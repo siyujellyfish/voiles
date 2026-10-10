@@ -1,0 +1,30 @@
+name: 專案檢查
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: 文件與工作紀錄
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: 取得檔案
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: 檢查 UTF-8 與專案規則
+        env:
+          VOILES_PULL_REQUEST: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
+        run: python3 tools/檢查專案.py
