@@ -21,7 +21,7 @@ from pathlib import Path
 
 def 執行_git(*參數: str) -> list[str]:
     結果 = subprocess.run(
-        ["git", *參數],
+        ["git", "-c", "core.quotePath=false", *參數],
         cwd=根目錄,
         check=True,
         capture_output=True,
