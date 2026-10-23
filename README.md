@@ -1,40 +1,46 @@
 # voiles
 
-voiles 是開發中的自製程式語言，目標是結合 Python 風格的簡潔編寫方式，以及參考 Rust 的記憶體安全與效能設計。
+voiles 是規劃中的自製程式語言。本儲存庫目前以語言設計與開發規劃為主，**尚未提供可執行的直譯器或編譯器**。
 
-## 專案方向
+## 新版語言設計方向（初步草案）
 
-- **主要執行模式**：直譯執行。
-- **延伸能力**：編譯為原生程式，以及打包為可獨立執行的檔案。
-- **長期目標**：直譯器與編譯器逐步以 voiles 自身實作，完成自舉。
-- **型別系統**：強型別、靜態型別、變數強制標註型別。
-- **記憶體管理**：所有權、明確移動與借用檢查；預設不依賴垃圾回收。
+自 2026-10-23 起以新版草案為準，暫捨棄此前版本的具體語法規格。新版目前包含：
 
-## 語法方向
+- 型別：`int`、`float`、`str`、`bool`、`list[T]`、`dict{K,V}`、`none`，以及具多型別聯集／缺失值語意的 `Optional`。
+- 大括號 `{}` 劃定作用域；`var`、`share`、`const` 宣告資料。
+- 函式 `fn` 預設公開；`_` 前綴函式為內部函式，不允許跨模組呼叫。
+- 結構 `struct`、模組 `import`、條件、迴圈、比對、`try/except` 與 `async fn/await`。
+- 值的預設複製、明確 `.move()` 與 `.borrow()`；字串依字元及其 UTF-8 位元組雙層索引。
 
-以下是目前確認的語法示意，**不是已可執行的程式**：
+以下僅為設計語法示意，**目前不可執行**：
 
-```python
-var x:int = 5
-const message:str = "voiles"
-share count:int = 0
+```voiles
+# a.voil
+share count:int = 5
 
-var a:str = "Hello"
-var b:str = a
-var reader:str = borrow(a)
-var transferred:str = move(b)
+fn read_count()->int{
+    return count
+}
+
+fn _helper()->none{
+    # 模組內部函式
+}
 ```
 
-一般賦值預設複製（前提是型別支援複製）；明確使用 `move(...)` 轉移所有權，以 `borrow(...)` 或 `borrow_mut(...)` 建立借用。
+```voiles
+# main.voil
+import a
 
-## 目前狀態
+fn main()->none{
+    print(a.read_count())  # 公開函式
+    a._helper()            # 錯誤：不能跨模組呼叫內部函式
+}
+```
 
-本儲存庫目前處於**語言規格與開發流程初始化**階段，尚未提供可使用的直譯器、編譯器或發行版本。
+## 專案狀態
 
-核心語法、容器及資源管理的完整細節仍在逐步確認。此時不提供尚未實作的安裝或執行命令。
+新版語言規格仍有待決細節；程式碼實作、編譯模式、開發工具及發行方式均需以後續已核准且已驗證的成果為準。
 
-## 文件與協作
+內部規格、待確認議題及工作階段記錄於 [AI-build](AI-build/README.md)。所有文件採繁體中文與 UTF-8。
 
-本檔面向外部使用者；內部規格、工作紀錄、已確認決策與待確認議題位於 `AI-build/`。所有說明文件以繁體中文撰寫，檔案使用 UTF-8 編碼。
-
-專案位置：[siyujellyfish/voiles](https://github.com/siyujellyfish/voiles)。
+儲存庫：[siyujellyfish/voiles](https://github.com/siyujellyfish/voiles)。
