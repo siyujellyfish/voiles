@@ -8,7 +8,7 @@ voiles 是規劃中的自製程式語言。本儲存庫目前以語言設計與�
 
 - 型別：`int`、`float`、`str`、`bool`、`list[T]`、`dict{K,V}`、`none`，以及具多型別聯集／缺失值語意的 `Optional`。
 - 大括號 `{}` 劃定作用域；`var`、`share`、`const` 宣告資料。
-- 一般 `fn`、`async fn` 與 `struct` 方法預設公開；`_` 前綴函式或方法為內部成員，不允許跨模組呼叫。
+- 一般 `fn`、`async fn` 與 `struct` 方法預設公開；`_` 前綴函式或方法為模組內部成員，允許同模組內其他函式或結構呼叫，不允許跨模組呼叫。
 - 結構 `struct`、模組 `import`、條件、迴圈、比對、`try/except` 與 `async fn/await`。
 - 值的預設複製、明確 `.move()` 與 `.borrow()`；字串依字元及其 UTF-8 位元組雙層索引。
 
