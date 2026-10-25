@@ -7,6 +7,7 @@ mod expr;
 mod parser;
 mod ast_debug;
 mod diagnostics;
+mod names;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -83,8 +84,13 @@ pub fn check_file(path: &Path) -> CheckResult {
             // 尚未有 P09～P12 靜態檢查：先對詞彙完整且安全的來源建立內部 AST，
             // 語法失敗才提供來源正確的語法診斷；不能將成功解析冒充 Passed。
             if diagnostics.is_empty() {
-                if let Err(error) = parser::parse(&source, &lexical.tokens) {
-                    diagnostics.push(error);
+                match parser::parse(&source, &lexical.tokens) {
+                    Ok(ast) => {
+                        if let Err(error) = names::resolve(&ast, &source) {
+                            diagnostics.push(error);
+                        }
+                    }
+                    Err(error) => diagnostics.push(error),
                 }
             }
             diagnostics::sort_diagnostics(&mut diagnostics);
