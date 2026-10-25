@@ -31,3 +31,5 @@
 - **BL06-A**：`CheckStatus::Passed` 與 `CheckStatus::Failed` 均為無附帶資料的 Rust 單元變體；不決定衍生 trait、成功判斷演算法或所有權安全。
 
 **治理界線**：只同步使用者已選 BL01～BL06。診斷訊息依 BK03 為 `Box<str>`、已換算範圍依 BK04 由兩個位置結構體組成；Rust 核心、AST／詞彙語法復原、完整 rustc 指令、runner 實際標籤、CLI 模板、診斷變體清單／型別可見性及所有權安全仍未實作／未決。AR04 原 Phase 依賴不變；P01～P03 未驗收；最新 PR HEAD 必要文件 CI 成功後才允許 Squash merge。
+
+- **BM01～BM06 新核准**：`DiagnosticKind` 首版依詞彙／語法／靜態三階段分類；`CheckResult` 三個既定欄位與 `Diagnostic` 類別／訊息／來源範圍相應欄位直接公開；無位置診斷顯示省略位置前綴；`Box<str>` 僅存說明、類別另行顯示；`diagnostics` 的集合順序即已核准診斷顯示順序。詳見語言規格第三十二節，未決部分不自補。
