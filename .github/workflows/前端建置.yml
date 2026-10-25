@@ -1,0 +1,59 @@
+name: Rust 前端建置與架構測試
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rust-frontend-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Rust 前端建置
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取得原始碼
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 檢查 Rust stable 版本與 Linux x86-64
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup run stable rustc --version
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+      - name: 直接 rustc 建置 voiles_core rlib 與 voiles 命令
+        run: |
+          mkdir -p target/p02
+          rustup run stable rustc --edition=2021 --crate-name voiles_core --crate-type rlib src/lib.rs -o target/p02/libvoiles_core.rlib
+          rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 src/main.rs -o target/p02/voiles
+          test -s target/p02/libvoiles_core.rlib
+          test -x target/p02/voiles
+
+  test:
+    name: Rust 獨立架構測試
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: 取得原始碼
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: 檢查 Rust stable 版本與 Linux x86-64
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup run stable rustc --version
+          test "$(uname -s)" = Linux
+          test "$(uname -m)" = x86_64
+      - name: 測試工作依 BK06 自行重編 rlib 並執行 Rust 內建測試
+        run: |
+          mkdir -p target/p02
+          rustup run stable rustc --edition=2021 --crate-name voiles_core --crate-type rlib src/lib.rs -o target/p02/libvoiles_core.rlib
+          rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 src/main.rs -o target/p02/voiles
+          rustup run stable rustc --edition=2021 --test --crate-name p02_smoke --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 tests/rust/p02_smoke.rs -o target/p02/p02_smoke
+          VOILES_CLI=./target/p02/voiles ./target/p02/p02_smoke
