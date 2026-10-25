@@ -52,7 +52,7 @@ rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=
 ./target/p02/voiles tests/fixtures/voiles/P01-正01.voil
 ```
 
-最後一個命令**目前預期退出 1 並向 stderr 說明前端尚未實作**；這不代表該正向素材的語法非法。Rust 架構測試及相依 CI 的完整指令見 `AI-build/建構階段.md` 第四十一節。
+最後一個命令**目前預期退出 1 並向 stderr 說明前端尚未實作**；這不代表該正向素材的語法非法。Rust 架構測試及相依 CI 的完整指令見 `AI-build/建構階段.md` 第三十六節。
 
 ## 規格與開發文件
 
