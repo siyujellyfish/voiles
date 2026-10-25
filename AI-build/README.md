@@ -62,3 +62,8 @@
 
 - **BS01～BS06** 依使用者編譯器具體相容建議委任由助手選定；詳見 [建構階段.md](建構階段.md) 第三十六節。P02 使用 Rust stable、標準函式庫、直接 rustc 編 `voiles_core` rlib 及 `voiles` CLI；獨立 `tests/rust/p02_smoke.rs` 只驗證架構／IO／沒有誤報成功。
 - `.github/workflows/前端建置.yml` 採 PR-only Linux x86-64 GitHub 託管環境，建置與測試相依分離，測試工作重編 rlib。**待新 PR 最新 HEAD 必要文件檢查與兩個 Rust 工作都完成成功並 Squash merge 後才能標 P02 已驗收**。P03～P30 未驗收，尚無語言分析器。
+
+## 十一、P02 Rust 工程正式驗收（2026-10-25）
+
+- PR [#74](https://github.com/siyujellyfish/voiles/pull/74) 必要文件 CI 與兩個 Rust CI 工作均 `completed/success`，Squash merge 至 main `0f2fbcb9b6e1cc43f5b4031198552a5d7b7dc178`；Rust stable 當次編譯器 `1.99.1`，**5 項 Rust 架構測試全部通過**。詳見 [建構階段.md](建構階段.md) 第三十七節。
+- **P02 工具鏈／工程架構正式驗收，不等於可用語言前端**。P03～P30 尚未驗收，49 個 P01 語意案例未實測；後續才進 P03 真正規格測試基礎與 P04～P12 語言前端實作。
