@@ -1,0 +1,7 @@
+fn main()->int{
+    var n:int
+    if (false){
+        n = 1
+    }
+    return n
+}

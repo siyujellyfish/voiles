@@ -1,0 +1,6 @@
+const first:int = later
+const later:int = 3
+
+fn main()->int{
+    return 0
+}

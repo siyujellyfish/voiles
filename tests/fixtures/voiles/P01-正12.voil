@@ -1,0 +1,11 @@
+fn first()->int{
+    return second()
+}
+
+fn second()->int{
+    return first()
+}
+
+fn main()->int{
+    return 0
+}

@@ -1,0 +1,7 @@
+fn number()->int{
+    return 7
+}
+
+fn main()->int{
+    return number() + 2
+}

@@ -9,14 +9,20 @@ from pathlib import Path
 根目錄 = Path(__file__).resolve().parent.parent
 素材根目錄 = 根目錄 / "tests" / "fixtures"
 清單路徑 = 素材根目錄 / "清單.json"
-預期正向編號 = {f"P01-正{序號:02d}" for 序號 in range(1, 7)}
-預期反向編號 = {f"P01-反{序號:02d}" for 序號 in range(1, 11)}
+預期正向編號 = {f"P01-正{序號:02d}" for 序號 in range(1, 20)}
+預期反向編號 = {f"P01-反{序號:02d}" for 序號 in range(1, 31)}
 預期向量位元組 = {
     "P01-源01": b"",
     "P01-源02": b"A\r\nB",
     "P01-源03": b"\r\n",
     "P01-源04": b"\xff\x80",
     "P01-源05": "\ufffd".encode("utf-8"),
+    "P01-源06": b"A\r\nB",
+    "P01-源07": "中\nB".encode("utf-8"),
+    "P01-源08": b"A\rB",
+    "P01-源09": b"A\nB",
+    "P01-源10": b"A\tB",
+    "P01-源11": b"\xffA\x80",
 }
 
 
@@ -61,7 +67,7 @@ def 驗證() -> None:
             raise ValueError(f"案例缺少可追溯決策代號：{編號}")
 
     if 編號集合 != 預期正向編號 | 預期反向編號:
-        raise ValueError("正反案例編號未完整對應 P01-正01～06 與反01～10")
+        raise ValueError("正反案例編號未完整對應 P01-正01～19 與反01～30")
     實際路徑 = set((素材根目錄 / "voiles").glob("*.voil"))
     if 已列路徑 != {檔案.resolve() for 檔案 in 實際路徑}:
         raise ValueError("存在未列於清單的 voiles 案例檔案")
@@ -84,4 +90,4 @@ def 驗證() -> None:
 
 if __name__ == "__main__":
     驗證()
-    print("測試素材檢查通過：16 個 UTF-8 原始案例、5 個原始位元組向量。")
+    print("測試素材檢查通過：49 個 UTF-8 原始案例、11 個原始位元組向量。")
