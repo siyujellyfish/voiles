@@ -76,3 +76,7 @@
 
 - P03 規格測試框架由 PR #76 通過 CI 並 Squash merge，49 個語意正反測試仍明確 ignored、21 項完整語言 struct 規格 blocked，**不代表語言已實測**。
 - P04 在內部 `src/source.rs` 實際追蹤合法／非法 UTF-8 原始零基半開跨度、CR/LF/CRLF/EOF 行欄換算及 U+FFFD 特例。Rust 內建測試已列 CI；P04 要以 PR 最新 HEAD 成功才驗收，P05～P30 未完成。
+
+## 十四、P04 驗收與 P05 內部詞彙器（2026-10-25）
+
+- P04 已透過 [PR #77](https://github.com/siyujellyfish/voiles/pull/77) Rust CI 與必要文件 CI 成功後 Squash merge。P05 新增 `src/lexer.rs`，建立原始來源跨度對應的內部關鍵字／數字／浮點／註解／Unicode 轉義／符號記號及內部回歸測試。**詞彙可辨識不代表 MVP-A 可接受 decimal64／str／容器**；P06～P30 仍待，49 個 P01 語意案例仍忽略。

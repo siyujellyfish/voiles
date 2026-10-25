@@ -2,6 +2,7 @@
 //! P02 僅處理架構和讀檔；詞彙、語法與靜態檢查交由 P04～P12。
 
 mod source;
+mod lexer;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -72,11 +73,19 @@ pub fn check_file(path: &Path) -> CheckResult {
     match std::fs::read(path) {
         Ok(bytes) => {
             let source = source::Source::new(bytes);
-            CheckResult {
-                status: CheckStatus::Failed,
-                diagnostics: source.lexical_diagnostics(),
-                io_error: None,
-            }
+            let mut diagnostics = source.lexical_diagnostics();
+            let lexical = lexer::scan(&source);
+            diagnostics.extend(lexical.diagnostics);
+            diagnostics.sort_by_key(|d| {
+                let (line, col) = d.span.map(|x| (x.start.line, x.start.column)).unwrap_or((usize::MAX, usize::MAX));
+                let phase = match d.kind {
+                    DiagnosticKind::Lexical => 0,
+                    DiagnosticKind::Syntax => 1,
+                    DiagnosticKind::Static => 2,
+                };
+                (line, col, phase)
+            });
+            CheckResult { status: CheckStatus::Failed, diagnostics, io_error: None }
         },
         Err(error) => CheckResult {
             status: CheckStatus::Failed,
