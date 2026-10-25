@@ -18,5 +18,16 @@
 - 未確認的技術選型、語意、模組邊界、資源安全條件不得自行確定。
 - 工作先開新分支，以合併請求與必要檢查驗證後用 Squash merge 合入 `main`。
 - 下一批**非純命名**的語言／前端規格決策選單須以**可直接點選的互動選項**呈現，分題獨立選 A／B、附簡短差異說明；允許部分選擇，未選保持未決。
-- **2026-10-25 新增純命名委任**：使用者允許開發助手自行採用最適合 voiles 的純識別名稱，不再詢問名稱 A／B；本次已據此選定 `CheckResult.diagnostics` 診斷集合欄位（沿用已核准的 `Vec<Diagnostic>` 方向）。公開位置、資料型別、CI 行為或其他非命名選擇仍須使用者核准；詳見 [專案規則.md](專案規則.md) 第九節。 **BK 技術裁決**：已核准 BK02 診斷類別專用列舉（純命名 `DiagnosticKind`）、BK03 訊息 `Box<str>`、BK04 來源起終兩個位置結構體、BK06 相依 PR CI 測試工作自行重編 `rlib`；BK05 公開根層／模組層級未選，不因純命名委任而決定。
+- **2026-10-25 新增純命名委任**：使用者允許開發助手自行採用最適合 voiles 的純識別名稱，不再詢問名稱 A／B；本次已據此選定 `CheckResult.diagnostics` 診斷集合欄位（沿用已核准的 `Vec<Diagnostic>` 方向）。公開位置、資料型別、CI 行為或其他非命名選擇仍須使用者核准；詳見 [專案規則.md](專案規則.md) 第九節。 **BK 技術裁決**：已核准 BK02 診斷類別專用列舉（純命名 `DiagnosticKind`）、BK03 訊息 `Box<str>`、BK04 來源起終兩個位置結構體、BK06 相依 PR CI 測試工作自行重編 `rlib`；原 BK05 公開根層／模組層級問題已由 BL01-A 裁決為 `voiles_core` 根層。
 - 目前仍是語言設計階段，沒有可用的直譯器或編譯器。
+
+## BL01～BL06 已核准 Rust 前端最小契約（2026-10-25）
+
+- **BL01-A**：`voiles_core::check_file` 直接位於核心程式庫根層；沿用 `&std::path::Path` 參數、核心自行讀檔、僅一項測試可呼叫檢查操作。不決定其他公開項目及穩定性。
+- **BL02-A**：已換算診斷來源位置的起點、終點，一基行號／原始 UTF-8 位元組欄位使用 Rust `usize`；原始字元追蹤仍保留零基原始位元組半開跨度，CRLF／EOF 已選規則不變。
+- **BL03-B**：`Diagnostic` 的已換算起終來源範圍採 `Option<來源範圍>`，容許沒有來源位置；但可定位語言診斷仍須提供合法位置，無合法行欄的用法／IO 錯誤不得捏造位置。不決定各類別的 `None` 適用條件。
+- **BL04-A**：`DiagnosticKind` 採無附帶資料的 Rust 單元列舉變體；具體分類、變體名稱／數量、顯示文字仍未決。
+- **BL05-A**：`check_file(&Path)` 直接回傳 `CheckResult`，不加外層 `Result`。保留 `status: CheckStatus`、`diagnostics: Vec<Diagnostic>`、`io_error: Option<std::io::ErrorKind>`；IO 失敗仍須為 `Failed`。其他完整 API 不推定。
+- **BL06-A**：`CheckStatus::Passed` 與 `CheckStatus::Failed` 均為無附帶資料的 Rust 單元變體；不決定衍生 trait、成功判斷演算法或所有權安全。
+
+**治理界線**：只同步使用者已選 BL01～BL06。診斷訊息依 BK03 為 `Box<str>`、已換算範圍依 BK04 由兩個位置結構體組成；Rust 核心、AST／詞彙語法復原、完整 rustc 指令、runner 實際標籤、CLI 模板、診斷變體清單／型別可見性及所有權安全仍未實作／未決。AR04 原 Phase 依賴不變；P01～P03 未驗收；最新 PR HEAD 必要文件 CI 成功後才允許 Squash merge。
