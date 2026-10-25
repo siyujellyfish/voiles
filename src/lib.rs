@@ -4,6 +4,7 @@
 mod source;
 mod lexer;
 mod expr;
+mod parser;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -77,6 +78,13 @@ pub fn check_file(path: &Path) -> CheckResult {
             let mut diagnostics = source.lexical_diagnostics();
             let lexical = lexer::scan(&source);
             diagnostics.extend(lexical.diagnostics);
+            // 尚未有 P09～P12 靜態檢查：先對詞彙完整且安全的來源建立內部 AST，
+            // 語法失敗才提供來源正確的語法診斷；不能將成功解析冒充 Passed。
+            if diagnostics.is_empty() {
+                if let Err(error) = parser::parse(&source, &lexical.tokens) {
+                    diagnostics.push(error);
+                }
+            }
             diagnostics.sort_by_key(|d| {
                 let (line, col) = d.span.map(|x| (x.start.line, x.start.column)).unwrap_or((usize::MAX, usize::MAX));
                 let phase = match d.kind {
