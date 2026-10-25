@@ -57,3 +57,8 @@
 
 - PR [#72](https://github.com/siyujellyfish/voiles/pull/72) 必要「文件與工作紀錄」CI 成功後已 Squash merge 至 `main`（`55b562747dfcb0ad937d161af2fa72650d5dc83c`）。**P01.1～P01.5 文件與驗收素材正式驗收**，目前有 49 個正反 `.voil` 案例、11 組原始來源向量與 11 個追溯群組；完整證據見 [建構階段.md](建構階段.md) 第三十五節。
 - **這不代表 Rust 前端已實作或真正執行語意測試**。P02～P30 未驗收，先完成 P02 工具鏈及 P03 Rust 自動測試，再進入 P04～P12 前端實作。AR04 Phase 依賴不變。
+
+## 十、P02 Rust 核心工程與雙工作 CI（2026-10-25）
+
+- **BS01～BS06** 依使用者編譯器具體相容建議委任由助手選定；詳見 [建構階段.md](建構階段.md) 第四十一節。P02 使用 Rust stable、標準函式庫、直接 rustc 編 `voiles_core` rlib 及 `voiles` CLI；獨立 `tests/rust/p02_smoke.rs` 只驗證架構／IO／沒有誤報成功。
+- `.github/workflows/前端建置.yml` 採 PR-only Linux x86-64 GitHub 託管環境，建置與測試相依分離，測試工作重編 rlib。**待新 PR 最新 HEAD 必要文件檢查與兩個 Rust 工作都完成成功並 Squash merge 後才能標 P02 已驗收**。P03～P30 未驗收，尚無語言分析器。
