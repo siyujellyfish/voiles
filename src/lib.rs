@@ -3,6 +3,7 @@
 
 mod source;
 mod lexer;
+mod expr;
 
 use std::fmt;
 use std::io::ErrorKind;
