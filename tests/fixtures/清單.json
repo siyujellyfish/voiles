@@ -451,6 +451,16 @@
         "E02",
         "AV04"
       ]
+    },
+    {
+      "id": "P01-正19",
+      "path": "voiles/P01-正19.voil",
+      "expect": "accept",
+      "rules": [
+        "AS02",
+        "AY02",
+        "I05"
+      ]
     }
   ],
   "source_vectors": [
