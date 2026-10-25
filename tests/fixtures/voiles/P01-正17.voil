@@ -1,0 +1,9 @@
+fn helper()->int{
+    return 1
+}
+
+const base:int = 2
+
+fn main()->int{
+    return base
+}

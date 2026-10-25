@@ -1,0 +1,5 @@
+const shared:int = 4
+
+fn main()->int{
+    return shared
+}

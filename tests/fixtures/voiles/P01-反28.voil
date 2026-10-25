@@ -1,0 +1,6 @@
+fn main()->int{
+    while (true){
+        return 1
+    }
+    return 0
+}

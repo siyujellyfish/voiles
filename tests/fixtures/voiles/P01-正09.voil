@@ -1,0 +1,11 @@
+fn main()->int{
+    var gate:bool = false
+    if (gate){
+        return 1
+    }else if (false){
+        return 2
+    }else{
+        const other:int = 3
+    }
+    return 0
+}

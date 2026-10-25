@@ -1,0 +1,7 @@
+fn main()->int{
+    var n:int = 1
+    if (false){
+        var n:int = 2
+    }
+    return n
+}

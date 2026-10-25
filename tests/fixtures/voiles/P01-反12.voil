@@ -1,0 +1,5 @@
+fn main()->int{
+    var n:int = 1
+    var n:int = 2
+    return n
+}

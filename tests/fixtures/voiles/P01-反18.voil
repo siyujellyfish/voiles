@@ -1,0 +1,6 @@
+fn main()->int{
+    if (true and false){
+        return 1
+    }
+    return 0
+}
