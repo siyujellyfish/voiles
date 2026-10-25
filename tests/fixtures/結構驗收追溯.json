@@ -1,0 +1,153 @@
+{
+  "format_version": 1,
+  "description": "P03.6 struct S01～S21 長期語言決策追溯；不屬 MVP-A，尚未產生實際編譯正反結果。",
+  "tests": [
+    {
+      "id": "STRUCT-S01",
+      "rule": "S01",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S02",
+      "rule": "S02",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S03",
+      "rule": "S03",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S04",
+      "rule": "S04",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S05",
+      "rule": "S05",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S06",
+      "rule": "S06",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S07",
+      "rule": "S07",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S08",
+      "rule": "S08",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S09",
+      "rule": "S09",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S10",
+      "rule": "S10",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S11",
+      "rule": "S11",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S12",
+      "rule": "S12",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S13",
+      "rule": "S13",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S14",
+      "rule": "S14",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S15",
+      "rule": "S15",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S16",
+      "rule": "S16",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S17",
+      "rule": "S17",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S18",
+      "rule": "S18",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S19",
+      "rule": "S19",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S20",
+      "rule": "S20",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    },
+    {
+      "id": "STRUCT-S21",
+      "rule": "S21",
+      "scope": "完整語言（非 MVP-A）",
+      "expect": "blocked",
+      "reason": "struct 不屬首版 Rust 前端子集；待 P07/P09/P10 與所有權安全規格及真實解析後確立可執行測試"
+    }
+  ]
+}

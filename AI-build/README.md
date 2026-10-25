@@ -67,3 +67,7 @@
 
 - PR [#74](https://github.com/siyujellyfish/voiles/pull/74) 必要文件 CI 與兩個 Rust CI 工作均 `completed/success`，Squash merge 至 main `0f2fbcb9b6e1cc43f5b4031198552a5d7b7dc178`；Rust stable 當次編譯器 `1.99.1`，**5 項 Rust 架構測試全部通過**。詳見 [建構階段.md](建構階段.md) 第三十七節。
 - **P02 工具鏈／工程架構正式驗收，不等於可用語言前端**。P03～P30 尚未驗收，49 個 P01 語意案例未實測；後續才進 P03 真正規格測試基礎與 P04～P12 語言前端實作。
+
+## 十二、P03 規格測試框架（2026-10-25）
+
+- BT01～BT03 依委任選定：以 `tools/產生規格測試.py` 將 P01 案例清單轉為獨立 Rust `--test` 框架；49 個案例在真正語法／靜態檢查完成前一律 `#[ignore]`，不得記為通過。`結構驗收追溯.json` 記錄 struct S01～S21 未列入 MVP-A 且尚待語意支援的阻塞項；PR Rust CI 會真的編譯及執行測試框架。P03 僅架構驗收，P04～P30 另依 Phase 順序進行。
