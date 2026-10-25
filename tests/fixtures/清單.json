@@ -1,0 +1,216 @@
+{
+  "format_version": 1,
+  "description": "MVP-A P01 代表性測試素材；expect 僅代表未來前端的預期，非當前實測。",
+  "cases": [
+    {
+      "id": "P01-正01",
+      "path": "voiles/P01-正01.voil",
+      "expect": "accept",
+      "rules": [
+        "AU01",
+        "AU02",
+        "AU03",
+        "AY03"
+      ]
+    },
+    {
+      "id": "P01-正02",
+      "path": "voiles/P01-正02.voil",
+      "expect": "accept",
+      "rules": [
+        "AS02",
+        "AX02",
+        "AV04",
+        "AW01"
+      ]
+    },
+    {
+      "id": "P01-正03",
+      "path": "voiles/P01-正03.voil",
+      "expect": "accept",
+      "rules": [
+        "AV02",
+        "AV03",
+        "AW03"
+      ]
+    },
+    {
+      "id": "P01-正04",
+      "path": "voiles/P01-正04.voil",
+      "expect": "accept",
+      "rules": [
+        "AT04",
+        "AU04",
+        "AY01",
+        "AU03"
+      ]
+    },
+    {
+      "id": "P01-正05",
+      "path": "voiles/P01-正05.voil",
+      "expect": "accept",
+      "rules": [
+        "I05",
+        "AU05",
+        "AZ01"
+      ]
+    },
+    {
+      "id": "P01-正06",
+      "path": "voiles/P01-正06.voil",
+      "expect": "accept",
+      "rules": [
+        "AW06",
+        "AU03"
+      ]
+    },
+    {
+      "id": "P01-反01",
+      "path": "voiles/P01-反01.voil",
+      "expect": "reject",
+      "rules": [
+        "AX03",
+        "AY03"
+      ]
+    },
+    {
+      "id": "P01-反02",
+      "path": "voiles/P01-反02.voil",
+      "expect": "reject",
+      "rules": [
+        "AY03"
+      ]
+    },
+    {
+      "id": "P01-反03",
+      "path": "voiles/P01-反03.voil",
+      "expect": "reject",
+      "rules": [
+        "AT02",
+        "AS05"
+      ]
+    },
+    {
+      "id": "P01-反04",
+      "path": "voiles/P01-反04.voil",
+      "expect": "reject",
+      "rules": [
+        "AS02",
+        "AS05"
+      ]
+    },
+    {
+      "id": "P01-反05",
+      "path": "voiles/P01-反05.voil",
+      "expect": "reject",
+      "rules": [
+        "H03"
+      ]
+    },
+    {
+      "id": "P01-反06",
+      "path": "voiles/P01-反06.voil",
+      "expect": "reject",
+      "rules": [
+        "E06",
+        "I01"
+      ]
+    },
+    {
+      "id": "P01-反07",
+      "path": "voiles/P01-反07.voil",
+      "expect": "reject",
+      "rules": [
+        "I05",
+        "AU05"
+      ]
+    },
+    {
+      "id": "P01-反08",
+      "path": "voiles/P01-反08.voil",
+      "expect": "reject",
+      "rules": [
+        "AZ02",
+        "AT03"
+      ]
+    },
+    {
+      "id": "P01-反09",
+      "path": "voiles/P01-反09.voil",
+      "expect": "reject",
+      "rules": [
+        "J06",
+        "AU03"
+      ]
+    },
+    {
+      "id": "P01-反10",
+      "path": "voiles/P01-反10.voil",
+      "expect": "reject",
+      "rules": [
+        "AV04",
+        "AW01",
+        "AS05"
+      ]
+    }
+  ],
+  "source_vectors": [
+    {
+      "id": "P01-源01",
+      "hex": "",
+      "rules": [
+        "BF01"
+      ],
+      "observations": [
+        "空來源 EOF 原始半開範圍 [0,0)，顯示 1:1"
+      ]
+    },
+    {
+      "id": "P01-源02",
+      "hex": "41 0D 0A 42",
+      "rules": [
+        "AZ04",
+        "BG02"
+      ],
+      "observations": [
+        "CRLF 僅算一次換行；B 的座標為第 2 行第 1 欄",
+        "完整 CRLF 的半開終點為下一行第 1 欄"
+      ]
+    },
+    {
+      "id": "P01-源03",
+      "hex": "0D 0A",
+      "rules": [
+        "BF02"
+      ],
+      "observations": [
+        "檔尾 CRLF EOF 定位保留 CR 與 LF 完整兩個位元組，不以單一 LF 冒充"
+      ]
+    },
+    {
+      "id": "P01-源04",
+      "hex": "FF 80",
+      "rules": [
+        "AZ03",
+        "BA02",
+        "BC02"
+      ],
+      "observations": [
+        "兩個非法原始位元組分別導致詞彙錯誤且各保留一位元組原始跨度",
+        "替代標記不可構成合法詞彙"
+      ]
+    },
+    {
+      "id": "P01-源05",
+      "hex": "EF BF BD",
+      "rules": [
+        "BF03",
+        "BG01"
+      ],
+      "observations": [
+        "原始合法編碼 U+FFFD 是一個必拒絕的來源字元，屬詞彙錯誤",
+        "不得視作三個非法原始位元組"
+      ]
+    }
+  ]
+}

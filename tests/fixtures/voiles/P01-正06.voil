@@ -1,0 +1,7 @@
+fn step()->int{
+    return step()
+}
+
+fn main()->int{
+    return 0
+}

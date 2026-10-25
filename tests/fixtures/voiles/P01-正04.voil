@@ -1,0 +1,9 @@
+fn main()->int{
+    var gate:bool = false
+    if (gate){
+        return 1
+    }else{
+        const fallback:int = 2
+    }
+    return 0
+}

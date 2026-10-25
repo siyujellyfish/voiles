@@ -28,3 +28,5 @@ jobs:
         env:
           VOILES_PULL_REQUEST: ${{ github.event_name == 'pull_request' && 'true' || 'false' }}
         run: python3 tools/檢查專案.py
+      - name: 驗證 P01 測試素材清單與原始位元組向量
+        run: python3 tools/檢查測試素材.py
