@@ -2,7 +2,7 @@
 
 **voiles** 是規劃中的自製程式語言，目標為**Python 式易讀簡潔的編寫風格、Rust 式記憶體安全、直譯優先**，後續提供編譯與單檔封裝能力，長期以自舉為目標。
 
-> **現況（2026-10-25）**：目前以新版語言規格與編譯器規劃為主，**尚未提供可執行的 voiles 直譯器、編譯器或前端**。本頁範例是設計示意，不代表可執行或已通過編譯測試。
+> **現況（2026-10-25）**：P01 首版語言規格已驗收，P02 已建立 Rust **工程骨架**與建置／架構測試。雖可建置名為 `voiles` 的命令，但**尚未實作可用的 voiles 語法／靜態檢查器、直譯器或編譯器**；可讀檔案會明確回報「前端尚未實作」，不虛報通過。
 
 ## 語言的編寫風格
 
@@ -34,11 +34,25 @@ fn main()->int{
 
 | 里程碑 | 已核准目標 | 狀態 |
 |---|---|---|
-| 首個單檔 Rust 前端 | 解析 `.voil`、建立內部 AST、來源診斷與指定子集靜態檢查；不執行、不輸出可執行檔 | 規格規劃中、尚未實作 |
+| 首個單檔 Rust 前端 | 解析 `.voil`、建立內部 AST、來源診斷與指定子集靜態檢查；不執行、不輸出可執行檔 | P01 規格完成、P02 工程骨架已建立；真正語言分析尚未實作 |
 | 記憶體安全與直譯器 | 完成既有所有權／借用／生命週期安全依賴後提供直譯執行 | 尚未實作 |
 | 日後可執行編譯產物 | 先滿足前述安全與直譯器依賴，再轉譯至可編譯表示、交既有編譯器產生產物 | 尚未實作 |
 
-依正式 Phase 表，**P00 儲存庫治理基線已驗收；P01～P30 尚未驗收**。現有 GitHub Actions 必要檢查主要驗證文件與工作紀錄，**不等於**編譯器的 Rust 建置／測試已通過。
+依正式 Phase 表，**P00／P01 已驗收；P02 工程已實作、待真實 Rust CI／合併驗收；P03～P30 尚未驗收**。新增 Rust CI 測試工程可建置與 IO／CLI 骨架，**不等於** voiles 語法或語意已被驗證。
+
+## Rust 前端工程骨架（P02）
+
+使用 Rust stable、直接以 `rustc` 編譯，不以 Cargo 為首版必要工具：
+
+```sh
+rustup toolchain install stable --profile minimal
+mkdir -p target/p02
+rustup run stable rustc --edition=2021 --crate-name voiles_core --crate-type rlib src/lib.rs -o target/p02/libvoiles_core.rlib
+rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 src/main.rs -o target/p02/voiles
+./target/p02/voiles tests/fixtures/voiles/P01-正01.voil
+```
+
+最後一個命令**目前預期退出 1 並向 stderr 說明前端尚未實作**；這不代表該正向素材的語法非法。Rust 架構測試及相依 CI 的完整指令見 `AI-build/建構階段.md` 第三十六節。
 
 ## 規格與開發文件
 
