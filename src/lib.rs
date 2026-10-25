@@ -5,6 +5,8 @@ mod source;
 mod lexer;
 mod expr;
 mod parser;
+mod ast_debug;
+mod diagnostics;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -85,15 +87,7 @@ pub fn check_file(path: &Path) -> CheckResult {
                     diagnostics.push(error);
                 }
             }
-            diagnostics.sort_by_key(|d| {
-                let (line, col) = d.span.map(|x| (x.start.line, x.start.column)).unwrap_or((usize::MAX, usize::MAX));
-                let phase = match d.kind {
-                    DiagnosticKind::Lexical => 0,
-                    DiagnosticKind::Syntax => 1,
-                    DiagnosticKind::Static => 2,
-                };
-                (line, col, phase)
-            });
+            diagnostics::sort_diagnostics(&mut diagnostics);
             CheckResult { status: CheckStatus::Failed, diagnostics, io_error: None }
         },
         Err(error) => CheckResult {

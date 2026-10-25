@@ -90,3 +90,7 @@
 
 - P06 PR #79 必要文件及 Rust CI success 後 Squash merge，內部算術 AST 已驗收。P07 新增 `src/parser.rs` 對 P01 支援的 fn／const／var／if／else if／else／return／換行／J06 非空區塊等建立內部 AST，Rust 測試包含 19 個首版正例**語法**解析及反向語法測試。
 - 解析成功**不等於**類型／名稱／確定初始化檢查通過，核心仍不回報 Passed；完整語言 Optional／字串索引及 struct 均保留未實作安全語意，P08～P30 待繼續。
+
+## 十七、P07 語法驗收與 P08 來源 AST 檢視及診斷（2026-10-25）
+
+- P07 PR #80 已真實解析 19 個 P01 正向程式並驗收，仍非語意驗收。P08 `src/ast_debug.rs` 以原始來源位元組跨度換算一基行欄，`src/diagnostics.rs` 保證原始位置與詞彙／語法／靜態階段排序、無位置後置；Rust 測試涵蓋 CRLF、中文、Debug AST。P08 仍待 CI，P09～P30 尚未驗收。
