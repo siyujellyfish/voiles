@@ -1,6 +1,8 @@
 //! voiles 最小 Rust 前端核心介面。
 //! P02 僅處理架構和讀檔；詞彙、語法與靜態檢查交由 P04～P12。
 
+mod source;
+
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::Path;
@@ -68,10 +70,13 @@ pub struct CheckResult {
 /// 讀檔失敗時回報 Failed、空診斷和真正的 IO 錯誤種類。
 pub fn check_file(path: &Path) -> CheckResult {
     match std::fs::read(path) {
-        Ok(_source) => CheckResult {
-            status: CheckStatus::Failed,
-            diagnostics: Vec::new(),
-            io_error: None,
+        Ok(bytes) => {
+            let source = source::Source::new(bytes);
+            CheckResult {
+                status: CheckStatus::Failed,
+                diagnostics: source.lexical_diagnostics(),
+                io_error: None,
+            }
         },
         Err(error) => CheckResult {
             status: CheckStatus::Failed,
