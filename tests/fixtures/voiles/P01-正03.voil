@@ -1,0 +1,7 @@
+fn main()->int{
+    return helper()
+}
+
+fn helper()->int{
+    return 3
+}

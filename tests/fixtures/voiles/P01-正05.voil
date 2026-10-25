@@ -1,0 +1,10 @@
+fn main()->int{
+    var n:int
+    var gate:bool = false
+    if (gate){
+        n = 1
+    }else{
+        n = 2
+    }
+    return n
+}
