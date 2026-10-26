@@ -1794,3 +1794,62 @@ mod float_copyable_approved_tests {
         assert!(error.message.contains("decimal64"));
     }
 }
+
+#[cfg(test)]
+mod float_copyable_method_tests {
+    use super::{inspect, Checker, Parser};
+    use crate::borrow_safety::BorrowKind;
+    use crate::lexer;
+    use crate::ownership_policy::approved_leaf_copy_permission;
+    use crate::source::Source;
+
+    #[test]
+    fn float_已准_copyable_故唯讀_self_欄位方法可以靜態驗證() {
+        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位唯讀方法型別能力.voil");
+        assert!(inspect(text).is_ok());
+        let source = Source::new(text.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        let (types, _) = Parser {
+            source: &source, tokens: &scan.tokens, cursor: 0
+        }.file().unwrap();
+        let checker = Checker {
+            source: &source, structs: &types,
+            ability: approved_leaf_copy_permission,
+        };
+        assert_eq!(
+            checker.check_method("FloatHolder", &types["FloatHolder"].methods[0]).unwrap(),
+            BorrowKind::SharedRead);
+    }
+
+    #[test]
+    fn float_欄位之間複製已准但仍必須推導獨占_self_借用() {
+        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位複製至同型別欄位.voil");
+        assert!(inspect(text).is_ok());
+        let source = Source::new(text.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        let (types, _) = Parser {
+            source: &source, tokens: &scan.tokens, cursor: 0
+        }.file().unwrap();
+        let checker = Checker {
+            source: &source, structs: &types,
+            ability: approved_leaf_copy_permission,
+        };
+        assert_eq!(
+            checker.check_method("FloatPair", &types["FloatPair"].methods[0]).unwrap(),
+            BorrowKind::ExclusiveWrite);
+    }
+
+    #[test]
+    fn float_可複製並不解除方法回傳型別一致的要求() {
+        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位回傳型別不一致.voil");
+        assert!(inspect(text).unwrap_err().message.contains("回傳型別"));
+    }
+
+    #[test]
+    fn float_未初始化的接收者仍不能直接呼叫方法() {
+        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位唯讀方法型別能力.voil");
+        let invalid = text.replace("return 0\n}", "var value:FloatHolder = FloatHolder()\nvar copy:float = value.read()\nreturn 0\n}");
+        let err = inspect(&invalid).unwrap_err();
+        assert!(err.message.contains("初始化"));
+    }
+}
