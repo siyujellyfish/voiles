@@ -1,0 +1,9 @@
+struct Note{
+var text:str = "note"
+var enabled:bool = true
+}
+fn main()->int{
+var original:Note = Note()
+var moved:Note = original.move()
+return 0
+}
