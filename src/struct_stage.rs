@@ -1368,3 +1368,60 @@ mod automatic_self_borrow_tests {
         assert!(inspect(src).unwrap_err().message.contains("所有權與別名"));
     }
 }
+
+#[cfg(test)]
+mod conditional_self_inference_tests {
+    use super::{inspect, Parser, Checker};
+    use crate::borrow_safety::BorrowKind;
+
+    #[test]
+    fn 任一分支修改_self_即推導獨占借用() {
+        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        assert!(inspect(text).is_ok());
+        let source = crate::source::Source::new(text.as_bytes().to_vec());
+        let scanned = crate::lexer::scan(&source);
+        let (types, _) = Parser {source: &source, tokens: &scanned.tokens, cursor: 0}.file().unwrap();
+        let checker = Checker {source: &source, structs: &types,
+            ability: crate::ownership_policy::approved_leaf_copy_permission};
+        let method = &types["Counter"].methods[0];
+        assert_eq!(checker.check_method("Counter", method).unwrap(), BorrowKind::ExclusiveWrite);
+    }
+
+    #[test]
+    fn const_實例不得呼叫只在某條分支寫入的方法() {
+        let text = include_str!("../tests/fixtures/p13_stage/const實例禁止分支寫入.voil");
+        assert!(inspect(text).unwrap_err().message.contains("const 結構實例"));
+    }
+
+    #[test]
+    fn 自動借用推導也必須檢查兩條分支的欄位寫入型別() {
+        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let bad = text.replace("self.value = 3", "self.value = false");
+        assert!(inspect(&bad).unwrap_err().message.contains("型別"));
+    }
+
+    #[test]
+    fn self_非布林欄位不可用作條件() {
+        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let bad = text.replace("if (self.active)", "if (self.value)");
+        assert!(inspect(&bad).unwrap_err().message.contains("bool"));
+    }
+
+    #[test]
+    fn 無副作用常值_巢狀條件可保守推導獨占而非放行別名() {
+        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let nested = text.replace("self.value = 2", "if (true){\nself.value = 2\n}");
+        assert!(inspect(&nested).is_ok());
+        let unknown = text.replace("if (self.active)", "if (other())");
+        assert!(inspect(&unknown).is_err());
+    }
+
+    #[test]
+    fn 方法分支內返回或寫入未知來源維持拒絕() {
+        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let early = text.replace("self.value = 2", "return 1");
+        assert!(inspect(&early).is_err());
+        let unknown = text.replace("self.value = 2", "other.value = 2");
+        assert!(inspect(&unknown).is_err());
+    }
+}
