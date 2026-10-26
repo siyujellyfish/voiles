@@ -432,32 +432,57 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 根據方法實際操作自動推導共享或獨占借用。
     /// 在此明確受限子集，方法只能修改自身 var 欄位、讀取已核准 Copyable
     /// 的 self 欄位，並於最後回傳可靜態確定型別的值；其他行為保守拒絕。
-    fn check_method(&self, owner: &str, method: &Function)
-        -> Result<BorrowKind, Diagnostic> {
-        self.reject_method_statements(&method.body)?;
-        let def = self.structs.get(owner).expect("已確認方法所屬結構存在");
-        let Some(Stmt { kind: StmtKind::Return(return_value), .. }) = method.body.last() else {
-            return Err(Diagnostic { kind: DiagnosticKind::Static,
-                message: "目前方法必須以單一明確 return 結束".into(), span: None });
-        };
-        let mut mode = BorrowKind::SharedRead;
-        for statement in method.body.iter().take(method.body.len() - 1) {
+    /// 只接受無副作用且可複製的布林條件。沒有取得獨立引用值。
+    fn method_bool_condition(&self, owner: &str, term: &Term)
+        -> Result<(), Diagnostic> {
+        match &term.kind {
+            TermKind::Literal("bool") => Ok(()),
+            TermKind::FieldRead(receiver, name) if receiver == "self" => {
+                let target = self.structs.get(owner)
+                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
+                    .ok_or_else(|| self.error("方法條件讀取的 self 欄位不存在", term))?;
+                if target.ty != "bool"
+                    || self.permission(&target.ty) != CopyPermission::Allowed {
+                    return Err(self.error(
+                        "if 條件的 self 欄位必須是可複製的 bool", term));
+                }
+                Ok(())
+            }
+            _ => Err(self.error(
+                "方法 if 條件只支援布林常值或已核准的 self.bool 欄位", term)),
+        }
+    }
+
+    /// 以所有可能執行路徑的操作推導方法整體借用模式；
+    /// 任一路徑寫入都需要在方法入口取得獨占借用。
+    fn method_writes(&self, owner: &str, body: &[Stmt])
+        -> Result<bool, Diagnostic> {
+        let definition = self.structs.get(owner).expect("方法所屬型別已確認");
+        let mut writes = false;
+        for statement in body {
             match &statement.kind {
                 StmtKind::FieldAssign { receiver, field, value } if receiver == "self" => {
-                    let target = def.fields.iter().find(|f| f.name == *field)
+                    let target = definition.fields.iter().find(|f| f.name == *field)
                         .ok_or_else(|| self.error("self 欄位不存在", value))?;
                     if target.immutable {
                         return Err(self.error("S18：const 欄位禁止透過方法寫入", value));
                     }
-                    // 受限子集只允許無副作用的字面值作欄位更新。
                     let TermKind::Literal(actual) = &value.kind else {
                         return Err(self.error(
-                            "方法欄位寫入目前僅支援相同型別的獨立字面值", value));
+                            "方法欄位寫入只接受型別相同的獨立字面值", value));
                     };
                     if *actual != target.ty.as_str() {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
-                    mode = BorrowKind::ExclusiveWrite;
+                    writes = true;
+                }
+                StmtKind::If { condition, yes, no } => {
+                    self.method_bool_condition(owner, condition)?;
+                    let yes_writes = self.method_writes(owner, yes)?;
+                    let no_writes = if let Some(otherwise) = no {
+                        self.method_writes(owner, otherwise)?
+                    } else { false };
+                    writes |= yes_writes || no_writes;
                 }
                 _ => return Err(Diagnostic {
                     kind: DiagnosticKind::Static,
@@ -466,6 +491,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }),
             }
         }
+        Ok(writes)
+    }
+
+    fn check_method(&self, owner: &str, method: &Function)
+        -> Result<BorrowKind, Diagnostic> {
+        self.reject_method_statements(&method.body)?;
+        let def = self.structs.get(owner).expect("已確認方法所屬結構存在");
+        let Some(Stmt { kind: StmtKind::Return(return_value), .. }) = method.body.last() else {
+            return Err(Diagnostic { kind: DiagnosticKind::Static,
+                message: "目前方法必須以單一明確 return 結束".into(), span: None });
+        };
+        let mode = if self.method_writes(owner,
+            &method.body[..method.body.len() - 1])? {
+            BorrowKind::ExclusiveWrite
+        } else { BorrowKind::SharedRead };
         let actual = match &return_value.kind {
             TermKind::Literal(ty) => *ty,
             TermKind::FieldRead(receiver, field) if receiver == "self" => {
