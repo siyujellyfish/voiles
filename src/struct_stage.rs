@@ -1,6 +1,6 @@
 //! P13 受限結構體所有權前端：真正 .voil → 私有 AST → 型別 → 所有權狀態。
 //! 只接受可以完整驗證的子集，未支援的語法拒絕，不影響 MVP-A check_file。
-//! 欄位型別 Copyable 由呼叫端提供，不自行宣告任何完整語言型別的資格。
+//! 正式內部入口依 HA13-A／str 方案 A 使用核准政策；自訂能力僅限 Rust 測試。
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -1303,7 +1303,7 @@ mod approved_policy_tests {
     }
 
     #[test]
-    fn ha13_str_資格未決_及含_str_欄位的_struct_都不可隱含複製() {
+    fn str_已禁止_copyable_及含_str_欄位的_struct_都不可隱含複製() {
         const SOURCE: &str =
             include_str!("../tests/fixtures/p13_approved/未知字串資格拒絕複製.voil");
         let error = inspect(SOURCE).unwrap_err();
@@ -1483,7 +1483,7 @@ mod copyable_self_field_tests {
     }
 
     #[test]
-    fn 未決_str_複製能力仍不可在方法裡隱含複製() {
+    fn 已禁止_str_複製能力不可在方法裡隱含複製() {
         let code = include_str!("../tests/fixtures/p13_stage/方法不可複製未知欄位.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
