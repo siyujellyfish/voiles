@@ -5,7 +5,11 @@
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use crate::ownership_ledger::DeclarationId;
+
+/// 每個私有借用追蹤器的身份皆不同，防止跨追蹤器票據意外相互解鎖。
+static NEXT_TRACKER_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BorrowKind {
@@ -26,17 +30,30 @@ pub(crate) enum BorrowSafetyError {
 pub(crate) struct BorrowTicket {
     declaration: DeclarationId,
     serial: u64,
+    tracker_id: u64,
     kind: BorrowKind,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug)]
 pub(crate) struct BorrowSafety {
     active: BTreeMap<DeclarationId, BTreeMap<u64, BorrowKind>>,
     next_serial: u64,
+    tracker_id: u64,
+}
+
+impl Default for BorrowSafety {
+    fn default() -> Self { Self::new() }
 }
 
 impl BorrowSafety {
-    pub(crate) fn new() -> Self { Self::default() }
+    pub(crate) fn new() -> Self {
+        // 超過身份空間時選擇明確停止，不允許回繞後重用既有追蹤器身分。
+        let tracker_id = NEXT_TRACKER_ID.fetch_update(
+            Ordering::Relaxed, Ordering::Relaxed,
+            |next| next.checked_add(1),
+        ).expect("借用追蹤器身分已用盡");
+        Self { active: BTreeMap::new(), next_serial: 0, tracker_id }
+    }
 
     pub(crate) fn acquire(&mut self, declaration: DeclarationId, kind: BorrowKind)
         -> Result<BorrowTicket, BorrowSafetyError> {
@@ -52,7 +69,7 @@ impl BorrowSafety {
         self.next_serial = self.next_serial
             .checked_add(1).ok_or(BorrowSafetyError::TooManySharedLoans)?;
         self.active.entry(declaration).or_default().insert(serial, kind);
-        Ok(BorrowTicket { declaration, serial, kind })
+        Ok(BorrowTicket { declaration, serial, tracker_id: self.tracker_id, kind })
     }
 
     /// 對直接讀、寫、複製或 .move() 均先執行此檢查。
@@ -66,6 +83,9 @@ impl BorrowSafety {
 
     pub(crate) fn release(&mut self, ticket: BorrowTicket)
         -> Result<(), BorrowSafetyError> {
+        if ticket.tracker_id != self.tracker_id {
+            return Err(BorrowSafetyError::InvalidRelease);
+        }
         let Some(loans) = self.active.get_mut(&ticket.declaration) else {
             return Err(BorrowSafetyError::InvalidRelease);
         };
@@ -84,6 +104,9 @@ impl BorrowSafety {
         -> Result<(), BorrowSafetyError> {
         let mut seen = std::collections::BTreeSet::new();
         for ticket in tickets {
+            if ticket.tracker_id != self.tracker_id {
+                return Err(BorrowSafetyError::InvalidRelease);
+            }
             if !seen.insert((ticket.declaration, ticket.serial)) {
                 return Err(BorrowSafetyError::InvalidRelease);
             }
@@ -193,6 +216,39 @@ mod tests {
         safety.finish_scope(&[loan]).unwrap();
         assert_eq!(safety.finish_scope(&[loan]),
             Err(BorrowSafetyError::InvalidRelease));
+    }
+
+    #[test]
+    fn hc14_不同追蹤器的借用票據即使宣告位置與序號相同也不能互換() {
+        let id = DeclarationId(31);
+        let mut first = BorrowSafety::new();
+        let mut second = BorrowSafety::new();
+        let first_ticket = first.acquire(id, BorrowKind::ExclusiveWrite).unwrap();
+        let second_ticket = second.acquire(id, BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(first_ticket.serial, second_ticket.serial);
+        assert_ne!(first_ticket.tracker_id, second_ticket.tracker_id);
+        assert_eq!(second.release(first_ticket), Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(second.check_direct_access(id), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(first.release(second_ticket), Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(first.check_direct_access(id), Err(BorrowSafetyError::SourceIsBorrowed));
+        first.finish_scope(&[first_ticket]).unwrap();
+        second.finish_scope(&[second_ticket]).unwrap();
+    }
+
+    #[test]
+    fn hc14_批次中混入跨追蹤器票據不得部分解除其餘借用() {
+        let id = DeclarationId(40);
+        let mut first = BorrowSafety::new();
+        let mut second = BorrowSafety::new();
+        let first_ticket = first.acquire(id, BorrowKind::SharedRead).unwrap();
+        let second_ticket = second.acquire(id, BorrowKind::SharedRead).unwrap();
+        let third_ticket = second.acquire(id, BorrowKind::SharedRead).unwrap();
+        assert_eq!(second.finish_scope(&[first_ticket, third_ticket]),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(second.check_direct_access(id), Err(BorrowSafetyError::SourceIsBorrowed));
+        second.finish_scope(&[second_ticket, third_ticket]).unwrap();
+        assert!(second.check_direct_access(id).is_ok());
+        first.release(first_ticket).unwrap();
     }
 
     #[test]
