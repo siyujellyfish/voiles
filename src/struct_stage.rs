@@ -358,10 +358,14 @@ impl Parser<'_> {
 
 #[derive(Clone)]
 struct Binding {
+    declaration_start: usize,
     ty: String,
     mutable: bool,
     value: ValueSlot,
 }
+
+/// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
+type Scopes = Vec<HashMap<String, Binding>>;
 
 struct Checker<'a, C> {
     source: &'a Source,
@@ -396,12 +400,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn permission(&self, ty: &str) -> CopyPermission {
         self.copy_permission(ty, &mut HashSet::new())
     }
-    fn evaluate(&self, term: &Term, vars: &mut HashMap<String, Binding>)
+    fn lookup<'b>(vars: &'b Scopes, name: &str) -> Option<&'b Binding> {
+        vars.iter().rev().find_map(|scope| scope.get(name))
+    }
+    fn lookup_mut<'b>(vars: &'b mut Scopes, name: &str) -> Option<&'b mut Binding> {
+        vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
+    }
+
+    fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
             TermKind::Name(name) => {
-                let binding = vars.get(name)
+                let binding = Self::lookup(vars, name)
                     .ok_or_else(|| self.error("找不到合法的來源宣告", term))?;
                 binding.value.duplicate().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
@@ -410,7 +421,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if name == "self" {
                     return Err(self.error("S15：方法不可消耗或移動整個 self", term));
                 }
-                let binding = vars.get_mut(name)
+                let binding = Self::lookup_mut(vars, name)
                     .ok_or_else(|| self.error("找不到可移動的具名來源", term))?;
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
@@ -454,12 +465,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.error(message, term)
     }
     /// true 表示分支仍會繼續執行；false 表示所有目前路徑已 return。
-    fn statements(&self, body: &[Stmt], vars: &mut HashMap<String, Binding>,
+    fn statements(&self, body: &[Stmt], vars: &mut Scopes,
+        expected_return: &str, new_scope: bool) -> Result<bool, Diagnostic> {
+        if new_scope { vars.push(HashMap::new()); }
+        let result = self.statement_body(body, vars, expected_return);
+        if new_scope { vars.pop(); }
+        result
+    }
+
+    fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str) -> Result<bool, Diagnostic> {
         for statement in body {
             match &statement.kind {
                 StmtKind::Declare { name, ty, mutable, init } => {
-                    if vars.contains_key(name) {
+                    if vars.last().expect("應有詞彙作用域").contains_key(name) {
                         return Err(Diagnostic { kind: DiagnosticKind::Static,
                             message: "此受限子集不接受同作用域重複宣告".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
@@ -483,12 +502,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     } else {
                         ValueSlot::uninitialized(permission)
                     };
-                    vars.insert(name.clone(), Binding {
-                        ty: ty.clone(), mutable: *mutable, value: slot
+                    vars.last_mut().expect("應有詞彙作用域").insert(name.clone(), Binding {
+                        declaration_start: statement.start, ty: ty.clone(),
+                        mutable: *mutable, value: slot
                     });
                 }
                 StmtKind::Assign { name, value } => {
-                    let expected = vars.get(name).ok_or_else(|| self.error(
+                    let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
                         "無法賦值給尚未宣告的名稱", value))?;
                     if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
@@ -496,7 +516,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != ty || !ready {
                         return Err(self.error("賦值型別錯誤或來源尚未完成初始化", value));
                     }
-                    vars.get_mut(name).unwrap().value.mark_reinitialized();
+                    Self::lookup_mut(vars, name).expect("已確認來源").value.mark_reinitialized();
                 }
                 StmtKind::Return(term) => {
                     let (actual, ready) = self.evaluate(term, vars)?;
@@ -512,22 +532,35 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     let snapshot = vars.clone();
                     let mut on_true = snapshot.clone();
-                    let live_true = self.statements(yes, &mut on_true, expected_return)?;
+                    let live_true = self.statements(yes, &mut on_true, expected_return, true)?;
                     let mut on_false = snapshot.clone();
                     let live_false = if let Some(otherwise) = no {
-                        self.statements(otherwise, &mut on_false, expected_return)?
+                        self.statements(otherwise, &mut on_false, expected_return, true)?
                     } else { true };
                     if !live_true && !live_false { return Ok(false); }
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
-                    for (name, original) in vars.iter_mut() {
-                        let left = if live_true {
-                            Some(on_true.get(name).expect("原來源必須存在").value)
-                        } else { None };
-                        let right = if live_false {
-                            Some(on_false.get(name).expect("原來源必須存在").value)
-                        } else { None };
-                        original.value = ValueSlot::join_reachable(&[left, right])
-                            .map_err(|err| self.model_error(err, condition))?;
+                    for (depth, scope) in vars.iter_mut().enumerate() {
+                        for (name, original) in scope.iter_mut() {
+                            // 真正來源以原始宣告位元組起點及詞彙深度識別。
+                            let left = if live_true {
+                                let same = on_true[depth].get(name)
+                                    .expect("原來源必須存在");
+                                if same.declaration_start != original.declaration_start {
+                                    return Err(self.error("分支來源身分不一致", condition));
+                                }
+                                Some(same.value)
+                            } else { None };
+                            let right = if live_false {
+                                let same = on_false[depth].get(name)
+                                    .expect("原來源必須存在");
+                                if same.declaration_start != original.declaration_start {
+                                    return Err(self.error("分支來源身分不一致", condition));
+                                }
+                                Some(same.value)
+                            } else { None };
+                            original.value = ValueSlot::join_reachable(&[left, right])
+                                .map_err(|err| self.model_error(err, condition))?;
+                        }
                     }
                 }
             }
@@ -543,8 +576,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     fun.body.last().map_or(0, |s| s.start),
                     fun.body.last().map_or(0, |s| s.end))) });
         }
-        let mut vars = HashMap::new();
-        self.statements(&fun.body, &mut vars, &fun.result_ty)?;
+        let mut vars = vec![HashMap::new()];
+        self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
         Ok(())
     }
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
@@ -559,7 +592,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     });
                 }
                 if let Some(default) = &field.default {
-                    let (ty, _) = self.evaluate(default, &mut HashMap::new())?;
+                    let (ty, _) = self.evaluate(default, &mut vec![HashMap::new()])?;
                     if ty != field.ty {
                         return Err(self.error("結構預設欄位型別不一致", default));
                     }
