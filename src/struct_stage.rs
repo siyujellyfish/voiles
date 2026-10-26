@@ -1127,7 +1127,7 @@ mod readonly_self_tests {
 
     #[test]
     fn 未驗證方法寫入及跨作用域語意維持保守拒絕() {
-        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = self.value\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = other.value\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(write).is_err());
         let calls_self = "struct A{\nvar value:int = 1\nfn read()->int{\nreturn self.other()\n}\nfn other()->int{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(calls_self).is_err());
