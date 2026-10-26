@@ -604,4 +604,33 @@ mod tests {
         let source = BASE.replace("return 0", "if (true){\nreturn 0\n}\nreturn 0");
         assert!(inspect(&source, |_| Allowed).is_err());
     }
+    #[test]
+    fn 實體_voil_素材須由完整受限_ast_及型別所有權檢查處理() {
+        const GOOD: &[&str] = &[
+            include_str!("../tests/fixtures/p13_stage/整筆移動.voil"),
+            include_str!("../tests/fixtures/p13_stage/結構重新初始化.voil"),
+        ];
+        const BAD: &[&str] = &[
+            include_str!("../tests/fixtures/p13_stage/移動後重複使用.voil"),
+            include_str!("../tests/fixtures/p13_stage/禁止欄位移動.voil"),
+        ];
+        for source in GOOD {
+            assert!(inspect(source, |_| Undecided).is_ok(), "合法整筆移動案例");
+        }
+        for source in BAD {
+            let error = inspect(source, |_| Allowed).unwrap_err();
+            assert_eq!(error.kind, DiagnosticKind::Static);
+        }
+        const UNKNOWN_COPY: &str =
+            include_str!("../tests/fixtures/p13_stage/未知複製資格.voil");
+        assert!(inspect(UNKNOWN_COPY, |_| Undecided).is_err());
+        assert!(inspect(UNKNOWN_COPY, |_| Allowed).is_ok());
+    }
+
+    #[test]
+    fn 不存在的結構欄位型別不得由假設能力誤認() {
+        let src = "struct Sample{\nvar mystery:Unknown\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src, |_| Allowed).is_err());
+    }
+
 }
