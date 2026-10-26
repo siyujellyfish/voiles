@@ -467,11 +467,25 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if target.immutable {
                         return Err(self.error("S18：const 欄位禁止透過方法寫入", value));
                     }
-                    let TermKind::Literal(actual) = &value.kind else {
-                        return Err(self.error(
-                            "方法欄位寫入只接受型別相同的獨立字面值", value));
+                    // 受限方法可用獨立字面值，或從相同 self 的已核准
+                    // Copyable 欄位取得獨立複本；不得搬移單一欄位。
+                    let actual = match &value.kind {
+                        TermKind::Literal(ty) => *ty,
+                        TermKind::FieldRead(owner, source_name) if owner == "self" => {
+                            let source = definition.fields.iter()
+                                .find(|f| f.name == *source_name)
+                                .ok_or_else(|| self.error("來源 self 欄位不存在", value))?;
+                            if self.permission(&source.ty) != CopyPermission::Allowed {
+                                return Err(self.error(
+                                    "HA13／S19：來源欄位 Copyable 資格尚未核准，禁止隱含複製",
+                                    value));
+                            }
+                            source.ty.as_str()
+                        }
+                        _ => return Err(self.error(
+                            "方法欄位寫入只接受獨立字面值或可複製的 self.欄位", value)),
                     };
-                    if *actual != target.ty.as_str() {
+                    if actual != target.ty.as_str() {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
                     writes = true;
