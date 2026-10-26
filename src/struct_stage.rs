@@ -1512,3 +1512,53 @@ mod nonempty_struct_tests {
         assert!(inspect(methods).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p13_deferred_borrowed_return_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_a_非_copyable_self_字串欄位借用回傳必須拒絕() {
+        let src = include_str!("../tests/fixtures/p13_stage/禁止回傳未決字串欄位.voil");
+        let error = inspect(src).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+        assert!(error.message.contains("P15"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn p13_a_巢狀結構含未決能力欄位不得從_self_逸出() {
+        let src = include_str!("../tests/fixtures/p13_stage/禁止回傳包含未決欄位的結構.voil");
+        let error = inspect(src).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("P15"));
+    }
+
+    #[test]
+    fn p13_a_全部欄位已核准_copyable_的巢狀結構可返回獨立複本() {
+        let src = include_str!("../tests/fixtures/p13_stage/允許回傳完全Copyable結構副本.voil");
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_a_與_self_無關的字串常值是新值_不是借用回傳() {
+        let src = include_str!("../tests/fixtures/p13_stage/合法獨立字串常值回傳.voil");
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn s21_即使回傳型別標註正確_仍不可移動單一_self_欄位() {
+        let src = include_str!("../tests/fixtures/p13_stage/拒絕移動self單一欄位回傳.voil");
+        let error = inspect(src).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("S21"));
+    }
+
+    #[test]
+    fn p13_a_未知_copyable_欄位不會因方法有寫入而可借用回傳() {
+        let src = "struct X{\nvar label:str = \"A\"\nvar n:int = 1\nfn get()->str{\nself.n = 2\nreturn self.label\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("P15"));
+    }
+}
