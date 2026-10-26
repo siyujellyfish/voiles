@@ -119,3 +119,8 @@
 ## 二十二、P10 基本型別實作（2026-10-26）
 
 CA01～CA06 依使用者相容建議委任採用。新增 `src/types.rs`，實測 int/bool、函式回傳、宣告與賦值型別、if bool 與可確定 i64 溢位；詳見 [建構階段.md](建構階段.md) 第四十八節。**待最新 HEAD 必要與 Rust CI success 才能驗收**；P10-F01 Optional、P10-F02 struct 延伸仍未實作，P11～P30 未驗收。
+
+## 二十三、P10 已驗收，P11 變數確定初始化工程（2026-10-26）
+
+- PR #86 Rust CI 與必要文件成功並 Squash merge，P10 MVP-A 基本型別已驗收；P11 CB01～CB06 依相容編譯器推薦委任實作 `src/flow.rs`，驗證 var 延後初始化、const 不可改寫、每個可達路徑合流、未命中 else、分支 return 與來源宣告身分。見 [建構階段.md](建構階段.md) 第四十九節。
+- P11 尚待最新 HEAD Rust／文件 CI 與 Squash merge。P11-F01 字素、P11-F02 struct 仍為完整語言未實作；P12～P30 與 49 個完整 P01 語意案例仍未驗收。

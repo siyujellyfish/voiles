@@ -9,6 +9,7 @@ mod ast_debug;
 mod diagnostics;
 mod names;
 mod types;
+mod flow;
 
 use std::fmt;
 use std::io::ErrorKind;
@@ -90,8 +91,10 @@ pub fn check_file(path: &Path) -> CheckResult {
                         if let Err(error) = names::resolve(&ast, &source) {
                             diagnostics.push(error);
                         } else if let Err(error) = types::check(&ast, &source) {
-                            // P10 僅回報已驗證的 int/bool 型別錯誤；
-                            // P11～P12 尚未完成，因此合法 AST 仍不可宣稱 Passed。
+                            diagnostics.push(error);
+                        } else if let Err(error) = flow::check(&ast, &source) {
+                            // P11 只驗證確定初始化與 const／var 權限；
+                            // P12 尚未驗收，合法來源仍不可宣稱 Passed。
                             diagnostics.push(error);
                         }
                     }
