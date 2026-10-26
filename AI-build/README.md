@@ -134,3 +134,8 @@ CA01～CA06 依使用者相容建議委任採用。新增 `src/types.rs`，實�
 
 - PR #86（型別）、#87（初始化）、#88（函式回傳與完整靜態檢查）均於最新 HEAD 必要文件與 Rust build/test success、clean/mergeable 後 Squash merge；見 [建構階段.md](建構階段.md) 第五十一節。**P00～P12 的 MVP-A 已驗收**；PR #88 Rust 真實 CI **62 項核心、5 項工程、49 項 P01 正反規格案例及 1 項素材案例全數 passed，0 failed／0 ignored**。
 - `voiles_core::check_file(&Path) -> CheckResult` 現在可正確回傳 MVP-A `Passed`／`Failed`，CLI 對合法 `.voil` 退出 0、不合法或 IO 失敗退出 1；不會執行 voiles 或生成執行檔。P09～P12 的 F 類延伸義務仍未實作，P13～P30 仍未驗收，AR04 依賴與既定語言設計維持。
+
+## 二十六、P13 所有權抽象模型及 P14～P16 阻塞（2026-10-26）
+
+- 依使用者相容編譯器建議委任採 CD01～CD03，新增僅供內部測試的 `src/ownership_model.rs`，預備 Copyable 權限未決時的保守拒絕、明確整體移動及來源失效、再初始化、可達分支合流。**沒有變更 P01 MVP-A 語法、公開 API 或判定任何具體型別的 Copyable 資格**。
+- **P13 尚未全部實作／驗收，P14～P16 依前 Phase 仍不應啟動或虛報**；可變借用、生命週期與執行期清理均待規格與真實驗證。權威阻塞及實作範圍見 [建構階段.md](建構階段.md) 第五十二節，AR04 不變。
