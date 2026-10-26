@@ -345,6 +345,11 @@ impl Parser<'_> {
             self.end_statement()?;
             self.lines();
         }
+        // K06-B：真正 struct 至少有一個欄位或方法；
+        // 不把空大括號或只有註解、換行的結構當成已完成宣告。
+        if fields.is_empty() && methods.is_empty() {
+            return Err(self.syntax("K06：struct 至少需要一個欄位或方法"));
+        }
         self.cursor += 1;
         Ok((name, StructDecl { fields, methods }))
     }
@@ -1477,5 +1482,33 @@ mod copyable_self_field_tests {
     fn s19_結構欄位若全可複製仍能整體複製作為_欄位_來源() {
         let src = "struct Leaf{\nvar n:int = 1\n}\nstruct Box{\nvar a:Leaf = Leaf()\nvar b:Leaf = Leaf()\nfn copy()->int{\nself.a = self.b\nreturn 0\n}\n}\nfn main()->int{\nvar box:Box = Box()\nreturn box.copy()\n}\n";
         assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod nonempty_struct_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn k06_空結構與只有註解的結構均必須拒絕() {
+        for src in [
+            "struct Empty{\n}\nfn main()->int{\nreturn 0\n}\n",
+            "struct Empty{\n# 沒有實際欄位或方法\n}\nfn main()->int{\nreturn 0\n}\n",
+            "struct Empty{\n\n}\nfn main()->int{\nreturn 0\n}\n",
+        ] {
+            let error = inspect(src).unwrap_err();
+            assert_eq!(error.kind, DiagnosticKind::Syntax);
+            assert!(error.message.contains("K06"));
+            assert!(error.span.is_some());
+        }
+    }
+
+    #[test]
+    fn k06_只有欄位或只有方法都滿足結構非空條件() {
+        let fields = "struct OnlyField{\nvar n:int = 1\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(fields).is_ok());
+        let methods = "struct OnlyMethod{\nfn get()->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(methods).is_ok());
     }
 }
