@@ -1,0 +1,9 @@
+struct Sample{
+var value:int = 1
+}
+fn main()->int{
+var a:Sample = Sample()
+var b:Sample = a.move()
+a = Sample()
+return 0
+}
