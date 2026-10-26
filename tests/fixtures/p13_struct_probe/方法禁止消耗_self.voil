@@ -1,0 +1,6 @@
+struct Sample{
+var number:int
+fn consume()->int{
+return self.move()
+}
+}

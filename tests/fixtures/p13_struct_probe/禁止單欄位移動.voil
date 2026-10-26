@@ -1,0 +1,7 @@
+struct Sample{
+var number:int
+}
+fn main()->int{
+var s:Sample = Sample(number=3)
+return s.number.move()
+}
