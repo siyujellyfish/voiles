@@ -1,0 +1,10 @@
+struct Note{
+var text:str = "hello"
+fn get()->str{
+return self.text
+}
+}
+fn main()->int{
+var original:Note = Note()
+return 0
+}
