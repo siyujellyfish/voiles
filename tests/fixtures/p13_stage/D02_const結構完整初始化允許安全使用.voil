@@ -1,0 +1,14 @@
+struct Sample{
+var value:int
+const ready:bool = true
+fn read()->int{
+return self.value
+}
+}
+fn main()->int{
+const item:Sample = Sample(value=5)
+var copied:Sample = item
+var result:int = item.read()
+var direct:int = item.value
+return result
+}
