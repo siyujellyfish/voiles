@@ -1833,8 +1833,8 @@ mod float_copyable_approved_tests {
     }
 
     #[test]
-    fn 受限前端沒有_decimal64_常值證明時不能因_float_copyable_而放行() {
-        let source_text = "fn main()->int{\nvar number:float = 1.25\nreturn 0\n}\n";
+    fn 受限前端沒有完整_decimal64_範圍證明時仍須保守拒絕() {
+        let source_text = "fn main()->int{\nvar number:float = 0.00000000000000001\nreturn 0\n}\n";
         let error = inspect(source_text).unwrap_err();
         assert!(error.message.contains("decimal64"));
     }
