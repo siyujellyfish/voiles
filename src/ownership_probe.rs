@@ -294,7 +294,7 @@ mod tests {
     fn 移動來源不可是未初始化或全域變數() {
         unsafe_source(
             "fn main()->int{\nvar a:int\nvar b:int = a.move()\nreturn 0\n}\n",
-            "尚未初始化"
+            "初始化"
         );
         unsafe_source(
             "var a:int = 3\nfn main()->int{\nreturn a.move()\n}\n",
@@ -311,6 +311,25 @@ mod tests {
             "fn main()->int{\nreturn helper().move()\n}\nfn helper()->int{\nreturn 3\n}\n",
         ] {
             assert!(inspect_source(text).is_err(), "不應擴大試驗來源形式：{text}");
+        }
+    }
+
+    #[test]
+    fn 獨立_voil_素材必須由真正試驗前端解析及靜態證明() {
+        const GOOD: &[&str] = &[
+            include_str!("../tests/fixtures/p13_probe/整體移動及保留複本.voil"),
+            include_str!("../tests/fixtures/p13_probe/重新初始化.voil"),
+        ];
+        const BAD: &[&str] = &[
+            include_str!("../tests/fixtures/p13_probe/移動後讀取錯誤.voil"),
+            include_str!("../tests/fixtures/p13_probe/分支移動錯誤.voil"),
+        ];
+        for source in GOOD { valid(source); }
+        for source in BAD {
+            assert_eq!(
+                inspect_source(source).expect_err("P13 負例應拒絕").kind,
+                DiagnosticKind::Static
+            );
         }
     }
 
