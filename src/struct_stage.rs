@@ -892,6 +892,43 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod default_constructor_cycle_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 相同結構的預設建構不得無限遞迴() {
+        let code = include_str!("../tests/fixtures/p13_stage/自身預設建構循環.voil");
+        let error = inspect(code).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("循環"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn 多結構互相建立的預設值亦需保守拒絕() {
+        let code = include_str!("../tests/fixtures/p13_stage/跨結構預設建構循環.voil");
+        let error = inspect(code).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("循環"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn 合法無循環巢狀預設值保留受限子集可用性() {
+        let code = include_str!("../tests/fixtures/p13_stage/無循環巢狀預設建構.voil");
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn 具名建立引數內的遞迴預設值仍須拒絕() {
+        let code = "struct Node{\nvar child:Node = Node(child=Node())\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(code).unwrap_err().message.contains("循環"));
+    }
+}
+
 #[cfg(test)]
 mod method_safety_tests {
     use super::inspect;
