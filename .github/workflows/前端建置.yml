@@ -61,6 +61,8 @@ jobs:
         run: |
           rustup run stable rustc --edition=2021 --test --crate-name voiles_source_tests src/lib.rs -o target/p02/p04_source_internal
           ./target/p02/p04_source_internal
+      - name: P13 人工驗收輔助腳本的 Bash 語法檢查
+        run: bash -n tools/人工驗收-P13.sh
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
           python3 tools/產生規格測試.py
