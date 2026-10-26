@@ -842,6 +842,48 @@ mod tests {
 }
 
 
+
+#[cfg(test)]
+mod method_safety_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn s15_方法_if_內消耗_self_精準拒絕() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法分支內消耗_self.voil");
+        let error = inspect(code).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("S15"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn s15_方法結構建立引數內消耗_self_亦應拒絕() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法建構引數內消耗_self.voil");
+        let error = inspect(code).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("S15"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn s21_方法分支內局部欄位移動應保有來源位置() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法分支內局部欄位移動.voil");
+        let error = inspect(code).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("S21"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn 無違規的合法借用方法仍不可在未驗證安全前誤收() {
+        let code = "struct Sample{\nvar x:int = 1\nfn value()->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error = inspect(code).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("方法借用"));
+    }
+}
+
 #[cfg(test)]
 mod lexical_ownership_tests {
     use super::inspect;
