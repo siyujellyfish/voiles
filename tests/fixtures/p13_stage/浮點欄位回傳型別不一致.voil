@@ -1,0 +1,9 @@
+struct FloatHolder{
+var amount:float
+fn read()->int{
+return self.amount
+}
+}
+fn main()->int{
+return 0
+}
