@@ -1,6 +1,6 @@
 # AI-build｜voiles 專案權威文件索引
 
-> 整理日期：2026-10-25。此資料夾為內部規格／開發／驗收依據，採繁體中文、UTF-8；對外現況請見儲存庫根目錄 `README.md`。目前**尚無可執行的 voiles 直譯器或編譯器**。
+> 整理日期：2026-10-25。此資料夾為內部規格／開發／驗收依據，採繁體中文、UTF-8；對外現況請見儲存庫根目錄 `README.md`。**已能建置及使用首版 Rust 靜態檢查命令 `voiles`，但尚無能執行 voiles 程式的直譯器或產出可執行檔的編譯後端**。
 
 ## 一、先看現行結論，不要從歷史紀錄倒推
 
@@ -129,3 +129,8 @@ CA01～CA06 依使用者相容建議委任採用。新增 `src/types.rs`，實�
 
 - PR #87 在最新 HEAD 文件、Rust build/test 成功後 Squash merge，P11 MVP-A var 初始化合流與 const 權限完成驗收。P12 CC01～CC06 將核心接通為真正 P01 MVP-A 靜態檢查前端，只有名稱／型別／流程均通過才回報 Passed；CLI 合法輸入退出 0，拒絕退出 1。
 - P03 已有 49 項完整語意案例不再忽略，現在真正執行並要求反例帶有診斷。**P12 尚待本 PR 最新 HEAD 真正 CI 全 successful、Squash merge 才能正式驗收**；仍不執行 voiles 或產出執行檔，完整語言 P12-F01 Optional／P12-F02 struct 方法及 P13～P30 未完成。見 [建構階段.md](建構階段.md) 第五十節。
+
+## 二十五、P10～P12 首版靜態前端正式驗收（2026-10-26）
+
+- PR #86（型別）、#87（初始化）、#88（函式回傳與完整靜態檢查）均於最新 HEAD 必要文件與 Rust build/test success、clean/mergeable 後 Squash merge；見 [建構階段.md](建構階段.md) 第五十一節。**P00～P12 的 MVP-A 已驗收**；PR #88 Rust 真實 CI **62 項核心、5 項工程、49 項 P01 正反規格案例及 1 項素材案例全數 passed，0 failed／0 ignored**。
+- `voiles_core::check_file(&Path) -> CheckResult` 現在可正確回傳 MVP-A `Passed`／`Failed`，CLI 對合法 `.voil` 退出 0、不合法或 IO 失敗退出 1；不會執行 voiles 或生成執行檔。P09～P12 的 F 類延伸義務仍未實作，P13～P30 仍未驗收，AR04 依賴與既定語言設計維持。
