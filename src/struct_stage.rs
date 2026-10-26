@@ -731,4 +731,35 @@ mod tests {
         assert!(inspect(&text, |_| Allowed).is_err());
     }
 
+    #[test]
+    fn 整數來源_非法進位與溢位均不得進入結構初始化() {
+        for value in [
+            "9223372036854775808",
+            "18446744073709551616",
+            "0x8000000000000000",
+            "0b",
+            "0o",
+        ] {
+            let source = BASE.replace("var number:int = 1",
+                &format!("var number:int = {value}"));
+            assert!(inspect(&source, |_| Allowed).is_err(),
+                "應拒絕不合法或超出 int64 上限的字面值：{value}");
+        }
+    }
+
+    #[test]
+    fn 整數來源_上限及合法多進位字面值仍可使用() {
+        for value in ["9223372036854775807", "0x7fff_ffff_ffff_ffff", "0b101010", "0o777"] {
+            let source = BASE.replace("var number:int = 1",
+                &format!("var number:int = {value}"));
+            assert!(inspect(&source, |_| Undecided).is_ok());
+        }
+    }
+
+    #[test]
+    fn 尚未支援的浮點字面值不能繞過型別安全檢查() {
+        let source = BASE.replace("var number:int = 1", "var number:float = 1.25");
+        assert!(inspect(&source, |_| Allowed).is_err());
+    }
+
 }
