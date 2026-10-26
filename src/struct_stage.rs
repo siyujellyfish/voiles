@@ -426,6 +426,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn permission(&self, ty: &str) -> CopyPermission {
         self.copy_permission(ty, &mut HashSet::new())
     }
+
+    /// 已明確禁止複製與仍待規格核准，必須使用不同診斷，不可混為一談。
+    fn reject_noncopyable(&self, permission: CopyPermission,
+        context: &str, term: &Term) -> Diagnostic {
+        let reason = match permission {
+            CopyPermission::Forbidden => "Copyable 已明確禁止",
+            CopyPermission::Undecided => "Copyable 資格未決",
+            CopyPermission::Allowed => "Copyable 檢查出現不一致",
+        };
+        self.error(&format!("{context}：{reason}，不能隱含複製"), term)
+    }
     fn lookup<'b>(vars: &'b Scopes, name: &str) -> Option<&'b Binding> {
         vars.iter().rev().find_map(|scope| scope.get(name))
     }
@@ -480,10 +491,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             let source = definition.fields.iter()
                                 .find(|f| f.name == *source_name)
                                 .ok_or_else(|| self.error("來源 self 欄位不存在", value))?;
-                            if self.permission(&source.ty) != CopyPermission::Allowed {
-                                return Err(self.error(
-                                    "HA13／S19：來源欄位 Copyable 資格尚未核准，禁止隱含複製",
-                                    value));
+                            let permission = self.permission(&source.ty);
+                            if permission != CopyPermission::Allowed {
+                                return Err(self.reject_noncopyable(permission,
+                                    "HA13／S19 來源欄位", value));
                             }
                             source.ty.as_str()
                         }
@@ -530,10 +541,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::FieldRead(receiver, field) if receiver == "self" => {
                 let target = def.fields.iter().find(|f| f.name == *field)
                     .ok_or_else(|| self.error("self 欄位不存在", return_value))?;
-                if self.permission(&target.ty) != CopyPermission::Allowed {
-                    return Err(self.error(
-                        "P13：self 欄位 Copyable 能力未核准，不可借用回傳；留待 P15 有效期與逃逸驗證",
-                        return_value));
+                let permission = self.permission(&target.ty);
+                if permission != CopyPermission::Allowed {
+                    let mut error = self.reject_noncopyable(permission,
+                        "P13 self 欄位", return_value);
+                    error.message = format!(
+                        "{}；不可借用回傳，留待 P15 有效期與逃逸驗證",
+                        error.message).into_boxed_str();
+                    return Err(error);
                 }
                 target.ty.as_str()
             }
@@ -576,8 +591,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let field = self.structs.get(&bound.ty)
                     .and_then(|def| def.fields.iter().find(|f| f.name == *name))
                     .ok_or_else(|| self.error("來源不是具有此欄位的結構", term))?;
-                if self.permission(&field.ty) != CopyPermission::Allowed {
-                    return Err(self.error("欄位 Copyable 能力尚未核准，不可直接複製", term));
+                let permission = self.permission(&field.ty);
+                if permission != CopyPermission::Allowed {
+                    return Err(self.reject_noncopyable(permission,
+                        "欄位讀取", term));
                 }
                 Ok((field.ty.clone(), true))
             }
@@ -642,7 +659,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             ModelError::MovedRead => "來源已移動，禁止再次使用",
             ModelError::UninitializedRead => "來源尚未完成初始化，不可使用",
             ModelError::UncertainRead => "存在可達路徑使來源可能無效",
-            ModelError::CopyForbidden => "型別不允許預設複製",
+            ModelError::CopyForbidden => "型別 Copyable 已明確禁止，拒絕隱含複製",
             ModelError::CopyUndecided => "型別 Copyable 能力未核准，拒絕預設複製",
             _ => "所有權狀態無法獲得合法證明",
         };
