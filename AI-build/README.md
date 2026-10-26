@@ -110,3 +110,8 @@
 
 - 原 P09 工作清單將已核准 P01 MVP-A 名稱檢查與不在首版的 Optional／struct／模組義務混在一起。依使用者本次「檢查 P09 並修正至通過」指示，經核對 P01 受限子集與相容建議委任，將 **P09 Phase 驗收限定於 MVP-A 名稱解析**；完整語言原義務不刪除，另以 **P09-F01 Optional 旗標／遮蔽、P09-F02 struct／欄位／方法／模組** 繼續標為未實作與未驗收。參見 [建構階段.md](建構階段.md) 第四十六節。
 - `src/names.rs` 現為每一變數宣告保存獨立來源身分，在巢狀遮蔽與退出後恢復原宣告。新增 Rust 測試確保來源身分不混淆、函式可前向但頂層變數不可前向、MVP-A 不誤收 struct。P09 **待本 PR 最新 HEAD Rust 與必要文件 CI success、Squash merge 後才正式通過**；P10～P30 目前未驗收。
+
+## 二十一、P09 首版正式驗收完成（2026-10-26）
+
+- PR [#84](https://github.com/siyujellyfish/voiles/pull/84) 最後 HEAD 的必要文件／Rust 建置／Rust 獨立測試均 `completed/success`，且在 `mergeable/clean` 後 Squash merge 至 main `d02880a0854028fa0dde8847eedcbfa7971b021b`。**P09.1～P09.6 已就 P01 核准的 MVP-A 名稱解析完成正式驗收**；詳見 [建構階段.md](建構階段.md) 第四十七節。
+- CI 實測：核心 43 passed、工程 5 passed、素材框架 1 passed，另外 49 個真正語意案例仍 ignored。**完整語言 P09-F01 Optional 旗標與 P09-F02 struct／模組仍未實作／未驗收**，P10～P30 尚未驗收；AR04 不變。
