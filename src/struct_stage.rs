@@ -44,6 +44,7 @@ struct Stmt {
 enum StmtKind {
     Declare { name: String, ty: String, mutable: bool, init: Option<Term> },
     Assign { name: String, value: Term },
+    FieldAssign { receiver: String, field: String, value: Term },
     If { condition: Term, yes: Vec<Stmt>, no: Option<Vec<Stmt>> },
     Return(Term),
 }
@@ -257,9 +258,17 @@ impl Parser<'_> {
             StmtKind::Return(self.term()?)
         } else {
             let name = self.name()?;
-            self.take('=', "此階段具名語句必須為賦值")?;
-            let value = self.term()?;
-            StmtKind::Assign { name, value }
+            if self.symbol('.') {
+                self.cursor += 1;
+                let field = self.name()?;
+                self.take('=', "欄位賦值需要等號")?;
+                let value = self.term()?;
+                StmtKind::FieldAssign { receiver: name, field, value }
+            } else {
+                self.take('=', "此階段具名語句必須為賦值")?;
+                let value = self.term()?;
+                StmtKind::Assign { name, value }
+            }
         };
         let end = self.tokens[self.cursor - 1].end;
         self.end_statement()?;
@@ -420,36 +429,63 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 
     /// 這裡僅核准完全唯讀且可靜態證明安全的 self 方法子集。
-    fn check_readonly_method(&self, owner: &str, method: &Function)
-        -> Result<(), Diagnostic> {
+    /// 根據方法實際操作自動推導共享或獨占借用。
+    /// 在此明確受限子集，方法只能修改自身 var 欄位、讀取已核准 Copyable
+    /// 的 self 欄位，並於最後回傳可靜態確定型別的值；其他行為保守拒絕。
+    fn check_method(&self, owner: &str, method: &Function)
+        -> Result<BorrowKind, Diagnostic> {
         self.reject_method_statements(&method.body)?;
-        if method.body.len() != 1 {
-            return Err(Diagnostic {kind: DiagnosticKind::Static,
-                message: "目前只能驗證單一 return 的唯讀 self 方法".into(), span: None});
-        }
-        let StmtKind::Return(term) = &method.body[0].kind else {
-            return Err(Diagnostic {kind: DiagnosticKind::Static,
-                message: "唯讀 self 方法必須只有 return".into(), span: None});
+        let def = self.structs.get(owner).expect("已確認方法所屬結構存在");
+        let Some(Stmt { kind: StmtKind::Return(return_value), .. }) = method.body.last() else {
+            return Err(Diagnostic { kind: DiagnosticKind::Static,
+                message: "目前方法必須以單一明確 return 結束".into(), span: None });
         };
-        let actual = match &term.kind {
-            TermKind::Literal(ty) => *ty,
-            TermKind::FieldRead(receiver, name) if receiver == "self" => {
-                let field = self.structs.get(owner)
-                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
-                    .ok_or_else(|| self.error("self 欄位不存在", term))?;
-                if self.permission(&field.ty) != CopyPermission::Allowed {
-                    return Err(self.error(
-                        "self 欄位 Copyable 能力未核准，不能從共享借用複製回傳", term));
+        let mut mode = BorrowKind::SharedRead;
+        for statement in method.body.iter().take(method.body.len() - 1) {
+            match &statement.kind {
+                StmtKind::FieldAssign { receiver, field, value } if receiver == "self" => {
+                    let target = def.fields.iter().find(|f| f.name == *field)
+                        .ok_or_else(|| self.error("self 欄位不存在", value))?;
+                    if target.immutable {
+                        return Err(self.error("S18：const 欄位禁止透過方法寫入", value));
+                    }
+                    // 受限子集只允許無副作用的字面值作欄位更新。
+                    let TermKind::Literal(actual) = &value.kind else {
+                        return Err(self.error(
+                            "方法欄位寫入目前僅支援相同型別的獨立字面值", value));
+                    };
+                    if *actual != target.ty {
+                        return Err(self.error("方法欄位賦值型別與宣告不一致", value));
+                    }
+                    mode = BorrowKind::ExclusiveWrite;
                 }
-                field.ty.as_str()
+                _ => return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
+                    message: "方法仍有未驗證的語句／別名或生命週期語意".into(),
+                    span: Some(self.source.span(statement.start, statement.end)),
+                }),
+            }
+        }
+        let actual = match &return_value.kind {
+            TermKind::Literal(ty) => *ty,
+            TermKind::FieldRead(receiver, field) if receiver == "self" => {
+                let target = def.fields.iter().find(|f| f.name == *field)
+                    .ok_or_else(|| self.error("self 欄位不存在", return_value))?;
+                if self.permission(&target.ty) != CopyPermission::Allowed {
+                    return Err(self.error(
+                        "self 欄位 Copyable 能力未核准，不能從借用回傳複製值",
+                        return_value));
+                }
+                target.ty.as_str()
             }
             _ => return Err(self.error(
-                "此階段方法只支援唯讀 self.欄位或常值回傳，其他借用尚未驗證", term)),
+                "方法只支援唯讀 self.欄位或常值回傳；其他借用安全未驗證",
+                return_value)),
         };
         if actual != method.result_ty {
-            return Err(self.error("方法回傳型別與已驗證運算式不一致", term));
+            return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
         }
-        Ok(())
+        Ok(mode)
     }
 
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
@@ -496,14 +532,23 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let method = self.structs.get(&bound.ty)
                     .and_then(|def| def.methods.iter().find(|m| m.name == *name))
                     .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
-                self.check_readonly_method(&bound.ty, method)?;
+                let mode = self.check_method(&bound.ty, method)?;
+                if mode == BorrowKind::ExclusiveWrite && !bound.mutable {
+                    return Err(self.error(
+                        "S18：const 結構實例不能呼叫會修改 self 欄位的方法", term));
+                }
                 let mut loans = BorrowSafety::new();
                 let loan = loans.acquire(DeclarationId(bound.declaration_start),
-                    BorrowKind::SharedRead)
+                    mode)
                     .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
-                // 唯讀無重入子集，不進行來源操作；方法結束後歸還 self 借用。
+                // 來源在方法作用域中必須保持借用封鎖，結束後歸還。
+                if loans.check_direct_access(DeclarationId(bound.declaration_start)).is_ok() {
+                    return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
+                }
                 loans.finish_scope(&[loan])
                     .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
+                loans.check_direct_access(DeclarationId(bound.declaration_start))
+                    .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
@@ -586,6 +631,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         declaration_start: statement.start, ty: ty.clone(),
                         mutable: *mutable, value: slot
                     });
+                }
+                StmtKind::FieldAssign { value, .. } => {
+                    return Err(self.error(
+                        "一般函式內的欄位寫入尚未完成所有權與別名驗證", value));
                 }
                 StmtKind::Assign { name, value } => {
                     let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
@@ -686,7 +735,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::Declare { init, .. } => {
                     if let Some(value) = init { self.reject_method_term(value)?; }
                 }
-                StmtKind::Assign { value, .. } | StmtKind::Return(value) => {
+                StmtKind::Assign { value, .. } | StmtKind::Return(value)
+                    | StmtKind::FieldAssign { value, .. } => {
                     self.reject_method_term(value)?;
                 }
                 StmtKind::If { condition, yes, no } => {
@@ -771,7 +821,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = field.immutable;
             }
             for method in &definition.methods {
-                self.check_readonly_method(struct_name, method)?;
+                self.check_method(struct_name, method)?;
             }
         }
         if !funcs.iter().any(|fun| fun.name == "main" && fun.result_ty == "int") {
