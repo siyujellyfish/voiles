@@ -77,10 +77,26 @@ impl BorrowSafety {
         Ok(())
     }
 
-    /// 方法／函式作用域出口依已核准歸還點明確釋放；不推定一般借用最後使用位置。
+    /// 方法／函式作用域出口依已核准歸還點明確釋放。
+    /// 必須先檢查整批票據均合法，避免錯誤路徑中只釋放部分借用。
+    /// 不在這裡推定一般借用最後使用位置。
     pub(crate) fn finish_scope(&mut self, tickets: &[BorrowTicket])
         -> Result<(), BorrowSafetyError> {
-        for ticket in tickets.iter().rev() { self.release(*ticket)?; }
+        let mut seen = std::collections::BTreeSet::new();
+        for ticket in tickets {
+            if !seen.insert((ticket.declaration, ticket.serial)) {
+                return Err(BorrowSafetyError::InvalidRelease);
+            }
+            let actual = self.active.get(&ticket.declaration)
+                .and_then(|loans| loans.get(&ticket.serial));
+            if actual != Some(&ticket.kind) {
+                return Err(BorrowSafetyError::InvalidRelease);
+            }
+        }
+        for ticket in tickets.iter().rev() {
+            // 上方預檢完成後，同一批次不會重複票據，故以下不應失敗。
+            self.release(*ticket)?;
+        }
         Ok(())
     }
 }
@@ -139,6 +155,44 @@ mod tests {
         assert!(safety.check_direct_access(DeclarationId(10)).is_err());
         safety.release(original).unwrap();
         assert_eq!(safety.release(original), Err(BorrowSafetyError::InvalidRelease));
+    }
+
+
+    #[test]
+    fn hc14_批次歸還發現無效票據時不得提前解除其他來源() {
+        let mut safety = BorrowSafety::new();
+        let a = DeclarationId(17);
+        let b = DeclarationId(19);
+        let first = safety.acquire(a, BorrowKind::SharedRead).unwrap();
+        let second = safety.acquire(b, BorrowKind::ExclusiveWrite).unwrap();
+        let fake = BorrowTicket { declaration: DeclarationId(99), ..first };
+        assert_eq!(safety.finish_scope(&[fake, second]),
+            Err(BorrowSafetyError::InvalidRelease));
+        // 舊版在反向歸還時先釋放 second，再碰到 fake 才報錯。
+        assert_eq!(safety.check_direct_access(a), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(safety.check_direct_access(b), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(safety.acquire(b, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::BorrowConflict));
+        safety.finish_scope(&[first, second]).unwrap();
+        assert!(safety.check_direct_access(a).is_ok());
+        assert!(safety.check_direct_access(b).is_ok());
+    }
+
+    #[test]
+    fn hc14_重複票據與錯誤種類不會在批次結束途中解鎖() {
+        let mut safety = BorrowSafety::new();
+        let id = DeclarationId(27);
+        let loan = safety.acquire(id, BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(safety.finish_scope(&[loan, loan]),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert!(safety.check_direct_access(id).is_err());
+        let wrong_kind = BorrowTicket { kind: BorrowKind::SharedRead, ..loan };
+        assert_eq!(safety.finish_scope(&[loan, wrong_kind]),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert!(safety.check_direct_access(id).is_err());
+        safety.finish_scope(&[loan]).unwrap();
+        assert_eq!(safety.finish_scope(&[loan]),
+            Err(BorrowSafetyError::InvalidRelease));
     }
 
     #[test]
