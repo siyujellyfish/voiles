@@ -1,0 +1,9 @@
+fn main()->int{
+var original:str = "outer"
+if (true){
+var original:str = "inner"
+var moved:str = original.move()
+}
+var outer_moved:str = original.move()
+return 0
+}
