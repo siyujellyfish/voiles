@@ -1,0 +1,4 @@
+fn main()->int{
+var x:float = 0.00000000000000001
+return 0
+}
