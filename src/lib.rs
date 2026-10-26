@@ -14,6 +14,7 @@ mod functions;
 mod ownership_model;
 mod ownership_ledger;
 mod ownership_probe;
+mod struct_ownership;
 
 use std::fmt;
 use std::io::ErrorKind;
