@@ -1,6 +1,6 @@
-"""由 P01 素材清單產生 Rust 規格測試；尚未支援的語意明確標示忽略。
+"""由 P01 素材清單產生 49 項真正執行的 Rust MVP-A 規格測試。
 
-此程式不依賴第三方套件，也不檢查任何 voiles 語法。
+由編譯完成的 voiles_core 檢查來源；完整語言 struct 等延伸仍 blocked。
 """
 import json
 import re
@@ -18,7 +18,7 @@ def main() -> None:
     cases = data["cases"]
     names = set()
     lines = [
-        "//! 由素材產生的 Rust 內建測試。被忽略的語意案例不能計作成功。",
+        "//! 從 P01 JSON 正反契約產生 Rust 內建語意測試；現在均真正執行。",
         "use std::path::Path;",
         "use voiles_core::{check_file, CheckStatus};",
         "",
@@ -32,17 +32,21 @@ def main() -> None:
         full = "tests/fixtures/" + case["path"]
         lines += [
             "#[test]",
-            '#[ignore = "P04～P12 解析與靜態檢查尚未具備，不得虛報語意通過"]',
             f"fn 規格_{name.replace('-', '_')}() {{",
             f"    let result = check_file(Path::new({rust_string(full)}));",
             "    assert!(result.io_error.is_none());",
             f"    assert_eq!(result.status, CheckStatus::{expected});",
+            "    if result.status == CheckStatus::Failed {",
+            "        assert!(!result.diagnostics.is_empty(), \"拒絕必須有可解釋診斷，而非空診斷假失敗\");",
+            "    } else {",
+            "        assert!(result.diagnostics.is_empty(), \"通過不得同時有阻斷診斷\");",
+            "    }",
             "}",
             "",
         ]
     lines += [
         "#[test]",
-        "fn 來源素材框架可按路徑讀取且不把結果誤作語法驗收() {",
+        "fn 來源素材可按路徑讀取且四十九項正反案例真實執行() {",
         "    for path in [",
     ]
     for case in cases:
@@ -56,7 +60,7 @@ def main() -> None:
     ]
     GENERATED.parent.mkdir(parents=True, exist_ok=True)
     GENERATED.write_text("\n".join(lines), encoding="utf-8")
-    print(f"P03 產生 {len(cases)} 項暫時忽略的語意測試 + 1 項素材路徑測試。")
+    print(f"P12 實際執行 {len(cases)} 項 P01 MVP-A 語意測試 + 1 項素材路徑測試。")
 
 if __name__ == "__main__":
     main()

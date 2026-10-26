@@ -124,3 +124,8 @@ CA01～CA06 依使用者相容建議委任採用。新增 `src/types.rs`，實�
 
 - PR #86 Rust CI 與必要文件成功並 Squash merge，P10 MVP-A 基本型別已驗收；P11 CB01～CB06 依相容編譯器推薦委任實作 `src/flow.rs`，驗證 var 延後初始化、const 不可改寫、每個可達路徑合流、未命中 else、分支 return 與來源宣告身分。見 [建構階段.md](建構階段.md) 第四十九節。
 - P11 尚待最新 HEAD Rust／文件 CI 與 Squash merge。P11-F01 字素、P11-F02 struct 仍為完整語言未實作；P12～P30 與 49 個完整 P01 語意案例仍未驗收。
+
+## 二十四、P11 首版驗收與 P12 49 個實際語意案例（2026-10-26）
+
+- PR #87 在最新 HEAD 文件、Rust build/test 成功後 Squash merge，P11 MVP-A var 初始化合流與 const 權限完成驗收。P12 CC01～CC06 將核心接通為真正 P01 MVP-A 靜態檢查前端，只有名稱／型別／流程均通過才回報 Passed；CLI 合法輸入退出 0，拒絕退出 1。
+- P03 已有 49 項完整語意案例不再忽略，現在真正執行並要求反例帶有診斷。**P12 尚待本 PR 最新 HEAD 真正 CI 全 successful、Squash merge 才能正式驗收**；仍不執行 voiles 或產出執行檔，完整語言 P12-F01 Optional／P12-F02 struct 方法及 P13～P30 未完成。見 [建構階段.md](建構階段.md) 第五十節。

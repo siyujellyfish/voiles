@@ -1,4 +1,4 @@
-//! P02 靜態檢查命令骨架，不執行 voiles 程式。
+//! voiles MVP-A 單檔靜態檢查命令，不執行 voiles 或輸出執行檔。
 
 use std::ffi::OsStr;
 use std::path::Path;
@@ -36,9 +36,9 @@ fn main() -> ExitCode {
     if result.status == CheckStatus::Passed {
         ExitCode::SUCCESS
     } else {
-        // 尚無 P04～P12 分析器，錯誤不可謊稱由語法判定。
+        // 保護非預期的無診斷失敗，不將其偽裝成任何語法診斷。
         if result.diagnostics.is_empty() {
-            eprintln!("前端尚未實作：已讀取來源，但目前無法驗證 voiles 語法與靜態語意");
+            eprintln!("檢查失敗：缺少可顯示的詳細診斷");
         }
         ExitCode::from(1)
     }

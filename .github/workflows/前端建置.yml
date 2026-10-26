@@ -61,11 +61,11 @@ jobs:
         run: |
           rustup run stable rustc --edition=2021 --test --crate-name voiles_source_tests src/lib.rs -o target/p02/p04_source_internal
           ./target/p02/p04_source_internal
-      - name: P03 產生並核對全部規格驗收測試與 struct 阻塞清單
+      - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
           python3 tools/產生規格測試.py
           python3 tools/檢查P03測試.py
-      - name: P03 編譯並執行獨立 Rust 測試框架（語意待實作案例標記忽略）
+      - name: P12 編譯並執行 49 個獨立 P01 語意驗收案例
         run: |
           rustup run stable rustc --edition=2021 --test --crate-name p03_spec --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 target/p02/p03_spec_generated.rs -o target/p02/p03_spec
           ./target/p02/p03_spec
