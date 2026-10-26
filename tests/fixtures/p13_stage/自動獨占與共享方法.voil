@@ -1,0 +1,19 @@
+struct Counter{
+var value:int = 1
+const enabled:bool = true
+fn set()->int{
+self.value = 3
+return self.value
+}
+fn get()->int{
+return self.value
+}
+}
+fn main()->int{
+var counter:Counter = Counter()
+var x:int = counter.get()
+var y:int = counter.set()
+var z:int = counter.get()
+var moved:Counter = counter.move()
+return z
+}
