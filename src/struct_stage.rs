@@ -419,6 +419,39 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
     }
 
+    /// 這裡僅核准完全唯讀且可靜態證明安全的 self 方法子集。
+    fn check_readonly_method(&self, owner: &str, method: &Function)
+        -> Result<(), Diagnostic> {
+        self.reject_method_statements(&method.body)?;
+        if method.body.len() != 1 {
+            return Err(Diagnostic {kind: DiagnosticKind::Static,
+                message: "目前只能驗證單一 return 的唯讀 self 方法".into(), span: None});
+        }
+        let StmtKind::Return(term) = &method.body[0].kind else {
+            return Err(Diagnostic {kind: DiagnosticKind::Static,
+                message: "唯讀 self 方法必須只有 return".into(), span: None});
+        };
+        let actual = match &term.kind {
+            TermKind::Literal(ty) => *ty,
+            TermKind::FieldRead(receiver, name) if receiver == "self" => {
+                let field = self.structs.get(owner)
+                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
+                    .ok_or_else(|| self.error("self 欄位不存在", term))?;
+                if self.permission(&field.ty) != CopyPermission::Allowed {
+                    return Err(self.error(
+                        "self 欄位 Copyable 能力未核准，不能從共享借用複製回傳", term));
+                }
+                field.ty.as_str()
+            }
+            _ => return Err(self.error(
+                "此階段方法只支援唯讀 self.欄位或常值回傳，其他借用尚未驗證", term)),
+        };
+        if actual != method.result_ty {
+            return Err(self.error("方法回傳型別與已驗證運算式不一致", term));
+        }
+        Ok(())
+    }
+
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
@@ -437,6 +470,41 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     .ok_or_else(|| self.error("找不到可移動的具名來源", term))?;
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
+            }
+            TermKind::FieldRead(owner, name) => {
+                if owner == "self" {
+                    return Err(self.error("只有方法內才能讀取 self 欄位", term));
+                }
+                let bound = Self::lookup(vars, owner)
+                    .ok_or_else(|| self.error("找不到欄位來源宣告", term))?;
+                bound.value.read().map_err(|err| self.model_error(err, term))?;
+                let field = self.structs.get(&bound.ty)
+                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
+                    .ok_or_else(|| self.error("來源不是具有此欄位的結構", term))?;
+                if self.permission(&field.ty) != CopyPermission::Allowed {
+                    return Err(self.error("欄位 Copyable 能力尚未核准，不可直接複製", term));
+                }
+                Ok((field.ty.clone(), true))
+            }
+            TermKind::MethodCall(receiver, name) => {
+                if receiver == "self" {
+                    return Err(self.error("重入 self 方法的借用安全尚未驗證", term));
+                }
+                let bound = Self::lookup(vars, receiver)
+                    .ok_or_else(|| self.error("找不到方法接收者來源", term))?;
+                bound.value.read().map_err(|err| self.model_error(err, term))?;
+                let method = self.structs.get(&bound.ty)
+                    .and_then(|def| def.methods.iter().find(|m| m.name == *name))
+                    .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
+                self.check_readonly_method(&bound.ty, method)?;
+                let mut loans = BorrowSafety::new();
+                let loan = loans.acquire(DeclarationId(bound.declaration_start),
+                    BorrowKind::SharedRead)
+                    .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
+                // 唯讀無重入子集，不進行來源操作；方法結束後歸還 self 借用。
+                loans.finish_scope(&[loan])
+                    .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
+                Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
@@ -683,7 +751,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
         self.check_default_constructor_cycles()?;
-        for definition in self.structs.values() {
+        for (struct_name, definition) in self.structs.iter() {
             for field in &definition.fields {
                 if !["int", "bool", "float", "str"].contains(&field.ty.as_str())
                     && !self.structs.contains_key(&field.ty) {
@@ -703,14 +771,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = field.immutable;
             }
             for method in &definition.methods {
-                self.reject_method_statements(&method.body)?;
-                // 方法借用與型別關聯仍待 P09-F02／P14 完整安全證明。
-                // 僅辨識並精準拒絕明確違規；對其他方法依然 fail-closed。
-                return Err(Diagnostic {
-                    kind: DiagnosticKind::Static,
-                    message: "含方法的 struct 尚待完整方法借用與名稱／型別檢查".into(),
-                    span: None,
-                });
+                self.check_readonly_method(struct_name, method)?;
             }
         }
         if !funcs.iter().any(|fun| fun.name == "main" && fun.result_ty == "int") {
