@@ -467,11 +467,25 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if target.immutable {
                         return Err(self.error("S18：const 欄位禁止透過方法寫入", value));
                     }
-                    let TermKind::Literal(actual) = &value.kind else {
-                        return Err(self.error(
-                            "方法欄位寫入只接受型別相同的獨立字面值", value));
+                    // 受限方法可用獨立字面值，或從相同 self 的已核准
+                    // Copyable 欄位取得獨立複本；不得搬移單一欄位。
+                    let actual = match &value.kind {
+                        TermKind::Literal(ty) => *ty,
+                        TermKind::FieldRead(owner, source_name) if owner == "self" => {
+                            let source = definition.fields.iter()
+                                .find(|f| f.name == *source_name)
+                                .ok_or_else(|| self.error("來源 self 欄位不存在", value))?;
+                            if self.permission(&source.ty) != CopyPermission::Allowed {
+                                return Err(self.error(
+                                    "HA13／S19：來源欄位 Copyable 資格尚未核准，禁止隱含複製",
+                                    value));
+                            }
+                            source.ty.as_str()
+                        }
+                        _ => return Err(self.error(
+                            "方法欄位寫入只接受獨立字面值或可複製的 self.欄位", value)),
                     };
-                    if *actual != target.ty.as_str() {
+                    if actual != target.ty.as_str() {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
                     writes = true;
@@ -1113,7 +1127,7 @@ mod readonly_self_tests {
 
     #[test]
     fn 未驗證方法寫入及跨作用域語意維持保守拒絕() {
-        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = self.value\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = other.value\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(write).is_err());
         let calls_self = "struct A{\nvar value:int = 1\nfn read()->int{\nreturn self.other()\n}\nfn other()->int{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(calls_self).is_err());
@@ -1356,9 +1370,9 @@ mod automatic_self_borrow_tests {
 
     #[test]
     fn 不推定不同方法重入與運算式寫入的借用生命週期() {
-        let src = "struct X{\nvar n:int = 1\nfn set()->int{\nself.n = self.n\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let src = "struct X{\nvar n:int = 1\nfn set()->int{\nself.n = other.n\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_err());
-        let nested = src.replace("self.n = self.n", "if (self.n){\nself.n = 2\n}");
+        let nested = src.replace("self.n = other.n", "if (self.n){\nself.n = 2\n}");
         assert!(inspect(&nested).is_err());
     }
 
@@ -1423,5 +1437,45 @@ mod conditional_self_inference_tests {
         assert!(inspect(&early).is_err());
         let unknown = text.replace("self.value = 2", "other.value = 2");
         assert!(inspect(&unknown).is_err());
+    }
+}
+
+#[cfg(test)]
+mod copyable_self_field_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准可複製的_self_欄位可作方法獨占寫入來源() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn 未決_str_複製能力仍不可在方法裡隱含複製() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法不可複製未知欄位.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn 已核准可複製來源若型別不一致亦不可寫入() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法來源欄位錯誤型別.voil");
+        assert!(inspect(code).unwrap_err().message.contains("型別"));
+    }
+
+    #[test]
+    fn 不存在或非法_self_欄位不能假借複製模式跳過解析() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
+        let invalid = code.replace("self.left = self.right", "self.left = self.missing");
+        assert!(inspect(&invalid).unwrap_err().message.contains("不存在"));
+    }
+
+    #[test]
+    fn s19_結構欄位若全可複製仍能整體複製作為_欄位_來源() {
+        let src = "struct Leaf{\nvar n:int = 1\n}\nstruct Box{\nvar a:Leaf = Leaf()\nvar b:Leaf = Leaf()\nfn copy()->int{\nself.a = self.b\nreturn 0\n}\n}\nfn main()->int{\nvar box:Box = Box()\nreturn box.copy()\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
