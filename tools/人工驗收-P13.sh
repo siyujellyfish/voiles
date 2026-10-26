@@ -59,6 +59,8 @@ grep -q "str_noncopyable_policy_tests::str_明確禁止名稱隱含複製" \
   target/p13-accept/internal_tests.list
 grep -q "float_copyable_approved_tests::float_與遞迴全部_copyable_" \
   target/p13-accept/internal_tests.list
+grep -q "float_copyable_method_tests::float_已准_copyable_" \
+  target/p13-accept/internal_tests.list
 ./target/p13-accept/internal_tests struct_stage:: \
   >target/p13-accept/p13_struct_tests.log
 ./target/p13-accept/internal_tests borrow_safety::tests:: \
@@ -69,6 +71,8 @@ grep -q "float_copyable_approved_tests::float_與遞迴全部_copyable_" \
   >target/p13-accept/p13_str_tests.log
 ./target/p13-accept/internal_tests float_copyable_approved_tests:: \
   >target/p13-accept/p13_float_tests.log
+./target/p13-accept/internal_tests float_copyable_method_tests:: \
+  >>target/p13-accept/p13_float_tests.log
 grep -q "test result: ok." target/p13-accept/p13_struct_tests.log
 grep -q "test result: ok." target/p13-accept/p13_borrow_tests.log
 grep -q "test result: ok." target/p13-accept/p13_copy_tests.log
