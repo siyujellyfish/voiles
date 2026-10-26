@@ -4,13 +4,17 @@
 #![allow(dead_code)]
 
 use crate::ownership_model::CopyPermission;
+use crate::container_copy_policy::{classify_container_shape, approved_container_copy_permission};
 
 /// str 方案 A：非 Copyable；float 方案 A：Copyable（維持 decimal64 規格）。
 pub(crate) fn approved_leaf_copy_permission(ty: &str) -> CopyPermission {
     match ty {
         "int" | "bool" | "float" => CopyPermission::Allowed,
         "str" => CopyPermission::Forbidden,
-        _ => CopyPermission::Undecided,
+        _ => match classify_container_shape(ty) {
+            Some(kind) => approved_container_copy_permission(kind),
+            None => CopyPermission::Undecided,
+        },
     }
 }
 
