@@ -129,6 +129,40 @@ pub fn check_file(path: &Path) -> CheckResult {
 mod p13_private_boundary_tests {
     use super::*;
 
+    /// 以真正的檔案路徑驗證對外公開 API，而非僅測試 parser。
+    fn check_public_source(source_text: &str, suffix: &str) -> CheckResult {
+        let file = std::env::temp_dir().join(format!(
+            "voiles_p13_private_{}_{}.voil", std::process::id(), suffix
+        ));
+        std::fs::write(&file, source_text).expect("應可建立單次驗證的暫存來源");
+        let result = check_file(&file);
+        std::fs::remove_file(&file).expect("應移除本次建立的暫存來源");
+        result
+    }
+
+    #[test]
+    fn 方案_b_公開_check_file_仍拒絕真實私有_struct_正例() {
+        let src =
+            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+        assert!(struct_stage::inspect(src).is_ok());
+        let result = check_public_source(src, "struct");
+        assert_eq!(result.status, CheckStatus::Failed);
+        assert!(result.io_error.is_none());
+        assert!(result.diagnostics.iter().any(|diag| diag.kind == DiagnosticKind::Syntax));
+    }
+
+    #[test]
+    fn 方案_b_公開_check_file_不接受內部_move_正例_但保留_mvp_a() {
+        let move_src = "fn main()->int{\nvar x:int = 1\nreturn x.move()\n}\n";
+        assert!(struct_stage::inspect(move_src).is_ok());
+        let denied = check_public_source(move_src, "move");
+        assert_eq!(denied.status, CheckStatus::Failed);
+        assert!(denied.diagnostics.iter().any(|diag| diag.kind == DiagnosticKind::Syntax));
+        let passed = check_public_source("fn main()->int{\nreturn 0\n}\n", "mvp");
+        assert_eq!(passed.status, CheckStatus::Passed);
+        assert!(passed.diagnostics.is_empty());
+    }
+
     #[test]
     fn 方案_b_真實結構安全子集仍只能在私有檢查器通過() {
         let source_text =
