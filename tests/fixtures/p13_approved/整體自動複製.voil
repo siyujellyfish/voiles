@@ -1,0 +1,10 @@
+struct Pair{
+var left:int = 1
+const ready:bool = true
+}
+fn main()->int{
+var a:Pair = Pair()
+var b:Pair = a
+var c:Pair = a.move()
+return 0
+}
