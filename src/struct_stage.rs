@@ -430,11 +430,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         };
         self.error(message, term)
     }
-    fn function(&self, fun: &Function) -> Result<(), Diagnostic> {
-        let mut vars: HashMap<String, Binding> = HashMap::new();
-        let mut returned = false;
-        for statement in &fun.body {
-            if returned { break; }
+    /// true 表示分支仍會繼續執行；false 表示所有目前路徑已 return。
+    fn statements(&self, body: &[Stmt], vars: &mut HashMap<String, Binding>,
+        expected_return: &str) -> Result<bool, Diagnostic> {
+        for statement in body {
             match &statement.kind {
                 StmtKind::Declare { name, ty, mutable, init } => {
                     if vars.contains_key(name) {
@@ -449,7 +448,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
                     let initialized = if let Some(expr) = init {
-                        let (actual, ready) = self.evaluate(expr, &mut vars)?;
+                        let (actual, ready) = self.evaluate(expr, vars)?;
                         if &actual != ty {
                             return Err(self.error("初始化運算式與宣告型別不一致", expr));
                         }
@@ -461,30 +460,59 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     } else {
                         ValueSlot::uninitialized(permission)
                     };
-                    vars.insert(name.clone(), Binding { ty: ty.clone(), mutable: *mutable, value: slot });
+                    vars.insert(name.clone(), Binding {
+                        ty: ty.clone(), mutable: *mutable, value: slot
+                    });
                 }
                 StmtKind::Assign { name, value } => {
                     let expected = vars.get(name).ok_or_else(|| self.error(
                         "無法賦值給尚未宣告的名稱", value))?;
-                    if !expected.mutable {
-                        return Err(self.error("const 不可重新賦值", value));
-                    }
+                    if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
-                    let (actual, ready) = self.evaluate(value, &mut vars)?;
+                    let (actual, ready) = self.evaluate(value, vars)?;
                     if actual != ty || !ready {
                         return Err(self.error("賦值型別錯誤或來源尚未完成初始化", value));
                     }
                     vars.get_mut(name).unwrap().value.mark_reinitialized();
                 }
                 StmtKind::Return(term) => {
-                    let (actual, ready) = self.evaluate(term, &mut vars)?;
-                    if actual != fun.result_ty || !ready {
+                    let (actual, ready) = self.evaluate(term, vars)?;
+                    if actual != expected_return || !ready {
                         return Err(self.error("函式回傳型別不一致或來源未初始化", term));
                     }
-                    returned = true;
+                    return Ok(false);
+                }
+                StmtKind::If { condition, yes, no } => {
+                    let (actual, ready) = self.evaluate(condition, vars)?;
+                    if actual != "bool" || !ready {
+                        return Err(self.error("if 條件必須是已初始化 bool", condition));
+                    }
+                    let snapshot = vars.clone();
+                    let mut on_true = snapshot.clone();
+                    let live_true = self.statements(yes, &mut on_true, expected_return)?;
+                    let mut on_false = snapshot.clone();
+                    let live_false = if let Some(otherwise) = no {
+                        self.statements(otherwise, &mut on_false, expected_return)?
+                    } else { true };
+                    if !live_true && !live_false { return Ok(false); }
+                    // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
+                    for (name, original) in vars.iter_mut() {
+                        let left = if live_true {
+                            Some(on_true.get(name).expect("原來源必須存在").value)
+                        } else { None };
+                        let right = if live_false {
+                            Some(on_false.get(name).expect("原來源必須存在").value)
+                        } else { None };
+                        original.value = ValueSlot::join_reachable(&[left, right])
+                            .map_err(|err| self.model_error(err, condition))?;
+                    }
                 }
             }
         }
+        Ok(true)
+    }
+
+    fn function(&self, fun: &Function) -> Result<(), Diagnostic> {
         if !matches!(fun.body.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
             return Err(Diagnostic { kind: DiagnosticKind::Syntax,
                 message: "函式最外層最後必須為明確 return".into(),
@@ -492,6 +520,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     fun.body.last().map_or(0, |s| s.start),
                     fun.body.last().map_or(0, |s| s.end))) });
         }
+        let mut vars = HashMap::new();
+        self.statements(&fun.body, &mut vars, &fun.result_ty)?;
         Ok(())
     }
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
@@ -520,6 +550,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         StmtKind::Declare { init, .. } => init.as_ref(),
                         StmtKind::Assign { value, .. } => Some(value),
                         StmtKind::Return(value) => Some(value),
+                        StmtKind::If { condition, .. } => Some(condition),
                     };
                     if let Some(term) = term {
                         if matches!(&term.kind, TermKind::Move(name) if name == "self") {
