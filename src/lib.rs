@@ -13,6 +13,7 @@ mod flow;
 mod functions;
 mod ownership_model;
 mod ownership_policy;
+mod borrow_safety;
 mod ownership_ledger;
 mod ownership_probe;
 mod struct_ownership;
