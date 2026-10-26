@@ -1,0 +1,7 @@
+fn main()->int{
+var x:float = 1.25
+var y:float = 00.5
+var z:float = 1.
+var copy:float = x
+return 0
+}
