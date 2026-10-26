@@ -1,5 +1,5 @@
 //! voiles 最小 Rust 前端核心介面。
-//! P02 僅處理架構和讀檔；詞彙、語法與靜態檢查交由 P04～P12。
+//! P12 已完成 P01 MVP-A 子集靜態檢查，尚無直譯或產生執行檔能力。
 
 mod source;
 mod lexer;
@@ -10,12 +10,13 @@ mod diagnostics;
 mod names;
 mod types;
 mod flow;
+mod functions;
 
 use std::fmt;
 use std::io::ErrorKind;
 use std::path::Path;
 
-/// 檢查狀態；尚無真正分析器時不准回報 Passed。
+/// 單檔 P01 MVP-A 靜態檢查狀態，Passed 不代表可執行或已驗證所有權。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckStatus {
     Passed,
@@ -71,11 +72,10 @@ pub struct CheckResult {
     pub io_error: Option<ErrorKind>,
 }
 
-/// 以原始位元組讀取單一來源檔案。
-///
-/// P02 暫態：對可讀檔案也回報 Failed、空診斷、無 IO 錯誤，
-/// 表示目前還沒有語言分析器，並非證明其來源語法非法。
-/// 讀檔失敗時回報 Failed、空診斷和真正的 IO 錯誤種類。
+/// 從原始位元組讀取單一來源檔，依序執行 P04～P12 首版靜態檢查。
+/// 若全部已核准 MVP-A 規則通過才回報 Passed；不執行 voiles，
+/// 不宣稱其他完整語言功能或資源／所有權安全已驗證。
+/// IO 失敗時仍回報 Failed、空診斷與真正的 ErrorKind。
 pub fn check_file(path: &Path) -> CheckResult {
     match std::fs::read(path) {
         Ok(bytes) => {
@@ -83,8 +83,7 @@ pub fn check_file(path: &Path) -> CheckResult {
             let mut diagnostics = source.lexical_diagnostics();
             let lexical = lexer::scan(&source);
             diagnostics.extend(lexical.diagnostics);
-            // 尚未有 P09～P12 靜態檢查：先對詞彙完整且安全的來源建立內部 AST，
-            // 語法失敗才提供來源正確的語法診斷；不能將成功解析冒充 Passed。
+            // 只有安全完成詞彙後才建立 AST；各階段失敗不得杜撰後續靜態證明。
             if diagnostics.is_empty() {
                 match parser::parse(&source, &lexical.tokens) {
                     Ok(ast) => {
@@ -93,8 +92,8 @@ pub fn check_file(path: &Path) -> CheckResult {
                         } else if let Err(error) = types::check(&ast, &source) {
                             diagnostics.push(error);
                         } else if let Err(error) = flow::check(&ast, &source) {
-                            // P11 只驗證確定初始化與 const／var 權限；
-                            // P12 尚未驗收，合法來源仍不可宣稱 Passed。
+                            diagnostics.push(error);
+                        } else if let Err(error) = functions::check(&ast, &source) {
                             diagnostics.push(error);
                         }
                     }
@@ -102,7 +101,12 @@ pub fn check_file(path: &Path) -> CheckResult {
                 }
             }
             diagnostics::sort_diagnostics(&mut diagnostics);
-            CheckResult { status: CheckStatus::Failed, diagnostics, io_error: None }
+            let status = if diagnostics.is_empty() {
+                CheckStatus::Passed
+            } else {
+                CheckStatus::Failed
+            };
+            CheckResult { status, diagnostics, io_error: None }
         },
         Err(error) => CheckResult {
             status: CheckStatus::Failed,

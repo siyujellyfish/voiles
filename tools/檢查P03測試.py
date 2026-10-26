@@ -21,8 +21,9 @@ def main() -> None:
         name = "規格_" + entry["id"].replace("-", "_")
         assert f"fn {name}()" in generated, name
         assert entry["expect"] in ("accept", "reject")
-    assert generated.count('#[ignore = "P04～P12') == len(cases), "語意測試不得偷偷當作已實測"
-    print(f"P03 追溯一致：{len(cases)} 個暫緩語意測試、21 個 struct S 規格阻塞項。")
+    assert "#[ignore" not in generated, "P12 已完成前端，49 個語意案例不得再被忽略"
+    assert generated.count("#[test]") == len(cases) + 1
+    print(f"P12 追溯一致：{len(cases)} 個實際語意測試、21 個 struct S 完整語言阻塞項。")
 
 if __name__ == "__main__":
     main()
