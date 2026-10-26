@@ -779,3 +779,62 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod approved_policy_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn ha13_核准_int_bool_且所有欄位可複製的_struct_可獨立複製() {
+        const SOURCE: &str =
+            include_str!("../tests/fixtures/p13_approved/整體自動複製.voil");
+        assert!(inspect(SOURCE).is_ok());
+    }
+
+    #[test]
+    fn ha13_str_資格未決_及含_str_欄位的_struct_都不可隱含複製() {
+        const SOURCE: &str =
+            include_str!("../tests/fixtures/p13_approved/未知字串資格拒絕複製.voil");
+        let error = inspect(SOURCE).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+        let simple = "fn main()->int{\nvar s:str = \"ok\"\nvar t:str = s\nreturn 0\n}\n";
+        assert!(inspect(simple).unwrap_err().message.contains("Copyable"));
+    }
+
+    #[test]
+    fn hb13_未知複製資格不應擋住明確的整筆具名移動() {
+        const SOURCE: &str =
+            include_str!("../tests/fixtures/p13_approved/未知字串允許具名整筆移動.voil");
+        assert!(inspect(SOURCE).is_ok());
+        let double_move = SOURCE.replace("return 0", "var c:Note = a.move()\nreturn 0");
+        assert!(inspect(&double_move).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn hb13_不允許單欄位_未綁定來源或方法消耗_self() {
+        const FIELD: &str =
+            include_str!("../tests/fixtures/p13_approved/禁止欄位單獨移動.voil");
+        assert!(inspect(FIELD).unwrap_err().message.contains("S21"));
+        let missing = "fn main()->int{\nvar b:int = not_declared.move()\nreturn 0\n}\n";
+        assert!(inspect(missing).unwrap_err().message.contains("找不到"));
+        let method = "struct Pair{\nvar value:int = 1\nfn take()->int{\nreturn self.move()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(method).unwrap_err().message.contains("S15"));
+    }
+
+    #[test]
+    fn hb13_移動後必須重新初始化才允許再次使用() {
+        let source = "fn main()->int{\nvar a:int = 1\nvar b:int = a.move()\na = 2\nreturn a\n}\n";
+        assert!(inspect(source).is_ok());
+        let invalid = source.replace("a = 2\n", "");
+        assert!(inspect(&invalid).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn mvp_a_公開解析器仍禁止_move_語法() {
+        let source = crate::source::Source::new(b"fn main()->int{\nvar a:int = 1\nreturn a.move()\n}\n".to_vec());
+        let lexed = crate::lexer::scan(&source);
+        assert!(crate::parser::parse(&source, &lexed.tokens).is_err());
+    }
+}
