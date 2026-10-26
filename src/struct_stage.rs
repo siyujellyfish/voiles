@@ -1898,3 +1898,51 @@ mod float_copyable_method_tests {
         assert!(err.message.contains("初始化"));
     }
 }
+
+#[cfg(test)]
+mod conservative_decimal64_tests {
+    use super::{inspect, Parser};
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn decimal64_有限子集與尾端小數點_前導零_底線可解析() {
+        let source = include_str!("../tests/fixtures/p13_stage/decimal64有限合法常值.voil");
+        assert!(inspect(source).is_ok());
+        for text in ["0.", "00.5", "1._2", "1.25", "12.345_678_901_234_5"] {
+            assert!(Parser::decimal64_checked_subset(text).is_some(), "{text}");
+        }
+    }
+
+    #[test]
+    fn decimal64_平手時選尾數偶數_超過一半需進位() {
+        assert_eq!(Parser::decimal64_checked_subset("1.2345678901234565"),
+            Some((1_234_567_890_123_456, -15)));
+        assert_eq!(Parser::decimal64_checked_subset("1.2345678901234555"),
+            Some((1_234_567_890_123_456, -15)));
+        assert_eq!(Parser::decimal64_checked_subset("1.2345678901234565001"),
+            Some((1_234_567_890_123_457, -15)));
+        assert_eq!(Parser::decimal64_checked_subset("1.2345678901234566"),
+            Some((1_234_567_890_123_457, -15)));
+        assert_eq!(Parser::decimal64_checked_subset("0.5"),
+            Some((5_000_000_000_000_000, -16)));
+    }
+
+    #[test]
+    fn decimal64_極端下溢與超出驗證範圍均保守拒絕() {
+        let source = include_str!("../tests/fixtures/p13_stage/decimal64超出安全子集.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Syntax);
+        assert!(error.message.contains("decimal64"));
+        assert!(error.span.is_some());
+        for text in ["0.00000000000000001", "99999999999999999.", "10000000000000000."] {
+            assert!(Parser::decimal64_checked_subset(text).is_none(), "{text}");
+        }
+    }
+
+    #[test]
+    fn decimal64_copyable_只允許型別相符而非隱含轉成_int() {
+        assert!(inspect("fn main()->int{\nvar x:float = 1.25\nvar y:float = x\nreturn 0\n}\n").is_ok());
+        let bad = "fn main()->int{\nvar x:int = 1.25\nreturn 0\n}\n";
+        assert!(inspect(bad).unwrap_err().message.contains("型別"));
+    }
+}
