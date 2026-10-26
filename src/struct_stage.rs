@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
 use crate::ownership_model::{CopyPermission, ModelError, ValueSlot};
+use crate::ownership_ledger::DeclarationId;
+use crate::borrow_safety::{BorrowKind, BorrowSafety};
 use crate::source::Source;
 use crate::struct_ownership::{self, MoveTarget, SelfAction};
 
@@ -60,6 +62,10 @@ enum TermKind {
     Construct(String, Vec<(String, Term)>),
     Move(String),
     FieldMove(String, String),
+    /// 只讀欄位值的複製；需另外通過已初始化與 HA13/S19 Copyable 檢查。
+    FieldRead(String, String),
+    /// S16 已核准的 instance.method() 零參數子集；此處不推定其他簽章。
+    MethodCall(String, String),
 }
 
 struct Parser<'a> {
@@ -193,8 +199,14 @@ impl Parser<'_> {
                         self.take(')', "欄位移動呼叫缺少右括號")?;
                         (TermKind::FieldMove(s, field_or_move),
                             self.tokens[self.cursor - 1].end)
+                    } else if self.symbol('(') {
+                        self.cursor += 1;
+                        self.take(')', "此受限子集方法呼叫只接受空引數列表")?;
+                        (TermKind::MethodCall(s, field_or_move),
+                            self.tokens[self.cursor - 1].end)
                     } else {
-                        return Err(self.syntax("此子集尚不接受一般欄位讀取或方法呼叫"));
+                        (TermKind::FieldRead(s, field_or_move),
+                            self.tokens[self.cursor - 1].end)
                     }
                 } else {
                     (TermKind::Name(s), end)
