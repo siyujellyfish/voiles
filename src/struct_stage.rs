@@ -42,6 +42,7 @@ struct Stmt {
 enum StmtKind {
     Declare { name: String, ty: String, mutable: bool, init: Option<Term> },
     Assign { name: String, value: Term },
+    If { condition: Term, yes: Vec<Stmt>, no: Option<Vec<Stmt>> },
     Return(Term),
 }
 
@@ -200,6 +201,22 @@ impl Parser<'_> {
                 return Err(self.syntax("const 宣告必須立即初始化"));
             }
             StmtKind::Declare { name, ty, mutable, init }
+        } else if self.keyword("if") {
+            self.cursor += 1;
+            self.take('(', "if 條件需要左括號")?;
+            let condition = self.term()?;
+            self.take(')', "if 條件需要右括號")?;
+            let yes = self.body()?;
+            let saved = self.cursor;
+            self.lines();
+            let no = if self.keyword("else") {
+                self.cursor += 1;
+                Some(self.body()?)
+            } else {
+                self.cursor = saved;
+                None
+            };
+            StmtKind::If { condition, yes, no }
         } else if self.keyword("return") {
             self.cursor += 1;
             StmtKind::Return(self.term()?)
