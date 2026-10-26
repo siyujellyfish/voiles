@@ -871,9 +871,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     });
                 }
                 if let Some(default) = &field.default {
-                    let (ty, _) = self.evaluate(default, &mut vec![HashMap::new()])?;
+                    let (ty, initialized) =
+                        self.evaluate(default, &mut vec![HashMap::new()])?;
                     if ty != field.ty {
                         return Err(self.error("結構預設欄位型別不一致", default));
+                    }
+                    // S07 容許 var 欄位延後初始化，但不能把「存在預設運算式」
+                    // 當成嵌入的結構值已全部初始化。受限模型尚無欄位級
+                    // 初始化證明時，必須拒絕不完整的巢狀預設建立式。
+                    if !initialized {
+                        return Err(self.error(
+                            "S07：結構預設值尚含未初始化欄位，不能證明完整初始化",
+                            default));
                     }
                 }
                 // immutable 僅保存 AST，不在此決定後續 S18 可變借用。
