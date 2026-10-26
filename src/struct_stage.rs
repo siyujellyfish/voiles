@@ -454,7 +454,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error(
                             "方法欄位寫入目前僅支援相同型別的獨立字面值", value));
                     };
-                    if *actual != target.ty {
+                    if *actual != target.ty.as_str() {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
                     mode = BorrowKind::ExclusiveWrite;
@@ -1073,7 +1073,7 @@ mod readonly_self_tests {
 
     #[test]
     fn 未驗證方法寫入及跨作用域語意維持保守拒絕() {
-        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = 2\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = self.value\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(write).is_err());
         let calls_self = "struct A{\nvar value:int = 1\nfn read()->int{\nreturn self.other()\n}\nfn other()->int{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(calls_self).is_err());
@@ -1261,5 +1261,72 @@ mod approved_policy_tests {
         let source = crate::source::Source::new(b"fn main()->int{\nvar a:int = 1\nreturn a.move()\n}\n".to_vec());
         let lexed = crate::lexer::scan(&source);
         assert!(crate::parser::parse(&source, &lexed.tokens).is_err());
+    }
+}
+
+#[cfg(test)]
+mod automatic_self_borrow_tests {
+    use super::{inspect, inspect_with_test_ability, Parser, Checker};
+    use crate::DiagnosticKind;
+    use crate::borrow_safety::BorrowKind;
+    use crate::ownership_model::CopyPermission;
+    use std::collections::HashMap;
+
+    #[test]
+    fn 方案_a_依欄位寫入推導方法共享或獨占借用() {
+        let text = include_str!("../tests/fixtures/p13_stage/自動獨占與共享方法.voil");
+        assert!(inspect(text).is_ok());
+        let source = crate::source::Source::new(text.as_bytes().to_vec());
+        let scan = crate::lexer::scan(&source);
+        let (structs, _) = Parser {source: &source, tokens: &scan.tokens, cursor: 0}.file().unwrap();
+        let methods = &structs["Counter"].methods;
+        let checker = Checker {source: &source, structs: &structs,
+            ability: crate::ownership_policy::approved_leaf_copy_permission};
+        assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
+            BorrowKind::SharedRead);
+        assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "set").unwrap()).unwrap(),
+            BorrowKind::ExclusiveWrite);
+    }
+
+    #[test]
+    fn s18_const_實例不得呼叫自動推導的獨占方法() {
+        let code = include_str!("../tests/fixtures/p13_stage/const實例禁止可變方法.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("const 結構實例"));
+    }
+
+    #[test]
+    fn s18_const_欄位不得被方法修改() {
+        let code = include_str!("../tests/fixtures/p13_stage/const欄位禁止方法寫入.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("const 欄位"));
+    }
+
+    #[test]
+    fn 方法對_self_欄位的錯誤型別必須拒絕() {
+        let code = include_str!("../tests/fixtures/p13_stage/可變方法錯誤型別.voil");
+        assert!(inspect(code).unwrap_err().message.contains("型別"));
+    }
+
+    #[test]
+    fn 已移動來源不得藉可變方法存取() {
+        let code = include_str!("../tests/fixtures/p13_stage/移動後禁止可變方法.voil");
+        assert!(inspect(code).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn 不推定不同方法重入與運算式寫入的借用生命週期() {
+        let src = "struct X{\nvar n:int = 1\nfn set()->int{\nself.n = self.n\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_err());
+        let nested = src.replace("self.n = self.n", "if (true){\nself.n = 2\n}");
+        assert!(inspect(&nested).is_err());
+    }
+
+    #[test]
+    fn 一般函式不可繞過尚未支援的欄位賦值別名檢查() {
+        let src = "struct X{\nvar n:int = 1\n}\nfn main()->int{\nvar x:X = X()\nx.n = 2\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("所有權與別名"));
     }
 }
