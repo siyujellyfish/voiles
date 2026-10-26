@@ -1266,11 +1266,9 @@ mod approved_policy_tests {
 
 #[cfg(test)]
 mod automatic_self_borrow_tests {
-    use super::{inspect, inspect_with_test_ability, Parser, Checker};
+    use super::{inspect, Parser, Checker};
     use crate::DiagnosticKind;
     use crate::borrow_safety::BorrowKind;
-    use crate::ownership_model::CopyPermission;
-    use std::collections::HashMap;
 
     #[test]
     fn 方案_a_依欄位寫入推導方法共享或獨占借用() {
