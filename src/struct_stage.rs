@@ -1036,10 +1036,10 @@ mod method_safety_tests {
 
     #[test]
     fn 無違規的合法借用方法仍不可在未驗證安全前誤收() {
-        let code = "struct Sample{\nvar x:int = 1\nfn value()->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let code = "struct Sample{\nvar x:int = 1\nfn value()->int{\nvar temp:int = 1\nreturn temp\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("方法借用"));
+        assert!(error.message.contains("唯讀 self 方法"));
     }
 }
 
