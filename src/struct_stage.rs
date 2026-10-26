@@ -580,6 +580,47 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
         Ok(())
     }
+    /// 對方法內所有深度的運算式查核明確禁令，不只檢查頂層 return。
+    /// 方法借用完整合法性仍待 P14，不能藉此宣告方法可使用。
+    fn reject_method_term(&self, term: &Term) -> Result<(), Diagnostic> {
+        match &term.kind {
+            TermKind::Move(name) if name == "self" => {
+                let _ = struct_ownership::check_method_self(SelfAction::ConsumeWhole);
+                Err(self.error("S15：方法禁止消耗整個 self", term))
+            }
+            TermKind::FieldMove(_, _) => {
+                let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
+                Err(self.error("S21：方法不可個別移動結構欄位", term))
+            }
+            TermKind::Construct(_, args) => {
+                for (_, value) in args { self.reject_method_term(value)?; }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn reject_method_statements(&self, body: &[Stmt]) -> Result<(), Diagnostic> {
+        for stmt in body {
+            match &stmt.kind {
+                StmtKind::Declare { init, .. } => {
+                    if let Some(value) = init { self.reject_method_term(value)?; }
+                }
+                StmtKind::Assign { value, .. } | StmtKind::Return(value) => {
+                    self.reject_method_term(value)?;
+                }
+                StmtKind::If { condition, yes, no } => {
+                    self.reject_method_term(condition)?;
+                    self.reject_method_statements(yes)?;
+                    if let Some(otherwise) = no {
+                        self.reject_method_statements(otherwise)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
         for definition in self.structs.values() {
             for field in &definition.fields {
@@ -601,27 +642,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = field.immutable;
             }
             for method in &definition.methods {
-                for stmt in &method.body {
-                    let term = match &stmt.kind {
-                        StmtKind::Declare { init, .. } => init.as_ref(),
-                        StmtKind::Assign { value, .. } => Some(value),
-                        StmtKind::Return(value) => Some(value),
-                        StmtKind::If { condition, .. } => Some(condition),
-                    };
-                    if let Some(term) = term {
-                        if matches!(&term.kind, TermKind::Move(name) if name == "self") {
-                            let _ = struct_ownership::check_method_self(SelfAction::ConsumeWhole);
-                            return Err(self.error("S15：方法禁止消耗整個 self", term));
-                        }
-                        if matches!(term.kind, TermKind::FieldMove(_, _)) {
-                            return Err(self.error("S21：方法不得單獨移動欄位", term));
-                        }
-                    }
-                }
-                // 方法其餘語意需要 P09-F02/P14；不把純形狀測試當作方法已驗收。
-                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                self.reject_method_statements(&method.body)?;
+                // 方法借用與型別關聯仍待 P09-F02／P14 完整安全證明。
+                // 僅辨識並精準拒絕明確違規；對其他方法依然 fail-closed。
+                return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
                     message: "含方法的 struct 尚待完整方法借用與名稱／型別檢查".into(),
-                    span: None });
+                    span: None,
+                });
             }
         }
         if !funcs.iter().any(|fun| fun.name == "main" && fun.result_ty == "int") {
