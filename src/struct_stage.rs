@@ -480,6 +480,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
         for definition in self.structs.values() {
             for field in &definition.fields {
+                if !["int", "bool", "float", "str"].contains(&field.ty.as_str())
+                    && !self.structs.contains_key(&field.ty) {
+                    return Err(Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "結構欄位使用不存在的型別".into(),
+                        span: None,
+                    });
+                }
                 if let Some(default) = &field.default {
                     let (ty, _) = self.evaluate(default, &mut HashMap::new())?;
                     if ty != field.ty {
