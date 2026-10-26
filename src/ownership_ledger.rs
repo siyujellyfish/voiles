@@ -159,8 +159,6 @@ mod tests {
     fn 分支一邊移動另一邊未移動_合流後保守拒絕讀取() {
         let mut original = OwnershipLedger::new();
         original.declare(id(1), Cap::Undecided, true).unwrap();
-        let mut moved = original.clone();
-        moved.move_to(id(1), id(9)).unwrap();
         // 僅保留共同於分支前建立的可見名稱：移動目標尚非共同宣告。
         let mut moved_early = OwnershipLedger::new();
         moved_early.declare(id(1), Cap::Undecided, true).unwrap();
