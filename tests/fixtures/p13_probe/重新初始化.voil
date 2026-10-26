@@ -1,0 +1,6 @@
+fn main()->int{
+var a:int = 5
+var b:int = a.move()
+a = 7
+return a + b
+}

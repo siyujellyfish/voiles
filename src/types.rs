@@ -23,6 +23,7 @@ struct TypeChecker<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
     globals: HashMap<String, (usize, Type)>,
+    probe_move: bool,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -92,6 +93,9 @@ impl<'a> TypeChecker<'a> {
                 Ok(TypedValue::new(ty))
             }
             ExprKind::Group(inner) => self.expression(inner, scopes),
+            ExprKind::ZeroArgMethod(inner, method) if self.probe_move
+                && method == "move" && matches!(inner.kind, ExprKind::Name(_)) =>
+                self.expression(inner, scopes),
             ExprKind::Add(left, right) | ExprKind::Subtract(left, right) => {
                 let lhs = self.expression(left, scopes)?;
                 let rhs = self.expression(right, scopes)?;
@@ -170,6 +174,15 @@ impl<'a> TypeChecker<'a> {
 /// 只在 P09 名稱解析及 P07 安全解析成功時呼叫；
 /// 不意味 P11 definite initialization／可變權限／P12 main 等驗收完成。
 pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
+    check_with_move_probe(file, source, false)
+}
+
+/// P13 測試模式不擴大 P01 公開介面。
+pub(crate) fn check_move_probe(file: &File, source: &Source) -> Result<(), Diagnostic> {
+    check_with_move_probe(file, source, true)
+}
+
+fn check_with_move_probe(file: &File, source: &Source, probe_move: bool) -> Result<(), Diagnostic> {
     let mut functions = HashMap::new();
     let mut globals = HashMap::new();
     for item in &file.items {
@@ -178,7 +191,7 @@ pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
             Item::Binding(b) => { globals.insert(b.name.clone(), (b.start, b.ty)); }
         }
     }
-    let checker = TypeChecker { source, functions, globals };
+    let checker = TypeChecker { source, functions, globals, probe_move };
     for item in &file.items {
         match item {
             Item::Binding(b) => checker.initializer(b, &[])?,

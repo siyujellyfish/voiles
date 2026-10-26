@@ -13,6 +13,7 @@ mod flow;
 mod functions;
 mod ownership_model;
 mod ownership_ledger;
+mod ownership_probe;
 
 use std::fmt;
 use std::io::ErrorKind;

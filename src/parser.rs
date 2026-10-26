@@ -73,6 +73,8 @@ struct Parser<'a> {
     source: &'a Source,
     tokens: &'a [Token],
     cursor: usize,
+    /// 僅供 P13 內部來源試驗使用，不變更 P01 正式解析模式。
+    allow_probe_move: bool,
 }
 
 impl<'a> Parser<'a> {
@@ -143,18 +145,22 @@ impl<'a> Parser<'a> {
         self.cursor = parser.cursor;
         Ok(value)
     }
-    fn is_initial_value(expr: &Expr) -> bool {
+    fn is_initial_value(&self, expr: &Expr) -> bool {
         matches!(expr.kind,
             ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) | ExprKind::Name(_)
-        )
+        ) || (self.allow_probe_move && matches!(&expr.kind,
+            ExprKind::ZeroArgMethod(inner, method)
+                if method == "move" && matches!(inner.kind, ExprKind::Name(_))))
     }
-    fn first_version_return(expr: &Expr) -> bool {
+    fn first_version_return(&self, expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
             ExprKind::Name(_) | ExprKind::ZeroArgCall(_) => true,
-            ExprKind::Group(x) => Self::first_version_return(x),
+            ExprKind::Group(x) => self.first_version_return(x),
             ExprKind::Add(l,r) | ExprKind::Subtract(l,r) =>
-                Self::first_version_return(l) && Self::first_version_return(r),
+                self.first_version_return(l) && self.first_version_return(r),
+            ExprKind::ZeroArgMethod(inner, method) => self.allow_probe_move
+                && method == "move" && matches!(inner.kind, ExprKind::Name(_)),
             _ => false,
         }
     }
@@ -172,7 +178,7 @@ impl<'a> Parser<'a> {
         if self.symbol('=') {
             self.next();
             let expr = self.expression()?;
-            if !Self::is_initial_value(&expr) {
+            if !self.is_initial_value(&expr) {
                 return Err(self.err("首版宣告初始化僅接受相符型別常值或合法具名變數"));
             }
             initializer = Some(expr);
@@ -263,7 +269,7 @@ impl<'a> Parser<'a> {
         } else if self.keyword("return") {
             self.next();
             let value = self.expression()?;
-            if !Self::first_version_return(&value) {
+            if !self.first_version_return(&value) {
                 return Err(self.err("首版 return 不接受此運算式來源"));
             }
             let end = value.end;
@@ -272,7 +278,7 @@ impl<'a> Parser<'a> {
             let name = self.name()?;
             self.expect_symbol('=', "首版具名語句必須為 var 賦值")?;
             let value = self.expression()?;
-            if !Self::is_initial_value(&value) {
+            if !self.is_initial_value(&value) {
                 return Err(self.err("首版 var 賦值只接受同型別常值或合法具名變數"));
             }
             let end = value.end;
@@ -326,7 +332,14 @@ impl<'a> Parser<'a> {
 }
 
 pub(crate) fn parse(source: &Source, tokens: &[Token]) -> Result<File, Diagnostic> {
-    Parser { source, tokens, cursor: 0 }.file()
+    Parser { source, tokens, cursor: 0, allow_probe_move: false }.file()
+}
+
+/// 僅為 P13 內部測試解析最窄的具名來源 .move()：
+/// 允許宣告／賦值初值與 return 表達式中明確整體移動；
+/// 不開放借用、結構欄位或非具名來源，也不更動正式 P01 語法。
+pub(crate) fn parse_move_probe(source: &Source, tokens: &[Token]) -> Result<File, Diagnostic> {
+    Parser { source, tokens, cursor: 0, allow_probe_move: true }.file()
 }
 
 #[cfg(test)]
