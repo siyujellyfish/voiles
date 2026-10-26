@@ -278,7 +278,7 @@ impl<'a> Parser<'a> {
             let name = self.name()?;
             self.expect_symbol('=', "首版具名語句必須為 var 賦值")?;
             let value = self.expression()?;
-            if !Self::is_initial_value(&value) {
+            if !self.is_initial_value(&value) {
                 return Err(self.err("首版 var 賦值只接受同型別常值或合法具名變數"));
             }
             let end = value.end;
