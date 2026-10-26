@@ -55,15 +55,20 @@ grep -q "nested_default_initialization_tests::s07_有預設運算式" \
   target/p13-accept/internal_tests.list
 grep -q "automatic_self_borrow_tests::方案_a_" \
   target/p13-accept/internal_tests.list
+grep -q "str_noncopyable_policy_tests::str_明確禁止名稱隱含複製" \
+  target/p13-accept/internal_tests.list
 ./target/p13-accept/internal_tests struct_stage:: \
   >target/p13-accept/p13_struct_tests.log
 ./target/p13-accept/internal_tests borrow_safety::tests:: \
   >target/p13-accept/p13_borrow_tests.log
 ./target/p13-accept/internal_tests ownership_policy::tests:: \
   >target/p13-accept/p13_copy_tests.log
+./target/p13-accept/internal_tests str_noncopyable_policy_tests:: \
+  >target/p13-accept/p13_str_tests.log
 grep -q "test result: ok." target/p13-accept/p13_struct_tests.log
 grep -q "test result: ok." target/p13-accept/p13_borrow_tests.log
 grep -q "test result: ok." target/p13-accept/p13_copy_tests.log
+grep -q "test result: ok." target/p13-accept/p13_str_tests.log
 echo "【7/7】49 項 P01 語意案例與 1 項素材追溯"
 python3 tools/產生規格測試.py
 python3 tools/檢查P03測試.py
