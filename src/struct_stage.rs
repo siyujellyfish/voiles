@@ -681,4 +681,31 @@ mod tests {
         assert!(inspect(src, |_| Allowed).is_err());
     }
 
+    #[test]
+    fn 真正結構來源_單分支移動合流後必須拒絕() {
+        let text = include_str!("../tests/fixtures/p13_stage/單分支移動後讀取.voil");
+        let error = inspect(text, |_| Allowed).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("可能") || error.message.contains("無效"));
+    }
+
+    #[test]
+    fn 真正結構來源_雙分支重新初始化合流後可合法移動() {
+        let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil");
+        assert!(inspect(text, |_| Undecided).is_ok());
+    }
+
+    #[test]
+    fn 真正結構來源_已提前_return_分支不得污染可達路徑() {
+        let text = include_str!("../tests/fixtures/p13_stage/提前回傳分支.voil");
+        assert!(inspect(text, |_| Undecided).is_ok());
+    }
+
+    #[test]
+    fn 分支區域內宣告不得外洩到外層() {
+        let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil")
+            .replace("var d:Sample = a.move()", "var d:Sample = b");
+        assert!(inspect(&text, |_| Allowed).is_err());
+    }
+
 }
