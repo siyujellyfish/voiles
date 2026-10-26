@@ -1,0 +1,6 @@
+fn main()->int{
+var original:str = "hello"
+var moved:str = original.move()
+var illegal:str = original
+return 0
+}

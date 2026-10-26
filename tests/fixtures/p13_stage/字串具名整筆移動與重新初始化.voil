@@ -1,0 +1,7 @@
+fn main()->int{
+var original:str = "hello"
+var moved:str = original.move()
+original = "again"
+var moved_again:str = original.move()
+return 0
+}

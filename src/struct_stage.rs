@@ -1,6 +1,6 @@
 //! P13 受限結構體所有權前端：真正 .voil → 私有 AST → 型別 → 所有權狀態。
 //! 只接受可以完整驗證的子集，未支援的語法拒絕，不影響 MVP-A check_file。
-//! 欄位型別 Copyable 由呼叫端提供，不自行宣告任何完整語言型別的資格。
+//! 正式內部入口依 HA13-A／str 方案 A 使用核准政策；自訂能力僅限 Rust 測試。
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
@@ -426,6 +426,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn permission(&self, ty: &str) -> CopyPermission {
         self.copy_permission(ty, &mut HashSet::new())
     }
+
+    /// 已明確禁止複製與仍待規格核准，必須使用不同診斷，不可混為一談。
+    fn reject_noncopyable(&self, permission: CopyPermission,
+        context: &str, term: &Term) -> Diagnostic {
+        let reason = match permission {
+            CopyPermission::Forbidden => "Copyable 已明確禁止",
+            CopyPermission::Undecided => "Copyable 資格未決",
+            CopyPermission::Allowed => "Copyable 檢查出現不一致",
+        };
+        self.error(&format!("{context}：{reason}，不能隱含複製"), term)
+    }
     fn lookup<'b>(vars: &'b Scopes, name: &str) -> Option<&'b Binding> {
         vars.iter().rev().find_map(|scope| scope.get(name))
     }
@@ -480,10 +491,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             let source = definition.fields.iter()
                                 .find(|f| f.name == *source_name)
                                 .ok_or_else(|| self.error("來源 self 欄位不存在", value))?;
-                            if self.permission(&source.ty) != CopyPermission::Allowed {
-                                return Err(self.error(
-                                    "HA13／S19：來源欄位 Copyable 資格尚未核准，禁止隱含複製",
-                                    value));
+                            let permission = self.permission(&source.ty);
+                            if permission != CopyPermission::Allowed {
+                                return Err(self.reject_noncopyable(permission,
+                                    "HA13／S19 來源欄位", value));
                             }
                             source.ty.as_str()
                         }
@@ -530,10 +541,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::FieldRead(receiver, field) if receiver == "self" => {
                 let target = def.fields.iter().find(|f| f.name == *field)
                     .ok_or_else(|| self.error("self 欄位不存在", return_value))?;
-                if self.permission(&target.ty) != CopyPermission::Allowed {
-                    return Err(self.error(
-                        "P13：self 欄位 Copyable 能力未核准，不可借用回傳；留待 P15 有效期與逃逸驗證",
-                        return_value));
+                let permission = self.permission(&target.ty);
+                if permission != CopyPermission::Allowed {
+                    let mut error = self.reject_noncopyable(permission,
+                        "P13 self 欄位", return_value);
+                    error.message = format!(
+                        "{}；不可借用回傳，留待 P15 有效期與逃逸驗證",
+                        error.message).into_boxed_str();
+                    return Err(error);
                 }
                 target.ty.as_str()
             }
@@ -576,8 +591,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let field = self.structs.get(&bound.ty)
                     .and_then(|def| def.fields.iter().find(|f| f.name == *name))
                     .ok_or_else(|| self.error("來源不是具有此欄位的結構", term))?;
-                if self.permission(&field.ty) != CopyPermission::Allowed {
-                    return Err(self.error("欄位 Copyable 能力尚未核准，不可直接複製", term));
+                let permission = self.permission(&field.ty);
+                if permission != CopyPermission::Allowed {
+                    return Err(self.reject_noncopyable(permission,
+                        "欄位讀取", term));
                 }
                 Ok((field.ty.clone(), true))
             }
@@ -642,7 +659,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             ModelError::MovedRead => "來源已移動，禁止再次使用",
             ModelError::UninitializedRead => "來源尚未完成初始化，不可使用",
             ModelError::UncertainRead => "存在可達路徑使來源可能無效",
-            ModelError::CopyForbidden => "型別不允許預設複製",
+            ModelError::CopyForbidden => "型別 Copyable 已明確禁止，拒絕隱含複製",
             ModelError::CopyUndecided => "型別 Copyable 能力未核准，拒絕預設複製",
             _ => "所有權狀態無法獲得合法證明",
         };
@@ -1286,7 +1303,7 @@ mod approved_policy_tests {
     }
 
     #[test]
-    fn ha13_str_資格未決_及含_str_欄位的_struct_都不可隱含複製() {
+    fn str_已禁止_copyable_及含_str_欄位的_struct_都不可隱含複製() {
         const SOURCE: &str =
             include_str!("../tests/fixtures/p13_approved/未知字串資格拒絕複製.voil");
         let error = inspect(SOURCE).unwrap_err();
@@ -1466,7 +1483,7 @@ mod copyable_self_field_tests {
     }
 
     #[test]
-    fn 未決_str_複製能力仍不可在方法裡隱含複製() {
+    fn 已禁止_str_複製能力不可在方法裡隱含複製() {
         let code = include_str!("../tests/fixtures/p13_stage/方法不可複製未知欄位.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
@@ -1614,5 +1631,72 @@ mod nested_default_initialization_tests {
     fn 多層巢狀預設建立亦不得繞過最內層未初始化狀態() {
         let src = "struct Leaf{\nvar n:int\n}\nstruct Mid{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar mid:Mid = Mid()\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).unwrap_err().message.contains("未初始化"));
+    }
+}
+
+#[cfg(test)]
+mod str_noncopyable_policy_tests {
+    use super::inspect;
+    use crate::{DiagnosticKind, ownership_model::CopyPermission};
+    use crate::ownership_policy::approved_leaf_copy_permission;
+
+    #[test]
+    fn str_明確禁止名稱隱含複製並保留來源位置() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/禁止字串名稱隱含複製.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn str_具名整筆移動及重新初始化不需_copyable() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn str_移動後的原來源讀取必須失敗() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/移動字串後不能再次讀取.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("已移動"));
+    }
+
+    #[test]
+    fn s19_包含非copyable字串欄位的結構確定禁止隱含複製() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/包含字串欄位的結構禁止複製.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"));
+    }
+
+    #[test]
+    fn s19_包含字串欄位的結構仍可合法整筆移動() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn p13_禁止借用回傳已確定非copyable的字串欄位_不提前p15() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/禁止方法複製確定非Copyable字串欄位.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"));
+        assert!(error.message.contains("P15"));
+    }
+
+    #[test]
+    fn str_已禁止與float_未決仍保有不同能力結果() {
+        assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
+        assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Undecided);
+        assert_eq!(approved_leaf_copy_permission("int"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
     }
 }

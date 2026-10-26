@@ -1,0 +1,5 @@
+fn main()->int{
+var original:str = "hello"
+var duplicate:str = original
+return 0
+}
