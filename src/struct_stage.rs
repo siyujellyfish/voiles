@@ -139,6 +139,46 @@ impl Parser<'_> {
                 .map(|value| value <= i64::MAX as u128)
                 .unwrap_or(false)
     }
+    /// P13 已核准的 decimal64 有限常值子集：採十進位字元和最近偶數捨入，
+    /// 不將宿主二進位 f64 當成 decimal64。僅驗證調整指數 -15..=15 的數值。
+    /// 回傳 (16 位十進位係數, 十進位指數)，保留未決邊界之外的拒絕。
+    fn decimal64_checked_subset(literal: &str) -> Option<(u64, i32)> {
+        let cleaned: String = literal.chars().filter(|c| *c != '_').collect();
+        let (integer, fraction) = cleaned.split_once('.')?;
+        if integer.is_empty()
+            || !integer.bytes().all(|b| b.is_ascii_digit())
+            || !fraction.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        let digits = format!("{integer}{fraction}");
+        let Some(first_nonzero) = digits.bytes().position(|b| b != b'0') else {
+            return Some((0, 0));
+        };
+        let mut adjusted = integer.len() as i64 - first_nonzero as i64 - 1;
+        if !(-15..=15).contains(&adjusted) { return None; }
+        let significant = &digits[first_nonzero..];
+        let mut coefficient = 0u64;
+        let first_sixteen = significant.bytes().take(16).collect::<Vec<_>>();
+        for digit in &first_sixteen {
+            coefficient = coefficient * 10 + (digit - b'0') as u64;
+        }
+        for _ in first_sixteen.len()..16 { coefficient *= 10; }
+        let following = significant.as_bytes().get(16).copied().unwrap_or(b'0');
+        let further_nonzero = significant.as_bytes().get(17..)
+            .unwrap_or(&[]).iter().any(|b| *b != b'0');
+        let round_up = following > b'5'
+            || (following == b'5' && (further_nonzero || coefficient % 2 == 1));
+        if round_up {
+            coefficient += 1;
+            if coefficient == 10_000_000_000_000_000 {
+                coefficient = 1_000_000_000_000_000;
+                adjusted += 1;
+                if adjusted > 15 { return None; }
+            }
+        }
+        Some((coefficient, (adjusted - 15) as i32))
+    }
+
     fn term(&mut self) -> Result<Term, Diagnostic> {
         let start = self.tok().start;
         let (kind, mut end) = match self.tok().kind.clone() {
@@ -149,10 +189,15 @@ impl Parser<'_> {
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("int"), end)
             }
-            TokenKind::Decimal(_) => {
-                return Err(self.syntax(
-                    "此 P13 受限檢查尚未完成 decimal64 字面值合法性驗證"
-                ));
+            TokenKind::Decimal(ref text) => {
+                if Self::decimal64_checked_subset(text).is_none() {
+                    return Err(self.syntax(
+                        "P13 decimal64 常值超出已驗證的有限安全子集；下溢、超界與特殊值仍待正式規格"
+                    ));
+                }
+                let end = self.tok().end;
+                self.cursor += 1;
+                (TermKind::Literal("float"), end)
             }
             TokenKind::StringLiteral(_) => {
                 let end = self.tok().end; self.cursor += 1;
@@ -1092,7 +1137,7 @@ mod tests {
 
     #[test]
     fn 尚未支援的浮點字面值不能繞過型別安全檢查() {
-        let source = BASE.replace("var number:int = 1", "var number:float = 1.25");
+        let source = BASE.replace("var number:int = 1", "var number:float = 0.00000000000000001");
         assert!(inspect_with_test_ability(&source, |_| Allowed).is_err());
     }
 
