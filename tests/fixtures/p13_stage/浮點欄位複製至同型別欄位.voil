@@ -1,0 +1,11 @@
+struct FloatPair{
+var left:float
+var right:float
+fn copy()->int{
+self.left = self.right
+return 0
+}
+}
+fn main()->int{
+return 0
+}
