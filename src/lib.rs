@@ -124,3 +124,31 @@ pub fn check_file(path: &Path) -> CheckResult {
         },
     }
 }
+
+#[cfg(test)]
+mod p13_private_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn 方案_b_真實結構安全子集仍只能在私有檢查器通過() {
+        let source_text =
+            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+        assert!(struct_stage::inspect(source_text).is_ok());
+        let source = source::Source::new(source_text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let error = parser::parse(&source, &tokens.tokens).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Syntax);
+    }
+
+    #[test]
+    fn 方案_b_明確整筆移動只通過私有檢查_不偷渡到公開_mvp_a() {
+        let source_text = "fn main()->int{\nvar n:int = 1\nvar m:int = n.move()\nreturn m\n}\n";
+        assert!(struct_stage::inspect(source_text).is_ok());
+        let source = source::Source::new(source_text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let error = parser::parse(&source, &tokens.tokens).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Syntax);
+    }
+}
