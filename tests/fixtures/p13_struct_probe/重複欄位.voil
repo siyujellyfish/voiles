@@ -1,0 +1,4 @@
+struct Sample{
+var number:int
+var number:bool
+}
