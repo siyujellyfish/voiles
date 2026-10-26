@@ -813,6 +813,55 @@ mod tests {
 
 }
 
+
+#[cfg(test)]
+mod lexical_ownership_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn h06_內層同名結構移動不得毀損外層所有權() {
+        let code = include_str!("../tests/fixtures/p13_stage/內層遮蔽移動不傷外層.voil");
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn 內層同名移動後不能透過同名重新複製() {
+        let code = include_str!("../tests/fixtures/p13_stage/內層移動後誤讀.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("移動"));
+    }
+
+    #[test]
+    fn 外層移動後不可藉內層重新宣告偷恢復來源() {
+        let code = include_str!("../tests/fixtures/p13_stage/外層已移動不被內層遮蔽復原.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("移動"));
+    }
+
+    #[test]
+    fn 同作用域重複宣告繼續拒絕() {
+        let code = include_str!("../tests/fixtures/p13_stage/同層重複宣告拒絕.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("重複宣告"));
+    }
+
+    #[test]
+    fn 雙分支同名內層資源都不該污染同一外層來源() {
+        let code = "struct S{\nvar v:int = 1\n}\nfn main()->int{\nvar a:S = S()\nif (true){\nvar a:S = S()\nvar x:S = a.move()\n}else{\nvar a:S = S()\nvar y:S = a.move()\n}\nvar last:S = a.move()\nreturn 0\n}\n";
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn 真正內層移動外層來源仍必須讓外層失效() {
+        let code = "struct S{\nvar v:int = 1\n}\nfn main()->int{\nvar a:S = S()\nif (true){\nvar moved:S = a.move()\n}\nvar last:S = a\nreturn 0\n}\n";
+        assert!(inspect(code).unwrap_err().message.contains("可能"));
+    }
+}
+
 #[cfg(test)]
 mod approved_policy_tests {
     use super::inspect;
