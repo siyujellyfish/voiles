@@ -1358,7 +1358,7 @@ mod automatic_self_borrow_tests {
     fn 不推定不同方法重入與運算式寫入的借用生命週期() {
         let src = "struct X{\nvar n:int = 1\nfn set()->int{\nself.n = self.n\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_err());
-        let nested = src.replace("self.n = self.n", "if (true){\nself.n = 2\n}");
+        let nested = src.replace("self.n = self.n", "if (self.n){\nself.n = 2\n}");
         assert!(inspect(&nested).is_err());
     }
 
