@@ -1,0 +1,9 @@
+struct Note{
+var text:str = "hello"
+fn get()->str{
+return self.text.move()
+}
+}
+fn main()->int{
+return 0
+}

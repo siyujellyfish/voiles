@@ -1,0 +1,12 @@
+struct Note{
+var text:str = "hello"
+}
+struct Outer{
+var child:Note = Note()
+fn get()->Note{
+return self.child
+}
+}
+fn main()->int{
+return 0
+}
