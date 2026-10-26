@@ -966,6 +966,70 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod readonly_self_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准_copyable_欄位可藉共享唯讀_self_方法複製() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+        assert!(inspect(CODE).is_ok());
+    }
+
+    #[test]
+    fn self_唯讀借用於方法結束後歸還_仍可明確整筆移動() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+        let invalid = CODE.replace("return copied", "var double:Counter = source.move()\nreturn copied");
+        assert!(inspect(&invalid).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn 尚未核准_copyable_的_self_欄位不得從借用偷複製() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/未知欄位複製能力的唯讀方法.voil");
+        let error = inspect(CODE).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn 方法呼叫者在移動後不可再被借用() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/移動後不可呼叫唯讀方法.voil");
+        assert!(inspect(CODE).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn 尚未初始化的結構不可從方法讀取欄位() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/未初始化欄位不可呼叫方法.voil");
+        assert!(inspect(CODE).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn 方法只能讀取合法_self_欄位_回傳型別不符必須拒絕() {
+        let wrong = "struct A{\nvar value:int = 1\nfn read()->bool{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(wrong).unwrap_err().message.contains("回傳型別"));
+        let missing = wrong.replace("->bool", "->int").replace("self.value", "self.missing");
+        assert!(inspect(&missing).unwrap_err().message.contains("不存在"));
+        let owner = wrong.replace("->bool", "->A").replace("self.value", "self");
+        assert!(inspect(&owner).unwrap_err().message.contains("其他借用"));
+    }
+
+    #[test]
+    fn 未驗證方法寫入及跨作用域語意維持保守拒絕() {
+        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = 2\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(write).is_err());
+        let calls_self = "struct A{\nvar value:int = 1\nfn read()->int{\nreturn self.other()\n}\nfn other()->int{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(calls_self).is_err());
+    }
+}
+
 #[cfg(test)]
 mod default_constructor_cycle_tests {
     use super::inspect;
