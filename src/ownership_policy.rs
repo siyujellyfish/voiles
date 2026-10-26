@@ -1,14 +1,14 @@
-//! P13 已正式核准的葉型別複製政策（HA13-A、str 方案 A）。
-//! int／bool 可隱含複製；str 明確不可複製；其他葉型別仍未決。
+//! P13 已正式核准的葉型別複製政策（HA13-A、str 方案 A、float 方案 A）。
+//! int／bool／float 可隱含複製；str 明確不可複製；其他葉型別仍未決。
 //! 這只界定 Copyable 能力，不定義 str 的儲存、釋放或借用有效期。
 #![allow(dead_code)]
 
 use crate::ownership_model::CopyPermission;
 
-/// str 方案 A：非 Copyable。未明確核准的其他葉型別不可推定禁用。
+/// str 方案 A：非 Copyable；float 方案 A：Copyable（維持 decimal64 規格）。
 pub(crate) fn approved_leaf_copy_permission(ty: &str) -> CopyPermission {
     match ty {
-        "int" | "bool" => CopyPermission::Allowed,
+        "int" | "bool" | "float" => CopyPermission::Allowed,
         "str" => CopyPermission::Forbidden,
         _ => CopyPermission::Undecided,
     }
@@ -20,11 +20,12 @@ mod tests {
     use crate::ownership_model::{ModelError, ValueSlot};
 
     #[test]
-    fn ha13_核准_int_bool_與_str_禁止複製_不擴及其他型別() {
+    fn ha13_核准_int_bool_float_與_str_禁止複製_不擴及其他型別() {
         assert_eq!(approved_leaf_copy_permission("int"), CopyPermission::Allowed);
         assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Allowed);
         assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
-        for ty in ["float", "list[int]", "dict[str,int]", "Unknown", "Sample"] {
+        for ty in ["list[int]", "dict[str,int]", "Unknown", "Sample"] {
             assert_eq!(approved_leaf_copy_permission(ty), CopyPermission::Undecided);
         }
     }
@@ -49,6 +50,21 @@ mod tests {
             Err(ModelError::CopyForbidden));
         assert_eq!(ValueSlot::initialized(
             approved_leaf_copy_permission("float")).duplicate(),
+            Ok(ValueSlot::initialized(CopyPermission::Allowed)));
+        assert_eq!(ValueSlot::initialized(
+            approved_leaf_copy_permission("list[int]")).duplicate(),
             Err(ModelError::CopyUndecided));
     }
+    #[test]
+    fn float_准複製不妨礙合法整筆_move_與移動來源失效() {
+        let mut source = ValueSlot::initialized(approved_leaf_copy_permission("float"));
+        let copy = source.duplicate().expect("float 已確認 Copyable");
+        let moved = source.move_whole().expect("合法具名整筆移動");
+        assert!(copy.read().is_ok());
+        assert!(moved.read().is_ok());
+        assert_eq!(source.read(), Err(ModelError::MovedRead));
+        source.mark_reinitialized();
+        assert!(source.duplicate().is_ok());
+    }
+
 }
