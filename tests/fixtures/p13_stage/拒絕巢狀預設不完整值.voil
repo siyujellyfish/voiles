@@ -1,0 +1,10 @@
+struct Child{
+var count:int
+}
+struct Parent{
+var child:Child = Child()
+}
+fn main()->int{
+var p:Parent = Parent()
+return 0
+}

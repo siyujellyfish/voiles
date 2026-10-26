@@ -871,9 +871,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     });
                 }
                 if let Some(default) = &field.default {
-                    let (ty, _) = self.evaluate(default, &mut vec![HashMap::new()])?;
+                    let (ty, initialized) =
+                        self.evaluate(default, &mut vec![HashMap::new()])?;
                     if ty != field.ty {
                         return Err(self.error("結構預設欄位型別不一致", default));
+                    }
+                    // S07 容許 var 欄位延後初始化，但不能把「存在預設運算式」
+                    // 當成嵌入的結構值已全部初始化。受限模型尚無欄位級
+                    // 初始化證明時，必須拒絕不完整的巢狀預設建立式。
+                    if !initialized {
+                        return Err(self.error(
+                            "S07：結構預設值尚含未初始化欄位，不能證明完整初始化",
+                            default));
                     }
                 }
                 // immutable 僅保存 AST，不在此決定後續 S18 可變借用。
@@ -1560,5 +1569,50 @@ mod p13_deferred_borrowed_return_tests {
     fn p13_a_未知_copyable_欄位不會因方法有寫入而可借用回傳() {
         let src = "struct X{\nvar label:str = \"A\"\nvar n:int = 1\nfn get()->str{\nself.n = 2\nreturn self.label\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).unwrap_err().message.contains("P15"));
+    }
+}
+
+#[cfg(test)]
+mod nested_default_initialization_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn s07_有預設運算式不代表子結構已完整初始化() {
+        let src = include_str!("../tests/fixtures/p13_stage/拒絕巢狀預設不完整值.voil");
+        let err = inspect(src).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("未初始化"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn f01_const_欄位預設值也不可包含不完整子結構() {
+        let src = include_str!("../tests/fixtures/p13_stage/拒絕const巢狀預設不完整值.voil");
+        let err = inspect(src).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("未初始化"));
+    }
+
+    #[test]
+    fn s05_具名提供所有必要欄位的巢狀預設值可通過() {
+        let src = include_str!("../tests/fixtures/p13_stage/已初始化巢狀具名預設值.voil");
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn s07_var_欄位沒有預設依舊合法_只要求在使用前完成初始化() {
+        let src = include_str!("../tests/fixtures/p13_stage/沒有預設值的var欄位仍合法宣告.voil");
+        assert!(inspect(src).is_ok());
+        let incomplete = src.replace("Parent(child=Child(count=5))", "Parent()");
+        // 可建立未完成初始化的具名 var，但不能將其誤當作合法回傳值。
+        let returned = incomplete.replace("return 0", "var q:Parent = p.move()\nreturn 0");
+        assert!(inspect(&returned).is_err());
+    }
+
+    #[test]
+    fn 多層巢狀預設建立亦不得繞過最內層未初始化狀態() {
+        let src = "struct Leaf{\nvar n:int\n}\nstruct Mid{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar mid:Mid = Mid()\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("未初始化"));
     }
 }

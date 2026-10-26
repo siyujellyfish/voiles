@@ -1,0 +1,11 @@
+struct Child{
+var count:int
+}
+struct Parent{
+var child:Child = Child(count=3)
+}
+fn main()->int{
+var p:Parent = Parent()
+var q:Parent = p.move()
+return 0
+}
