@@ -7,6 +7,8 @@ use std::collections::{HashMap, HashSet};
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
 use crate::ownership_model::{CopyPermission, ModelError, ValueSlot};
+use crate::ownership_ledger::DeclarationId;
+use crate::borrow_safety::{BorrowKind, BorrowSafety};
 use crate::source::Source;
 use crate::struct_ownership::{self, MoveTarget, SelfAction};
 
@@ -60,6 +62,10 @@ enum TermKind {
     Construct(String, Vec<(String, Term)>),
     Move(String),
     FieldMove(String, String),
+    /// 只讀欄位值的複製；需另外通過已初始化與 HA13/S19 Copyable 檢查。
+    FieldRead(String, String),
+    /// S16 已核准的 instance.method() 零參數子集；此處不推定其他簽章。
+    MethodCall(String, String),
 }
 
 struct Parser<'a> {
@@ -193,8 +199,14 @@ impl Parser<'_> {
                         self.take(')', "欄位移動呼叫缺少右括號")?;
                         (TermKind::FieldMove(s, field_or_move),
                             self.tokens[self.cursor - 1].end)
+                    } else if self.symbol('(') {
+                        self.cursor += 1;
+                        self.take(')', "此受限子集方法呼叫只接受空引數列表")?;
+                        (TermKind::MethodCall(s, field_or_move),
+                            self.tokens[self.cursor - 1].end)
                     } else {
-                        return Err(self.syntax("此子集尚不接受一般欄位讀取或方法呼叫"));
+                        (TermKind::FieldRead(s, field_or_move),
+                            self.tokens[self.cursor - 1].end)
                     }
                 } else {
                     (TermKind::Name(s), end)
@@ -407,6 +419,39 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
     }
 
+    /// 這裡僅核准完全唯讀且可靜態證明安全的 self 方法子集。
+    fn check_readonly_method(&self, owner: &str, method: &Function)
+        -> Result<(), Diagnostic> {
+        self.reject_method_statements(&method.body)?;
+        if method.body.len() != 1 {
+            return Err(Diagnostic {kind: DiagnosticKind::Static,
+                message: "目前只能驗證單一 return 的唯讀 self 方法".into(), span: None});
+        }
+        let StmtKind::Return(term) = &method.body[0].kind else {
+            return Err(Diagnostic {kind: DiagnosticKind::Static,
+                message: "唯讀 self 方法必須只有 return".into(), span: None});
+        };
+        let actual = match &term.kind {
+            TermKind::Literal(ty) => *ty,
+            TermKind::FieldRead(receiver, name) if receiver == "self" => {
+                let field = self.structs.get(owner)
+                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
+                    .ok_or_else(|| self.error("self 欄位不存在", term))?;
+                if self.permission(&field.ty) != CopyPermission::Allowed {
+                    return Err(self.error(
+                        "self 欄位 Copyable 能力未核准，不能從共享借用複製回傳", term));
+                }
+                field.ty.as_str()
+            }
+            _ => return Err(self.error(
+                "此階段方法只支援唯讀 self.欄位或常值回傳，其他借用尚未驗證", term)),
+        };
+        if actual != method.result_ty {
+            return Err(self.error("方法回傳型別與已驗證運算式不一致", term));
+        }
+        Ok(())
+    }
+
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
@@ -425,6 +470,41 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     .ok_or_else(|| self.error("找不到可移動的具名來源", term))?;
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
+            }
+            TermKind::FieldRead(owner, name) => {
+                if owner == "self" {
+                    return Err(self.error("只有方法內才能讀取 self 欄位", term));
+                }
+                let bound = Self::lookup(vars, owner)
+                    .ok_or_else(|| self.error("找不到欄位來源宣告", term))?;
+                bound.value.read().map_err(|err| self.model_error(err, term))?;
+                let field = self.structs.get(&bound.ty)
+                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
+                    .ok_or_else(|| self.error("來源不是具有此欄位的結構", term))?;
+                if self.permission(&field.ty) != CopyPermission::Allowed {
+                    return Err(self.error("欄位 Copyable 能力尚未核准，不可直接複製", term));
+                }
+                Ok((field.ty.clone(), true))
+            }
+            TermKind::MethodCall(receiver, name) => {
+                if receiver == "self" {
+                    return Err(self.error("重入 self 方法的借用安全尚未驗證", term));
+                }
+                let bound = Self::lookup(vars, receiver)
+                    .ok_or_else(|| self.error("找不到方法接收者來源", term))?;
+                bound.value.read().map_err(|err| self.model_error(err, term))?;
+                let method = self.structs.get(&bound.ty)
+                    .and_then(|def| def.methods.iter().find(|m| m.name == *name))
+                    .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
+                self.check_readonly_method(&bound.ty, method)?;
+                let mut loans = BorrowSafety::new();
+                let loan = loans.acquire(DeclarationId(bound.declaration_start),
+                    BorrowKind::SharedRead)
+                    .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
+                // 唯讀無重入子集，不進行來源操作；方法結束後歸還 self 借用。
+                loans.finish_scope(&[loan])
+                    .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
+                Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
@@ -671,7 +751,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
         self.check_default_constructor_cycles()?;
-        for definition in self.structs.values() {
+        for (struct_name, definition) in self.structs.iter() {
             for field in &definition.fields {
                 if !["int", "bool", "float", "str"].contains(&field.ty.as_str())
                     && !self.structs.contains_key(&field.ty) {
@@ -691,14 +771,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = field.immutable;
             }
             for method in &definition.methods {
-                self.reject_method_statements(&method.body)?;
-                // 方法借用與型別關聯仍待 P09-F02／P14 完整安全證明。
-                // 僅辨識並精準拒絕明確違規；對其他方法依然 fail-closed。
-                return Err(Diagnostic {
-                    kind: DiagnosticKind::Static,
-                    message: "含方法的 struct 尚待完整方法借用與名稱／型別檢查".into(),
-                    span: None,
-                });
+                self.check_readonly_method(struct_name, method)?;
             }
         }
         if !funcs.iter().any(|fun| fun.name == "main" && fun.result_ty == "int") {
@@ -893,6 +966,70 @@ mod tests {
 
 
 
+
+#[cfg(test)]
+mod readonly_self_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准_copyable_欄位可藉共享唯讀_self_方法複製() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+        assert!(inspect(CODE).is_ok());
+    }
+
+    #[test]
+    fn self_唯讀借用於方法結束後歸還_仍可明確整筆移動() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+        let invalid = CODE.replace("return copied", "var double:Counter = source.move()\nreturn copied");
+        assert!(inspect(&invalid).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn 尚未核准_copyable_的_self_欄位不得從借用偷複製() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/未知欄位複製能力的唯讀方法.voil");
+        let error = inspect(CODE).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn 方法呼叫者在移動後不可再被借用() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/移動後不可呼叫唯讀方法.voil");
+        assert!(inspect(CODE).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn 尚未初始化的結構不可從方法讀取欄位() {
+        const CODE: &str =
+            include_str!("../tests/fixtures/p13_stage/未初始化欄位不可呼叫方法.voil");
+        assert!(inspect(CODE).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn 方法只能讀取合法_self_欄位_回傳型別不符必須拒絕() {
+        let wrong = "struct A{\nvar value:int = 1\nfn read()->bool{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(wrong).unwrap_err().message.contains("回傳型別"));
+        let missing = wrong.replace("->bool", "->int").replace("self.value", "self.missing");
+        assert!(inspect(&missing).unwrap_err().message.contains("不存在"));
+        let owner = wrong.replace("->bool", "->A").replace("self.value", "self");
+        assert!(inspect(&owner).unwrap_err().message.contains("其他借用"));
+    }
+
+    #[test]
+    fn 未驗證方法寫入及跨作用域語意維持保守拒絕() {
+        let write = "struct A{\nvar value:int = 1\nfn change()->int{\nself.value = 2\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(write).is_err());
+        let calls_self = "struct A{\nvar value:int = 1\nfn read()->int{\nreturn self.other()\n}\nfn other()->int{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(calls_self).is_err());
+    }
+}
+
 #[cfg(test)]
 mod default_constructor_cycle_tests {
     use super::inspect;
@@ -963,10 +1100,10 @@ mod method_safety_tests {
 
     #[test]
     fn 無違規的合法借用方法仍不可在未驗證安全前誤收() {
-        let code = "struct Sample{\nvar x:int = 1\nfn value()->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let code = "struct Sample{\nvar x:int = 1\nfn value()->int{\nvar temp:int = 1\nreturn temp\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("方法借用"));
+        assert!(error.message.contains("唯讀 self 方法"));
     }
 }
 

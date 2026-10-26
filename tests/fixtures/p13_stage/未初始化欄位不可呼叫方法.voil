@@ -1,0 +1,10 @@
+struct Box{
+var n:int
+fn get()->int{
+return self.n
+}
+}
+fn main()->int{
+var source:Box = Box()
+return source.get()
+}

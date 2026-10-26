@@ -1,0 +1,14 @@
+struct Counter{
+var number:int = 1
+const ready:bool = true
+fn get()->int{
+return self.number
+}
+}
+fn main()->int{
+var source:Counter = Counter()
+var copied:int = source.get()
+var again:int = source.number
+var moved:Counter = source.move()
+return copied
+}
