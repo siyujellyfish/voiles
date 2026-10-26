@@ -1,0 +1,4 @@
+struct Sample{
+var number:int
+const flag:bool = true
+}
