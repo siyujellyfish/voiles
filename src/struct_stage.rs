@@ -113,16 +113,39 @@ impl Parser<'_> {
         self.lines();
         Ok(())
     }
+    /// 和 MVP-A i64 有效整數字面值規則一致；底線只作分隔，
+    /// 範圍溢位在靜態前端拒絕，不移交未知執行時處理。
+    fn valid_integer(literal: &str) -> bool {
+        let (radix, digits) = if let Some(rest) = literal.strip_prefix("0x") {
+            (16, rest)
+        } else if let Some(rest) = literal.strip_prefix("0b") {
+            (2, rest)
+        } else if let Some(rest) = literal.strip_prefix("0o") {
+            (8, rest)
+        } else {
+            (10, literal)
+        };
+        let normalized: String = digits.chars().filter(|c| *c != '_').collect();
+        !normalized.is_empty()
+            && normalized.chars().all(|c| c.to_digit(radix).is_some())
+            && u128::from_str_radix(&normalized, radix)
+                .map(|value| value <= i64::MAX as u128)
+                .unwrap_or(false)
+    }
     fn term(&mut self) -> Result<Term, Diagnostic> {
         let start = self.tok().start;
         let (kind, mut end) = match self.tok().kind.clone() {
-            TokenKind::Integer(_) => {
+            TokenKind::Integer(text) => {
+                if !Self::valid_integer(&text) {
+                    return Err(self.syntax("整數字面值無效或超出有號 64 位元範圍"));
+                }
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("int"), end)
             }
             TokenKind::Decimal(_) => {
-                let end = self.tok().end; self.cursor += 1;
-                (TermKind::Literal("float"), end)
+                return Err(self.syntax(
+                    "此 P13 受限檢查尚未完成 decimal64 字面值合法性驗證"
+                ));
             }
             TokenKind::StringLiteral(_) => {
                 let end = self.tok().end; self.cursor += 1;
