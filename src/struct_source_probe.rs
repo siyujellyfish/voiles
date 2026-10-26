@@ -220,4 +220,26 @@ mod tests {
             assert!(inspect_struct_copy(invalid, |_| Allowed).is_err());
         }
     }
+    #[test]
+    fn 獨立_voil_實體素材要由真正詞彙和結構分析處理() {
+        const GOOD: &str = include_str!("../tests/fixtures/p13_struct_probe/雙欄位.voil");
+        const BAD: &[&str] = &[
+            include_str!("../tests/fixtures/p13_struct_probe/重複欄位.voil"),
+            include_str!("../tests/fixtures/p13_struct_probe/禁止_share_欄位.voil"),
+            include_str!("../tests/fixtures/p13_struct_probe/const_缺少初值.voil"),
+        ];
+        assert!(inspect_struct_copy(GOOD, |name| match name {
+            "int" | "bool" => Allowed, _ => Undecided,
+        }).is_ok());
+        for source in BAD {
+            assert!(inspect_struct_copy(source, |_| Allowed).is_err());
+        }
+    }
+
+    #[test]
+    fn 具型別標註的初值不得放行錯誤字面型別() {
+        assert!(inspect_struct_copy("struct S{\nconst x:int = false\n}\n",
+            |_| Allowed).is_err());
+    }
+
 }
