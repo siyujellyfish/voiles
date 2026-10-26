@@ -532,7 +532,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     .ok_or_else(|| self.error("self 欄位不存在", return_value))?;
                 if self.permission(&target.ty) != CopyPermission::Allowed {
                     return Err(self.error(
-                        "self 欄位 Copyable 能力未核准，不能從借用回傳複製值",
+                        "P13：self 欄位 Copyable 能力未核准，不可借用回傳；留待 P15 有效期與逃逸驗證",
                         return_value));
                 }
                 target.ty.as_str()
