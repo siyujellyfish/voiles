@@ -59,22 +59,20 @@ impl StructParser<'_> {
         while matches!(self.token().kind, TokenKind::Newline) { self.cursor += 1; }
     }
 
-    fn initializer(&mut self) -> Result<(), Diagnostic> {
-        // 私有最小探針僅接受單一字面值；完整合法初值會由後續 AST 處理。
-        if matches!(&self.token().kind,
-            TokenKind::Integer(_) | TokenKind::Decimal(_) |
-            TokenKind::StringLiteral(_) | TokenKind::Keyword(_))
-        {
-            if let TokenKind::Keyword(keyword) = &self.token().kind {
-                if keyword != "true" && keyword != "false" && keyword != "none" {
-                    return Err(self.error("結構初值試驗尚不支援這種運算式"));
-                }
-            }
-            self.cursor += 1;
-            Ok(())
-        } else {
-            Err(self.error("結構初值試驗僅接受單一字面值"))
+    fn initializer(&mut self, ty: &str) -> Result<(), Diagnostic> {
+        // 只接受可靜態確認型別相同的單一字面值；不暗中放行無效初值。
+        let valid = match &self.token().kind {
+            TokenKind::Integer(_) => ty == "int",
+            TokenKind::Decimal(_) => ty == "float",
+            TokenKind::StringLiteral(_) => ty == "str",
+            TokenKind::Keyword(value) if value == "true" || value == "false" => ty == "bool",
+            _ => false,
+        };
+        if !valid {
+            return Err(self.error("結構初值試驗僅接受與標註型別相同的單一字面值"));
         }
+        self.cursor += 1;
+        Ok(())
     }
 
     fn parse(mut self) -> Result<Vec<String>, Diagnostic> {
@@ -118,7 +116,7 @@ impl StructParser<'_> {
             let ty = self.name()?;
             if self.is_symbol('=') {
                 self.cursor += 1;
-                self.initializer()?;
+                self.initializer(&ty)?;
             } else if immutable {
                 return Err(self.error("const 結構欄位必須在宣告時提供預設值"));
             }
