@@ -12,6 +12,7 @@ mod types;
 mod flow;
 mod functions;
 mod ownership_model;
+mod ownership_policy;
 mod ownership_ledger;
 mod ownership_probe;
 mod struct_ownership;

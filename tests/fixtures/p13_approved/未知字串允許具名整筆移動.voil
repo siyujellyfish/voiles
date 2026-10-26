@@ -1,0 +1,8 @@
+struct Note{
+const value:str = "ok"
+}
+fn main()->int{
+var a:Note = Note()
+var b:Note = a.move()
+return 0
+}

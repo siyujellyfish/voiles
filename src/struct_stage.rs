@@ -601,7 +601,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 }
 
 /// 成功僅代表完整檢查了這個明確受限的 P13 子集，不代表 P13 Phase 已通過。
-pub(crate) fn inspect(text: &str, ability: impl Fn(&str) -> CopyPermission)
+fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<(), Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
     if let Some(error) = source.lexical_diagnostics().into_iter().next() { return Err(error); }
@@ -609,6 +609,22 @@ pub(crate) fn inspect(text: &str, ability: impl Fn(&str) -> CopyPermission)
     if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
     let (structs, funcs) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
     Checker { source: &source, structs: &structs, ability }.all(&funcs)
+}
+
+/** P13 已核准 HA13-A/HB13-A 的真實來源受限靜態入口。
+ * 目前僅內部使用；若有尚未實作的語意，仍必須保守拒絕。
+ * 外部無法傳入臨時型別權限覆寫已核准 Copyable 政策。
+ */
+pub(crate) fn inspect(text: &str) -> Result<(), Diagnostic> {
+    inspect_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
+}
+
+/// 歷史測試保留假設能力注入，僅用於驗證 S19 合取及未知能力；
+/// 正式核准入口一律使用上方 inspect，不接受外部能力覆寫。
+#[cfg(test)]
+fn inspect_with_test_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
+    -> Result<(), Diagnostic> {
+    inspect_with_ability(text, ability)
 }
 
 #[cfg(test)]
@@ -620,9 +636,9 @@ mod tests {
 
     #[test]
     fn 真正_struct_ast_具名整筆移動_來源失效() {
-        assert!(inspect(BASE, |_| Allowed).is_ok());
+        assert!(inspect_with_test_ability(BASE, |_| Allowed).is_ok());
         let invalid = BASE.replace("return 0", "var c:Sample = a\nreturn 0");
-        let err = inspect(&invalid, |_| Allowed).unwrap_err();
+        let err = inspect_with_test_ability(&invalid, |_| Allowed).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("移動"));
     }
@@ -630,50 +646,50 @@ mod tests {
     #[test]
     fn 真正_struct_ast_整體複製資格由欄位逐一核對() {
         let source = BASE.replace("a.move()", "a");
-        assert!(inspect(&source, |_| Allowed).is_ok());
+        assert!(inspect_with_test_ability(&source, |_| Allowed).is_ok());
         for cap in [Forbidden, Undecided] {
-            let err = inspect(&source, |name| if name == "bool" { cap } else { Allowed })
+            let err = inspect_with_test_ability(&source, |name| if name == "bool" { cap } else { Allowed })
                 .unwrap_err();
             assert_eq!(err.kind, DiagnosticKind::Static);
             assert!(err.message.contains("複製") || err.message.contains("Copyable"));
         }
         // 即使複製資格未定，明確整筆移動亦不等於隱含複製。
-        assert!(inspect(BASE, |_| Undecided).is_ok());
+        assert!(inspect_with_test_ability(BASE, |_| Undecided).is_ok());
     }
 
     #[test]
     fn 真正_struct_ast_移動來源重新初始化後可再用() {
         let source = BASE.replace("return 0", "a = Sample()\nvar c:Sample = a.move()\nreturn 0");
-        assert!(inspect(&source, |_| Undecided).is_ok());
+        assert!(inspect_with_test_ability(&source, |_| Undecided).is_ok());
     }
 
     #[test]
     fn 真正_struct_ast_拒絕欄位移動與方法消耗_self() {
         let bad_field = BASE.replace("a.move()", "a.number.move()");
-        assert!(inspect(&bad_field, |_| Allowed).unwrap_err().message.contains("S21"));
+        assert!(inspect_with_test_ability(&bad_field, |_| Allowed).unwrap_err().message.contains("S21"));
         let bad_method = "struct S{\nvar n:int = 1\nfn consume()->int{\nreturn self.move()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        assert!(inspect(bad_method, |_| Allowed).unwrap_err().message.contains("S15"));
+        assert!(inspect_with_test_ability(bad_method, |_| Allowed).unwrap_err().message.contains("S15"));
     }
 
     #[test]
     fn 真正_struct_ast_缺失欄位初始化不能假裝資源完整() {
         let source = "struct S{\nvar missing:int\nconst flag:bool = true\n}\nfn main()->int{\nvar a:S = S()\nvar b:S = a.move()\nreturn 0\n}\n";
-        assert!(inspect(source, |_| Allowed).is_err());
+        assert!(inspect_with_test_ability(source, |_| Allowed).is_err());
     }
 
     #[test]
     fn 真正_struct_ast_建立式具名欄位及型別() {
         let source = BASE.replace("Sample()", "Sample(number=3,flag=false,)");
-        assert!(inspect(&source, |_| Allowed).is_ok());
+        assert!(inspect_with_test_ability(&source, |_| Allowed).is_ok());
         for bad in ["Sample(extra=1)", "Sample(number=false)", "Sample(number=1,number=2)"] {
-            assert!(inspect(&BASE.replace("Sample()", bad), |_| Allowed).is_err());
+            assert!(inspect_with_test_ability(&BASE.replace("Sample()", bad), |_| Allowed).is_err());
         }
     }
 
     #[test]
     fn 不得把限制外的控制流程直接當成已驗證() {
         let source = BASE.replace("return 0", "while (true){\nreturn 0\n}\nreturn 0");
-        assert!(inspect(&source, |_| Allowed).is_err());
+        assert!(inspect_with_test_ability(&source, |_| Allowed).is_err());
     }
     #[test]
     fn 實體_voil_素材須由完整受限_ast_及型別所有權檢查處理() {
@@ -686,28 +702,28 @@ mod tests {
             include_str!("../tests/fixtures/p13_stage/禁止欄位移動.voil"),
         ];
         for source in GOOD {
-            assert!(inspect(source, |_| Undecided).is_ok(), "合法整筆移動案例");
+            assert!(inspect_with_test_ability(source, |_| Undecided).is_ok(), "合法整筆移動案例");
         }
         for source in BAD {
-            let error = inspect(source, |_| Allowed).unwrap_err();
+            let error = inspect_with_test_ability(source, |_| Allowed).unwrap_err();
             assert_eq!(error.kind, DiagnosticKind::Static);
         }
         const UNKNOWN_COPY: &str =
             include_str!("../tests/fixtures/p13_stage/未知複製資格.voil");
-        assert!(inspect(UNKNOWN_COPY, |_| Undecided).is_err());
-        assert!(inspect(UNKNOWN_COPY, |_| Allowed).is_ok());
+        assert!(inspect_with_test_ability(UNKNOWN_COPY, |_| Undecided).is_err());
+        assert!(inspect_with_test_ability(UNKNOWN_COPY, |_| Allowed).is_ok());
     }
 
     #[test]
     fn 不存在的結構欄位型別不得由假設能力誤認() {
         let src = "struct Sample{\nvar mystery:Unknown\n}\nfn main()->int{\nreturn 0\n}\n";
-        assert!(inspect(src, |_| Allowed).is_err());
+        assert!(inspect_with_test_ability(src, |_| Allowed).is_err());
     }
 
     #[test]
     fn 真正結構來源_單分支移動合流後必須拒絕() {
         let text = include_str!("../tests/fixtures/p13_stage/單分支移動後讀取.voil");
-        let error = inspect(text, |_| Allowed).unwrap_err();
+        let error = inspect_with_test_ability(text, |_| Allowed).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("可能") || error.message.contains("無效"));
     }
@@ -715,20 +731,20 @@ mod tests {
     #[test]
     fn 真正結構來源_雙分支重新初始化合流後可合法移動() {
         let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil");
-        assert!(inspect(text, |_| Undecided).is_ok());
+        assert!(inspect_with_test_ability(text, |_| Undecided).is_ok());
     }
 
     #[test]
     fn 真正結構來源_已提前_return_分支不得污染可達路徑() {
         let text = include_str!("../tests/fixtures/p13_stage/提前回傳分支.voil");
-        assert!(inspect(text, |_| Undecided).is_ok());
+        assert!(inspect_with_test_ability(text, |_| Undecided).is_ok());
     }
 
     #[test]
     fn 分支區域內宣告不得外洩到外層() {
         let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil")
             .replace("var d:Sample = a.move()", "var d:Sample = b");
-        assert!(inspect(&text, |_| Allowed).is_err());
+        assert!(inspect_with_test_ability(&text, |_| Allowed).is_err());
     }
 
     #[test]
@@ -742,7 +758,7 @@ mod tests {
         ] {
             let source = BASE.replace("var number:int = 1",
                 &format!("var number:int = {value}"));
-            assert!(inspect(&source, |_| Allowed).is_err(),
+            assert!(inspect_with_test_ability(&source, |_| Allowed).is_err(),
                 "應拒絕不合法或超出 int64 上限的字面值：{value}");
         }
     }
@@ -752,14 +768,73 @@ mod tests {
         for value in ["9223372036854775807", "0x7fff_ffff_ffff_ffff", "0b101010", "0o777"] {
             let source = BASE.replace("var number:int = 1",
                 &format!("var number:int = {value}"));
-            assert!(inspect(&source, |_| Undecided).is_ok());
+            assert!(inspect_with_test_ability(&source, |_| Undecided).is_ok());
         }
     }
 
     #[test]
     fn 尚未支援的浮點字面值不能繞過型別安全檢查() {
         let source = BASE.replace("var number:int = 1", "var number:float = 1.25");
-        assert!(inspect(&source, |_| Allowed).is_err());
+        assert!(inspect_with_test_ability(&source, |_| Allowed).is_err());
     }
 
+}
+
+#[cfg(test)]
+mod approved_policy_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn ha13_核准_int_bool_且所有欄位可複製的_struct_可獨立複製() {
+        const SOURCE: &str =
+            include_str!("../tests/fixtures/p13_approved/整體自動複製.voil");
+        assert!(inspect(SOURCE).is_ok());
+    }
+
+    #[test]
+    fn ha13_str_資格未決_及含_str_欄位的_struct_都不可隱含複製() {
+        const SOURCE: &str =
+            include_str!("../tests/fixtures/p13_approved/未知字串資格拒絕複製.voil");
+        let error = inspect(SOURCE).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+        let simple = "fn main()->int{\nvar s:str = \"ok\"\nvar t:str = s\nreturn 0\n}\n";
+        assert!(inspect(simple).unwrap_err().message.contains("Copyable"));
+    }
+
+    #[test]
+    fn hb13_未知複製資格不應擋住明確的整筆具名移動() {
+        const SOURCE: &str =
+            include_str!("../tests/fixtures/p13_approved/未知字串允許具名整筆移動.voil");
+        assert!(inspect(SOURCE).is_ok());
+        let double_move = SOURCE.replace("return 0", "var c:Note = a.move()\nreturn 0");
+        assert!(inspect(&double_move).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn hb13_不允許單欄位_未綁定來源或方法消耗_self() {
+        const FIELD: &str =
+            include_str!("../tests/fixtures/p13_approved/禁止欄位單獨移動.voil");
+        assert!(inspect(FIELD).unwrap_err().message.contains("S21"));
+        let missing = "fn main()->int{\nvar b:int = not_declared.move()\nreturn 0\n}\n";
+        assert!(inspect(missing).unwrap_err().message.contains("找不到"));
+        let method = "struct Pair{\nvar value:int = 1\nfn take()->int{\nreturn self.move()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(method).unwrap_err().message.contains("S15"));
+    }
+
+    #[test]
+    fn hb13_移動後必須重新初始化才允許再次使用() {
+        let source = "fn main()->int{\nvar a:int = 1\nvar b:int = a.move()\na = 2\nreturn a\n}\n";
+        assert!(inspect(source).is_ok());
+        let invalid = source.replace("a = 2\n", "");
+        assert!(inspect(&invalid).unwrap_err().message.contains("已移動"));
+    }
+
+    #[test]
+    fn mvp_a_公開解析器仍禁止_move_語法() {
+        let source = crate::source::Source::new(b"fn main()->int{\nvar a:int = 1\nreturn a.move()\n}\n".to_vec());
+        let lexed = crate::lexer::scan(&source);
+        assert!(crate::parser::parse(&source, &lexed.tokens).is_err());
+    }
 }
