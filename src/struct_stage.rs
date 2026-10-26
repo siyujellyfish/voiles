@@ -1439,3 +1439,43 @@ mod conditional_self_inference_tests {
         assert!(inspect(&unknown).is_err());
     }
 }
+
+#[cfg(test)]
+mod copyable_self_field_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准可複製的_self_欄位可作方法獨占寫入來源() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn 未決_str_複製能力仍不可在方法裡隱含複製() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法不可複製未知欄位.voil");
+        let err = inspect(code).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn 已核准可複製來源若型別不一致亦不可寫入() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法來源欄位錯誤型別.voil");
+        assert!(inspect(code).unwrap_err().message.contains("型別"));
+    }
+
+    #[test]
+    fn 不存在或非法_self_欄位不能假借複製模式跳過解析() {
+        let code = include_str!("../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
+        let invalid = code.replace("self.left = self.right", "self.left = self.missing");
+        assert!(inspect(&invalid).unwrap_err().message.contains("不存在"));
+    }
+
+    #[test]
+    fn s19_結構欄位若全可複製仍能整體複製作為_欄位_來源() {
+        let src = "struct Leaf{\nvar n:int = 1\n}\nstruct Box{\nvar a:Leaf = Leaf()\nvar b:Leaf = Leaf()\nfn copy()->int{\nself.a = self.b\nreturn 0\n}\n}\nfn main()->int{\nvar box:Box = Box()\nreturn box.copy()\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
