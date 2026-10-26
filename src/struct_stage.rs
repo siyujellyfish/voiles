@@ -1700,3 +1700,53 @@ mod str_noncopyable_policy_tests {
         assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
     }
 }
+
+#[cfg(test)]
+mod str_ownership_branch_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 非copyable字串雙分支皆重新初始化可再次整筆移動() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn 非copyable字串只有一條路徑移動合流後必須拒絕() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串單分支移動合流後不得使用.voil");
+        let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("可能"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn 已提前回傳的字串移動路徑不污染後續可達路徑() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串提前回傳後合流可合法移動.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn 分支內遮蔽的字串所有權不得混入外層來源() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串遮蔽來源移動不影響外層.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn 字串在重新初始化前仍不得隱含複製且禁止讀取已移動來源() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
+        let illegal = source.replace(
+            "original = \"true\"", "var illegal:str = original");
+        assert!(inspect(&illegal).unwrap_err().message.contains("已移動"));
+        let illegal_copy = source.replace(
+            "var last:str = original.move()", "var last:str = original");
+        assert!(inspect(&illegal_copy).unwrap_err()
+            .message.contains("Copyable 已明確禁止"));
+    }
+}
