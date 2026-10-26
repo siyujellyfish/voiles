@@ -1946,3 +1946,68 @@ mod conservative_decimal64_tests {
         assert!(inspect(bad).unwrap_err().message.contains("型別"));
     }
 }
+
+#[cfg(test)]
+mod p13_d02_const_partial_safety_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    fn partial() -> &'static str {
+        include_str!("../tests/fixtures/p13_stage/D02_const結構允許保留未初始化var欄位.voil")
+    }
+
+    #[test]
+    fn d02_a_const_實例可以建立但不能誤判var欄位全部初始化() {
+        assert!(inspect(partial()).is_ok());
+    }
+
+    #[test]
+    fn d02_a_const_來源未完整初始化禁止欄位讀取() {
+        let bad = partial().replace("return 0", "var copy:int = item.value\nreturn 0");
+        let err = inspect(&bad).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("初始化"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn d02_a_const_來源未完整初始化即使全部欄位copyable也禁止隱含複製() {
+        let bad = partial().replace("return 0", "var duplicate:Sample = item\nreturn 0");
+        assert!(inspect(&bad).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn d02_a_const_來源未完整初始化禁止整筆_move() {
+        let bad = partial().replace("return 0", "var moved:Sample = item.move()\nreturn 0");
+        assert!(inspect(&bad).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn d02_a_const_來源未完整初始化禁止方法借用讀取() {
+        let bad = include_str!("../tests/fixtures/p13_stage/D02_const結構未初始化欄位不得藉方法使用.voil");
+        assert!(inspect(bad).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn d02_a_const_來源不得透過賦值或欄位寫入補足初始化() {
+        let reassignment = partial().replace("return 0", "item = Sample(value=9)\nreturn 0");
+        assert!(inspect(&reassignment).unwrap_err().message.contains("const"));
+        let field_write = partial().replace("return 0", "item.value = 9\nreturn 0");
+        assert!(inspect(&field_write).unwrap_err().message.contains("所有權與別名"));
+    }
+
+    #[test]
+    fn d02_a_已完整初始化的_const_結構仍可安全複製讀取及使用唯讀方法() {
+        let positive =
+            include_str!("../tests/fixtures/p13_stage/D02_const結構完整初始化允許安全使用.voil");
+        assert!(inspect(positive).is_ok());
+    }
+
+    #[test]
+    fn d02_a_const_須有建立式且const欄位仍須提供預設值() {
+        let no_init = partial().replace("const item:Sample = Sample()", "const item:Sample");
+        assert!(inspect(&no_init).unwrap_err().message.contains("const"));
+        let no_default = partial().replace("const ready:bool = true", "const ready:bool");
+        assert!(inspect(&no_default).unwrap_err().message.contains("const"));
+    }
+}
