@@ -113,16 +113,39 @@ impl Parser<'_> {
         self.lines();
         Ok(())
     }
+    /// 和 MVP-A i64 有效整數字面值規則一致；底線只作分隔，
+    /// 範圍溢位在靜態前端拒絕，不移交未知執行時處理。
+    fn valid_integer(literal: &str) -> bool {
+        let (radix, digits) = if let Some(rest) = literal.strip_prefix("0x") {
+            (16, rest)
+        } else if let Some(rest) = literal.strip_prefix("0b") {
+            (2, rest)
+        } else if let Some(rest) = literal.strip_prefix("0o") {
+            (8, rest)
+        } else {
+            (10, literal)
+        };
+        let normalized: String = digits.chars().filter(|c| *c != '_').collect();
+        !normalized.is_empty()
+            && normalized.chars().all(|c| c.to_digit(radix).is_some())
+            && u128::from_str_radix(&normalized, radix)
+                .map(|value| value <= i64::MAX as u128)
+                .unwrap_or(false)
+    }
     fn term(&mut self) -> Result<Term, Diagnostic> {
         let start = self.tok().start;
         let (kind, mut end) = match self.tok().kind.clone() {
-            TokenKind::Integer(_) => {
+            TokenKind::Integer(text) => {
+                if !Self::valid_integer(&text) {
+                    return Err(self.syntax("整數字面值無效或超出有號 64 位元範圍"));
+                }
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("int"), end)
             }
             TokenKind::Decimal(_) => {
-                let end = self.tok().end; self.cursor += 1;
-                (TermKind::Literal("float"), end)
+                return Err(self.syntax(
+                    "此 P13 受限檢查尚未完成 decimal64 字面值合法性驗證"
+                ));
             }
             TokenKind::StringLiteral(_) => {
                 let end = self.tok().end; self.cursor += 1;
@@ -706,6 +729,37 @@ mod tests {
         let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil")
             .replace("var d:Sample = a.move()", "var d:Sample = b");
         assert!(inspect(&text, |_| Allowed).is_err());
+    }
+
+    #[test]
+    fn 整數來源_非法進位與溢位均不得進入結構初始化() {
+        for value in [
+            "9223372036854775808",
+            "18446744073709551616",
+            "0x8000000000000000",
+            "0b",
+            "0o",
+        ] {
+            let source = BASE.replace("var number:int = 1",
+                &format!("var number:int = {value}"));
+            assert!(inspect(&source, |_| Allowed).is_err(),
+                "應拒絕不合法或超出 int64 上限的字面值：{value}");
+        }
+    }
+
+    #[test]
+    fn 整數來源_上限及合法多進位字面值仍可使用() {
+        for value in ["9223372036854775807", "0x7fff_ffff_ffff_ffff", "0b101010", "0o777"] {
+            let source = BASE.replace("var number:int = 1",
+                &format!("var number:int = {value}"));
+            assert!(inspect(&source, |_| Undecided).is_ok());
+        }
+    }
+
+    #[test]
+    fn 尚未支援的浮點字面值不能繞過型別安全檢查() {
+        let source = BASE.replace("var number:int = 1", "var number:float = 1.25");
+        assert!(inspect(&source, |_| Allowed).is_err());
     }
 
 }
