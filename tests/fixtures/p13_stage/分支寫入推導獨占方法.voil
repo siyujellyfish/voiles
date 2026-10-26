@@ -1,0 +1,16 @@
+struct Counter{
+var value:int = 1
+const active:bool = true
+fn update()->int{
+if (self.active){
+self.value = 2
+}else{
+self.value = 3
+}
+return self.value
+}
+}
+fn main()->int{
+var counter:Counter = Counter()
+return counter.update()
+}
