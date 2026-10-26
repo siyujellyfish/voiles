@@ -1,0 +1,10 @@
+struct Leaf{
+var value:int = 1
+}
+struct Root{
+var leaf:Leaf = Leaf()
+}
+fn main()->int{
+var root:Root = Root()
+return 0
+}

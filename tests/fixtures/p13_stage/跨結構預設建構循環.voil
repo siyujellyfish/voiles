@@ -1,0 +1,9 @@
+struct A{
+var child:B = B()
+}
+struct B{
+var parent:A = A()
+}
+fn main()->int{
+return 0
+}

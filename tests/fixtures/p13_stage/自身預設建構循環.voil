@@ -1,0 +1,6 @@
+struct Node{
+var next:Node = Node()
+}
+fn main()->int{
+return 0
+}
