@@ -1633,3 +1633,70 @@ mod nested_default_initialization_tests {
         assert!(inspect(src).unwrap_err().message.contains("未初始化"));
     }
 }
+
+#[cfg(test)]
+mod str_noncopyable_policy_tests {
+    use super::inspect;
+    use crate::{DiagnosticKind, ownership_model::CopyPermission};
+    use crate::ownership_policy::approved_leaf_copy_permission;
+
+    #[test]
+    fn str_明確禁止名稱隱含複製並保留來源位置() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/禁止字串名稱隱含複製.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn str_具名整筆移動及重新初始化不需_copyable() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn str_移動後的原來源讀取必須失敗() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/移動字串後不能再次讀取.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("已移動"));
+    }
+
+    #[test]
+    fn s19_包含非copyable字串欄位的結構確定禁止隱含複製() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/包含字串欄位的結構禁止複製.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"));
+    }
+
+    #[test]
+    fn s19_包含字串欄位的結構仍可合法整筆移動() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn p13_禁止借用回傳已確定非copyable的字串欄位_不提前p15() {
+        let source =
+            include_str!("../tests/fixtures/p13_stage/禁止方法複製確定非Copyable字串欄位.voil");
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"));
+        assert!(error.message.contains("P15"));
+    }
+
+    #[test]
+    fn str_已禁止與float_未決仍保有不同能力結果() {
+        assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
+        assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Undecided);
+        assert_eq!(approved_leaf_copy_permission("int"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
+    }
+}
