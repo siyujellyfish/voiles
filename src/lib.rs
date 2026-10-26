@@ -165,6 +165,19 @@ mod p13_private_boundary_tests {
     }
 
     #[test]
+    fn d01_b_容器類別能力並不開放其語法() {
+        for (ty, suffix) in [("list[int]", "d01list"), ("dict{str,int}", "d01dict")] {
+            assert_eq!(ownership_policy::approved_leaf_copy_permission(ty),
+                ownership_model::CopyPermission::Undecided);
+            let program = format!("fn main()->int{{\nvar item:{ty}\nreturn 0\n}}\n");
+            assert!(struct_stage::inspect(&program).is_err());
+            let output = check_public_source(&program, suffix);
+            assert_eq!(output.status, CheckStatus::Failed);
+            assert!(output.diagnostics.iter().any(|d| d.kind == DiagnosticKind::Syntax));
+        }
+    }
+
+    #[test]
     fn 方案_b_真實結構安全子集仍只能在私有檢查器通過() {
         let source_text =
             include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
