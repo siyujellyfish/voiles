@@ -1,0 +1,8 @@
+fn main()->int{
+var original:str = "old"
+if (true){
+var moved:str = original.move()
+}
+var last:str = original.move()
+return 0
+}
