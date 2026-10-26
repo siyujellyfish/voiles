@@ -1,0 +1,12 @@
+struct Pair{
+var left:int = 1
+const flag:bool = true
+fn copy()->int{
+self.left = self.flag
+return self.left
+}
+}
+fn main()->int{
+var pair:Pair = Pair()
+return pair.copy()
+}
