@@ -21,7 +21,7 @@ if ./target/p13-accept/voiles tests/fixtures/voiles/P01-反08.voil >target/p13-a
 fi
 test ! -s target/p13-accept/negative.out
 grep -q "靜態錯誤" target/p13-accept/negative.err
-echo "【4/7】未核准 .move() 必須仍是 MVP-A 語法錯誤"
+echo "【4/7】方案 B：公開 MVP-A 不得接受私有 P13 struct／.move()"
 cat >target/p13-accept/move_not_supported.voil <<'VOILES'
 fn main()->int{
 var n:int = 1
@@ -32,6 +32,16 @@ if ./target/p13-accept/voiles target/p13-accept/move_not_supported.voil >target/
   echo "MVP-A 不應接受 .move()" >&2; exit 1
 fi
 grep -q "語法錯誤" target/p13-accept/move.err
+# 即使這份來源會由私有 struct_stage AST 通過，
+# 對外 CLI 仍應拒絕，避免私有試驗不經 P13 Phase 驗收即曝光。
+if ./target/p13-accept/voiles \
+  tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil \
+  >target/p13-accept/struct.out 2>target/p13-accept/struct.err; then
+  echo "方案 B：MVP-A 不應接受內部 P13 結構體語法" >&2
+  exit 1
+fi
+test ! -s target/p13-accept/struct.out
+grep -q "語法錯誤" target/p13-accept/struct.err
 echo "【5/7】Rust 核心與 P13 內部模型測試"
 rustup run stable rustc --edition=2021 --test --crate-name voiles_internal src/lib.rs -o target/p13-accept/internal_tests
 ./target/p13-accept/internal_tests
