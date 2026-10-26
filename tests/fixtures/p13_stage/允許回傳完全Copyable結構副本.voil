@@ -1,0 +1,16 @@
+struct Leaf{
+var n:int = 1
+const flag:bool = true
+}
+struct Outer{
+var child:Leaf = Leaf()
+fn get()->Leaf{
+return self.child
+}
+}
+fn main()->int{
+var outer:Outer = Outer()
+var one:Leaf = outer.get()
+var two:Leaf = outer.get()
+return 0
+}
