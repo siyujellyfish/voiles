@@ -115,3 +115,7 @@
 
 - PR [#84](https://github.com/siyujellyfish/voiles/pull/84) 最後 HEAD 的必要文件／Rust 建置／Rust 獨立測試均 `completed/success`，且在 `mergeable/clean` 後 Squash merge 至 main `d02880a0854028fa0dde8847eedcbfa7971b021b`。**P09.1～P09.6 已就 P01 核准的 MVP-A 名稱解析完成正式驗收**；詳見 [建構階段.md](建構階段.md) 第四十七節。
 - CI 實測：核心 43 passed、工程 5 passed、素材框架 1 passed，另外 49 個真正語意案例仍 ignored。**完整語言 P09-F01 Optional 旗標與 P09-F02 struct／模組仍未實作／未驗收**，P10～P30 尚未驗收；AR04 不變。
+
+## 二十二、P10 基本型別實作（2026-10-26）
+
+CA01～CA06 依使用者相容建議委任採用。新增 `src/types.rs`，實測 int/bool、函式回傳、宣告與賦值型別、if bool 與可確定 i64 溢位；詳見 [建構階段.md](建構階段.md) 第四十八節。**待最新 HEAD 必要與 Rust CI success 才能驗收**；P10-F01 Optional、P10-F02 struct 延伸仍未實作，P11～P30 未驗收。
