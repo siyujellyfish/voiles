@@ -7,10 +7,17 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind, Type};
 use crate::source::Source;
 
+/// 每筆變數宣告具有獨立的原始來源身分；名稱只是查找鍵。
+/// 不把同名遮蔽的內層變數誤當外層來源，亦不代表 Optional 旗標已實作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BindingId {
+    declaration_start: usize,
+}
+
 struct Resolver<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
-    globals: HashMap<String, usize>,
+    globals: HashMap<String, BindingId>,
 }
 
 impl<'a> Resolver<'a> {
@@ -22,18 +29,20 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn local_or_global(&self, name: &str, pos: usize,
-        scopes: &[HashMap<String, usize>]) -> bool {
+    /// 查找實際宣告身分，而非只回傳同名字串是否存在。
+    /// 函式前向參照由獨立函式表處理；一般頂層值仍遵守 AW04。
+    fn binding_for_reference(&self, name: &str, pos: usize,
+        scopes: &[HashMap<String, BindingId>]) -> Option<BindingId> {
         for scope in scopes.iter().rev() {
-            if scope.contains_key(name) { return true; }
+            if let Some(id) = scope.get(name) { return Some(*id); }
         }
-        self.globals.get(name).is_some_and(|global_start| *global_start < pos)
+        self.globals.get(name).copied().filter(|id| id.declaration_start < pos)
     }
 
-    fn check_expr(&self, e: &Expr, scopes: &[HashMap<String, usize>]) -> Result<(), Diagnostic> {
+    fn check_expr(&self, e: &Expr, scopes: &[HashMap<String, BindingId>]) -> Result<(), Diagnostic> {
         match &e.kind {
             ExprKind::Name(name) => {
-                if self.local_or_global(name, e.start, scopes) {
+                if self.binding_for_reference(name, e.start, scopes).is_some() {
                     Ok(())
                 } else {
                     Err(self.error("找不到已宣告且可讀取的具名變數", e.start, e.end))
@@ -59,7 +68,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn initializer(&self, b: &Binding,
-        scopes: &[HashMap<String, usize>]) -> Result<(), Diagnostic> {
+        scopes: &[HashMap<String, BindingId>]) -> Result<(), Diagnostic> {
         if let Some(value) = &b.initializer {
             self.check_expr(value, scopes)?;
         }
@@ -67,7 +76,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn block(&self, block: &Block,
-        scopes: &mut Vec<HashMap<String, usize>>) -> Result<(), Diagnostic> {
+        scopes: &mut Vec<HashMap<String, BindingId>>) -> Result<(), Diagnostic> {
         scopes.push(HashMap::new());
         for statement in &block.statements {
             match &statement.kind {
@@ -78,10 +87,10 @@ impl<'a> Resolver<'a> {
                     // 先檢查初始化來源，再加入當前作用域名稱。
                     // 不因同名宣告預設自己能讀取尚未建立的變數。
                     self.initializer(b, scopes)?;
-                    scopes.last_mut().unwrap().insert(b.name.clone(), b.start);
+                    scopes.last_mut().unwrap().insert(b.name.clone(), BindingId { declaration_start: b.start });
                 }
                 StmtKind::Assignment { name, value } => {
-                    if !self.local_or_global(name, statement.start, scopes) {
+                    if self.binding_for_reference(name, statement.start, scopes).is_none() {
                         return Err(self.error("賦值目標尚未宣告", statement.start, statement.end));
                     }
                     self.check_expr(value, scopes)?;
@@ -119,7 +128,7 @@ pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
                 }
             }
             Item::Binding(b) => {
-                if globals.insert(b.name.clone(), b.start).is_some() {
+                if globals.insert(b.name.clone(), BindingId { declaration_start: b.start }).is_some() {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
                         message: "頂層作用域重複宣告變數".into(),
@@ -149,8 +158,9 @@ pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve;
-    use crate::{lexer::scan, parser::parse, source::Source, DiagnosticKind};
+    use super::{resolve, BindingId, Resolver};
+    use std::collections::HashMap;
+    use crate::{lexer::scan, parser::{parse, Item, StmtKind}, source::Source, DiagnosticKind};
 
     fn resolve_text(text: &str) -> Result<(),crate::Diagnostic> {
         let source=Source::new(text.as_bytes().to_vec());
@@ -207,4 +217,62 @@ mod tests {
             "fn main()->int{\nvar n:int = 1\nif (true){\nvar n:int = 2\n}\nreturn n\n}\n"
         ).is_ok());
     }
+
+    #[test]
+    fn 同名變數維持各自宣告來源身分且內層退出恢復外層() {
+        let text = "fn main()->int{\nvar n:int = 1\nif (true){\nvar n:int = 2\n}\nreturn n\n}\n";
+        let source = Source::new(text.as_bytes().to_vec());
+        let tokens = scan(&source).tokens;
+        let file = parse(&source, &tokens).unwrap();
+        let Item::Function(function) = &file.items[0] else { panic!("缺少 main"); };
+        let StmtKind::Binding(outer) = &function.body.statements[0].kind
+            else { panic!("缺少外層名稱"); };
+        let StmtKind::IfChain { branches, .. } = &function.body.statements[1].kind
+            else { panic!("缺少內層分支"); };
+        let StmtKind::Binding(inner) = &branches[0].1.statements[0].kind
+            else { panic!("缺少內層遮蔽宣告"); };
+
+        let resolver = Resolver {
+            source: &source,
+            functions: HashMap::new(),
+            globals: HashMap::new(),
+        };
+        let mut scopes = vec![HashMap::new()];
+        scopes[0].insert(outer.name.clone(), BindingId { declaration_start: outer.start });
+        let outer_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
+        scopes.push(HashMap::new());
+        scopes[1].insert(inner.name.clone(), BindingId { declaration_start: inner.start });
+        let inner_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
+        assert_ne!(outer_id, inner_id, "H06／AH04 遮蔽不能覆蓋來源身分");
+        assert_eq!(inner_id.declaration_start, inner.start);
+        scopes.pop();
+        assert_eq!(
+            resolver.binding_for_reference("n", function.end, &scopes),
+            Some(outer_id),
+            "離開內層詞彙作用域應回復原本外層宣告身分"
+        );
+        // Optional 旗標 AJ04／AI06 不屬本 MVP-A 名稱解析器，未據此實作。
+    }
+
+    #[test]
+    fn 名稱解析不會把頂層變數的前向讀取誤當函式前向() {
+        let invalid = "fn main()->int{\nreturn later\n}\nvar later:int = 3\n";
+        let failure = resolve_text(invalid).unwrap_err();
+        assert_eq!(failure.kind, DiagnosticKind::Static);
+        assert!(failure.span.is_some());
+        let valid = "fn later()->int{\nreturn 3\n}\nfn main()->int{\nreturn later()\n}\n";
+        assert!(resolve_text(valid).is_ok());
+    }
+
+    #[test]
+    fn 首版不把_struct_及模組語法當成已實作_下劃線名稱也不推斷可見性() {
+        let unsupported = "struct Sample{\nvar value:int = 1\n}\nfn main()->int{\nreturn 0\n}\n";
+        let source = Source::new(unsupported.as_bytes().to_vec());
+        let tokens = scan(&source).tokens;
+        assert!(parse(&source, &tokens).is_err(), "首版 AS05 必須拒絕 struct 語法");
+        assert!(resolve_text(
+            "fn _helper()->int{\nreturn 1\n}\nfn main()->int{\nreturn _helper()\n}\n"
+        ).is_ok(), "同檔名稱可被查找，不能由此聲稱跨模組可見性已實作");
+    }
+
 }
