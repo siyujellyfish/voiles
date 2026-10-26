@@ -1693,9 +1693,10 @@ mod str_noncopyable_policy_tests {
     }
 
     #[test]
-    fn str_已禁止與float_未決仍保有不同能力結果() {
+    fn str_明確非_copyable_float_明確_copyable_容器仍未決() {
         assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
-        assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Undecided);
+        assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("list[float]"), CopyPermission::Undecided);
         assert_eq!(approved_leaf_copy_permission("int"), CopyPermission::Allowed);
         assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
     }
@@ -1748,5 +1749,48 @@ mod str_ownership_branch_tests {
             "var last:str = original.move()", "var last:str = original");
         assert!(inspect(&illegal_copy).unwrap_err()
             .message.contains("Copyable 已明確禁止"));
+    }
+}
+
+#[cfg(test)]
+mod float_copyable_approved_tests {
+    use super::{inspect, Checker, Parser};
+    use crate::ownership_model::CopyPermission;
+    use crate::ownership_policy::approved_leaf_copy_permission;
+    use crate::source::Source;
+    use crate::lexer;
+
+    /// 結構體的 float 欄位可在無具體 decimal64 常值求值的情況下驗證 Copyable。
+    #[test]
+    fn float_與遞迴全部_copyable_結構已核准_但包含_str_的結構不准複製() {
+        let source_text = include_str!("../tests/fixtures/p13_stage/浮點與混合結構複製能力.voil");
+        assert!(inspect(source_text).is_ok());
+        let source = Source::new(source_text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let (structs, _) = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0
+        }.file().unwrap();
+        let checker = Checker {
+            source: &source, structs: &structs,
+            ability: approved_leaf_copy_permission,
+        };
+        assert_eq!(checker.permission("FloatBox"), CopyPermission::Allowed);
+        assert_eq!(checker.permission("NestedFloat"), CopyPermission::Allowed);
+        assert_eq!(checker.permission("MixedString"), CopyPermission::Forbidden);
+    }
+
+    #[test]
+    fn float_具名來源尚未初始化不能因_copyable_就略過安全檢查() {
+        let source_text = "fn main()->int{\nvar number:float\nvar copy:float = number\nreturn 0\n}\n";
+        let error = inspect(source_text).unwrap_err();
+        assert!(error.message.contains("初始化"));
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn 受限前端沒有_decimal64_常值證明時不能因_float_copyable_而放行() {
+        let source_text = "fn main()->int{\nvar number:float = 1.25\nreturn 0\n}\n";
+        let error = inspect(source_text).unwrap_err();
+        assert!(error.message.contains("decimal64"));
     }
 }

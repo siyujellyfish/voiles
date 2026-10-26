@@ -1,0 +1,14 @@
+struct FloatBox{
+var value:float
+}
+struct NestedFloat{
+var nested:FloatBox
+const valid:bool = true
+}
+struct MixedString{
+var value:float
+var message:str = "hello"
+}
+fn main()->int{
+return 0
+}
