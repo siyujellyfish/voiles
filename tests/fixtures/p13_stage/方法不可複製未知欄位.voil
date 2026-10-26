@@ -1,0 +1,12 @@
+struct Note{
+var left:str = "A"
+var right:str = "B"
+fn copy()->int{
+self.left = self.right
+return 0
+}
+}
+fn main()->int{
+var note:Note = Note()
+return note.copy()
+}
