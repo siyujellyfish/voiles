@@ -621,7 +621,56 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(())
     }
 
+    /// 檢查結構欄位預設建立式是否形成循環。
+    /// 未有資源執行期之前，不能把互相建立的預設值誤視為完成初始化。
+    fn check_default_constructor_cycles(&self) -> Result<(), Diagnostic> {
+        let mut active = HashSet::new();
+        let mut checked = HashSet::new();
+        for name in self.structs.keys() {
+            self.check_default_type(name, &mut active, &mut checked)?;
+        }
+        Ok(())
+    }
+
+    fn check_default_type(&self, name: &str, active: &mut HashSet<String>,
+        checked: &mut HashSet<String>) -> Result<(), Diagnostic> {
+        if checked.contains(name) { return Ok(()); }
+        if !active.insert(name.to_string()) {
+            return Err(Diagnostic {
+                kind: DiagnosticKind::Static,
+                message: "結構預設建構形成循環，無法證明安全初始化".into(),
+                span: None,
+            });
+        }
+        if let Some(definition) = self.structs.get(name) {
+            for field in &definition.fields {
+                if let Some(default) = &field.default {
+                    self.check_default_term(default, active, checked)?;
+                }
+            }
+        }
+        active.remove(name);
+        checked.insert(name.to_string());
+        Ok(())
+    }
+
+    fn check_default_term(&self, term: &Term, active: &mut HashSet<String>,
+        checked: &mut HashSet<String>) -> Result<(), Diagnostic> {
+        if let TermKind::Construct(name, args) = &term.kind {
+            if active.contains(name) {
+                return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
+            }
+            self.check_default_type(name, active, checked)?;
+            // 具名欄位實際求值時，也不得在巢狀建立引數中形成循環。
+            for (_, value) in args {
+                self.check_default_term(value, active, checked)?;
+            }
+        }
+        Ok(())
+    }
+
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
+        self.check_default_constructor_cycles()?;
         for definition in self.structs.values() {
             for field in &definition.fields {
                 if !["int", "bool", "float", "str"].contains(&field.ty.as_str())
