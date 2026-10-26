@@ -333,6 +333,28 @@ mod tests {
         }
     }
 
+
+    #[test]
+    fn 分支兩側均重新初始化_合流後允許安全讀取() {
+        valid("fn main()->int{\nvar a:int = 3\nif (true){\nvar b:int = a.move()\na = 4\n}else{\nvar c:int = a.move()\na = 5\n}\nreturn a\n}\n");
+    }
+
+    #[test]
+    fn 分支只有一側重新初始化_合流後仍拒絕來源讀取() {
+        unsafe_source(
+            "fn main()->int{\nvar a:int = 3\nif (true){\nvar b:int = a.move()\na = 4\n}else{\nvar c:int = a.move()\n}\nreturn a\n}\n",
+            "可達分支"
+        );
+    }
+
+    #[test]
+    fn 遮蔽區域內移動後讀取必須拒絕_不借用外層同名來源() {
+        unsafe_source(
+            "fn main()->int{\nvar a:int = 3\nif (true){\nvar a:int = 4\nvar b:int = a.move()\nvar c:int = a\n}\nreturn a\n}\n",
+            "已明確移動"
+        );
+    }
+
     #[test]
     fn 不變更對外_mvp_a_的_passed_與_move_拒絕() {
         use crate::check_file;
