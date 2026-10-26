@@ -8,7 +8,9 @@ use std::collections::HashMap;
 use crate::{Diagnostic, DiagnosticKind};
 use crate::expr::{Expr, ExprKind};
 use crate::ownership_ledger::DeclarationId;
-use crate::ownership_model::{CopyPermission, ModelError, ValueSlot};
+use crate::ownership_model::{ModelError, ValueSlot};
+use crate::ownership_policy::approved_leaf_copy_permission;
+use crate::parser::Type;
 use crate::parser::{Binding, Block, File, Item, StmtKind};
 use crate::source::Source;
 
@@ -61,7 +63,7 @@ impl OwnershipPass<'_> {
     }
 
     /// 一般使用是複製；唯有明確 .move() 會使具名局部來源失效。
-    /// int/bool 的複製資格只用於本 P13 試驗，並未授權其他型別。
+    /// int/bool 能力取自 HA13-A 已核准清單；不得擴及其他型別。
     fn expression(&self, expr: &Expr, state: &mut FlowState) -> Result<(), Diagnostic> {
         match &expr.kind {
             ExprKind::Name(name) => {
@@ -106,12 +108,18 @@ impl OwnershipPass<'_> {
         if let Some(initializer) = &binding.initializer {
             self.expression(initializer, state)?;
         }
+        // P13 已正式核准 HA13-A：型別資格來自單一權威表，
+        // 不允許私有入口自行把所有來源預設為可複製。
+        let permission = match binding.ty {
+            Type::Int => approved_leaf_copy_permission("int"),
+            Type::Bool => approved_leaf_copy_permission("bool"),
+        };
         let scoped = OwnershipBinding {
             id: DeclarationId(binding.start),
             slot: if binding.initializer.is_some() {
-                ValueSlot::initialized(CopyPermission::Allowed)
+                ValueSlot::initialized(permission)
             } else {
-                ValueSlot::uninitialized(CopyPermission::Allowed)
+                ValueSlot::uninitialized(permission)
             },
         };
         state.scopes.last_mut().expect("需有作用域").insert(binding.name.clone(), scoped);
