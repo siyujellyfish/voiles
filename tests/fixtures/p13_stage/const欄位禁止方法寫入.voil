@@ -1,0 +1,11 @@
+struct Counter{
+const value:int = 1
+fn set()->int{
+self.value = 3
+return self.value
+}
+}
+fn main()->int{
+var counter:Counter = Counter()
+return counter.set()
+}
