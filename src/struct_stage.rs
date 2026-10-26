@@ -649,7 +649,7 @@ mod tests {
 
     #[test]
     fn 不得把限制外的控制流程直接當成已驗證() {
-        let source = BASE.replace("return 0", "if (true){\nreturn 0\n}\nreturn 0");
+        let source = BASE.replace("return 0", "while (true){\nreturn 0\n}\nreturn 0");
         assert!(inspect(&source, |_| Allowed).is_err());
     }
     #[test]
