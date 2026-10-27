@@ -15,6 +15,7 @@ mod ownership_model;
 mod ownership_policy;
 mod container_copy_policy;
 mod borrow_safety;
+mod borrow_ownership_gate;
 mod ownership_ledger;
 mod ownership_probe;
 mod struct_ownership;
