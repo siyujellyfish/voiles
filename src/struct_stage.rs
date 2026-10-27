@@ -2299,6 +2299,43 @@ mod conservative_decimal64_tests {
 }
 
 #[cfg(test)]
+mod vb14_vb15_vb16_approved_source_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn vb16_具名引數可任意排列且未覆蓋預設值仍合法() {
+        let source="struct Profile{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nconst id:int = 1\n}\nfn main()->int{\nvar source:str = \"新\"\nvar x:Profile = Profile(second=source.move(),first=\"覆蓋\")\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn vb16_同一欄位重複具名引數先靜態拒絕() {
+        let source="struct Item{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar x:Item=Item(text=\"甲\",text=\"乙\")\nreturn 0\n}\n";
+        assert_eq!(inspect(source).unwrap_err().kind,DiagnosticKind::Syntax);
+    }
+
+    #[test]
+    fn vb14_既有借用別名再借用必須保守拒絕() {
+        let source="fn main()->int{\nconst value:int = 1\nconst alias:int = value.borrow()\nconst second:int = alias.borrow()\nreturn second\n}\n";
+        let err=inspect(source).unwrap_err();
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("再次借用"));
+    }
+
+    #[test]
+    fn vb15_尚未支援的跨_await_借用與例外不可被私有檢查器放行() {
+        for source in [
+            "fn main()->int{\nvar x:int=1\nvar alias:int=x.borrow()\nawait alias\nreturn x\n}\n",
+            "fn main()->int{\nvar x:int=1\nvar alias:int=x.borrow()\nthrow alias\nreturn x\n}\n",
+        ] {
+            let err=inspect(source).unwrap_err();
+            assert!(matches!(err.kind,DiagnosticKind::Syntax|DiagnosticKind::Static));
+        }
+    }
+}
+
+#[cfg(test)]
 mod va15_path_sensitive_last_use_tests {
     use super::inspect;
     use crate::DiagnosticKind;
