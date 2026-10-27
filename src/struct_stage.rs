@@ -2071,6 +2071,57 @@ mod conservative_decimal64_tests {
 }
 
 #[cfg(test)]
+mod p13_resource_overwrite_barrier_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 有效_str_整筆覆寫未有_p16_安全證明應拒絕() {
+        let src = "fn main()->int{\nvar s:str = \"old\"\ns = \"new\"\nreturn 0\n}\n";
+        let err = inspect(src).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P16"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn 已存在非_copyable_struct_不得整筆資源覆寫() {
+        let src = "struct S{\nvar text:str = \"old\"\n}\nfn main()->int{\nvar a:S = S()\na = S()\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("P16"));
+    }
+
+    #[test]
+    fn 已存在_str_方法欄位寫入亦不可繞過_p16() {
+        let src = "struct S{\nvar text:str = \"old\"\nfn change()->int{\nself.text = \"new\"\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("P16"));
+    }
+
+    #[test]
+    fn copyable_一般賦值與方法覆寫仍合法() {
+        let src = "struct S{\nvar value:int = 1\nfn update()->int{\nself.value = 2\nreturn self.value\n}\n}\nfn main()->int{\nvar s:S = S()\nvar n:int = 1\nn = 2\nvar m:int = s.update()\nreturn m\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn str_移動後重新初始化保留已核准語意() {
+        let src = "fn main()->int{\nvar s:str = \"original\"\nvar t:str = s.move()\ns = \"new\"\nvar result:str = s.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 同名自身_move_回寫暫緩至求值次序安全核准() {
+        let src = "fn main()->int{\nvar n:int = 1\nn = n.move()\nreturn n\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("同一名稱"));
+    }
+
+    #[test]
+    fn 合流仍可能保有資源時禁止整筆覆寫() {
+        let src = "fn main()->int{\nvar s:str = \"old\"\nif (true){\nvar taken:str = s.move()\n}\ns = \"new\"\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("P16"));
+    }
+}
+
+#[cfg(test)]
 mod p13_formal_partial_field_completion_tests {
     use super::inspect;
     use crate::DiagnosticKind;
