@@ -725,17 +725,30 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         match &term.kind {
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
             TermKind::Name(name) => {
+                self.check_direct(vars, name, term)?;
                 let binding = Self::lookup(vars, name)
                     .ok_or_else(|| self.error("找不到合法的來源宣告", term))?;
+                if binding.loan.as_ref().is_some_and(|loan| !loan.active) {
+                    return Err(self.error("P15：借用已於最後使用點歸還", term));
+                }
+                // 非擁有借用僅能對已核准 Copyable 值產生獨立複本，
+                // 不得以一般名稱使用把 str 借用轉成新資源擁有者。
                 binding.value.duplicate().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
             }
+            TermKind::Borrow(_) => Err(self.error(
+                "VA14／VA15：.borrow() 僅可直接綁定到合法 var／const；回傳與逃逸保守拒絕",
+                term)),
             TermKind::Move(name) => {
                 if name == "self" {
                     return Err(self.error("S15：方法不可消耗或移動整個 self", term));
                 }
+                self.check_direct(vars, name, term)?;
                 let binding = Self::lookup_mut(vars, name)
                     .ok_or_else(|| self.error("找不到可移動的具名來源", term))?;
+                if binding.loan.is_some() {
+                    return Err(self.error("VA14-01：借用別名不是所有者，不能 .move()", term));
+                }
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
             }
@@ -743,8 +756,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if owner == "self" {
                     return Err(self.error("只有方法內才能讀取 self 欄位", term));
                 }
+                self.check_direct(vars, owner, term)?;
                 let bound = Self::lookup(vars, owner)
                     .ok_or_else(|| self.error("找不到欄位來源宣告", term))?;
+                if bound.loan.as_ref().is_some_and(|loan| !loan.active) {
+                    return Err(self.error("P15：借用別名已不再有效", term));
+                }
                 bound.value.read().map_err(|err| self.model_error(err, term))?;
                 let field = self.structs.get(&bound.ty)
                     .and_then(|def| def.fields.iter().find(|f| f.name == *name))
@@ -760,8 +777,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if receiver == "self" {
                     return Err(self.error("重入 self 方法的借用安全尚未驗證", term));
                 }
+                self.check_direct(vars, receiver, term)?;
                 let bound = Self::lookup(vars, receiver)
                     .ok_or_else(|| self.error("找不到方法接收者來源", term))?;
+                if bound.loan.as_ref().is_some_and(|loan| !loan.active) {
+                    return Err(self.error("P15：借用別名已不再有效", term));
+                }
                 bound.value.read().map_err(|err| self.model_error(err, term))?;
                 let method = self.structs.get(&bound.ty)
                     .and_then(|def| def.methods.iter().find(|m| m.name == *name))
@@ -771,18 +792,25 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error(
                         "S18：const 結構實例不能呼叫會修改 self 欄位的方法", term));
                 }
-                let mut loans = BorrowSafety::new();
-                let loan = loans.acquire(DeclarationId(bound.declaration_start),
-                    mode)
-                    .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
-                // 來源在方法作用域中必須保持借用封鎖，結束後歸還。
-                if loans.check_direct_access(DeclarationId(bound.declaration_start)).is_ok() {
-                    return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
+                if let Some(loan) = &bound.loan {
+                    // 方法透過已存在的非擁有別名使用來源，不可另取第二筆
+                    // 借用；共享別名只能執行真正唯讀的方法。
+                    if mode == BorrowKind::ExclusiveWrite
+                        && loan.kind != BorrowKind::ExclusiveWrite {
+                        return Err(self.error("HC14：唯讀借用不可呼叫可寫方法", term));
+                    }
+                } else {
+                    let mut loans = BorrowSafety::new();
+                    let loan = loans.acquire(DeclarationId(bound.declaration_start), mode)
+                        .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
+                    if loans.check_direct_access(DeclarationId(bound.declaration_start)).is_ok() {
+                        return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
+                    }
+                    loans.finish_scope(&[loan])
+                        .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
+                    loans.check_direct_access(DeclarationId(bound.declaration_start))
+                        .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
-                loans.finish_scope(&[loan])
-                    .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
-                loans.check_direct_access(DeclarationId(bound.declaration_start))
-                    .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
@@ -834,7 +862,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str) -> Result<bool, Diagnostic> {
-        for statement in body {
+        for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
                 StmtKind::Declare { name, ty, mutable, init } => {
                     if vars.last().expect("應有詞彙作用域").contains_key(name) {
