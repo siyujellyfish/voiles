@@ -582,14 +582,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    /// VA15-01-A：一般借用在本詞彙區塊最後合法使用後歸還。
-    /// 外層借用若仍可能在其他外層語句使用，不在內層擅自歸還。
-    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt]) {
-        let scope = vars.last_mut().expect("至少根作用域存在");
-        for (name, binding) in scope.iter_mut() {
-            if let Some(loan) = binding.loan.as_mut() {
-                if loan.active && !rest.iter().any(|stmt| Self::statement_mentions(stmt, name)) {
-                    loan.active = false;
+    /// VA15-01-A：各可達路徑的後續語句與外層延續語句共同決定
+    /// 真正最後合法使用點。只有該路徑的所有未來語句都不再引用
+    /// 相同借用別名，才解除來源直接存取封鎖。
+    /// 表面同名遮蔽只會延後釋放（安全假陽性），不會使借用提前失效。
+    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt], continuation: &[Stmt]) {
+        for scope in vars.iter_mut() {
+            for (name, binding) in scope.iter_mut() {
+                if let Some(loan) = binding.loan.as_mut() {
+                    let needed = rest.iter().chain(continuation.iter())
+                        .any(|stmt| Self::statement_mentions(stmt, name));
+                    if loan.active && !needed { loan.active = false; }
                 }
             }
         }
@@ -854,14 +857,23 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// true 表示分支仍會繼續執行；false 表示所有目前路徑已 return。
     fn statements(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str, new_scope: bool) -> Result<bool, Diagnostic> {
+        self.statements_with_follow(body, vars, expected_return, new_scope, &[])
+    }
+
+    fn statements_with_follow(&self, body: &[Stmt], vars: &mut Scopes,
+        expected_return: &str, new_scope: bool,
+        continuation: &[Stmt]) -> Result<bool, Diagnostic> {
         if new_scope { vars.push(HashMap::new()); }
-        let result = self.statement_body(body, vars, expected_return);
+        let result = self.statement_body(body, vars, expected_return, continuation);
         if new_scope { vars.pop(); }
         result
     }
 
     fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
-        expected_return: &str) -> Result<bool, Diagnostic> {
+        expected_return: &str, continuation: &[Stmt]) -> Result<bool, Diagnostic> {
+        // 區塊入口若某外層借用在本條路徑及其外層後繼均不再使用，
+        // 便已過最後使用點，不需要等到下一筆語句才歸還。
+        Self::release_last_uses(vars, body, continuation);
         for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
                 StmtKind::Declare { name, ty, mutable, init } => {
@@ -1032,12 +1044,22 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error("if 條件必須是已初始化 bool", condition));
                     }
                     let snapshot = vars.clone();
+                    // 每條分支只能參考自己之後真正可達的語句。
+                    // 外層後繼若還會使用某個借用別名，任何分支都
+                    // 不得在提前歸還後直接使用原來源。
+                    let after_branch: Vec<Stmt> = body[position + 1..].iter()
+                        .chain(continuation.iter()).cloned().collect();
                     let mut on_true = snapshot.clone();
-                    let live_true = self.statements(yes, &mut on_true, expected_return, true)?;
+                    let live_true = self.statements_with_follow(
+                        yes, &mut on_true, expected_return, true, &after_branch)?;
                     let mut on_false = snapshot.clone();
                     let live_false = if let Some(otherwise) = no {
-                        self.statements(otherwise, &mut on_false, expected_return, true)?
-                    } else { true };
+                        self.statements_with_follow(
+                            otherwise, &mut on_false, expected_return, true, &after_branch)?
+                    } else {
+                        Self::release_last_uses(&mut on_false, &after_branch, &[]);
+                        true
+                    };
                     if !live_true && !live_false { return Ok(false); }
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
                     for (depth, scope) in vars.iter_mut().enumerate() {
@@ -1074,13 +1096,22 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 (Some(one), None) | (None, Some(one)) => one.clone(),
                                 _ => None,
                             };
+                            if let Some(loan) = original.loan.as_mut() {
+                                // 僅合流實際繼續執行的分支；若任一可達
+                                // 路徑仍有借用，合流後必須維持來源封鎖。
+                                let true_active = live_true && on_true[depth][name].loan
+                                    .as_ref().is_some_and(|item| item.active);
+                                let false_active = live_false && on_false[depth][name].loan
+                                    .as_ref().is_some_and(|item| item.active);
+                                loan.active = true_active || false_active;
+                            }
                         }
                     }
                 }
             }
             // 本區塊剩餘路徑已不再引用的非擁有借用可即時歸還；
             // 不得因來源尚存在就把借用自動延長到作用域結束。
-            Self::release_last_uses(vars, &body[position + 1..]);
+            Self::release_last_uses(vars, &body[position + 1..], continuation);
         }
         Ok(true)
     }
@@ -2238,6 +2269,52 @@ mod conservative_decimal64_tests {
         assert!(inspect("fn main()->int{\nvar x:float = 1.25\nvar y:float = x\nreturn 0\n}\n").is_ok());
         let bad = "fn main()->int{\nvar x:int = 1.25\nreturn 0\n}\n";
         assert!(inspect(bad).unwrap_err().message.contains("型別"));
+    }
+}
+
+#[cfg(test)]
+mod va15_path_sensitive_last_use_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn va15_分支中真正最後使用後同分支恢復原來源直接讀取() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar copy:int = alias\nvar direct:int = owner\n}else{\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_外層仍會使用借用時分支內不可提前解除() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar direct:int = owner\n}else{\nvar other:int = 2\n}\nreturn alias\n}\n";
+        let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn va15_無_else_的隱含分支也須和已分析分支安全合流() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar copy:int = alias\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_巢狀分支各自完成最後使用後來源可用() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nif (false){\nvar a:int = alias\n}else{\nvar b:int = alias\n}\nvar direct:int = owner\n}else{\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_返回路徑不能把借用活性污染可達的其他路徑() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nreturn alias\n}else{\nvar copy:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_跨分支仍有效的獨占借用不得允許重新借用() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar first:int = alias\n}else{\nvar second:int = 2\n}\nvar other:int = owner.borrow()\nreturn alias\n}\n";
+        let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
     }
 }
 
