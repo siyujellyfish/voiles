@@ -43,6 +43,7 @@ verify_group 4 flow struct_stage::str_ownership_branch_tests::
 verify_group 4 ledger ownership_ledger::tests::
 verify_group 5 positive struct_stage::float_copyable_approved_tests::
 verify_group 5 negative struct_stage::p13_d02_const_partial_safety_tests::
+verify_group 5 resource_overwrite struct_stage::p13_resource_overwrite_barrier_tests::
 verify_group 6 partial_completion struct_stage::p13_formal_partial_field_completion_tests::
 verify_group 6 field_write struct_stage::p13_formal_field_write_tests::
 verify_group 6 struct struct_ownership::tests::
