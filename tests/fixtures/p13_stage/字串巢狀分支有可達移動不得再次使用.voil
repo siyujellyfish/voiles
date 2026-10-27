@@ -1,0 +1,14 @@
+fn main()->int{
+var original:str = "old"
+if (true){
+if (false){
+var gone:str = original.move()
+}else{
+var untouched:int = 0
+}
+}else{
+original = "alternate"
+}
+var last:str = original.move()
+return 0
+}
