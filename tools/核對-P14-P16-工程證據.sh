@@ -34,6 +34,7 @@ check_phase() {
 }
 check_phase P14 borrow_ownership_gate::tests::
 check_phase P15 borrow_lifetime_probe::tests::
+check_phase P14_P15_SOURCE struct_stage::va14_va15_borrow_source_tests::
 check_phase P16 resource_obligation_audit::tests::
 check_phase P16_UTF8 owned_str_runtime::tests::
 check_phase P14_P16 resource_borrow_pipeline::tests::
