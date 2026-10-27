@@ -861,7 +861,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     };
                     if actual != expected.ty || !ready {
                         return Err(self.error(
-                            "VB16：結構欄位求值型別錯誤或資源尚未完成初始化",
+                            "VB16：結構欄位求值型別錯誤或資源尚未初始化",
                             expr));
                     }
                 }
