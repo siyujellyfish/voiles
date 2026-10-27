@@ -983,14 +983,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
-                    // 可證明未初始化或已移動者可以重新繫結。
-                    // 其餘非 Copyable／未決的既有資源，須待 P16 清理證明。
+                    // VA16-03-A 已核准非 Copyable 資源原子覆寫。
+                    // 僅對已實作真實 P16 單一持有者緩衝區的 str，
+                    // 准許獨立新常值與另一具名整筆移動；含資源結構、
+                    // 容器與未確認欄位清理仍不得假裝有相同執行期保證。
                     let state = expected.value.state();
                     if self.permission(&ty) != CopyPermission::Allowed
                         && !matches!(state, ValueState::Uninitialized | ValueState::Moved) {
-                        return Err(self.error(
-                            "P16 尚未核准有效資源的整筆覆寫與清理；僅允許初始化或移動後重置",
-                            value));
+                        let proven_str_rhs = ty == "str"
+                            && matches!(&value.kind,
+                                TermKind::Literal("str") | TermKind::Move(_));
+                        if !proven_str_rhs {
+                            return Err(self.error(
+                                "P16：此型別／右值的既有資源覆寫尚未完成端到端清理證明",
+                                value));
+                        }
                     }
                     // 自身轉移與寫回的重疊求值次序尚未有獨立安全證據。
                     if matches!(&value.kind, TermKind::Move(source) if source == name) {
