@@ -658,12 +658,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != target.ty.as_str() {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
-                    // 方法接收者在此子集已完整初始化，欄位寫入必然覆寫舊值。
-                    // 非 Copyable 資源的舊值清理順序尚待 P16，必須先保守拒絕。
+                    // VA16-03-A：獨立 str 常值的單一持有者緩衝區，
+                    // 已有 P16 失敗回滾與成功清理證明。只有此明確
+                    // 子集可覆寫既有 var 欄位；其他非 Copyable 資源仍拒絕。
                     let permission = self.permission(&target.ty);
-                    if permission != CopyPermission::Allowed {
+                    let literal_str = target.ty == "str"
+                        && matches!(&value.kind, TermKind::Literal("str"));
+                    if permission != CopyPermission::Allowed && !literal_str {
                         return Err(self.reject_noncopyable(permission,
-                            "P16 尚未核准方法覆寫既有資源的清理責任", value));
+                            "P16 尚無此欄位右值的完整資源清理證明", value));
                     }
                     writes = true;
                 }
@@ -982,9 +985,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let expected_type = member.ty.clone();
                     if !first_init {
                         let permission = self.permission(&expected_type);
-                        if permission != CopyPermission::Allowed {
+                        let proven_str_literal = expected_type == "str"
+                            && matches!(&value.kind, TermKind::Literal("str"));
+                        if permission != CopyPermission::Allowed && !proven_str_literal {
                             return Err(self.reject_noncopyable(permission,
-                                "P13 欄位覆寫涉及未核准的原值資源清理", value));
+                                "P16 其他資源欄位覆寫尚無原子清理證明", value));
                         }
                     }
                     let (actual, ready) = self.evaluate(value, vars)?;
@@ -2295,6 +2300,47 @@ mod conservative_decimal64_tests {
         assert!(inspect("fn main()->int{\nvar x:float = 1.25\nvar y:float = x\nreturn 0\n}\n").is_ok());
         let bad = "fn main()->int{\nvar x:int = 1.25\nreturn 0\n}\n";
         assert!(inspect(bad).unwrap_err().message.contains("型別"));
+    }
+}
+
+#[cfg(test)]
+mod va16_str_field_overwrite_source_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn va16_var_結構已有_str_欄位可用獨立常值安全覆寫() {
+        let source="struct S{\nvar text:str = \"old\"\n}\nfn main()->int{\nvar value:S = S()\nvalue.text = \"new\"\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va16_var_方法可在獨占_self_借用下覆寫已存在_str_欄位() {
+        let source="struct S{\nvar text:str = \"old\"\nfn change()->int{\nself.text = \"new\"\nreturn 0\n}\n}\nfn main()->int{\nvar value:S = S()\nreturn value.change()\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va16_const_實例或_const_欄位仍禁止覆寫() {
+        let const_owner="struct S{\nvar text:str = \"old\"\n}\nfn main()->int{\nconst value:S = S()\nvalue.text = \"new\"\nreturn 0\n}\n";
+        let const_field="struct S{\nconst text:str = \"old\"\n}\nfn main()->int{\nvar value:S = S()\nvalue.text = \"new\"\nreturn 0\n}\n";
+        for source in [const_owner,const_field] {
+            let e=inspect(source).unwrap_err();
+            assert_eq!(e.kind,DiagnosticKind::Static);
+            assert!(e.message.contains("const"));
+        }
+    }
+
+    #[test]
+    fn va16_尚有效借用禁止透過欄位覆寫破壞來源() {
+        let source="struct S{\nvar text:str = \"old\"\nfn read()->int{\nreturn 1\n}\n}\nfn main()->int{\nvar value:S = S()\nvar alias:S = value.borrow()\nvalue.text = \"new\"\nreturn alias.read()\n}\n";
+        assert!(inspect(source).unwrap_err().message.contains("HC14"));
+    }
+
+    #[test]
+    fn va16_未知資源和非獨立字串右值仍保守拒絕() {
+        let source="struct Inner{\nvar text:str = \"x\"\n}\nstruct Outer{\nvar inner:Inner = Inner()\n}\nfn main()->int{\nvar value:Outer = Outer()\nvalue.inner = Inner()\nreturn 0\n}\n";
+        assert!(inspect(source).unwrap_err().message.contains("P16"));
     }
 }
 
