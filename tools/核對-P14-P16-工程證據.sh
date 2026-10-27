@@ -38,6 +38,9 @@ check_phase P14_P15_SOURCE struct_stage::va14_va15_borrow_source_tests::
 check_phase P15_BRANCH struct_stage::va15_path_sensitive_last_use_tests::
 check_phase P16 resource_obligation_audit::tests::
 check_phase P16_UTF8 owned_str_runtime::tests::
+check_phase P16_ORDER struct_eval_plan::tests::
+check_phase P16_CONSTRUCT_RESOURCE struct_resource_build::tests::
+check_phase P16_CONSTRUCT_SOURCE struct_stage::vb16_constructor_source_tests::
 check_phase P16_STRUCT_PLAN struct_eval_plan::tests::
 check_phase P16_STRUCT_RUNTIME struct_initialization::tests::
 check_phase P14_P16 resource_borrow_pipeline::tests::
