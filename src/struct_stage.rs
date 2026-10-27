@@ -823,23 +823,49 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Construct(name, args) => {
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
-                let mut written = HashSet::new();
-                for (field, expr) in args {
-                    let expected = definition.fields.iter().find(|f| f.name == *field)
-                        .ok_or_else(|| self.error("建立結構時指定了不存在的欄位", term))?;
-                    if !written.insert(field.as_str()) {
-                        return Err(self.error("建立結構時不得重複指定欄位", term));
-                    }
-                    let (actual, ready) = self.evaluate(expr, vars)?;
+                // VB16-01-A：嚴格依書寫順序先求值所有具名引數，之後
+                // 再依宣告順序求值未被覆蓋的預設值。先檢查整份
+                // 計畫再求值，重複／不存在欄位不得先消耗資源來源。
+                let fields: Vec<_> = definition.fields.iter().map(|field|
+                    crate::struct_eval_plan::FieldInfo {
+                        name: field.name.as_str(),
+                        has_default: field.default.is_some(),
+                        immutable: field.immutable,
+                    }).collect();
+                let names: Vec<_> = args.iter().map(|(field, _)| field.as_str()).collect();
+                let ordered = crate::struct_eval_plan::plan(&fields, &names)
+                    .map_err(|error| self.error(&format!(
+                        "VB16：結構求值計畫不合法：{error:?}"), term))?;
+                for step in &ordered.steps {
+                    let expected = definition.fields.iter()
+                        .find(|field| field.name == step.field)
+                        .expect("計畫中的欄位已預檢存在");
+                    let (expr, actual, ready) = match step.origin {
+                        crate::struct_eval_plan::Origin::Named => {
+                            let expr = args.iter()
+                                .find(|(field, _)| *field == step.field)
+                                .map(|(_, expression)| expression)
+                                .expect("具名引數已預檢存在");
+                            let (actual, ready) = self.evaluate(expr, vars)?;
+                            (expr, actual, ready)
+                        }
+                        crate::struct_eval_plan::Origin::Default => {
+                            let expr = expected.default.as_ref()
+                                .expect("未被覆蓋的預設值已預檢存在");
+                            // 欄位預設值在其宣告本身的獨立上下文求值，
+                            // 不暗中捕獲呼叫端的區域名稱。
+                            let (actual, ready) = self.evaluate(
+                                expr, &mut vec![HashMap::new()])?;
+                            (expr, actual, ready)
+                        }
+                    };
                     if actual != expected.ty || !ready {
-                        return Err(self.error("結構具名欄位初值型別不一致或尚未初始化", expr));
+                        return Err(self.error(
+                            "VB16：結構欄位求值型別錯誤或資源尚未初始化",
+                            expr));
                     }
                 }
-                // const 欄位依法必有預設；未給初值的 var 欄位可延後初始化，
-                // 但本保守子集不允許把尚未全部初始化的實例複製／移動。
-                let complete = definition.fields.iter()
-                    .all(|field| written.contains(field.name.as_str()) || field.default.is_some());
-                Ok((name.clone(), complete))
+                Ok((name.clone(), ordered.missing_mutable_fields.is_empty()))
             }
         }
     }
@@ -2269,6 +2295,43 @@ mod conservative_decimal64_tests {
         assert!(inspect("fn main()->int{\nvar x:float = 1.25\nvar y:float = x\nreturn 0\n}\n").is_ok());
         let bad = "fn main()->int{\nvar x:int = 1.25\nreturn 0\n}\n";
         assert!(inspect(bad).unwrap_err().message.contains("型別"));
+    }
+}
+
+#[cfg(test)]
+mod vb14_vb15_vb16_approved_source_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn vb16_具名引數可任意排列且未覆蓋預設值仍合法() {
+        let source="struct Profile{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nconst id:int = 1\n}\nfn main()->int{\nvar source:str = \"新\"\nvar x:Profile = Profile(second=source.move(),first=\"覆蓋\")\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn vb16_同一欄位重複具名引數先靜態拒絕() {
+        let source="struct Item{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar x:Item=Item(text=\"甲\",text=\"乙\")\nreturn 0\n}\n";
+        assert_eq!(inspect(source).unwrap_err().kind,DiagnosticKind::Syntax);
+    }
+
+    #[test]
+    fn vb14_既有借用別名再借用必須保守拒絕() {
+        let source="fn main()->int{\nconst value:int = 1\nconst alias:int = value.borrow()\nconst second:int = alias.borrow()\nreturn second\n}\n";
+        let err=inspect(source).unwrap_err();
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("再次借用"));
+    }
+
+    #[test]
+    fn vb15_尚未支援的跨_await_借用與例外不可被私有檢查器放行() {
+        for source in [
+            "fn main()->int{\nvar x:int=1\nvar alias:int=x.borrow()\nawait alias\nreturn x\n}\n",
+            "fn main()->int{\nvar x:int=1\nvar alias:int=x.borrow()\nthrow alias\nreturn x\n}\n",
+        ] {
+            let err=inspect(source).unwrap_err();
+            assert!(matches!(err.kind,DiagnosticKind::Syntax|DiagnosticKind::Static));
+        }
     }
 }
 

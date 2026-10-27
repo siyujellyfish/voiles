@@ -26,6 +26,8 @@ mod struct_ownership;
 mod struct_source_probe;
 mod struct_move_probe;
 mod struct_stage;
+mod struct_eval_plan;
+mod struct_initialization;
 
 use std::fmt;
 use std::io::ErrorKind;
