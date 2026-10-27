@@ -983,14 +983,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
-                    // 可證明未初始化或已移動者可以重新繫結。
-                    // 其餘非 Copyable／未決的既有資源，須待 P16 清理證明。
+                    // VA16-03-A 已核准非 Copyable 資源原子覆寫。
+                    // 僅對已實作真實 P16 單一持有者緩衝區的 str，
+                    // 准許獨立新常值與另一具名整筆移動；含資源結構、
+                    // 容器與未確認欄位清理仍不得假裝有相同執行期保證。
                     let state = expected.value.state();
                     if self.permission(&ty) != CopyPermission::Allowed
-                        && !matches!(state, ValueState::Uninitialized | ValueState::Moved) {
+                        && state == ValueState::MayBeUnavailable {
                         return Err(self.error(
-                            "P16 尚未核准有效資源的整筆覆寫與清理；僅允許初始化或移動後重置",
+                            "VA16-03：合流後資源可能存在或已移動，條件性舊值清理尚未證明",
                             value));
+                    }
+                    if self.permission(&ty) != CopyPermission::Allowed
+                        && !matches!(state, ValueState::Uninitialized | ValueState::Moved) {
+                        let proven_str_rhs = ty == "str"
+                            && matches!(&value.kind,
+                                TermKind::Literal("str") | TermKind::Move(_));
+                        if !proven_str_rhs {
+                            return Err(self.error(
+                                "P16：此型別／右值的既有資源覆寫尚未完成端到端清理證明",
+                                value));
+                        }
                     }
                     // 自身轉移與寫回的重疊求值次序尚未有獨立安全證據。
                     if matches!(&value.kind, TermKind::Move(source) if source == name) {
@@ -2050,12 +2063,13 @@ mod str_ownership_branch_tests {
         let source = include_str!(
             "../tests/fixtures/p13_stage/字串巢狀分支有可達移動不得再次使用.voil"
         );
-        // 原素材的 else 覆寫仍有效 str，依 P16 安全防線應更早被拒絕。
+        // VA16-03-A 已正式核准可證明安全的 str 常值覆寫。
+        // 分支另一側仍可能已移動，不能因覆寫路徑合法就擅自宣稱
+        // 合流之後來源一定有效，仍應回報「可能已移動」。
         let err = inspect(source).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
-        assert!(err.message.contains("P16"));
-        // 將覆寫換成不觸及資源的獨立宣告，原「可能已移動」合流
-        // 拒絕也必須繼續存在，不以新拒絕理由掩蓋狀態合流。
+        assert!(err.message.contains("可能"));
+        // 未覆寫的另一條路徑同樣必須維持此失效證明。
         let merged = source.replace("original = \"alternate\"", "var untouched2:int = 1");
         let err = inspect(&merged).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
@@ -2322,15 +2336,24 @@ mod va14_va15_borrow_source_tests {
 #[cfg(test)]
 mod p13_resource_overwrite_barrier_tests {
     use super::inspect;
-    use crate::DiagnosticKind;
+    #[test]
+    fn va16_已核准有效_str_新常值原子覆寫為合法來源() {
+        let src = "fn main()->int{\nvar s:str = \"old\"\ns = \"new\"\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
 
     #[test]
-    fn 有效_str_整筆覆寫未有_p16_安全證明應拒絕() {
-        let src = "fn main()->int{\nvar s:str = \"old\"\ns = \"new\"\nreturn 0\n}\n";
-        let err = inspect(src).unwrap_err();
-        assert_eq!(err.kind, DiagnosticKind::Static);
-        assert!(err.message.contains("P16"));
-        assert!(err.span.is_some());
+    fn va16_另一合法具名_str_整筆_move_可覆寫有效目標() {
+        let src = "fn main()->int{\nvar s:str = \"old\"\nvar incoming:str = \"new\"\ns = incoming.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn va16_新資源覆寫前先檢查右側型別與原來源借用限制() {
+        let mismatch = "fn main()->int{\nvar s:str = \"old\"\ns = false\nreturn 0\n}\n";
+        assert!(inspect(mismatch).unwrap_err().message.contains("型別"));
+        let borrowed = "fn main()->int{\nvar s:str = \"old\"\nvar alias:str = s.borrow()\ns = \"new\"\nvar invalid:str = alias\nreturn 0\n}\n";
+        assert!(inspect(borrowed).unwrap_err().message.contains("HC14"));
     }
 
     #[test]
@@ -2366,7 +2389,7 @@ mod p13_resource_overwrite_barrier_tests {
     #[test]
     fn 合流仍可能保有資源時禁止整筆覆寫() {
         let src = "fn main()->int{\nvar s:str = \"old\"\nif (true){\nvar taken:str = s.move()\n}\ns = \"new\"\nreturn 0\n}\n";
-        assert!(inspect(src).unwrap_err().message.contains("P16"));
+        assert!(inspect(src).unwrap_err().message.contains("可能"));
     }
 }
 

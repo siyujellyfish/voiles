@@ -146,6 +146,30 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
+    /// VA16-03-A：來源具名整筆 .move() 作為既有 var 的新值。
+    /// 先驗證來源、目的、可寫性和序號，再移交同一 UTF-8 緩衝區，
+    /// 舊值只在成功提交後釋放。任何失敗都不可將來源提前失效。
+    pub(crate) fn replace_from(&mut self, from: &str, to: &str)
+        -> Result<(), StrRuntimeError> {
+        let src = self.location(from)?;
+        let dst = self.location(to)?;
+        if src == dst { return Err(StrRuntimeError::DuplicateBinding); }
+        if !self.scopes[dst.0].names[dst.1].mutable {
+            return Err(StrRuntimeError::ImmutableBinding);
+        }
+        if self.scopes[src.0].names[src.1].owned.is_none() {
+            return Err(StrRuntimeError::MovedSource);
+        }
+        let order = self.next_order()?;
+        let incoming = self.scopes[src.0].names[src.1].owned.take()
+            .expect("已完成來源與目標預檢");
+        self.events.push(ResourceEvent::Moved(incoming.id));
+        let old = self.scopes[dst.0].names[dst.1].owned.replace(incoming);
+        self.scopes[dst.0].names[dst.1].initialized_at = order;
+        if let Some(old) = old { self.release(old); }
+        Ok(())
+    }
+
     /// VA16-03-A：右側先成功取得字串；才把新所有者接到舊 var 綁定。
     /// 成功後由舊綁定負責清理原資源，不透過 String 複製。
     pub(crate) fn assign(&mut self, name: &str, right: &str)
@@ -335,6 +359,55 @@ mod tests {
         // 此為故意不完整資源責任的負例：Rust 最後會釋放 escaped，
         // 但不能把宿主自動釋放誤認為 voiles 清理順序證明。
         drop(escaped);
+    }
+
+    #[test]
+    fn va16_已核准來源整筆移動覆寫_釋放舊值且新資源責任只有一次() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("old", true, "舊字串").unwrap();
+        runtime.declare("new", true, "新字串").unwrap();
+        let pointer = runtime.read("new").unwrap().as_ptr();
+        runtime.replace_from("new", "old").unwrap();
+        assert_eq!(runtime.read("old"), Ok("新字串"));
+        assert_eq!(runtime.read("new"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(runtime.read("old").unwrap().as_ptr(), pointer);
+        assert_eq!(released(runtime.events()), vec![1]);
+        assert_eq!(released(&runtime.finish().unwrap()), vec![1,2]);
+    }
+
+    #[test]
+    fn va16_不可寫目標拒絕後來源字串仍有效且不得提前清理() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("source", true, "source").unwrap();
+        runtime.declare("target", false, "target").unwrap();
+        assert_eq!(runtime.replace_from("source","target"),
+            Err(StrRuntimeError::ImmutableBinding));
+        assert_eq!(runtime.read("source"), Ok("source"));
+        assert_eq!(runtime.read("target"), Ok("target"));
+        assert!(released(runtime.events()).is_empty());
+        assert_eq!(released(&runtime.finish().unwrap()), vec![2,1]);
+    }
+
+    #[test]
+    fn va16_不可從已移動來源覆寫既有目標() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("from", true, "first").unwrap();
+        runtime.move_named("from", "taken").unwrap();
+        runtime.declare("to", true, "old").unwrap();
+        assert_eq!(runtime.replace_from("from","to"),
+            Err(StrRuntimeError::MovedSource));
+        assert_eq!(runtime.read("to"), Ok("old"));
+        assert_eq!(released(&runtime.finish().unwrap()), vec![2,1]);
+    }
+
+    #[test]
+    fn va16_同一名稱自身轉交覆寫拒絕且資源保持可用() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("value", true, "unchanged").unwrap();
+        assert_eq!(runtime.replace_from("value","value"),
+            Err(StrRuntimeError::DuplicateBinding));
+        assert_eq!(runtime.read("value"), Ok("unchanged"));
+        assert_eq!(released(&runtime.finish().unwrap()), vec![1]);
     }
 
     #[test]
