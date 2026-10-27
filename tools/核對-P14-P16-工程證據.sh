@@ -38,5 +38,7 @@ check_phase P14_P15_SOURCE struct_stage::va14_va15_borrow_source_tests::
 check_phase P15_BRANCH struct_stage::va15_path_sensitive_last_use_tests::
 check_phase P16 resource_obligation_audit::tests::
 check_phase P16_UTF8 owned_str_runtime::tests::
+check_phase P16_STRUCT_PLAN struct_eval_plan::tests::
+check_phase P16_STRUCT_RUNTIME struct_initialization::tests::
 check_phase P14_P16 resource_borrow_pipeline::tests::
 echo "P14～P16 工程候選證據可重現，正式 Phase 依原規格及相依階段另行驗收。"
