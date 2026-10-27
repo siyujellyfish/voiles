@@ -1480,9 +1480,9 @@ mod automatic_self_borrow_tests {
     }
 
     #[test]
-    fn 一般函式不可繞過尚未支援的欄位賦值別名檢查() {
+    fn 一般函式在完整持有來源上可合法寫入已核准_copyable_var_欄位() {
         let src = "struct X{\nvar n:int = 1\n}\nfn main()->int{\nvar x:X = X()\nx.n = 2\nreturn 0\n}\n";
-        assert!(inspect(src).unwrap_err().message.contains("所有權與別名"));
+        assert!(inspect(src).is_ok());
     }
 }
 
@@ -2174,7 +2174,7 @@ mod p13_d02_const_partial_safety_tests {
         let reassignment = partial().replace("return 0", "item = Sample(value=9)\nreturn 0");
         assert!(inspect(&reassignment).unwrap_err().message.contains("const"));
         let field_write = partial().replace("return 0", "item.value = 9\nreturn 0");
-        assert!(inspect(&field_write).unwrap_err().message.contains("所有權與別名"));
+        assert!(inspect(&field_write).unwrap_err().message.contains("初始化"));
     }
 
     #[test]
