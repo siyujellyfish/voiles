@@ -1900,7 +1900,14 @@ mod str_ownership_branch_tests {
         let source = include_str!(
             "../tests/fixtures/p13_stage/字串巢狀分支有可達移動不得再次使用.voil"
         );
+        // 原素材的 else 覆寫仍有效 str，依 P16 安全防線應更早被拒絕。
         let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P16"));
+        // 將覆寫換成不觸及資源的獨立宣告，原「可能已移動」合流
+        // 拒絕也必須繼續存在，不以新拒絕理由掩蓋狀態合流。
+        let merged = source.replace("original = \"alternate\"", "var untouched2:int = 1");
+        let err = inspect(&merged).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("可能"));
         assert!(err.span.is_some());
