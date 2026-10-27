@@ -1784,6 +1784,25 @@ mod str_ownership_branch_tests {
     }
 
     #[test]
+    fn str_巢狀提前_return_不可達移動不污染可達合流() {
+        let source = include_str!(
+            "../tests/fixtures/p13_stage/字串巢狀分支提前回傳不污染合流.voil"
+        );
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn str_巢狀分支有可達移動時合流後須拒絕再次使用() {
+        let source = include_str!(
+            "../tests/fixtures/p13_stage/字串巢狀分支有可達移動不得再次使用.voil"
+        );
+        let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("可能"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
     fn 字串在重新初始化前仍不得隱含複製且禁止讀取已移動來源() {
         let source =
             include_str!("../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
