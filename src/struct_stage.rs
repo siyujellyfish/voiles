@@ -2336,6 +2336,49 @@ mod vb14_vb15_vb16_approved_source_tests {
 }
 
 #[cfg(test)]
+mod vb16_constructor_source_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn vb16_具名順序任意且覆蓋預設_真正來源建構合法() {
+        let source = "struct Config{\nvar text:str = \"default\"\nconst fixed:bool = true\nvar amount:int = 1\n}\nfn main()->int{\nvar value:Config = Config(amount=2,text=\"named\")\nreturn value.amount\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn vb16_具名之前先完整預檢未知欄位不得消耗來源() {
+        let source = "struct S{\nvar text:str = \"default\"\n}\nfn main()->int{\nvar owner:str = \"source\"\nvar item:S = S(text=owner.move(),missing=1)\nreturn 0\n}\n";
+        let err=inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("UnknownField"));
+    }
+
+    #[test]
+    fn vb16_重複具名引數不得在錯誤前部分移動() {
+        let source = "struct S{\nvar text:str = \"default\"\n}\nfn main()->int{\nvar owner:str = \"source\"\nvar item:S = S(text=owner.move(),text=\"other\")\nreturn 0\n}\n";
+        let err=inspect(source).unwrap_err();
+        assert!(err.message.contains("DuplicateField"));
+    }
+
+    #[test]
+    fn vb16_未給具名引數的欄位必須靜態檢查預設值型別() {
+        let source = "struct S{\nvar value:int = \"wrong\"\n}\nfn main()->int{\nvar item:S = S()\nreturn 0\n}\n";
+        let err=inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("型別") || err.message.contains("VB16"));
+    }
+
+    #[test]
+    fn vb16_部分初始化_var_合法但不能拿未補齊實例來讀欄位() {
+        let source = "struct S{\nvar late:int\nvar text:str = \"default\"\n}\nfn main()->int{\nvar item:S = S()\nreturn item.late\n}\n";
+        let err=inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("初始化"));
+    }
+}
+
+#[cfg(test)]
 mod va15_path_sensitive_last_use_tests {
     use super::inspect;
     use crate::DiagnosticKind;
