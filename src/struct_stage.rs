@@ -218,7 +218,11 @@ impl Parser<'_> {
                     while !self.symbol(')') {
                         let field = self.name()?;
                         if !names.insert(field.clone()) {
-                            return Err(self.syntax("建立結構時不得重複指定同一欄位"));
+                            return Err(Diagnostic {
+                                kind: DiagnosticKind::Static,
+                                message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
+                                span: Some(self.source.span(self.tok().start, self.tok().end)),
+                            });
                         }
                         self.take('=', "具名欄位引數需要等號")?;
                         let value = self.term()?;
