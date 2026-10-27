@@ -823,23 +823,49 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Construct(name, args) => {
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
-                let mut written = HashSet::new();
-                for (field, expr) in args {
-                    let expected = definition.fields.iter().find(|f| f.name == *field)
-                        .ok_or_else(|| self.error("建立結構時指定了不存在的欄位", term))?;
-                    if !written.insert(field.as_str()) {
-                        return Err(self.error("建立結構時不得重複指定欄位", term));
-                    }
-                    let (actual, ready) = self.evaluate(expr, vars)?;
+                // VB16-01-A：嚴格依書寫順序先求值所有具名引數，之後
+                // 再依宣告順序求值未被覆蓋的預設值。先檢查整份
+                // 計畫再求值，重複／不存在欄位不得先消耗資源來源。
+                let fields: Vec<_> = definition.fields.iter().map(|field|
+                    crate::struct_eval_plan::FieldInfo {
+                        name: field.name.as_str(),
+                        has_default: field.default.is_some(),
+                        immutable: field.immutable,
+                    }).collect();
+                let names: Vec<_> = args.iter().map(|(field, _)| field.as_str()).collect();
+                let ordered = crate::struct_eval_plan::plan(&fields, &names)
+                    .map_err(|error| self.error(&format!(
+                        "VB16：結構求值計畫不合法：{error:?}"), term))?;
+                for step in &ordered.steps {
+                    let expected = definition.fields.iter()
+                        .find(|field| field.name == step.field)
+                        .expect("計畫中的欄位已預檢存在");
+                    let (expr, actual, ready) = match step.origin {
+                        crate::struct_eval_plan::Origin::Named => {
+                            let expr = args.iter()
+                                .find(|(field, _)| *field == step.field)
+                                .map(|(_, expression)| expression)
+                                .expect("具名引數已預檢存在");
+                            let (actual, ready) = self.evaluate(expr, vars)?;
+                            (expr, actual, ready)
+                        }
+                        crate::struct_eval_plan::Origin::Default => {
+                            let expr = expected.default.as_ref()
+                                .expect("未被覆蓋的預設值已預檢存在");
+                            // 欄位預設值在其宣告本身的獨立上下文求值，
+                            // 不暗中捕獲呼叫端的區域名稱。
+                            let (actual, ready) = self.evaluate(
+                                expr, &mut vec![HashMap::new()])?;
+                            (expr, actual, ready)
+                        }
+                    };
                     if actual != expected.ty || !ready {
-                        return Err(self.error("結構具名欄位初值型別不一致或尚未初始化", expr));
+                        return Err(self.error(
+                            "VB16：結構欄位求值型別錯誤或資源尚未完成初始化",
+                            expr));
                     }
                 }
-                // const 欄位依法必有預設；未給初值的 var 欄位可延後初始化，
-                // 但本保守子集不允許把尚未全部初始化的實例複製／移動。
-                let complete = definition.fields.iter()
-                    .all(|field| written.contains(field.name.as_str()) || field.default.is_some());
-                Ok((name.clone(), complete))
+                Ok((name.clone(), ordered.missing_mutable_fields.is_empty()))
             }
         }
     }
