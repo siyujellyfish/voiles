@@ -42,6 +42,26 @@ if ./target/p13-accept/voiles \
 fi
 test ! -s target/p13-accept/struct.out
 grep -q "語法錯誤" target/p13-accept/struct.err
+# D01 list A／dict A：能力分類僅在私有 Rust 內部，公開 CLI 必須拒絕容器語法。
+for kind in list dict; do
+  case "$kind" in
+    list) ty='list[int]' ;;
+    dict) ty='dict{str,int}' ;;
+  esac
+  cat >"target/p13-accept/d01_${kind}_not_public.voil" <<VOILES
+fn main()->int{
+var item:${ty}
+return 0
+}
+VOILES
+  if ./target/p13-accept/voiles "target/p13-accept/d01_${kind}_not_public.voil" \
+    >"target/p13-accept/d01_${kind}.out" 2>"target/p13-accept/d01_${kind}.err"; then
+    echo "D01：公開 MVP-A 不應接受 ${ty}" >&2
+    exit 1
+  fi
+  test ! -s "target/p13-accept/d01_${kind}.out"
+  grep -q "語法錯誤" "target/p13-accept/d01_${kind}.err"
+done
 echo "【5/7】Rust 核心與 P13 內部模型測試"
 rustup run stable rustc --edition=2021 --test --crate-name voiles_internal src/lib.rs -o target/p13-accept/internal_tests
 ./target/p13-accept/internal_tests
@@ -63,6 +83,10 @@ grep -q "p13_d02_const_partial_safety_tests::d02_a_const_" \
   target/p13-accept/internal_tests.list
 grep -q "float_copyable_method_tests::float_已准_copyable_" \
   target/p13-accept/internal_tests.list
+grep -q "container_copy_policy::tests::d01_後續_list_a_dict_a_保留兩種類獨立未決" \
+  target/p13-accept/internal_tests.list
+grep -q "container_copy_policy::tests::d01_後續_list_a_dict_a_拒絕隱含複製" \
+  target/p13-accept/internal_tests.list
 ./target/p13-accept/internal_tests struct_stage:: \
   >target/p13-accept/p13_struct_tests.log
 ./target/p13-accept/internal_tests p13_d02_const_partial_safety_tests:: \
@@ -71,6 +95,8 @@ grep -q "float_copyable_method_tests::float_已准_copyable_" \
   >target/p13-accept/p13_borrow_tests.log
 ./target/p13-accept/internal_tests ownership_policy::tests:: \
   >target/p13-accept/p13_copy_tests.log
+./target/p13-accept/internal_tests container_copy_policy::tests:: \
+  >target/p13-accept/p13_container_copy_tests.log
 ./target/p13-accept/internal_tests str_noncopyable_policy_tests:: \
   >target/p13-accept/p13_str_tests.log
 ./target/p13-accept/internal_tests float_copyable_approved_tests:: \
@@ -81,6 +107,7 @@ grep -q "test result: ok." target/p13-accept/p13_struct_tests.log
 grep -q "test result: ok." target/p13-accept/p13_d02_tests.log
 grep -q "test result: ok." target/p13-accept/p13_borrow_tests.log
 grep -q "test result: ok." target/p13-accept/p13_copy_tests.log
+grep -q "test result: ok." target/p13-accept/p13_container_copy_tests.log
 grep -q "test result: ok." target/p13-accept/p13_str_tests.log
 grep -q "test result: ok." target/p13-accept/p13_float_tests.log
 echo "【7/7】49 項 P01 語意案例與 1 項素材追溯"
