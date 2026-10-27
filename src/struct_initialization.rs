@@ -100,6 +100,35 @@ mod tests {
         ]
     }
     #[test]
+    fn va16_結構_var_str_欄位獨立常值覆寫先釋放舊值() {
+        let mut rt=OwnedStrRuntime::new();
+        rt.enter_scope();
+        rt.declare("text",true,"old").unwrap();
+        rt.assign("text","new").unwrap();
+        assert_eq!(rt.read("text"),Ok("new"));
+        assert_eq!(released(rt.events()),vec![1]);
+        rt.leave_scope().unwrap();
+        let events=rt.finish().unwrap();
+        assert_eq!(created(&events),vec![1,2]);
+        assert_eq!(released(&events),vec![1,2]);
+    }
+
+    #[test]
+    fn va16_結構欄位求值失敗時舊值可用且暫存新資源被清理() {
+        let mut rt=OwnedStrRuntime::new();
+        rt.enter_scope();
+        rt.declare("text",true,"old").unwrap();
+        assert_eq!(rt.assign_checked("text","not committed",true),
+            Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(rt.read("text"),Ok("old"));
+        assert_eq!(released(rt.events()),vec![2]);
+        rt.leave_scope().unwrap();
+        let events=rt.finish().unwrap();
+        assert_eq!(created(&events),vec![1,2]);
+        assert_eq!(released(&events),vec![2,1]);
+    }
+
+    #[test]
     fn vb16_具名與預設欄位真實資源依核准順序求值及反序清理(){
         let out=build_string_struct(&fields(),&[
             NamedString{field:"c",value:"丙"},
