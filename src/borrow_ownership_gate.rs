@@ -55,21 +55,45 @@ impl BorrowOwnershipGate {
         self.direct(id).map(|_| ())
     }
 
-    pub(crate) fn copy_into(&mut self, from: DeclarationId, to: DeclarationId)
+    /// P14/P16 共用的唯讀預檢：先證明來源有效及複製資格，
+    /// 才能讓同一交易內的資源責任模型發生任何變化。
+    pub(crate) fn check_copy_into(&self, from: DeclarationId, to: DeclarationId)
         -> Result<(), GateError> {
         if self.values.contains_key(&to) { return Err(GateError::DuplicateDestination); }
+        self.direct(from)?.duplicate().map_err(GateError::Value)?;
+        Ok(())
+    }
+
+    pub(crate) fn copy_into(&mut self, from: DeclarationId, to: DeclarationId)
+        -> Result<(), GateError> {
+        self.check_copy_into(from, to)?;
         let copied = self.direct(from)?.duplicate().map_err(GateError::Value)?;
         self.values.insert(to, copied);
         Ok(())
     }
 
-    pub(crate) fn move_into(&mut self, from: DeclarationId, to: DeclarationId)
+    pub(crate) fn check_move_into(&self, from: DeclarationId, to: DeclarationId)
         -> Result<(), GateError> {
         if self.values.contains_key(&to) { return Err(GateError::DuplicateDestination); }
         self.direct(from)?;
+        Ok(())
+    }
+
+    pub(crate) fn move_into(&mut self, from: DeclarationId, to: DeclarationId)
+        -> Result<(), GateError> {
+        self.check_move_into(from, to)?;
         let moved = self.values.get_mut(&from).expect("已確認合法來源")
             .move_whole().map_err(GateError::Value)?;
         self.values.insert(to, moved);
+        Ok(())
+    }
+
+    /// 僅供 P14/P16 內部交易使用；清理前拒絕仍受借用的來源。
+    /// 不代表語言已核准任何自動析構時間點。
+    pub(crate) fn finish_owner(&mut self, owner: DeclarationId)
+        -> Result<(), GateError> {
+        self.direct(owner)?;
+        self.values.remove(&owner);
         Ok(())
     }
 
