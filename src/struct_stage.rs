@@ -753,9 +753,36 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         mutable: *mutable, value: slot
                     });
                 }
-                StmtKind::FieldAssign { value, .. } => {
-                    return Err(self.error(
-                        "一般函式內的欄位寫入尚未完成所有權與別名驗證", value));
+                StmtKind::FieldAssign { receiver, field, value } => {
+                    // P13 僅接受可直接證明安全的具名整筆持有者之 Copyable var
+                    // 欄位覆寫；非 Copyable 欄位的舊值清理屬 P16，不擅自補定。
+                    let owner = Self::lookup(vars, receiver)
+                        .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
+                    owner.value.read().map_err(|err| self.model_error(err, value))?;
+                    if !owner.mutable {
+                        return Err(self.error("S18：const 結構實例不可修改欄位", value));
+                    }
+                    let member = self.structs.get(&owner.ty)
+                        .and_then(|def| def.fields.iter().find(|f| f.name == *field))
+                        .ok_or_else(|| self.error("欄位寫入的型別或欄位不存在", value))?;
+                    if member.immutable {
+                        return Err(self.error("S18：const 欄位不可重新賦值", value));
+                    }
+                    let expected_type = member.ty.clone();
+                    let permission = self.permission(&expected_type);
+                    if permission != CopyPermission::Allowed {
+                        return Err(self.reject_noncopyable(permission,
+                            "P13 欄位覆寫涉及未核准的原值資源清理", value));
+                    }
+                    let (actual, ready) = self.evaluate(value, vars)?;
+                    if actual != expected_type || !ready {
+                        return Err(self.error("欄位賦值型別錯誤或來源尚未完整初始化", value));
+                    }
+                    // RHS 有可能消耗或重新繫結接收者；必須重新確認原來源
+                    // 仍完整且可寫，不能讓自我移動或分支失效繞過檢查。
+                    let owner = Self::lookup(vars, receiver)
+                        .ok_or_else(|| self.error("欄位寫入接收者已失效", value))?;
+                    owner.value.read().map_err(|err| self.model_error(err, value))?;
                 }
                 StmtKind::Assign { name, value } => {
                     let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
@@ -1963,6 +1990,67 @@ mod conservative_decimal64_tests {
         assert!(inspect("fn main()->int{\nvar x:float = 1.25\nvar y:float = x\nreturn 0\n}\n").is_ok());
         let bad = "fn main()->int{\nvar x:int = 1.25\nreturn 0\n}\n";
         assert!(inspect(bad).unwrap_err().message.contains("型別"));
+    }
+}
+
+#[cfg(test)]
+mod p13_formal_field_write_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    const BODY: &str =
+        "struct S{\nvar n:int = 1\nconst fixed:bool = true\nvar text:str = \"ok\"\n}\nfn main()->int{\nvar a:S = S()\n";
+
+    #[test]
+    fn p13_s13_s18_完整_var_接收者可覆寫_copyable_var_欄位() {
+        let src = format!("{BODY}a.n = 2\nvar copy:int = a.n\nreturn copy\n}}\n");
+        assert!(inspect(&src).is_ok());
+        let in_branch = format!(
+            "{BODY}if (true){{\na.n = 3\n}}else{{\na.n = 4\n}}\nreturn a.n\n}}\n"
+        );
+        assert!(inspect(&in_branch).is_ok());
+    }
+
+    #[test]
+    fn p13_s18_const_實例及_const_欄位都不能寫入() {
+        let const_owner = "struct S{\nvar n:int = 1\n}\nfn main()->int{\nconst a:S = S()\na.n = 2\nreturn 0\n}\n";
+        let err = inspect(const_owner).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("S18"));
+        let const_field = format!("{BODY}a.fixed = false\nreturn 0\n}}\n");
+        assert!(inspect(&const_field).unwrap_err().message.contains("S18"));
+    }
+
+    #[test]
+    fn p13_資源欄位覆寫仍依_p16_前置安全保守拒絕() {
+        let src = format!("{BODY}a.text = \"new\"\nreturn 0\n}}\n");
+        let err = inspect(&src).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable 已明確禁止"));
+    }
+
+    #[test]
+    fn p13_移動後_分支不確定_未初始化接收者都不得寫欄位() {
+        let moved = format!(
+            "{BODY}var b:S = a.move()\na.n = 2\nreturn 0\n}}\n"
+        );
+        assert!(inspect(&moved).unwrap_err().message.contains("已移動"));
+        let uncertain = format!(
+            "{BODY}if (true){{\nvar b:S = a.move()\n}}\na.n = 2\nreturn 0\n}}\n"
+        );
+        assert!(inspect(&uncertain).unwrap_err().message.contains("可能"));
+        let partial = "struct S{\nvar n:int\n}\nfn main()->int{\nvar a:S = S()\na.n = 2\nreturn 0\n}\n";
+        assert!(inspect(partial).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn p13_欄位型別不符與原來源仍受檢查() {
+        let type_mismatch = format!("{BODY}a.n = false\nreturn 0\n}}\n");
+        assert!(inspect(&type_mismatch).unwrap_err().message.contains("型別"));
+        let missing = format!("{BODY}a.other = 5\nreturn 0\n}}\n");
+        assert!(inspect(&missing).unwrap_err().message.contains("不存在"));
+        let source_move = format!("{BODY}var n:int = 5\na.n = n.move()\nreturn n\n}}\n");
+        assert!(inspect(&source_move).unwrap_err().message.contains("已移動"));
     }
 }
 
