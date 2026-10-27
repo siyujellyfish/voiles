@@ -1,5 +1,6 @@
 //! P13-D01-B：容器按種類獨立判定 Copyable 能力的內部安全界線。
-//! list／dict 尚無核准的具體複製規則；不得自動繼承其元素或鍵值型別的資格。
+//! 使用者已選 list A／dict A：本階段兩類維持 Undecided，最終規則延後裁決。
+//! 不得自動繼承元素或鍵值型別資格，也不可把未決誤記為永久禁止。
 //! 此模組不解析完整容器型別，也不定義容器複製、借用或執行期表示。
 #![allow(dead_code)]
 
@@ -22,7 +23,7 @@ pub(crate) fn classify_container_shape(ty: &str) -> Option<ContainerKind> {
     }
 }
 
-/// P13-D01-B 已選「分種類決定」，但尚未選每一種類的可複製與否。
+/// D01-B 依種類分派；後續 list A／dict A 已各自選擇本階段保持未決。
 /// 任何元素全可複製、空容器或巢狀形狀都不構成容器複製能力的授權。
 pub(crate) fn approved_container_copy_permission(kind: ContainerKind)
     -> CopyPermission {
@@ -87,4 +88,37 @@ mod tests {
         assert_eq!(approved_container_copy_permission(ContainerKind::Dictionary),
             CopyPermission::Undecided);
     }
+    #[test]
+    fn d01_後續_list_a_dict_a_保留兩種類獨立未決與已核准葉型別() {
+        for (ty, kind) in [
+            ("list[int]", ContainerKind::List),
+            ("list[str]", ContainerKind::List),
+            ("list[list[float]]", ContainerKind::List),
+            ("dict{int,bool}", ContainerKind::Dictionary),
+            ("dict{str,int}", ContainerKind::Dictionary),
+            ("dict{int,list[str]}", ContainerKind::Dictionary),
+        ] {
+            assert_eq!(classify_container_shape(ty), Some(kind));
+            assert_eq!(approved_container_copy_permission(kind), CopyPermission::Undecided);
+            assert_eq!(approved_leaf_copy_permission(ty), CopyPermission::Undecided);
+        }
+        assert_eq!(approved_leaf_copy_permission("int"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Allowed);
+        assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
+    }
+
+    #[test]
+    fn d01_後續_list_a_dict_a_拒絕隱含複製但不毀損可用來源() {
+        for ty in ["list[int]", "list[str]", "dict{int,float}", "dict{str,str}"] {
+            let source = ValueSlot::initialized(approved_leaf_copy_permission(ty));
+            assert_eq!(source.duplicate(), Err(ModelError::CopyUndecided));
+            assert!(source.read().is_ok(), "Copyable 未決不等於來源已移動");
+            assert_eq!(
+                whole_struct_copy(&[CopyPermission::Allowed, approved_leaf_copy_permission(ty)]),
+                Err(StructOwnershipError::FieldCopyUndecided)
+            );
+        }
+    }
+
 }
