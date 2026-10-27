@@ -62,6 +62,8 @@ enum TermKind {
     Name(String),
     Construct(String, Vec<(String, Term)>),
     Move(String),
+    /// VA14-01-A：只於具型別 var／const 直接初始化時建立非擁有借用。
+    Borrow(String),
     FieldMove(String, String),
     /// 只讀欄位值的複製；需另外通過已初始化與 HA13/S19 Copyable 檢查。
     FieldRead(String, String),
@@ -231,7 +233,11 @@ impl Parser<'_> {
                 } else if self.symbol('.') {
                     self.cursor += 1;
                     let field_or_move = self.name()?;
-                    if field_or_move == "move" && self.symbol('(') {
+                    if field_or_move == "borrow" && self.symbol('(') {
+                        self.cursor += 1;
+                        self.take(')', "一般借用 .borrow() 不可帶引數")?;
+                        (TermKind::Borrow(s), self.tokens[self.cursor - 1].end)
+                    } else if field_or_move == "move" && self.symbol('(') {
                         self.cursor += 1;
                         self.take(')', "明確移動目前只接受零參數")?;
                         (TermKind::Move(s), self.tokens[self.cursor - 1].end)
@@ -428,6 +434,13 @@ impl Parser<'_> {
 }
 
 #[derive(Clone)]
+struct LoanBinding {
+    source: usize,
+    kind: BorrowKind,
+    active: bool,
+}
+
+#[derive(Clone)]
 struct Binding {
     declaration_start: usize,
     ty: String,
@@ -436,6 +449,8 @@ struct Binding {
     /// 僅以合法 struct 建立式已知的未初始化 var 欄位集合。
     /// None 表示不存在可追蹤的部分建立證明；不等於全部欄位可用。
     pending_fields: Option<HashSet<String>>,
+    /// 非擁有的借用別名，不擁有來源值，不允許 .move()。
+    loan: Option<LoanBinding>,
 }
 
 /// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
