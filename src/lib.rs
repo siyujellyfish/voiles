@@ -28,6 +28,8 @@ mod struct_move_probe;
 mod struct_stage;
 mod struct_eval_plan;
 mod struct_initialization;
+#[cfg(test)]
+mod vb16_constructor_source_tests;
 
 use std::fmt;
 use std::io::ErrorKind;
