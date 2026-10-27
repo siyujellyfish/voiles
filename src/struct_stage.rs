@@ -2228,6 +2228,98 @@ mod conservative_decimal64_tests {
 }
 
 #[cfg(test)]
+mod va14_va15_borrow_source_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn va15_合法最後使用後來源恢復可用_不必等區塊出口() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar copy:int = alias\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_來源借用尚有效時不得直接隱含複製() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar illegal:int = owner\nreturn alias\n}\n";
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn va14_const_共享借用可同時存在() {
+        let source = "fn main()->int{\nconst owner:int = 1\nconst first:int = owner.borrow()\nconst second:int = owner.borrow()\nvar read:int = first\nreturn second\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_var_獨占借用不可重疊() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar second:int = owner.borrow()\nreturn first\n}\n";
+        let error = inspect(source).unwrap_err();
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn va14_來源與借用宣告可變性不符必須拒絕() {
+        for source in [
+            "fn main()->int{\nconst owner:int = 1\nvar alias:int = owner.borrow()\nreturn 0\n}\n",
+            "fn main()->int{\nvar owner:int = 1\nconst alias:int = owner.borrow()\nreturn 0\n}\n",
+        ] {
+            assert!(inspect(source).unwrap_err().message.contains("VA14-01"));
+        }
+    }
+
+    #[test]
+    fn va14_非擁有借用不得被明確_move_轉換成所有者() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar moved:int = alias.move()\nreturn owner\n}\n";
+        let error = inspect(source).unwrap_err();
+        assert!(error.message.contains("VA14-01"));
+    }
+
+    #[test]
+    fn va15_借用回傳沒有獨立存活證明時拒絕_但_copyable_值可獨立複製() {
+        let bad = "fn main()->str{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nreturn alias\n}\n";
+        assert!(inspect(bad).unwrap_err().message.contains("Copyable"));
+        let direct = "fn main()->int{\nvar owner:int = 1\nreturn owner.borrow()\n}\n";
+        assert!(inspect(direct).unwrap_err().message.contains("逃逸"));
+        let copy = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nreturn alias\n}\n";
+        assert!(inspect(copy).is_ok());
+    }
+
+    #[test]
+    fn va14_借用原非_copyable_資源期間不能偷偷移動來源() {
+        let source = "fn main()->int{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nvar stolen:str = owner.move()\nreturn 0\n}\n";
+        // 沒有實際用到 alias 會即時歸還，因此另加最後使用以確保此處仍借用。
+        let source = source.replace("return 0", "var copy:str = alias\nreturn 0");
+        assert!(inspect(&source).unwrap_err().message.contains("HC14"));
+    }
+
+    #[test]
+    fn va15_分支內借用於分支最後使用後歸還外層來源() {
+        let source = "fn main()->int{\nvar owner:int = 1\nif (true){\nvar alias:int = owner.borrow()\nvar copy:int = alias\n}else{\nvar other:int = 2\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_借用接收者合法唯讀方法且最後使用後解除封鎖() {
+        let source = "struct S{\nvar n:int = 1\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nconst owner:S = S()\nconst alias:S = owner.borrow()\nvar independent:int = alias.get()\nreturn owner.get()\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_var_獨占借用可呼叫合法可寫方法且原來源於最後使用後恢復() {
+        let source = "struct S{\nvar n:int = 1\nfn update()->int{\nself.n = 2\nreturn self.n\n}\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nvar owner:S = S()\nvar alias:S = owner.borrow()\nvar independent:int = alias.update()\nreturn owner.get()\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_再借用_在缺乏別名關係證明前保守拒絕() {
+        let source = "fn main()->int{\nconst owner:int = 1\nconst alias:int = owner.borrow()\nconst twice:int = alias.borrow()\nreturn twice\n}\n";
+        assert!(inspect(source).unwrap_err().message.contains("再次借用"));
+    }
+}
+
+#[cfg(test)]
 mod p13_resource_overwrite_barrier_tests {
     use super::inspect;
     use crate::DiagnosticKind;
