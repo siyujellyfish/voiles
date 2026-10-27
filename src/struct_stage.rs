@@ -989,6 +989,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 容器與未確認欄位清理仍不得假裝有相同執行期保證。
                     let state = expected.value.state();
                     if self.permission(&ty) != CopyPermission::Allowed
+                        && state == ValueState::MayBeUnavailable {
+                        return Err(self.error(
+                            "VA16-03：合流後資源可能存在或已移動，條件性舊值清理尚未證明",
+                            value));
+                    }
+                    if self.permission(&ty) != CopyPermission::Allowed
                         && !matches!(state, ValueState::Uninitialized | ValueState::Moved) {
                         let proven_str_rhs = ty == "str"
                             && matches!(&value.kind,
@@ -2329,15 +2335,24 @@ mod va14_va15_borrow_source_tests {
 #[cfg(test)]
 mod p13_resource_overwrite_barrier_tests {
     use super::inspect;
-    use crate::DiagnosticKind;
+    #[test]
+    fn va16_已核准有效_str_新常值原子覆寫為合法來源() {
+        let src = "fn main()->int{\nvar s:str = \"old\"\ns = \"new\"\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
 
     #[test]
-    fn 有效_str_整筆覆寫未有_p16_安全證明應拒絕() {
-        let src = "fn main()->int{\nvar s:str = \"old\"\ns = \"new\"\nreturn 0\n}\n";
-        let err = inspect(src).unwrap_err();
-        assert_eq!(err.kind, DiagnosticKind::Static);
-        assert!(err.message.contains("P16"));
-        assert!(err.span.is_some());
+    fn va16_另一合法具名_str_整筆_move_可覆寫有效目標() {
+        let src = "fn main()->int{\nvar s:str = \"old\"\nvar incoming:str = \"new\"\ns = incoming.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn va16_新資源覆寫前先檢查右側型別與原來源借用限制() {
+        let mismatch = "fn main()->int{\nvar s:str = \"old\"\ns = false\nreturn 0\n}\n";
+        assert!(inspect(mismatch).unwrap_err().message.contains("型別"));
+        let borrowed = "fn main()->int{\nvar s:str = \"old\"\nvar alias:str = s.borrow()\ns = \"new\"\nvar invalid:str = alias\nreturn 0\n}\n";
+        assert!(inspect(borrowed).unwrap_err().message.contains("HC14"));
     }
 
     #[test]
@@ -2373,7 +2388,7 @@ mod p13_resource_overwrite_barrier_tests {
     #[test]
     fn 合流仍可能保有資源時禁止整筆覆寫() {
         let src = "fn main()->int{\nvar s:str = \"old\"\nif (true){\nvar taken:str = s.move()\n}\ns = \"new\"\nreturn 0\n}\n";
-        assert!(inspect(src).unwrap_err().message.contains("P16"));
+        assert!(inspect(src).unwrap_err().message.contains("可能"));
     }
 }
 
