@@ -43,6 +43,7 @@ verify_group 4 flow struct_stage::str_ownership_branch_tests::
 verify_group 4 ledger ownership_ledger::tests::
 verify_group 5 positive struct_stage::float_copyable_approved_tests::
 verify_group 5 negative struct_stage::p13_d02_const_partial_safety_tests::
+verify_group 6 field_write struct_stage::p13_formal_field_write_tests::
 verify_group 6 struct struct_ownership::tests::
 verify_group 6 method struct_stage::p13_deferred_borrowed_return_tests::
 echo "P13.1～P13.6 私有測試候選門檻已取得證據；完整語意仍須正式驗收。"
