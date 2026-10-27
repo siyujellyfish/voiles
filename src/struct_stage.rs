@@ -62,6 +62,8 @@ enum TermKind {
     Name(String),
     Construct(String, Vec<(String, Term)>),
     Move(String),
+    /// VA14-01-A：只於具型別 var／const 直接初始化時建立非擁有借用。
+    Borrow(String),
     FieldMove(String, String),
     /// 只讀欄位值的複製；需另外通過已初始化與 HA13/S19 Copyable 檢查。
     FieldRead(String, String),
@@ -231,7 +233,11 @@ impl Parser<'_> {
                 } else if self.symbol('.') {
                     self.cursor += 1;
                     let field_or_move = self.name()?;
-                    if field_or_move == "move" && self.symbol('(') {
+                    if field_or_move == "borrow" && self.symbol('(') {
+                        self.cursor += 1;
+                        self.take(')', "一般借用 .borrow() 不可帶引數")?;
+                        (TermKind::Borrow(s), self.tokens[self.cursor - 1].end)
+                    } else if field_or_move == "move" && self.symbol('(') {
                         self.cursor += 1;
                         self.take(')', "明確移動目前只接受零參數")?;
                         (TermKind::Move(s), self.tokens[self.cursor - 1].end)
@@ -428,6 +434,13 @@ impl Parser<'_> {
 }
 
 #[derive(Clone)]
+struct LoanBinding {
+    source: usize,
+    kind: BorrowKind,
+    active: bool,
+}
+
+#[derive(Clone)]
 struct Binding {
     declaration_start: usize,
     ty: String,
@@ -436,6 +449,8 @@ struct Binding {
     /// 僅以合法 struct 建立式已知的未初始化 var 欄位集合。
     /// None 表示不存在可追蹤的部分建立證明；不等於全部欄位可用。
     pending_fields: Option<HashSet<String>>,
+    /// 非擁有的借用別名，不擁有來源值，不允許 .move()。
+    loan: Option<LoanBinding>,
 }
 
 /// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
@@ -490,6 +505,94 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
     fn lookup_mut<'b>(vars: &'b mut Scopes, name: &str) -> Option<&'b mut Binding> {
         vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
+    }
+
+    /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
+    /// 不能只以目前作用域或表面名稱判斷，否則遮蔽可繞過來源封鎖。
+    fn active_loans(vars: &Scopes, source: usize) -> Vec<BorrowKind> {
+        vars.iter().flat_map(|scope| scope.values()).filter_map(|binding| {
+            binding.loan.as_ref().and_then(|loan| {
+                (loan.active && loan.source == source).then_some(loan.kind)
+            })
+        }).collect()
+    }
+
+    fn check_direct(&self, vars: &Scopes, name: &str, term: &Term)
+        -> Result<(), Diagnostic> {
+        let owner = Self::lookup(vars, name)
+            .ok_or_else(|| self.error("找不到原始來源宣告", term))?;
+        if owner.loan.is_none() && !Self::active_loans(vars, owner.declaration_start).is_empty() {
+            return Err(self.error("HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term));
+        }
+        Ok(())
+    }
+
+    fn authorize_borrow(&self, vars: &Scopes, source: &str, mutable: bool, term: &Term)
+        -> Result<(String, LoanBinding), Diagnostic> {
+        let owner = Self::lookup(vars, source)
+            .ok_or_else(|| self.error("P14 找不到可借用來源", term))?;
+        if owner.loan.is_some() {
+            return Err(self.error("P14：由借用再次借用尚未有完整別名證明", term));
+        }
+        owner.value.read().map_err(|e| self.model_error(e, term))?;
+        if owner.mutable != mutable {
+            return Err(self.error("VA14-01：借用變數的 var／const 權限必須跟隨來源", term));
+        }
+        let kind = if mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
+        let conflicts = Self::active_loans(vars, owner.declaration_start);
+        if (kind == BorrowKind::ExclusiveWrite && !conflicts.is_empty())
+            || (kind == BorrowKind::SharedRead
+                && conflicts.contains(&BorrowKind::ExclusiveWrite)) {
+            return Err(self.error("HC14：共享／獨占借用與現有別名衝突", term));
+        }
+        Ok((owner.ty.clone(), LoanBinding {
+            source: owner.declaration_start, kind, active: true,
+        }))
+    }
+
+    /// 本批只對真正已解析的語句追蹤別名是否未來仍被使用。
+    /// 此處寧可把有遮蔽的同名字串當成仍存活（假陽性），也不能
+    /// 漏掉未來引用造成提前解鎖；完整詞彙來源精細度留待 P15 驗收。
+    fn term_mentions(term: &Term, name: &str) -> bool {
+        match &term.kind {
+            TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+                => id == name,
+            TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _)
+                | TermKind::MethodCall(id, _) => id == name,
+            TermKind::Construct(_, arguments) =>
+                arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
+            TermKind::Literal(_) => false,
+        }
+    }
+
+    fn statement_mentions(statement: &Stmt, name: &str) -> bool {
+        match &statement.kind {
+            StmtKind::Declare { init, .. } => init.as_ref()
+                .is_some_and(|expr| Self::term_mentions(expr, name)),
+            StmtKind::Assign { name: target, value } =>
+                target == name || Self::term_mentions(value, name),
+            StmtKind::FieldAssign { receiver, value, .. } =>
+                receiver == name || Self::term_mentions(value, name),
+            StmtKind::If { condition, yes, no } =>
+                Self::term_mentions(condition, name)
+                || yes.iter().any(|stmt| Self::statement_mentions(stmt, name))
+                || no.as_ref().is_some_and(|body|
+                    body.iter().any(|stmt| Self::statement_mentions(stmt, name))),
+            StmtKind::Return(term) => Self::term_mentions(term, name),
+        }
+    }
+
+    /// VA15-01-A：一般借用在本詞彙區塊最後合法使用後歸還。
+    /// 外層借用若仍可能在其他外層語句使用，不在內層擅自歸還。
+    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt]) {
+        let scope = vars.last_mut().expect("至少根作用域存在");
+        for (name, binding) in scope.iter_mut() {
+            if let Some(loan) = binding.loan.as_mut() {
+                if loan.active && !rest.iter().any(|stmt| Self::statement_mentions(stmt, name)) {
+                    loan.active = false;
+                }
+            }
+        }
     }
 
     /// 這裡僅核准完全唯讀且可靜態證明安全的 self 方法子集。
@@ -622,17 +725,30 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         match &term.kind {
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
             TermKind::Name(name) => {
+                self.check_direct(vars, name, term)?;
                 let binding = Self::lookup(vars, name)
                     .ok_or_else(|| self.error("找不到合法的來源宣告", term))?;
+                if binding.loan.as_ref().is_some_and(|loan| !loan.active) {
+                    return Err(self.error("P15：借用已於最後使用點歸還", term));
+                }
+                // 非擁有借用僅能對已核准 Copyable 值產生獨立複本，
+                // 不得以一般名稱使用把 str 借用轉成新資源擁有者。
                 binding.value.duplicate().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
             }
+            TermKind::Borrow(_) => Err(self.error(
+                "VA14／VA15：.borrow() 僅可直接綁定到合法 var／const；回傳與逃逸保守拒絕",
+                term)),
             TermKind::Move(name) => {
                 if name == "self" {
                     return Err(self.error("S15：方法不可消耗或移動整個 self", term));
                 }
+                self.check_direct(vars, name, term)?;
                 let binding = Self::lookup_mut(vars, name)
                     .ok_or_else(|| self.error("找不到可移動的具名來源", term))?;
+                if binding.loan.is_some() {
+                    return Err(self.error("VA14-01：借用別名不是所有者，不能 .move()", term));
+                }
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
                 Ok((binding.ty.clone(), true))
             }
@@ -640,8 +756,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if owner == "self" {
                     return Err(self.error("只有方法內才能讀取 self 欄位", term));
                 }
+                self.check_direct(vars, owner, term)?;
                 let bound = Self::lookup(vars, owner)
                     .ok_or_else(|| self.error("找不到欄位來源宣告", term))?;
+                if bound.loan.as_ref().is_some_and(|loan| !loan.active) {
+                    return Err(self.error("P15：借用別名已不再有效", term));
+                }
                 bound.value.read().map_err(|err| self.model_error(err, term))?;
                 let field = self.structs.get(&bound.ty)
                     .and_then(|def| def.fields.iter().find(|f| f.name == *name))
@@ -657,8 +777,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if receiver == "self" {
                     return Err(self.error("重入 self 方法的借用安全尚未驗證", term));
                 }
+                self.check_direct(vars, receiver, term)?;
                 let bound = Self::lookup(vars, receiver)
                     .ok_or_else(|| self.error("找不到方法接收者來源", term))?;
+                if bound.loan.as_ref().is_some_and(|loan| !loan.active) {
+                    return Err(self.error("P15：借用別名已不再有效", term));
+                }
                 bound.value.read().map_err(|err| self.model_error(err, term))?;
                 let method = self.structs.get(&bound.ty)
                     .and_then(|def| def.methods.iter().find(|m| m.name == *name))
@@ -668,18 +792,25 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error(
                         "S18：const 結構實例不能呼叫會修改 self 欄位的方法", term));
                 }
-                let mut loans = BorrowSafety::new();
-                let loan = loans.acquire(DeclarationId(bound.declaration_start),
-                    mode)
-                    .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
-                // 來源在方法作用域中必須保持借用封鎖，結束後歸還。
-                if loans.check_direct_access(DeclarationId(bound.declaration_start)).is_ok() {
-                    return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
+                if let Some(loan) = &bound.loan {
+                    // 方法透過已存在的非擁有別名使用來源，不可另取第二筆
+                    // 借用；共享別名只能執行真正唯讀的方法。
+                    if mode == BorrowKind::ExclusiveWrite
+                        && loan.kind != BorrowKind::ExclusiveWrite {
+                        return Err(self.error("HC14：唯讀借用不可呼叫可寫方法", term));
+                    }
+                } else {
+                    let mut loans = BorrowSafety::new();
+                    let loan = loans.acquire(DeclarationId(bound.declaration_start), mode)
+                        .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
+                    if loans.check_direct_access(DeclarationId(bound.declaration_start)).is_ok() {
+                        return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
+                    }
+                    loans.finish_scope(&[loan])
+                        .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
+                    loans.check_direct_access(DeclarationId(bound.declaration_start))
+                        .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
-                loans.finish_scope(&[loan])
-                    .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
-                loans.check_direct_access(DeclarationId(bound.declaration_start))
-                    .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
@@ -731,7 +862,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str) -> Result<bool, Diagnostic> {
-        for statement in body {
+        for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
                 StmtKind::Declare { name, ty, mutable, init } => {
                     if vars.last().expect("應有詞彙作用域").contains_key(name) {
@@ -745,8 +876,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             message: "宣告使用不存在的型別".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
+                    let mut loan = None;
                     let initialized = if let Some(expr) = init {
-                        let (actual, ready) = self.evaluate(expr, vars)?;
+                        let (actual, ready) = if let TermKind::Borrow(source) = &expr.kind {
+                            let (actual, alias) = self.authorize_borrow(vars, source, *mutable, expr)?;
+                            loan = Some(alias);
+                            (actual, true)
+                        } else {
+                            self.evaluate(expr, vars)?
+                        };
                         if &actual != ty {
                             return Err(self.error("初始化運算式與宣告型別不一致", expr));
                         }
@@ -776,14 +914,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     };
                     vars.last_mut().expect("應有詞彙作用域").insert(name.clone(), Binding {
                         declaration_start: statement.start, ty: ty.clone(),
-                        mutable: *mutable, value: slot, pending_fields
+                        mutable: *mutable, value: slot, pending_fields, loan
                     });
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
                     // 僅准對完整具名擁有者覆寫 Copyable var 欄位，或對可證明
                     // 尚未初始化的 var 欄位首次寫入；後者不涉及 P16 舊值清理。
+                    self.check_direct(vars, receiver, value)?;
                     let owner = Self::lookup(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
+                    if owner.loan.as_ref().is_some_and(|loan| !loan.active) {
+                        return Err(self.error("P15：借用別名已不再有效", value));
+                    }
                     let first_init = owner.value.state() == ValueState::Uninitialized
                         && owner.pending_fields.as_ref()
                             .is_some_and(|pending| pending.contains(field));
@@ -832,8 +974,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 }
                 StmtKind::Assign { name, value } => {
+                    self.check_direct(vars, name, value)?;
                     let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
                         "無法賦值給尚未宣告的名稱", value))?;
+                    if expected.loan.is_some() {
+                        return Err(self.error(
+                            "VA14-01：不得把非擁有借用綁定重新賦值成持有者", value));
+                    }
                     if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
                     // 可證明未初始化或已移動者可以重新繫結。
@@ -918,6 +1065,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 }
             }
+            // 本區塊剩餘路徑已不再引用的非擁有借用可即時歸還；
+            // 不得因來源尚存在就把借用自動延長到作用域結束。
+            Self::release_last_uses(vars, &body[position + 1..]);
         }
         Ok(true)
     }
@@ -2074,6 +2224,98 @@ mod conservative_decimal64_tests {
         assert!(inspect("fn main()->int{\nvar x:float = 1.25\nvar y:float = x\nreturn 0\n}\n").is_ok());
         let bad = "fn main()->int{\nvar x:int = 1.25\nreturn 0\n}\n";
         assert!(inspect(bad).unwrap_err().message.contains("型別"));
+    }
+}
+
+#[cfg(test)]
+mod va14_va15_borrow_source_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn va15_合法最後使用後來源恢復可用_不必等區塊出口() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar copy:int = alias\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_來源借用尚有效時不得直接隱含複製() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar illegal:int = owner\nreturn alias\n}\n";
+        let error = inspect(source).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn va14_const_共享借用可同時存在() {
+        let source = "fn main()->int{\nconst owner:int = 1\nconst first:int = owner.borrow()\nconst second:int = owner.borrow()\nvar read:int = first\nreturn second\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_var_獨占借用不可重疊() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar second:int = owner.borrow()\nreturn first\n}\n";
+        let error = inspect(source).unwrap_err();
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn va14_來源與借用宣告可變性不符必須拒絕() {
+        for source in [
+            "fn main()->int{\nconst owner:int = 1\nvar alias:int = owner.borrow()\nreturn 0\n}\n",
+            "fn main()->int{\nvar owner:int = 1\nconst alias:int = owner.borrow()\nreturn 0\n}\n",
+        ] {
+            assert!(inspect(source).unwrap_err().message.contains("VA14-01"));
+        }
+    }
+
+    #[test]
+    fn va14_非擁有借用不得被明確_move_轉換成所有者() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar moved:int = alias.move()\nreturn owner\n}\n";
+        let error = inspect(source).unwrap_err();
+        assert!(error.message.contains("VA14-01"));
+    }
+
+    #[test]
+    fn va15_借用回傳沒有獨立存活證明時拒絕_但_copyable_值可獨立複製() {
+        let bad = "fn get_str()->str{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(bad).unwrap_err().message.contains("Copyable"));
+        let direct = "fn main()->int{\nvar owner:int = 1\nreturn owner.borrow()\n}\n";
+        assert!(inspect(direct).unwrap_err().message.contains("逃逸"));
+        let copy = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nreturn alias\n}\n";
+        assert!(inspect(copy).is_ok());
+    }
+
+    #[test]
+    fn va14_借用原非_copyable_資源期間不能偷偷移動來源() {
+        let source = "fn main()->int{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nvar stolen:str = owner.move()\nreturn 0\n}\n";
+        // 沒有實際用到 alias 會即時歸還，因此另加最後使用以確保此處仍借用。
+        let source = source.replace("return 0", "var copy:str = alias\nreturn 0");
+        assert!(inspect(&source).unwrap_err().message.contains("HC14"));
+    }
+
+    #[test]
+    fn va15_分支內借用於分支最後使用後歸還外層來源() {
+        let source = "fn main()->int{\nvar owner:int = 1\nif (true){\nvar alias:int = owner.borrow()\nvar copy:int = alias\n}else{\nvar other:int = 2\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_借用接收者合法唯讀方法且最後使用後解除封鎖() {
+        let source = "struct S{\nvar n:int = 1\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nconst owner:S = S()\nconst alias:S = owner.borrow()\nvar independent:int = alias.get()\nreturn owner.get()\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_var_獨占借用可呼叫合法可寫方法且原來源於最後使用後恢復() {
+        let source = "struct S{\nvar n:int = 1\nfn update()->int{\nself.n = 2\nreturn self.n\n}\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nvar owner:S = S()\nvar alias:S = owner.borrow()\nvar independent:int = alias.update()\nreturn owner.get()\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va14_再借用_在缺乏別名關係證明前保守拒絕() {
+        let source = "fn main()->int{\nconst owner:int = 1\nconst alias:int = owner.borrow()\nconst twice:int = alias.borrow()\nreturn twice\n}\n";
+        assert!(inspect(source).unwrap_err().message.contains("再次借用"));
     }
 }
 
