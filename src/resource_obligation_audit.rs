@@ -63,10 +63,16 @@ impl ResourceObligationAudit {
 
     /// HB13：整筆所有權責任由來源改掛目標，來源不能再當成所有者。
     /// 不在此層擅定被借用來源是否可移動，必須由 P14／P15 檢查器先授權。
-    pub(crate) fn move_into(&mut self, from: DeclarationId, to: DeclarationId)
+    pub(crate) fn check_move_into(&self, from: DeclarationId, to: DeclarationId)
         -> Result<(), ResourceAuditError> {
         if self.values.contains_key(&to) { return Err(ResourceAuditError::DuplicateBinding); }
         if !self.values.contains_key(&from) { return Err(ResourceAuditError::MissingBinding); }
+        Ok(())
+    }
+
+    pub(crate) fn move_into(&mut self, from: DeclarationId, to: DeclarationId)
+        -> Result<(), ResourceAuditError> {
+        self.check_move_into(from, to)?;
         let record = self.values.remove(&from).expect("已驗證來源");
         self.values.insert(to, record);
         Ok(())
@@ -74,7 +80,7 @@ impl ResourceObligationAudit {
 
     /// Copyable 值若含抽象資源責任，仍不做任何自選深／淺複製；
     /// 無資源的已核准 Copyable 葉值可建立獨立的空責任紀錄。
-    pub(crate) fn copy_into(&mut self, from: DeclarationId, to: DeclarationId)
+    pub(crate) fn check_copy_into(&self, from: DeclarationId, to: DeclarationId)
         -> Result<(), ResourceAuditError> {
         if self.values.contains_key(&to) { return Err(ResourceAuditError::DuplicateBinding); }
         let source = self.values.get(&from).ok_or(ResourceAuditError::MissingBinding)?;
@@ -86,6 +92,12 @@ impl ResourceObligationAudit {
         if !source.resources.is_empty() {
             return Err(ResourceAuditError::ResourceCopyUnverified);
         }
+        Ok(())
+    }
+
+    pub(crate) fn copy_into(&mut self, from: DeclarationId, to: DeclarationId)
+        -> Result<(), ResourceAuditError> {
+        self.check_copy_into(from, to)?;
         self.values.insert(to, BindingRecord {
             permission: CopyPermission::Allowed,
             resources: BTreeSet::new(),
@@ -96,13 +108,19 @@ impl ResourceObligationAudit {
     /// 只記錄由已授權清理事件證明完成的責任，不執行真實析構。
     /// 先驗證整批所有者互異且皆有效，避免錯誤清理中途釋放部分責任。
     /// 輸入順序不代表 voiles 正式清理順序。
-    pub(crate) fn release_batch(&mut self, ids: &[DeclarationId])
-        -> Result<usize, ResourceAuditError> {
+    pub(crate) fn check_release_batch(&self, ids: &[DeclarationId])
+        -> Result<(), ResourceAuditError> {
         let mut seen = BTreeSet::new();
         for id in ids {
             if !seen.insert(*id) { return Err(ResourceAuditError::DuplicateCleanupTarget); }
             if !self.values.contains_key(id) { return Err(ResourceAuditError::MissingBinding); }
         }
+        Ok(())
+    }
+
+    pub(crate) fn release_batch(&mut self, ids: &[DeclarationId])
+        -> Result<usize, ResourceAuditError> {
+        self.check_release_batch(ids)?;
         let mut count = 0;
         for id in ids {
             let record = self.values.remove(id).expect("已預檢成功");
