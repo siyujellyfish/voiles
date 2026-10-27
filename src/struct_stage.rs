@@ -2273,6 +2273,52 @@ mod conservative_decimal64_tests {
 }
 
 #[cfg(test)]
+mod va15_path_sensitive_last_use_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn va15_分支中真正最後使用後同分支恢復原來源直接讀取() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar copy:int = alias\nvar direct:int = owner\n}else{\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_外層仍會使用借用時分支內不可提前解除() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar direct:int = owner\n}else{\nvar other:int = 2\n}\nreturn alias\n}\n";
+        let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn va15_無_else_的隱含分支也須和已分析分支安全合流() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar copy:int = alias\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_巢狀分支各自完成最後使用後來源可用() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nif (false){\nvar a:int = alias\n}else{\nvar b:int = alias\n}\nvar direct:int = owner\n}else{\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_返回路徑不能把借用活性污染可達的其他路徑() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nreturn alias\n}else{\nvar copy:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn va15_跨分支仍有效的獨占借用不得允許重新借用() {
+        let source = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif (true){\nvar first:int = alias\n}else{\nvar second:int = 2\n}\nvar other:int = owner.borrow()\nreturn alias\n}\n";
+        let err = inspect(source).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+}
+
+#[cfg(test)]
 mod va14_va15_borrow_source_tests {
     use super::inspect;
     use crate::DiagnosticKind;
