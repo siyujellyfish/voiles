@@ -1967,6 +1967,62 @@ mod conservative_decimal64_tests {
 }
 
 #[cfg(test)]
+mod p13_formal_implicit_move_matrix_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    fn forbidden_copy(code: &str) {
+        let error = inspect(code).expect_err("已繫結 str 的隱含複製不得被當成移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable 已明確禁止"),
+            "應清楚區分明確禁止與未決：{}", error.message);
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn p13_2_宣告初始化不允許把_str_名稱當成隱式移動() {
+        forbidden_copy("fn main()->int{\nvar a:str = \"x\"\nvar b:str = a\nreturn 0\n}\n");
+    }
+
+    #[test]
+    fn p13_2_重新賦值不允許把_str_名稱當成隱式移動() {
+        forbidden_copy("fn main()->int{\nvar a:str = \"x\"\nvar b:str\nb = a\nreturn 0\n}\n");
+    }
+
+    #[test]
+    fn p13_2_函式回傳已繫結_str_必須明確_move() {
+        forbidden_copy("fn give()->str{\nvar a:str = \"x\"\nreturn a\n}\nfn main()->int{\nreturn 0\n}\n");
+    }
+
+    #[test]
+    fn p13_2_結構具名欄位建立不得隱式移動_str() {
+        forbidden_copy("struct Holder{\nvar value:str\n}\nfn main()->int{\nvar a:str = \"x\"\nvar h:Holder = Holder(value=a)\nreturn 0\n}\n");
+    }
+
+    #[test]
+    fn p13_3_明確整筆_move_在宣告賦值回傳及具名建構仍合法() {
+        let sources = [
+            "fn main()->int{\nvar a:str = \"x\"\nvar b:str = a.move()\nreturn 0\n}\n",
+            "fn main()->int{\nvar a:str = \"x\"\nvar b:str\nb = a.move()\nreturn 0\n}\n",
+            "fn give()->str{\nvar a:str = \"x\"\nreturn a.move()\n}\nfn main()->int{\nreturn 0\n}\n",
+            "struct Holder{\nvar value:str\n}\nfn main()->int{\nvar a:str = \"x\"\nvar h:Holder = Holder(value=a.move())\nreturn 0\n}\n",
+        ];
+        for source in sources {
+            assert!(inspect(source).is_ok(), "合法的具名整筆明確移動不應被誤拒：{source}");
+        }
+    }
+
+    #[test]
+    fn p13_4_建構引數明確移動後原來源不得二次移動() {
+        let source = "struct Holder{\nvar value:str\n}\nfn main()->int{\nvar a:str = \"x\"\nvar h:Holder = Holder(value=a.move())\nvar again:str = a.move()\nreturn 0\n}\n";
+        let error = inspect(source).expect_err("已移動來源不得二次消耗");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("已移動"));
+        assert!(error.span.is_some());
+    }
+}
+
+#[cfg(test)]
 mod p13_d02_const_partial_safety_tests {
     use super::inspect;
     use crate::DiagnosticKind;

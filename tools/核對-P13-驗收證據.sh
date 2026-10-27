@@ -36,6 +36,7 @@ verify_group 1 base ownership_policy::tests::
 verify_group 1 container container_copy_policy::tests::
 verify_group 2 copy ownership_model::tests::
 verify_group 2 str struct_stage::str_noncopyable_policy_tests::
+verify_group 2 move_matrix struct_stage::p13_formal_implicit_move_matrix_tests::
 verify_group 3 move struct_ownership::tests::
 verify_group 3 checker struct_stage::method_safety_tests::
 verify_group 4 flow struct_stage::str_ownership_branch_tests::
