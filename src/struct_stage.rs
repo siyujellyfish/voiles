@@ -552,6 +552,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != target.ty.as_str() {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
+                    // 方法接收者在此子集已完整初始化，欄位寫入必然覆寫舊值。
+                    // 非 Copyable 資源的舊值清理順序尚待 P16，必須先保守拒絕。
+                    let permission = self.permission(&target.ty);
+                    if permission != CopyPermission::Allowed {
+                        return Err(self.reject_noncopyable(permission,
+                            "P16 尚未核准方法覆寫既有資源的清理責任", value));
+                    }
                     writes = true;
                 }
                 StmtKind::If { condition, yes, no } => {
@@ -829,6 +836,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         "無法賦值給尚未宣告的名稱", value))?;
                     if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
+                    // 可證明未初始化或已移動者可以重新繫結。
+                    // 其餘非 Copyable／未決的既有資源，須待 P16 清理證明。
+                    let state = expected.value.state();
+                    if self.permission(&ty) != CopyPermission::Allowed
+                        && !matches!(state, ValueState::Uninitialized | ValueState::Moved) {
+                        return Err(self.error(
+                            "P16 尚未核准有效資源的整筆覆寫與清理；僅允許初始化或移動後重置",
+                            value));
+                    }
+                    // 自身轉移與寫回的重疊求值次序尚未有獨立安全證據。
+                    if matches!(&value.kind, TermKind::Move(source) if source == name) {
+                        return Err(self.error(
+                            "P13：同一名稱不可在同一次賦值中移動並重綁自身",
+                            value));
+                    }
                     let (actual, ready) = self.evaluate(value, vars)?;
                     if actual != ty || !ready {
                         return Err(self.error("賦值型別錯誤或來源尚未完成初始化", value));
