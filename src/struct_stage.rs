@@ -2549,9 +2549,9 @@ mod p13_resource_overwrite_barrier_tests {
     }
 
     #[test]
-    fn 已存在_str_方法欄位寫入亦不可繞過_p16() {
+    fn va16_方法獨占_self_可覆寫既有_str_欄位() {
         let src = "struct S{\nvar text:str = \"old\"\nfn change()->int{\nself.text = \"new\"\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        assert!(inspect(src).unwrap_err().message.contains("P16"));
+        assert!(inspect(src).is_ok());
     }
 
     #[test]
@@ -2629,10 +2629,9 @@ mod p13_formal_partial_field_completion_tests {
     }
 
     #[test]
-    fn p13_s07_已有非_copyable_欄位不可二次覆寫_避免偷定_p16() {
+    fn va16_s07_首次建立後的_str_欄位可依核准清理再次覆寫() {
         let src = format!("{HEADER}a.x = 2\na.text = \"hi\"\na.text = \"bye\"\nreturn 0\n}}\n");
-        let err = inspect(&src).unwrap_err();
-        assert!(err.message.contains("Copyable 已明確禁止"));
+        assert!(inspect(&src).is_ok());
     }
 }
 
@@ -2665,9 +2664,11 @@ mod p13_formal_field_write_tests {
     }
 
     #[test]
-    fn p13_資源欄位覆寫仍依_p16_前置安全保守拒絕() {
+    fn va16_已有_str_欄位准用獨立常值覆寫但仍不得隱含複製() {
         let src = format!("{BODY}a.text = \"new\"\nreturn 0\n}}\n");
-        let err = inspect(&src).unwrap_err();
+        assert!(inspect(&src).is_ok());
+        let implicit = format!("{BODY}var incoming:str = \"copy\"\na.text = incoming\nreturn 0\n}}\n");
+        let err = inspect(&implicit).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("Copyable 已明確禁止"));
     }
