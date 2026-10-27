@@ -67,6 +67,11 @@ jobs:
         run: |
           bash -n tools/檢查-P13-公開邊界.sh
           bash tools/檢查-P13-公開邊界.sh ./target/p02/voiles target/p02/p13-public
+      - name: P13 六項候選驗收及完整人工驗收腳本實際執行
+        run: |
+          bash -n tools/核對-P13-驗收證據.sh
+          bash tools/人工驗收-P13.sh
+          bash tools/核對-P13-驗收證據.sh ./target/p13-accept/internal_tests target/p13-accept
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
           python3 tools/產生規格測試.py
