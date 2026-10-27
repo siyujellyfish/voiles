@@ -1,0 +1,17 @@
+fn main()->int{
+var original:str = "old"
+if (true){
+if (false){
+var lost:str = original.move()
+return 0
+}else{
+var taken:str = original.move()
+original = "restored"
+}
+}else{
+var shadow:str = original.move()
+original = "safe"
+}
+var last:str = original.move()
+return 0
+}
