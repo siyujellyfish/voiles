@@ -2142,7 +2142,7 @@ mod p13_formal_field_write_tests {
     }
 
     #[test]
-    fn p13_移動後_分支不確定_未初始化接收者都不得寫欄位() {
+    fn p13_移動後與分支不確定接收者仍拒絕_有建構基礎可首次補欄位() {
         let moved = format!(
             "{BODY}var b:S = a.move()\na.n = 2\nreturn 0\n}}\n"
         );
@@ -2152,7 +2152,7 @@ mod p13_formal_field_write_tests {
         );
         assert!(inspect(&uncertain).unwrap_err().message.contains("可能"));
         let partial = "struct S{\nvar n:int\n}\nfn main()->int{\nvar a:S = S()\na.n = 2\nreturn 0\n}\n";
-        assert!(inspect(partial).unwrap_err().message.contains("初始化"));
+        assert!(inspect(partial).is_ok());
     }
 
     #[test]
