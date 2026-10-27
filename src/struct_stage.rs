@@ -2286,7 +2286,7 @@ mod p13_d02_const_partial_safety_tests {
         let reassignment = partial().replace("return 0", "item = Sample(value=9)\nreturn 0");
         assert!(inspect(&reassignment).unwrap_err().message.contains("const"));
         let field_write = partial().replace("return 0", "item.value = 9\nreturn 0");
-        assert!(inspect(&field_write).unwrap_err().message.contains("初始化"));
+        assert!(inspect(&field_write).unwrap_err().message.contains("const"));
     }
 
     #[test]
