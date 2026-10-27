@@ -2022,6 +2022,18 @@ mod p13_d02_const_partial_safety_tests {
     }
 
     #[test]
+    fn d02_a_完整初始化_const_可讀取有預設值欄位並合法複製至另一_const() {
+        let ready = include_str!(
+            "../tests/fixtures/p13_stage/D02_const結構完整初始化允許安全使用.voil"
+        );
+        let positive = ready.replace(
+            "return result",
+            "const alias:Sample = item\nvar flag:bool = alias.ready\nreturn result"
+        );
+        assert!(inspect(&positive).is_ok());
+    }
+
+    #[test]
     fn d02_a_const_須有建立式且const欄位仍須提供預設值() {
         let no_init = partial().replace("const item:Sample = Sample()", "const item:Sample");
         assert!(inspect(&no_init).unwrap_err().message.contains("const"));
