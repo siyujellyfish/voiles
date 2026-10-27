@@ -2278,7 +2278,7 @@ mod va14_va15_borrow_source_tests {
 
     #[test]
     fn va15_借用回傳沒有獨立存活證明時拒絕_但_copyable_值可獨立複製() {
-        let bad = "fn main()->str{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nreturn alias\n}\n";
+        let bad = "fn get_str()->str{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(bad).unwrap_err().message.contains("Copyable"));
         let direct = "fn main()->int{\nvar owner:int = 1\nreturn owner.borrow()\n}\n";
         assert!(inspect(direct).unwrap_err().message.contains("逃逸"));
