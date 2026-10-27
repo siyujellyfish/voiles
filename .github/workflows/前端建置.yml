@@ -63,6 +63,10 @@ jobs:
           ./target/p02/p04_source_internal
       - name: P13 人工驗收輔助腳本的 Bash 語法檢查
         run: bash -n tools/人工驗收-P13.sh
+      - name: P13 入口 B 與 D01 A／A 容器公開 CLI 隔離回歸
+        run: |
+          bash -n tools/檢查-P13-公開邊界.sh
+          bash tools/檢查-P13-公開邊界.sh ./target/p02/voiles target/p02/p13-public
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
           python3 tools/產生規格測試.py
