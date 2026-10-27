@@ -109,6 +109,21 @@ mod tests {
     }
 
     #[test]
+    fn d01_a_a_尚未初始化時先拒絕讀取_不讓容器未決能力掩蓋來源狀態() {
+        // 僅驗證 Rust 私有的抽象 ValueSlot；不表示合法容器 AST 或搬移已實作。
+        for ty in ["list[int]", "list[str]", "dict{int,bool}", "dict{str,int}"] {
+            let ability = approved_leaf_copy_permission(ty);
+            assert_eq!(ability, CopyPermission::Undecided);
+            let absent = ValueSlot::uninitialized(ability);
+            assert_eq!(absent.read(), Err(ModelError::UninitializedRead));
+            assert_eq!(absent.duplicate(), Err(ModelError::UninitializedRead));
+            let ready = ValueSlot::initialized(ability);
+            assert_eq!(ready.duplicate(), Err(ModelError::CopyUndecided));
+            assert!(ready.read().is_ok());
+        }
+    }
+
+    #[test]
     fn d01_後續_list_a_dict_a_拒絕隱含複製但不毀損可用來源() {
         for ty in ["list[int]", "list[str]", "dict{int,float}", "dict{str,str}"] {
             let source = ValueSlot::initialized(approved_leaf_copy_permission(ty));
