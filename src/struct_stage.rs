@@ -876,8 +876,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             message: "宣告使用不存在的型別".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
+                    let mut loan = None;
                     let initialized = if let Some(expr) = init {
-                        let (actual, ready) = self.evaluate(expr, vars)?;
+                        let (actual, ready) = if let TermKind::Borrow(source) = &expr.kind {
+                            let (actual, alias) = self.authorize_borrow(vars, source, *mutable, expr)?;
+                            loan = Some(alias);
+                            (actual, true)
+                        } else {
+                            self.evaluate(expr, vars)?
+                        };
                         if &actual != ty {
                             return Err(self.error("初始化運算式與宣告型別不一致", expr));
                         }
@@ -907,14 +914,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     };
                     vars.last_mut().expect("應有詞彙作用域").insert(name.clone(), Binding {
                         declaration_start: statement.start, ty: ty.clone(),
-                        mutable: *mutable, value: slot, pending_fields
+                        mutable: *mutable, value: slot, pending_fields, loan
                     });
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
                     // 僅准對完整具名擁有者覆寫 Copyable var 欄位，或對可證明
                     // 尚未初始化的 var 欄位首次寫入；後者不涉及 P16 舊值清理。
+                    self.check_direct(vars, receiver, value)?;
                     let owner = Self::lookup(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
+                    if owner.loan.as_ref().is_some_and(|loan| !loan.active) {
+                        return Err(self.error("P15：借用別名已不再有效", value));
+                    }
                     let first_init = owner.value.state() == ValueState::Uninitialized
                         && owner.pending_fields.as_ref()
                             .is_some_and(|pending| pending.contains(field));
@@ -963,8 +974,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 }
                 StmtKind::Assign { name, value } => {
+                    self.check_direct(vars, name, value)?;
                     let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
                         "無法賦值給尚未宣告的名稱", value))?;
+                    if expected.loan.is_some() {
+                        return Err(self.error(
+                            "VA14-01：不得把非擁有借用綁定重新賦值成持有者", value));
+                    }
                     if !expected.mutable { return Err(self.error("const 不可重新賦值", value)); }
                     let ty = expected.ty.clone();
                     // 可證明未初始化或已移動者可以重新繫結。
@@ -1049,6 +1065,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 }
             }
+            // 本區塊剩餘路徑已不再引用的非擁有借用可即時歸還；
+            // 不得因來源尚存在就把借用自動延長到作用域結束。
+            Self::release_last_uses(vars, &body[position + 1..]);
         }
         Ok(true)
     }
