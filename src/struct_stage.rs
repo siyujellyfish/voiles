@@ -1977,6 +1977,24 @@ mod p13_d02_const_partial_safety_tests {
     }
 
     #[test]
+    fn d02_a_const_即使欄位有預設值_未完整初始化結構仍不得讀取欄位() {
+        let bad = partial().replace("return 0", "var flag:bool = item.ready\nreturn 0");
+        let err = inspect(&bad).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("初始化"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
+    fn d02_a_const_不完整來源不可透過新的_const_綁定偷渡複製() {
+        let bad = partial().replace("return 0", "const alias:Sample = item\nreturn 0");
+        let err = inspect(&bad).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("初始化"));
+        assert!(err.span.is_some());
+    }
+
+    #[test]
     fn d02_a_const_來源未完整初始化禁止整筆_move() {
         let bad = partial().replace("return 0", "var moved:Sample = item.move()\nreturn 0");
         assert!(inspect(&bad).unwrap_err().message.contains("初始化"));
