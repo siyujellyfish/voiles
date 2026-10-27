@@ -507,6 +507,94 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
     }
 
+    /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
+    /// 不能只以目前作用域或表面名稱判斷，否則遮蔽可繞過來源封鎖。
+    fn active_loans(vars: &Scopes, source: usize) -> Vec<BorrowKind> {
+        vars.iter().flat_map(|scope| scope.values()).filter_map(|binding| {
+            binding.loan.as_ref().and_then(|loan| {
+                (loan.active && loan.source == source).then_some(loan.kind)
+            })
+        }).collect()
+    }
+
+    fn check_direct(&self, vars: &Scopes, name: &str, term: &Term)
+        -> Result<(), Diagnostic> {
+        let owner = Self::lookup(vars, name)
+            .ok_or_else(|| self.error("找不到原始來源宣告", term))?;
+        if owner.loan.is_none() && !Self::active_loans(vars, owner.declaration_start).is_empty() {
+            return Err(self.error("HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term));
+        }
+        Ok(())
+    }
+
+    fn authorize_borrow(&self, vars: &Scopes, source: &str, mutable: bool, term: &Term)
+        -> Result<(String, LoanBinding), Diagnostic> {
+        let owner = Self::lookup(vars, source)
+            .ok_or_else(|| self.error("P14 找不到可借用來源", term))?;
+        if owner.loan.is_some() {
+            return Err(self.error("P14：由借用再次借用尚未有完整別名證明", term));
+        }
+        owner.value.read().map_err(|e| self.model_error(e, term))?;
+        if owner.mutable != mutable {
+            return Err(self.error("VA14-01：借用變數的 var／const 權限必須跟隨來源", term));
+        }
+        let kind = if mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
+        let conflicts = Self::active_loans(vars, owner.declaration_start);
+        if (kind == BorrowKind::ExclusiveWrite && !conflicts.is_empty())
+            || (kind == BorrowKind::SharedRead
+                && conflicts.contains(&BorrowKind::ExclusiveWrite)) {
+            return Err(self.error("HC14：共享／獨占借用與現有別名衝突", term));
+        }
+        Ok((owner.ty.clone(), LoanBinding {
+            source: owner.declaration_start, kind, active: true,
+        }))
+    }
+
+    /// 本批只對真正已解析的語句追蹤別名是否未來仍被使用。
+    /// 此處寧可把有遮蔽的同名字串當成仍存活（假陽性），也不能
+    /// 漏掉未來引用造成提前解鎖；完整詞彙來源精細度留待 P15 驗收。
+    fn term_mentions(term: &Term, name: &str) -> bool {
+        match &term.kind {
+            TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+                => id == name,
+            TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _)
+                | TermKind::MethodCall(id, _) => id == name,
+            TermKind::Construct(_, arguments) =>
+                arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
+            TermKind::Literal(_) => false,
+        }
+    }
+
+    fn statement_mentions(statement: &Stmt, name: &str) -> bool {
+        match &statement.kind {
+            StmtKind::Declare { init, .. } => init.as_ref()
+                .is_some_and(|expr| Self::term_mentions(expr, name)),
+            StmtKind::Assign { name: target, value } =>
+                target == name || Self::term_mentions(value, name),
+            StmtKind::FieldAssign { receiver, value, .. } =>
+                receiver == name || Self::term_mentions(value, name),
+            StmtKind::If { condition, yes, no } =>
+                Self::term_mentions(condition, name)
+                || yes.iter().any(|stmt| Self::statement_mentions(stmt, name))
+                || no.as_ref().is_some_and(|body|
+                    body.iter().any(|stmt| Self::statement_mentions(stmt, name))),
+            StmtKind::Return(term) => Self::term_mentions(term, name),
+        }
+    }
+
+    /// VA15-01-A：一般借用在本詞彙區塊最後合法使用後歸還。
+    /// 外層借用若仍可能在其他外層語句使用，不在內層擅自歸還。
+    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt]) {
+        let scope = vars.last_mut().expect("至少根作用域存在");
+        for (name, binding) in scope.iter_mut() {
+            if let Some(loan) = binding.loan.as_mut() {
+                if loan.active && !rest.iter().any(|stmt| Self::statement_mentions(stmt, name)) {
+                    loan.active = false;
+                }
+            }
+        }
+    }
+
     /// 這裡僅核准完全唯讀且可靜態證明安全的 self 方法子集。
     /// 根據方法實際操作自動推導共享或獨占借用。
     /// 在此明確受限子集，方法只能修改自身 var 欄位、讀取已核准 Copyable
