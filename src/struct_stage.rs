@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
-use crate::ownership_model::{CopyPermission, ModelError, ValueSlot};
+use crate::ownership_model::{CopyPermission, ModelError, ValueSlot, ValueState};
 use crate::ownership_ledger::DeclarationId;
 use crate::borrow_safety::{BorrowKind, BorrowSafety};
 use crate::source::Source;
@@ -433,6 +433,9 @@ struct Binding {
     ty: String,
     mutable: bool,
     value: ValueSlot,
+    /// 僅以合法 struct 建立式已知的未初始化 var 欄位集合。
+    /// None 表示不存在可追蹤的部分建立證明；不等於全部欄位可用。
+    pending_fields: Option<HashSet<String>>,
 }
 
 /// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
@@ -742,6 +745,22 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                         ready
                     } else { false };
+                    // 只有具名 struct 建立式可給出精確的缺失欄位集合；
+                    // 無初始化的普通 var 宣告不得假設已分配結構實例。
+                    let pending_fields = if !initialized {
+                        if let Some(Term { kind: TermKind::Construct(actual, args), .. }) = init {
+                            self.structs.get(actual).and_then(|definition| {
+                                let explicit: HashSet<&str> =
+                                    args.iter().map(|(name, _)| name.as_str()).collect();
+                                let missing: HashSet<String> = definition.fields.iter()
+                                    .filter(|field| field.default.is_none()
+                                        && !explicit.contains(field.name.as_str()))
+                                    .map(|field| field.name.clone())
+                                    .collect();
+                                if missing.is_empty() { None } else { Some(missing) }
+                            })
+                        } else { None }
+                    } else { None };
                     let permission = self.permission(ty);
                     let slot = if initialized {
                         ValueSlot::initialized(permission)
@@ -750,15 +769,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     };
                     vars.last_mut().expect("應有詞彙作用域").insert(name.clone(), Binding {
                         declaration_start: statement.start, ty: ty.clone(),
-                        mutable: *mutable, value: slot
+                        mutable: *mutable, value: slot, pending_fields
                     });
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
-                    // P13 僅接受可直接證明安全的具名整筆持有者之 Copyable var
-                    // 欄位覆寫；非 Copyable 欄位的舊值清理屬 P16，不擅自補定。
+                    // 僅准對完整具名擁有者覆寫 Copyable var 欄位，或對可證明
+                    // 尚未初始化的 var 欄位首次寫入；後者不涉及 P16 舊值清理。
                     let owner = Self::lookup(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
-                    owner.value.read().map_err(|err| self.model_error(err, value))?;
+                    let first_init = owner.value.state() == ValueState::Uninitialized
+                        && owner.pending_fields.as_ref()
+                            .is_some_and(|pending| pending.contains(field));
+                    if !first_init {
+                        owner.value.read().map_err(|err| self.model_error(err, value))?;
+                    }
                     if !owner.mutable {
                         return Err(self.error("S18：const 結構實例不可修改欄位", value));
                     }
@@ -769,20 +793,36 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error("S18：const 欄位不可重新賦值", value));
                     }
                     let expected_type = member.ty.clone();
-                    let permission = self.permission(&expected_type);
-                    if permission != CopyPermission::Allowed {
-                        return Err(self.reject_noncopyable(permission,
-                            "P13 欄位覆寫涉及未核准的原值資源清理", value));
+                    if !first_init {
+                        let permission = self.permission(&expected_type);
+                        if permission != CopyPermission::Allowed {
+                            return Err(self.reject_noncopyable(permission,
+                                "P13 欄位覆寫涉及未核准的原值資源清理", value));
+                        }
                     }
                     let (actual, ready) = self.evaluate(value, vars)?;
                     if actual != expected_type || !ready {
                         return Err(self.error("欄位賦值型別錯誤或來源尚未完整初始化", value));
                     }
-                    // RHS 有可能消耗或重新繫結接收者；必須重新確認原來源
-                    // 仍完整且可寫，不能讓自我移動或分支失效繞過檢查。
-                    let owner = Self::lookup(vars, receiver)
+                    // RHS 有可能消耗或重新繫結接收者：重新查核後才更新證明。
+                    let owner = Self::lookup_mut(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入接收者已失效", value))?;
-                    owner.value.read().map_err(|err| self.model_error(err, value))?;
+                    if first_init {
+                        if owner.value.state() != ValueState::Uninitialized
+                            || !owner.pending_fields.as_ref()
+                                .is_some_and(|pending| pending.contains(field)) {
+                            return Err(self.error("欄位初始化來源身分已失效", value));
+                        }
+                        let pending = owner.pending_fields.as_mut()
+                            .expect("首次初始化必須有待完成欄位證明");
+                        pending.remove(field);
+                        if pending.is_empty() {
+                            owner.pending_fields = None;
+                            owner.value.mark_reinitialized();
+                        }
+                    } else {
+                        owner.value.read().map_err(|err| self.model_error(err, value))?;
+                    }
                 }
                 StmtKind::Assign { name, value } => {
                     let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
@@ -793,7 +833,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != ty || !ready {
                         return Err(self.error("賦值型別錯誤或來源尚未完成初始化", value));
                     }
-                    Self::lookup_mut(vars, name).expect("已確認來源").value.mark_reinitialized();
+                    let destination = Self::lookup_mut(vars, name).expect("已確認來源");
+                    destination.value.mark_reinitialized();
+                    destination.pending_fields = None;
                 }
                 StmtKind::Return(term) => {
                     let (actual, ready) = self.evaluate(term, vars)?;
@@ -837,6 +879,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             } else { None };
                             original.value = ValueSlot::join_reachable(&[left, right])
                                 .map_err(|err| self.model_error(err, condition))?;
+                            // 只有各可達分支的缺失欄位集合完全相同，才能
+                            // 保留首次寫入許可；否則失去部分初始化證明。
+                            let pending_true = if live_true {
+                                Some(&on_true[depth][name].pending_fields)
+                            } else { None };
+                            let pending_false = if live_false {
+                                Some(&on_false[depth][name].pending_fields)
+                            } else { None };
+                            original.pending_fields = match (pending_true, pending_false) {
+                                (Some(left), Some(right)) if left == right => left.clone(),
+                                (Some(one), None) | (None, Some(one)) => one.clone(),
+                                _ => None,
+                            };
                         }
                     }
                 }
@@ -1994,6 +2049,63 @@ mod conservative_decimal64_tests {
 }
 
 #[cfg(test)]
+mod p13_formal_partial_field_completion_tests {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    const HEADER: &str = "struct S{\nvar x:int\nvar text:str\nconst flag:bool = true\n}\nfn main()->int{\nvar a:S = S()\n";
+
+    #[test]
+    fn p13_s07_var_逐欄首次初始化後方可整筆明確移動() {
+        let source = format!("{HEADER}a.x = 2\na.text = \"text\"\nvar b:S = a.move()\nreturn b.x\n}}\n");
+        assert!(inspect(&source).is_ok());
+    }
+
+    #[test]
+    fn p13_s07_仍缺少一欄時不得讀取_複製_移動或呼叫方法() {
+        let moved = format!("{HEADER}a.x = 2\nvar b:S = a.move()\nreturn 0\n}}\n");
+        assert!(inspect(&moved).unwrap_err().message.contains("初始化"));
+        let read = format!("{HEADER}a.x = 2\nreturn a.x\n}}\n");
+        assert!(inspect(&read).unwrap_err().message.contains("初始化"));
+        let copy = format!("{HEADER}a.x = 2\nvar b:S = a\nreturn 0\n}}\n");
+        assert!(inspect(&copy).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn p13_s07_分支兩側同樣補齊欄位才能在合流後使用() {
+        let both = format!(
+            "{HEADER}if (true){{\na.x = 3\n}}else{{\na.x = 4\n}}\na.text = \"yes\"\nvar b:S = a.move()\nreturn b.x\n}}\n"
+        );
+        assert!(inspect(&both).is_ok());
+        let divergent = format!(
+            "{HEADER}if (true){{\na.x = 3\n}}else{{\na.text = \"str\"\n}}\na.x = 2\na.text = \"text\"\nreturn a.x\n}}\n"
+        );
+        let err = inspect(&divergent).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("初始化"));
+    }
+
+    #[test]
+    fn p13_d02_const_部分實例不可透過欄位寫入補完() {
+        let src = "struct S{\nvar n:int\n}\nfn main()->int{\nconst a:S = S()\na.n = 5\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("const"));
+    }
+
+    #[test]
+    fn p13_s07_未建構的_var_宣告不可偽裝成可寫的結構實例() {
+        let src = "struct S{\nvar n:int\n}\nfn main()->int{\nvar a:S\na.n = 5\nreturn 0\n}\n";
+        assert!(inspect(src).unwrap_err().message.contains("初始化"));
+    }
+
+    #[test]
+    fn p13_s07_已有非_copyable_欄位不可二次覆寫_避免偷定_p16() {
+        let src = format!("{HEADER}a.x = 2\na.text = \"hi\"\na.text = \"bye\"\nreturn 0\n}}\n");
+        let err = inspect(&src).unwrap_err();
+        assert!(err.message.contains("Copyable 已明確禁止"));
+    }
+}
+
+#[cfg(test)]
 mod p13_formal_field_write_tests {
     use super::inspect;
     use crate::DiagnosticKind;
@@ -2030,7 +2142,7 @@ mod p13_formal_field_write_tests {
     }
 
     #[test]
-    fn p13_移動後_分支不確定_未初始化接收者都不得寫欄位() {
+    fn p13_移動後與分支不確定接收者仍拒絕_有建構基礎可首次補欄位() {
         let moved = format!(
             "{BODY}var b:S = a.move()\na.n = 2\nreturn 0\n}}\n"
         );
@@ -2040,7 +2152,7 @@ mod p13_formal_field_write_tests {
         );
         assert!(inspect(&uncertain).unwrap_err().message.contains("可能"));
         let partial = "struct S{\nvar n:int\n}\nfn main()->int{\nvar a:S = S()\na.n = 2\nreturn 0\n}\n";
-        assert!(inspect(partial).unwrap_err().message.contains("初始化"));
+        assert!(inspect(partial).is_ok());
     }
 
     #[test]
@@ -2174,7 +2286,7 @@ mod p13_d02_const_partial_safety_tests {
         let reassignment = partial().replace("return 0", "item = Sample(value=9)\nreturn 0");
         assert!(inspect(&reassignment).unwrap_err().message.contains("const"));
         let field_write = partial().replace("return 0", "item.value = 9\nreturn 0");
-        assert!(inspect(&field_write).unwrap_err().message.contains("初始化"));
+        assert!(inspect(&field_write).unwrap_err().message.contains("const"));
     }
 
     #[test]
