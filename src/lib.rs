@@ -19,6 +19,7 @@ mod borrow_ownership_gate;
 mod borrow_lifetime_probe;
 mod resource_obligation_audit;
 mod resource_borrow_pipeline;
+mod owned_str_runtime;
 mod ownership_ledger;
 mod ownership_probe;
 mod struct_ownership;
