@@ -48,4 +48,20 @@ mod tests {
         let src="struct S{\nvar owned:str = \"default\"\nconst id:int = 1\n}\nfn main()->int{\nvar owner:str = \"value\"\nvar item:S = S(owned=owner.move())\nreturn item.id\n}\n";
         assert!(inspect(src).is_ok());
     }
+
+    #[test]
+    fn vb16_重複欄位即使來源未定義也先報靜態重複() {
+        let src="struct S{\nvar text:str = \"default\"\n}\nfn main()->int{\nvar item:S = S(text=missing.move(),text=\"other\")\nreturn 0\n}\n";
+        let err=inspect(src).unwrap_err();
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("DuplicateField"),"{}",err.message);
+    }
+
+    #[test]
+    fn vb16_未知欄位即使來源未定義也先報未知欄位() {
+        let src="struct S{\nvar text:str = \"default\"\n}\nfn main()->int{\nvar item:S = S(text=missing.move(),unknown=1)\nreturn 0\n}\n";
+        let err=inspect(src).unwrap_err();
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("UnknownField"),"{}",err.message);
+    }
 }
