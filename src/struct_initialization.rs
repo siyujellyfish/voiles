@@ -178,4 +178,23 @@ mod tests {
             PlanError::MissingConstDefault("id".into())));
         assert!(o.resources.is_empty());
     }
+
+    #[test]
+    fn vb16_所有成功初始化步驟的失敗切點皆恰好逆序釋放一次() {
+        let fields=fields();
+        let named=[
+            NamedString{field:"c",value:"丙"},
+            NamedString{field:"a",value:"甲"},
+        ];
+        for (index,failed_field) in ["c","a","b","id"].iter().enumerate() {
+            let trace=build_string_struct(&fields,&named,Some(failed_field));
+            assert_eq!(trace.status,BuildStatus::EvaluationFailed((*failed_field).into()));
+            let expected:Vec<u64>=(1..=(index+1) as u64).collect();
+            let mut reversed=expected.clone();
+            reversed.reverse();
+            assert_eq!(created(&trace.resources),expected,"失敗欄位：{failed_field}");
+            assert_eq!(released(&trace.resources),reversed,"失敗欄位：{failed_field}");
+            assert_eq!(trace.evaluated.len(),index+1);
+        }
+    }
 }
