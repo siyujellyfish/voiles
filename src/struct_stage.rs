@@ -2805,3 +2805,47 @@ mod p13_d02_const_partial_safety_tests {
         assert!(inspect(&no_default).unwrap_err().message.contains("const"));
     }
 }
+
+#[cfg(test)]
+mod p13_完整來源閉包推進測試 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_2_已核准_copyable_一般賦值及函式回傳不需隱式移動() {
+        let cases = [
+            "fn main()->int{\nvar a:int = 1\nvar b:int = a\nreturn a\n}\n",
+            "fn main()->int{\nvar a:bool = true\nvar b:bool = a\nreturn 0\n}\n",
+            "fn give()->int{\nvar a:int = 7\nreturn a\n}\nfn main()->int{\nreturn 0\n}\n",
+        ];
+        for source in cases {
+            assert!(inspect(source).is_ok(), "合法 Copyable 來源不應誤拒：{source}");
+        }
+    }
+
+    #[test]
+    fn p13_3_明確移動後_原來源不可再次作為隱含複製或移動() {
+        let suffixes = [
+            "var again:str = a",
+            "var again:str = a.move()",
+        ];
+        for suffix in suffixes {
+            let source=format!(
+                "fn main()->int{{\nvar a:str = \"原始\"\nvar b:str = a.move()\n{suffix}\nreturn 0\n}}\n"
+            );
+            let error=inspect(&source).expect_err("移動後來源不可再次使用");
+            assert_eq!(error.kind,DiagnosticKind::Static);
+            assert!(error.span.is_some());
+        }
+    }
+
+    #[test]
+    fn p13_4_移動後重新初始化可以再次明確移動_但不得隱含複製() {
+        let valid="fn main()->int{\nvar a:str = \"原始\"\nvar b:str = a.move()\na = \"重新初始化\"\nvar c:str = a.move()\nreturn 0\n}\n";
+        assert!(inspect(valid).is_ok());
+        let invalid=valid.replace("var c:str = a.move()", "var c:str = a");
+        let error=inspect(&invalid).expect_err("str 重新初始化後仍禁止隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"),"{}",error.message);
+    }
+}
