@@ -2881,3 +2881,27 @@ mod p13_分支合流所有權來源矩陣 {
         assert!(inspect(source).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p13_s19_s21_結構所有權來源矩陣 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_6_結構整體複製僅在全部欄位可複製時合法() {
+        let valid="struct S{\nvar n:int = 1\nconst flag:bool = true\n}\nfn main()->int{\nvar original:S = S()\nvar copy:S = original\nreturn original.n\n}\n";
+        assert!(inspect(valid).is_ok());
+        let invalid="struct S{\nvar n:int = 1\nvar text:str = \"resource\"\n}\nfn main()->int{\nvar original:S = S()\nvar copy:S = original\nreturn 0\n}\n";
+        let error=inspect(invalid).expect_err("含非 Copyable 欄位的結構不可整筆隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn p13_6_禁止從結構個別欄位明確移動() {
+        let source="struct S{\nvar text:str = \"resource\"\n}\nfn main()->int{\nvar owner:S = S()\nvar stolen:str = owner.text.move()\nreturn 0\n}\n";
+        let error=inspect(source).expect_err("S21 不允許只移動結構單一欄位");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.span.is_some());
+    }
+}
