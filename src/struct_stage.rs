@@ -2905,3 +2905,35 @@ mod p13_s19_s21_結構所有權來源矩陣 {
         assert!(error.span.is_some());
     }
 }
+
+#[cfg(test)]
+mod p13_5_資源與可複製值來源對照矩陣 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_5_資源_str_允許明確整筆移動_但不允許隱含複製() {
+        let allowed="fn main()->int{\nvar resource:str = \"resource\"\nvar transferred:str = resource.move()\nreturn 0\n}\n";
+        assert!(inspect(allowed).is_ok());
+        let forbidden="fn main()->int{\nvar resource:str = \"resource\"\nvar duplicated:str = resource\nreturn 0\n}\n";
+        let error=inspect(forbidden).expect_err("資源不得透過一般 = 隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn p13_5_可複製值_允許複製與明確移動_移動後來源失效() {
+        let copied="fn main()->int{\nvar source:int = 3\nvar copied:int = source\nreturn source\n}\n";
+        assert!(inspect(copied).is_ok());
+        let moved="fn main()->int{\nvar source:int = 3\nvar transferred:int = source.move()\nreturn source\n}\n";
+        let error=inspect(moved).expect_err("即使是 Copyable，明確移動仍須使來源失效");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn p13_5_資源重新初始化後可再次明確移動() {
+        let source="fn main()->int{\nvar resource:str = \"first\"\nvar first:str = resource.move()\nresource = \"second\"\nvar second:str = resource.move()\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+}
