@@ -125,4 +125,40 @@ mod tests {
         let fields=[FieldInfo{name:"id",has_default:false,immutable:true}];
         assert_eq!(plan(&fields,&["id"]),Err(PlanError::MissingConstDefault("id".into())));
     }
+
+    #[test]
+    fn vb16_所有具名欄位排列均維持來源先行與預設宣告順序() {
+        let fields=[
+            FieldInfo{name:"a",has_default:true,immutable:false},
+            FieldInfo{name:"b",has_default:true,immutable:false},
+            FieldInfo{name:"c",has_default:true,immutable:false},
+        ];
+        for supplied in [
+            ["a","b"],["b","a"],["a","c"],["c","a"],["b","c"],["c","b"]
+        ] {
+            let result=plan(&fields,&supplied).unwrap();
+            assert_eq!(result.steps[0].field,supplied[0]);
+            assert_eq!(result.steps[1].field,supplied[1]);
+            assert_eq!(result.steps[0].origin,Origin::Named);
+            assert_eq!(result.steps[1].origin,Origin::Named);
+            let omitted=fields.iter().find(|f| !supplied.contains(&f.name)).unwrap();
+            assert_eq!(result.steps[2],EvalStep{
+                field:omitted.name.into(),origin:Origin::Default
+            });
+        }
+    }
+
+    #[test]
+    fn vb16_重複宣告欄位與缺少_const_預設不產生求值計畫() {
+        let duplicate=[
+            FieldInfo{name:"a",has_default:true,immutable:false},
+            FieldInfo{name:"a",has_default:true,immutable:false},
+        ];
+        assert_eq!(plan(&duplicate,&[]),Err(PlanError::DuplicateDefinition("a".into())));
+        let missing=[
+            FieldInfo{name:"id",has_default:false,immutable:true},
+            FieldInfo{name:"value",has_default:true,immutable:false},
+        ];
+        assert_eq!(plan(&missing,&["value"]),Err(PlanError::MissingConstDefault("id".into())));
+    }
 }
