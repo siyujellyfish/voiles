@@ -2849,3 +2849,35 @@ mod p13_完整來源閉包推進測試 {
         assert!(error.message.contains("Copyable"),"{}",error.message);
     }
 }
+
+#[cfg(test)]
+mod p13_分支合流所有權來源矩陣 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_4_單側移動合流後不能讀取或再移動來源() {
+        for operation in ["var copy:str = source", "var taken:str = source.move()"] {
+            let source=format!(
+                "fn main()->int{{\nvar source:str = \"text\"\nif (true){{\nvar inner:str = source.move()\n}}else{{\nvar keep:int = 1\n}}\n{operation}\nreturn 0\n}}\n"
+            );
+            let error=inspect(&source).expect_err("單側移動後合流不得視為仍持有");
+            assert_eq!(error.kind,DiagnosticKind::Static);
+            assert!(error.span.is_some());
+        }
+    }
+
+    #[test]
+    fn p13_4_雙側移動合流後仍不得再次消耗() {
+        let source="fn main()->int{\nvar source:str = \"text\"\nif (true){\nvar left:str = source.move()\n}else{\nvar right:str = source.move()\n}\nvar after:str = source.move()\nreturn 0\n}\n";
+        let error=inspect(source).expect_err("兩側皆移動後不得重用");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.span.is_some());
+    }
+
+    #[test]
+    fn p13_4_分支內合法_copyable_讀取不應令合流來源失效() {
+        let source="fn main()->int{\nvar original:int = 3\nif (true){\nvar left:int = original\n}else{\nvar right:int = original\n}\nreturn original\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+}
