@@ -3588,3 +3588,50 @@ mod p13_預設值來源跨型別循環 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p13_1_copyable_完整能力分類 {
+    use super::{Checker, Parser};
+    use crate::ownership_model::CopyPermission;
+    use crate::ownership_policy::approved_leaf_copy_permission;
+    use crate::source::Source;
+
+    fn permission(src: &str, ty: &str) -> CopyPermission {
+        let source = Source::new(src);
+        let tokens = super::lex(&source).expect("來源詞法合法");
+        let (structs, functions) = Parser::new(&source, &tokens).file().expect("來源語法合法");
+        let checker = Checker {
+            source: &source, structs: &structs, functions: &functions,
+            ability: approved_leaf_copy_permission,
+        };
+        checker.permission(ty)
+    }
+
+    #[test]
+    fn 已核准葉型別及容器各自維持三態() {
+        let src="fn main()->int{\nreturn 0\n}\n";
+        for ty in ["int", "bool", "float"] {
+            assert_eq!(permission(src,ty),CopyPermission::Allowed);
+        }
+        assert_eq!(permission(src,"str"),CopyPermission::Forbidden);
+        for ty in ["list[int]","dict{int,bool}","list[list[float]]","Unknown"] {
+            assert_eq!(permission(src,ty),CopyPermission::Undecided);
+        }
+    }
+
+    #[test]
+    fn 巢狀結構全欄位允許時才允許複製() {
+        let src="struct Leaf{\nvar value:float = 1.0\n}\nstruct Middle{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar middle:Middle = Middle()\n}\nfn main()->int{\nreturn 0\n}\n";
+        for ty in ["Leaf","Middle","Root"] {
+            assert_eq!(permission(src,ty),CopyPermission::Allowed);
+        }
+    }
+
+    #[test]
+    fn 巢狀結構含資源欄位整體明確禁止複製() {
+        let src="struct Resource{\nvar text:str = \"x\"\n}\nstruct Wrapper{\nvar resource:Resource = Resource()\n}\nfn main()->int{\nreturn 0\n}\n";
+        for ty in ["Resource","Wrapper"] {
+            assert_eq!(permission(src,ty),CopyPermission::Forbidden);
+        }
+    }
+}
