@@ -748,7 +748,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         match &term.kind {
             TermKind::Literal(ty) => Ok((*ty).to_string()),
             TermKind::Name(name) if name == "self" =>
-                Err(self.error("S15：方法不可回傳或複製整個 self", term)),
+                Err(self.error("S15：方法不可回傳整個 self，涉及其他借用與消耗", term)),
             TermKind::Name(name) => {
                 let param = method.params.iter().find(|param| param.name == *name)
                     .ok_or_else(|| self.error("方法值來源參數不存在", term))?;
