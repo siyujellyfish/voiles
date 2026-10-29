@@ -62,6 +62,8 @@ enum TermKind {
     Literal(&'static str),
     Name(String),
     Construct(String, Vec<(String, Term)>),
+    /// 一般函式位置引數；呼叫端所有權資料流完成前不得接受。
+    Call(String, Vec<Term>),
     Move(String),
     /// VA14-01-A：只於具型別 var／const 直接初始化時建立非擁有借用。
     Borrow(String),
@@ -214,27 +216,45 @@ impl Parser<'_> {
                 let end = self.tok().end; self.cursor += 1;
                 if self.symbol('(') {
                     self.cursor += 1;
-                    let mut args = Vec::new();
-                    let mut names = HashSet::new();
-                    while !self.symbol(')') {
-                        let field = self.name()?;
-                        if !names.insert(field.clone()) {
-                            return Err(Diagnostic {
-                                kind: DiagnosticKind::Static,
-                                message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
-                                span: Some(self.source.span(self.tok().start, self.tok().end)),
-                            });
+                    // 只有 name = value 才是結構具名欄位建立式；
+                    // 位置引數須另建 AST，避免錯當欄位或略過所有權檢查。
+                    let named = matches!(self.tok().kind, TokenKind::Name(_))
+                        && self.tokens.get(self.cursor + 1)
+                            .is_some_and(|token| matches!(token.kind, TokenKind::Symbol('=')));
+                    if named {
+                        let mut args = Vec::new();
+                        let mut names = HashSet::new();
+                        while !self.symbol(')') {
+                            let field = self.name()?;
+                            if !names.insert(field.clone()) {
+                                return Err(Diagnostic {
+                                    kind: DiagnosticKind::Static,
+                                    message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
+                                    span: Some(self.source.span(self.tok().start, self.tok().end)),
+                                });
+                            }
+                            self.take('=', "具名欄位引數需要等號")?;
+                            let value = self.term()?;
+                            args.push((field, value));
+                            if self.symbol(',') { self.cursor += 1; }
+                            else if !self.symbol(')') {
+                                return Err(self.syntax("具名欄位引數之間需要逗號"));
+                            }
                         }
-                        self.take('=', "具名欄位引數需要等號")?;
-                        let value = self.term()?;
-                        args.push((field, value));
-                        if self.symbol(',') { self.cursor += 1; }
-                        else if !self.symbol(')') {
-                            return Err(self.syntax("具名欄位引數之間需要逗號"));
+                        let end = self.tok().end; self.cursor += 1;
+                        (TermKind::Construct(s, args), end)
+                    } else {
+                        let mut args = Vec::new();
+                        while !self.symbol(')') {
+                            args.push(self.term()?);
+                            if self.symbol(',') { self.cursor += 1; }
+                            else if !self.symbol(')') {
+                                return Err(self.syntax("函式位置引數之間需要逗號"));
+                            }
                         }
+                        let end = self.tok().end; self.cursor += 1;
+                        (TermKind::Call(s, args), end)
                     }
-                    let end = self.tok().end; self.cursor += 1;
-                    (TermKind::Construct(s, args), end)
                 } else if self.symbol('.') {
                     self.cursor += 1;
                     let field_or_move = self.name()?;
