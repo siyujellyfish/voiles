@@ -62,6 +62,8 @@ enum TermKind {
     Literal(&'static str),
     Name(String),
     Construct(String, Vec<(String, Term)>),
+    /// 一般函式位置引數；呼叫端所有權資料流完成前不得接受。
+    Call(String, Vec<Term>),
     Move(String),
     /// VA14-01-A：只於具型別 var／const 直接初始化時建立非擁有借用。
     Borrow(String),
@@ -214,27 +216,45 @@ impl Parser<'_> {
                 let end = self.tok().end; self.cursor += 1;
                 if self.symbol('(') {
                     self.cursor += 1;
-                    let mut args = Vec::new();
-                    let mut names = HashSet::new();
-                    while !self.symbol(')') {
-                        let field = self.name()?;
-                        if !names.insert(field.clone()) {
-                            return Err(Diagnostic {
-                                kind: DiagnosticKind::Static,
-                                message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
-                                span: Some(self.source.span(self.tok().start, self.tok().end)),
-                            });
+                    // 只有 name = value 才是結構具名欄位建立式；
+                    // 位置引數須另建 AST，避免錯當欄位或略過所有權檢查。
+                    let named = matches!(self.tok().kind, TokenKind::Name(_))
+                        && self.tokens.get(self.cursor + 1)
+                            .is_some_and(|token| matches!(token.kind, TokenKind::Symbol('=')));
+                    if named || self.symbol(')') {
+                        let mut args = Vec::new();
+                        let mut names = HashSet::new();
+                        while !self.symbol(')') {
+                            let field = self.name()?;
+                            if !names.insert(field.clone()) {
+                                return Err(Diagnostic {
+                                    kind: DiagnosticKind::Static,
+                                    message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
+                                    span: Some(self.source.span(self.tok().start, self.tok().end)),
+                                });
+                            }
+                            self.take('=', "具名欄位引數需要等號")?;
+                            let value = self.term()?;
+                            args.push((field, value));
+                            if self.symbol(',') { self.cursor += 1; }
+                            else if !self.symbol(')') {
+                                return Err(self.syntax("具名欄位引數之間需要逗號"));
+                            }
                         }
-                        self.take('=', "具名欄位引數需要等號")?;
-                        let value = self.term()?;
-                        args.push((field, value));
-                        if self.symbol(',') { self.cursor += 1; }
-                        else if !self.symbol(')') {
-                            return Err(self.syntax("具名欄位引數之間需要逗號"));
+                        let end = self.tok().end; self.cursor += 1;
+                        (TermKind::Construct(s, args), end)
+                    } else {
+                        let mut args = Vec::new();
+                        while !self.symbol(')') {
+                            args.push(self.term()?);
+                            if self.symbol(',') { self.cursor += 1; }
+                            else if !self.symbol(')') {
+                                return Err(self.syntax("函式位置引數之間需要逗號"));
+                            }
                         }
+                        let end = self.tok().end; self.cursor += 1;
+                        (TermKind::Call(s, args), end)
                     }
-                    let end = self.tok().end; self.cursor += 1;
-                    (TermKind::Construct(s, args), end)
                 } else if self.symbol('.') {
                     self.cursor += 1;
                     let field_or_move = self.name()?;
@@ -579,6 +599,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 | TermKind::MethodCall(id, _) => id == name,
             TermKind::Construct(_, arguments) =>
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
+            TermKind::Call(_, arguments) =>
+                arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::Literal(_) => false,
         }
     }
@@ -842,6 +864,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
                 Err(self.error("S21：結構欄位不能單獨移動", term))
             }
+            TermKind::Call(_, _) => Err(self.error(
+                "P13：一般函式呼叫已解析，但引數所有權傳遞尚未完整驗證，保守拒絕", term)),
             TermKind::Construct(name, args) => {
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
@@ -1208,6 +1232,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Construct(_, args) => {
                 for (_, value) in args { self.reject_method_term(value)?; }
                 Ok(())
+            }
+            TermKind::Call(_, args) => {
+                for value in args { self.reject_method_term(value)?; }
+                Err(self.error("P13：方法內一般函式呼叫尚未驗證所有權", term))
             }
             _ => Ok(()),
         }
@@ -3016,5 +3044,26 @@ mod p13_函式參數型別閉包 {
     fn p13_可複製的已宣告結構可作為受限函式參數() {
         let src="struct Item{\nvar n:int = 1\n}\nfn identity(value:Item)->int{\nreturn value.n\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_一般函式呼叫解析邊界 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_位置引數呼叫保守拒絕而非錯當結構欄位() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        let error=inspect(src).expect_err("一般函式呼叫所有權未驗證前不得放行");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("一般函式呼叫"));
+    }
+
+    #[test]
+    fn p13_位置引數巢狀移動不得繞過方法禁令() {
+        let src="struct Item{\nvar n:int = 1\nfn value()->int{\nreturn identity(self.move())\n}\n}\nfn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("方法中巢狀 self.move 不得通過");
+        assert_eq!(error.kind,DiagnosticKind::Static);
     }
 }
