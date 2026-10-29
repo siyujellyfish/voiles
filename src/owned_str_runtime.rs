@@ -420,4 +420,27 @@ mod tests {
         assert_eq!(rt.read("b"),Ok("B"));
         assert_eq!(released(&rt.finish().unwrap()),vec![2,1]);
     }
+    #[test]
+    fn p13_k_跨函式語意的整筆轉移只保留單一資源持有者() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("caller", true, "payload").unwrap();
+        runtime.move_named("caller", "parameter").unwrap();
+        assert_eq!(runtime.read("caller"), Err(StrRuntimeError::MovedSource));
+        runtime.move_named("parameter", "returned").unwrap();
+        assert_eq!(runtime.read("parameter"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(runtime.read("returned"), Ok("payload"));
+        assert!(released(runtime.events()).is_empty());
+        assert_eq!(released(&runtime.finish().unwrap()), vec![1]);
+    }
+
+    #[test]
+    fn p13_k_已移動資源不得藉第二次轉移形成重複持有者() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("source", true, "payload").unwrap();
+        runtime.move_named("source", "first").unwrap();
+        assert_eq!(runtime.move_named("source", "second"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(runtime.read("first"), Ok("payload"));
+        assert_eq!(released(&runtime.finish().unwrap()), vec![1]);
+    }
+
 }
