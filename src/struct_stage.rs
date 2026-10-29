@@ -3087,3 +3087,41 @@ mod p13_一般函式呼叫解析邊界 {
         assert_eq!(error.kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p13_可複製函式呼叫 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_可複製參數與回傳可安全呼叫() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_巢狀可複製呼叫可通過() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(identity(1))\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_呼叫參數數量不符必須拒絕() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity()\n}\n";
+        let err=inspect(src).expect_err("引數數量不符");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_呼叫參數型別不符必須拒絕() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(true)\n}\n";
+        let err=inspect(src).expect_err("引數型別不符");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_資源參數呼叫不得隱含複製() {
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_err());
+    }
+}
