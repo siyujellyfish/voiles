@@ -798,6 +798,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         } else { BorrowKind::SharedRead };
         let actual = match &return_value.kind {
             TermKind::Literal(ty) => *ty,
+            TermKind::Name(name) if name == "self" => {
+                return Err(self.error("方法不可回傳整個 self，涉及其他借用與消耗", return_value));
+            }
             TermKind::Name(name) => method.params.iter()
                 .find(|p| p.name == *name)
                 .map(|p| p.ty.as_str())
@@ -3626,8 +3629,8 @@ mod p13_方法回傳與借用權限交叉來源 {
     }
 
     #[test]
-    fn 方法宣告參數仍保守拒絕直到借用安全完整驗證() {
-        let src="struct Counter{\nvar count:int = 1\nfn add(amount:int)->int{\nreturn self.count\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+    fn 非_copyable_方法參數仍保守拒絕直到借用安全完整驗證() {
+        let src="struct Counter{\nvar count:int = 1\nfn add(amount:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         let error=inspect(src).unwrap_err();
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("方法參數"));
