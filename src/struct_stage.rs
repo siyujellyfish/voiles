@@ -716,12 +716,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 跨作用域已解析身分表，因此仍採名稱保守掃描，不能提早歸還。
     fn release_last_uses(vars: &mut Scopes, rest: &[Stmt], continuation: &[Stmt]) {
         let mut younger_names = HashSet::new();
-        for scope in vars.iter_mut().rev() {
+        let current_scope = vars.len() - 1;
+        for (depth, scope) in vars.iter_mut().enumerate().rev() {
             for (name, binding) in scope.iter_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
                     let needed_here = Self::scope_mentions_binding(
                         rest, name, younger_names.contains(name));
-                    let needed_later = continuation.iter()
+                    // continuation 來自父區塊，不能引用在當前最內層
+                    // 區塊新宣告的同名別名；同名外層別名是不同來源。
+                    // 外層仍存活的別名繼續保守追蹤其父區塊後繼。
+                    let needed_later = depth != current_scope && continuation.iter()
                         .any(|stmt| Self::statement_mentions(stmt, name));
                     if loan.active && !needed_here && !needed_later {
                         loan.active = false;
@@ -4649,5 +4653,25 @@ mod p14_4_借用別名複製能力來源 {
         let error=inspect(src).expect_err("非 Copyable 借用不能複製出第二持有者");
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p15_1_父區塊後繼與內層宣告身分 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 父區塊引用外層同名變數不可延長內層借用有效期() {
+        let src="fn main()->int{\nvar source:int = 1\nconst alias:int = 99\nif(true){\nvar alias:int = source.borrow()\nvar copied:int = alias\nvar after:int = source\n}\nreturn alias\n}\n";
+        assert!(inspect(src).is_ok(), "外層同名引用不是內層借用最後使用點");
+    }
+
+    #[test]
+    fn 父區塊真正再次引用外層借用仍應封鎖分支內原來源() {
+        let src="fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nif(true){\nvar another:int = source\n}\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("外層借用在分支後仍使用不得提前解除");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
     }
 }
