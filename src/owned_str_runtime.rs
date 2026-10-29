@@ -444,3 +444,78 @@ mod tests {
     }
 
 }
+
+#[cfg(test)]
+mod p13_4_不確定分支持有權原子覆寫 {
+    use super::{OwnedStrRuntime, ResourceEvent, StrRuntimeError};
+
+    fn assert_exactly_once(events: &[ResourceEvent]) {
+        let mut created: Vec<_> = events.iter().filter_map(|event|
+            if let ResourceEvent::Created(id) = event { Some(*id) } else { None }
+        ).collect();
+        let mut released: Vec<_> = events.iter().filter_map(|event|
+            if let ResourceEvent::Released(id) = event { Some(*id) } else { None }
+        ).collect();
+        created.sort_unstable();
+        released.sort_unstable();
+        assert_eq!(created, released, "每個成功建立的 UTF-8 資源必須恰好釋放一次");
+    }
+
+    #[test]
+    fn 兩種分支結果的新字串覆寫都只有唯一持有者與一次清理() {
+        for moved_in_branch in [false, true] {
+            let mut rt=OwnedStrRuntime::new();
+            rt.declare("source", true, "原始資源").unwrap();
+            if moved_in_branch {
+                rt.enter_scope();
+                rt.move_named("source", "taken").unwrap();
+                rt.leave_scope().unwrap();
+            }
+            rt.assign("source", "重新建立").unwrap();
+            assert_eq!(rt.read("source").unwrap(), "重新建立");
+            let events=rt.finish().unwrap();
+            assert_exactly_once(&events);
+            assert_eq!(events.iter().filter(|event|
+                matches!(event, ResourceEvent::Created(_))).count(), 2);
+        }
+    }
+
+    #[test]
+    fn 兩種分支結果的右值失敗都保持原有狀態並清理暫存() {
+        for moved_in_branch in [false, true] {
+            let mut rt=OwnedStrRuntime::new();
+            rt.declare("source", true, "原始資源").unwrap();
+            if moved_in_branch {
+                rt.enter_scope();
+                rt.move_named("source", "taken").unwrap();
+                rt.leave_scope().unwrap();
+            }
+            assert_eq!(rt.assign_checked("source", "暫存", true),
+                Err(StrRuntimeError::EvaluationFailed));
+            if moved_in_branch {
+                assert_eq!(rt.read("source"), Err(StrRuntimeError::MovedSource));
+            } else {
+                assert_eq!(rt.read("source").unwrap(), "原始資源");
+            }
+            assert_exactly_once(&rt.finish().unwrap());
+        }
+    }
+
+    #[test]
+    fn 兩種分支結果由另一持有者整筆移交時恰一次釋放() {
+        for moved_in_branch in [false, true] {
+            let mut rt=OwnedStrRuntime::new();
+            rt.declare("source", true, "原始").unwrap();
+            rt.declare("incoming", true, "傳入").unwrap();
+            if moved_in_branch {
+                rt.enter_scope();
+                rt.move_named("source", "taken").unwrap();
+                rt.leave_scope().unwrap();
+            }
+            rt.replace_from("incoming", "source").unwrap();
+            assert_eq!(rt.read("source").unwrap(), "傳入");
+            assert_eq!(rt.read("incoming"), Err(StrRuntimeError::MovedSource));
+            assert_exactly_once(&rt.finish().unwrap());
+        }
+    }
+}
