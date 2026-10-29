@@ -3635,3 +3635,52 @@ mod p13_1_copyable_完整能力分類 {
         }
     }
 }
+
+#[cfg(test)]
+mod p13_1_正式來源閉包 {
+    use super::{inspect, Checker, Parser};
+    use crate::ownership_model::CopyPermission;
+    use crate::ownership_policy::approved_leaf_copy_permission;
+    use crate::{DiagnosticKind, lexer, source::Source};
+
+    fn ability(src: &str, ty: &str) -> CopyPermission {
+        let source = Source::new(src.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let (structs, functions) = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0,
+        }.file().expect("來源語法應可解析");
+        Checker {
+            source: &source, structs: &structs, functions: &functions,
+            ability: approved_leaf_copy_permission,
+        }.permission(ty)
+    }
+
+    #[test]
+    fn 全部欄位可複製的三層結構可實際隱含複製() {
+        let src = "struct Leaf{\nvar amount:float = 1.0\n}\nstruct Middle{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar middle:Middle = Middle()\n}\nfn main()->int{\nvar first:Root = Root()\nvar second:Root = first\nvar third:Root = first\nreturn 0\n}\n";
+        assert_eq!(ability(src, "Root"), CopyPermission::Allowed);
+        assert!(inspect(src).is_ok(), "可複製來源的多次使用必須合法");
+    }
+
+    #[test]
+    fn 三層結構內含字串時整體確定禁止隱含複製() {
+        let src = "struct Leaf{\nvar title:str = \"文字\"\n}\nstruct Middle{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar middle:Middle = Middle()\n}\nfn main()->int{\nvar first:Root = Root()\nvar second:Root = first\nreturn 0\n}\n";
+        assert_eq!(ability(src, "Root"), CopyPermission::Forbidden);
+        let error = inspect(src).expect_err("非 Copyable 結構不得隱含複製");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn 容器未決與未知型別不誤報為永久不可複製() {
+        let src = "fn main()->int{\nreturn 0\n}\n";
+        for ty in ["list[int]", "list[list[float]]", "dict{str,int}", "Optional[int]", "Unknown"] {
+            assert_eq!(ability(src, ty), CopyPermission::Undecided, "{ty}");
+        }
+        assert_eq!(ability(src, "str"), CopyPermission::Forbidden);
+        for ty in ["int", "bool", "float"] {
+            assert_eq!(ability(src, ty), CopyPermission::Allowed);
+        }
+    }
+}
