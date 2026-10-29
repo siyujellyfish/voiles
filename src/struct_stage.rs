@@ -871,12 +871,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if function.params.len() != args.len() {
                     return Err(self.error("P13：函式引數數量不符", term));
                 }
-                // 僅在所有參數與回傳型別均已證明 Copyable 時，
-                // 允許不移交所有權的位置引數呼叫；資源呼叫留待 C 批次。
-                if function.params.iter().any(|(_, ty)|
-                    self.permission(ty) != CopyPermission::Allowed)
-                    || self.permission(&function.result_ty) != CopyPermission::Allowed {
-                    return Err(self.error("P13：資源函式呼叫的所有權移交尚未驗證", term));
+                // 明確移動非 Copyable 具名來源；其餘資源運算式
+                // 需由自身求值產生獨立所有權，不能隱含複製。
+                // 所有參數預先核對型別與移交形式，避免型別錯誤
+                // 才發現時已消耗前面參數的來源。
+                for (arg, (_, expected)) in args.iter().zip(&function.params) {
+                    if self.permission(expected) != CopyPermission::Allowed {
+                        match &arg.kind {
+                            TermKind::Move(_) | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
+                            _ => return Err(self.error(
+                                "P13：非 Copyable 函式引數須明確移動或產生獨立擁有值", arg)),
+                        }
+                    }
                 }
                 for (arg, (_, expected)) in args.iter().zip(&function.params) {
                     let (actual, initialized) = self.evaluate(arg, vars)?;
@@ -1222,11 +1228,6 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 && !self.structs.contains_key(ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
-            }
-            if self.permission(ty) != CopyPermission::Allowed {
-                return Err(Diagnostic { kind: DiagnosticKind::Static,
-                    message: "P13：非 Copyable 函式參數的呼叫端移交與借用尚未完成，保守拒絕".into(),
-                    span: None });
             }
             vars[0].insert(name.clone(), Binding {
                 declaration_start: 0, ty: ty.clone(), mutable: false,
@@ -3046,11 +3047,9 @@ mod p13_函式參數來源安全 {
     }
 
     #[test]
-    fn p13_非可複製參數在呼叫端移交未完成前保守拒絕() {
-        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("尚無呼叫端所有權來源證明");
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("P13"));
+    fn p13_非可複製參數須由明確移交的呼叫端供應() {
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nvar result:str = identity(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
     }
 
     #[test]
@@ -3132,7 +3131,7 @@ mod p13_可複製函式呼叫 {
 
     #[test]
     fn p13_資源參數呼叫不得隱含複製() {
-        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nvar result:str = identity(source)\nreturn 0\n}\n";
         assert!(inspect(src).is_err());
     }
 }
@@ -3161,6 +3160,38 @@ mod p13_函式簽章唯一性 {
     #[test]
     fn p13_唯一函式簽章與合法入口仍可呼叫() {
         let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_跨函式資源移交 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_資源參數明確移動並由函式回傳() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar received:str = take(item.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_移交後原來源不得再用() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar received:str = take(item.move())\nvar invalid:str = item.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_非_copyable_具名引數不能隱含複製() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar invalid:str = take(item)\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("資源不能隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("明確移動"));
+    }
+
+    #[test]
+    fn p13_資源函式呼叫結果可再移交() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar received:str = take(take(item.move()))\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
     }
 }
