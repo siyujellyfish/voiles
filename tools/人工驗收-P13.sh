@@ -48,6 +48,28 @@ grep -q "container_copy_policy::tests::d01_後續_list_a_dict_a_保留兩種類�
   target/p13-accept/internal_tests.list
 grep -q "container_copy_policy::tests::d01_後續_list_a_dict_a_拒絕隱含複製" \
   target/p13-accept/internal_tests.list
+# P13 C／D：確保新增跨函式資源正反來源真的編譯並執行，不能只靠全量數字。
+for case_name in \
+  "p13_跨函式資源移交::p13_資源參數明確移動並由函式回傳" \
+  "p13_跨函式資源移交::p13_移交後原來源不得再用" \
+  "p13_跨函式資源移交::p13_非_copyable_具名引數不能隱含複製" \
+  "p13_跨函式資源移交::p13_資源函式呼叫結果可再移交" \
+  "p13_跨函式資源分支合流::p13_單側移交後合流不得再次使用來源" \
+  "p13_跨函式資源分支合流::p13_雙分支皆移交後合流不得再次使用來源" \
+  "p13_跨函式資源分支合流::p13_分支內遮蔽資源移交不影響外層來源" \
+  "p13_跨函式資源分支合流::p13_雙分支重新初始化後可再次移交"
+do
+  grep -Fq "$case_name" target/p13-accept/internal_tests.list || {
+    echo "P13 跨函式來源案例缺失：$case_name" >&2
+    exit 1
+  }
+done
+./target/p13-accept/internal_tests p13_跨函式資源移交:: \
+  >target/p13-accept/p13_function_transfer_tests.log
+./target/p13-accept/internal_tests p13_跨函式資源分支合流:: \
+  >target/p13-accept/p13_function_branch_tests.log
+grep -q "test result: ok. 4 passed; 0 failed" target/p13-accept/p13_function_transfer_tests.log
+grep -q "test result: ok. 4 passed; 0 failed" target/p13-accept/p13_function_branch_tests.log
 ./target/p13-accept/internal_tests struct_stage:: \
   >target/p13-accept/p13_struct_tests.log
 ./target/p13-accept/internal_tests p13_d02_const_partial_safety_tests:: \
