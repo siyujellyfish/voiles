@@ -1358,22 +1358,26 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 准許獨立新常值與另一具名整筆移動；含資源結構、
                     // 容器與未確認欄位清理仍不得假裝有相同執行期保證。
                     let state = expected.value.state();
+                    // VA16-03-A：str 的 OwnedStrRuntime::assign_checked／replace_from
+                    // 皆以 Option<OwnedUtf8> 原子替換：若原值仍存在便在
+                    // 提交後清理，若已移動則只安裝新值。兩條分支均經
+                    // 真實資源回滾測試，才能允許 MayBeUnavailable 重綁。
+                    // 其他非 Copyable 型別尚無相同證明，仍保守拒絕。
+                    let proven_str_rhs = ty == "str"
+                        && matches!(&value.kind,
+                            TermKind::Literal("str") | TermKind::Move(_));
                     if self.permission(&ty) != CopyPermission::Allowed
-                        && state == ValueState::MayBeUnavailable {
+                        && state == ValueState::MayBeUnavailable && !proven_str_rhs {
                         return Err(self.error(
-                            "VA16-03：合流後資源可能存在或已移動，條件性舊值清理尚未證明",
+                            "VA16-03：合流後不確定資源僅准已證明的 str 原子覆寫",
                             value));
                     }
                     if self.permission(&ty) != CopyPermission::Allowed
-                        && !matches!(state, ValueState::Uninitialized | ValueState::Moved) {
-                        let proven_str_rhs = ty == "str"
-                            && matches!(&value.kind,
-                                TermKind::Literal("str") | TermKind::Move(_));
-                        if !proven_str_rhs {
-                            return Err(self.error(
-                                "P16：此型別／右值的既有資源覆寫尚未完成端到端清理證明",
-                                value));
-                        }
+                        && !matches!(state, ValueState::Uninitialized | ValueState::Moved)
+                        && !proven_str_rhs {
+                        return Err(self.error(
+                            "P16：此型別／右值的既有資源覆寫尚未完成端到端清理證明",
+                            value));
                     }
                     // 自身轉移與寫回的重疊求值次序尚未有獨立安全證據。
                     if matches!(&value.kind, TermKind::Move(source) if source == name) {
@@ -2947,9 +2951,9 @@ mod p13_resource_overwrite_barrier_tests {
     }
 
     #[test]
-    fn 合流仍可能保有資源時禁止整筆覆寫() {
+    fn 合流後可能保有的_str_資源允許已證明原子覆寫() {
         let src = "fn main()->int{\nvar s:str = \"old\"\nif (true){\nvar taken:str = s.move()\n}\ns = \"new\"\nreturn 0\n}\n";
-        assert!(inspect(src).unwrap_err().message.contains("可能"));
+        assert!(inspect(src).is_ok());
     }
 }
 
@@ -4476,5 +4480,29 @@ mod p13_6_方法獨立資源回傳 {
         let err=inspect(src).expect_err("方法新建資源的引數不得隱含複製 str");
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p13_4_不確定_str_資源合流重新初始化 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 單側移動後可由新字串原子重新初始化() {
+        let src="fn main()->int{\nvar text:str = \"old\"\nif(true){\nvar moved:str = text.move()\n}\ntext = \"new\"\nvar result:str = text.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 單側移動後也可從另一個有效持有者明確移交() {
+        let src="fn main()->int{\nvar text:str = \"old\"\nvar incoming:str = \"new\"\nif(true){\nvar moved:str = text.move()\n}\ntext = incoming.move()\nvar result:str = text.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 不確定來源在重新初始化前仍不得使用() {
+        let src="fn main()->int{\nvar text:str = \"old\"\nif(true){\nvar moved:str = text.move()\n}\nvar invalid:str = text.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
