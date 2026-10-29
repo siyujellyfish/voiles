@@ -3237,6 +3237,30 @@ mod p13_跨函式資源分支合流 {
 }
 
 #[cfg(test)]
+mod p13_函式呼叫所有權預檢 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_非可複製參數拒絕具名隱含複製() {
+        let src="fn consume(value:str)->int{\nreturn 0\n}\nfn main()->int{\nvar source:str = \"hello\"\nreturn consume(source)\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_呼叫引數數量錯誤不應消耗資源() {
+        let src="fn consume(value:str)->int{\nreturn 0\n}\nfn main()->int{\nvar source:str = \"hello\"\nreturn consume(source.move(),source.move())\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_明確資源移交與可複製參數可混用() {
+        let src="fn consume(value:str,count:int)->int{\nreturn count\n}\nfn main()->int{\nvar source:str = \"hello\"\nreturn consume(source.move(),1)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
 mod p13_零引數一般函式 {
     use super::inspect;
     use crate::DiagnosticKind;
