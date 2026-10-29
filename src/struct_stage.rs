@@ -29,12 +29,18 @@ struct StructDecl {
 #[derive(Debug, Clone)]
 struct Function {
     name: String,
-    params: Vec<(String, String)>,
+    params: Vec<Parameter>,
     result_ty: String,
     body: Vec<Stmt>,
 }
 
 #[derive(Debug, Clone)]
+struct Parameter {
+    name: String,
+    ty: String,
+    declaration_start: usize,
+}
+
 struct Stmt {
     kind: StmtKind,
     start: usize,
@@ -372,13 +378,14 @@ impl Parser<'_> {
         let mut params = Vec::new();
         let mut seen = HashSet::new();
         while !self.symbol(')') {
+            let declaration_start = self.tok().start;
             let parameter = self.name()?;
             if !seen.insert(parameter.clone()) {
                 return Err(self.syntax("函式參數名稱不得重複"));
             }
             self.take(':', "函式參數需要明確型別")?;
             let ty = self.name()?;
-            params.push((parameter, ty));
+            params.push(Parameter { name: parameter, ty, declaration_start });
             if self.symbol(',') { self.cursor += 1; }
             else if !self.symbol(')') { return Err(self.syntax("函式參數之間需要逗號")); }
         }
@@ -875,7 +882,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // 需由自身求值產生獨立所有權，不能隱含複製。
                 // 所有參數預先核對型別與移交形式，避免型別錯誤
                 // 才發現時已消耗前面參數的來源。
-                for (arg, (_, expected)) in args.iter().zip(&function.params) {
+                for (arg, parameter) in args.iter().zip(&function.params) {
+                    let expected = &parameter.ty;
                     if self.permission(expected) != CopyPermission::Allowed {
                         match &arg.kind {
                             TermKind::Move(_) | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
@@ -884,7 +892,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                     }
                 }
-                for (arg, (_, expected)) in args.iter().zip(&function.params) {
+                for (arg, parameter) in args.iter().zip(&function.params) {
+                    let expected = &parameter.ty;
                     let (actual, initialized) = self.evaluate(arg, vars)?;
                     if actual != *expected || !initialized {
                         return Err(self.error("P13：函式引數型別不符或尚未初始化", arg));
@@ -1233,14 +1242,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     fun.body.last().map_or(0, |s| s.end))) });
         }
         let mut vars = vec![HashMap::new()];
-        for (name, ty) in &fun.params {
+        for parameter in &fun.params {
+            let name = &parameter.name;
+            let ty = &parameter.ty;
             if !["int", "bool", "float", "str"].contains(&ty.as_str())
                 && !self.structs.contains_key(ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
             }
             vars[0].insert(name.clone(), Binding {
-                declaration_start: 0, ty: ty.clone(), mutable: false,
+                declaration_start: parameter.declaration_start,
+                ty: ty.clone(), mutable: false,
                 value: ValueSlot::initialized(self.permission(ty)),
                 pending_fields: None, loan: None,
             });
@@ -3682,5 +3694,25 @@ mod p13_1_正式來源閉包 {
         for ty in ["int", "bool", "float"] {
             assert_eq!(ability(src, ty), CopyPermission::Allowed);
         }
+    }
+}
+
+#[cfg(test)]
+mod p13_p14_函式參數真實宣告身分 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 借用第一參數不應封鎖另一個獨立參數() {
+        let src = "fn calculate(first:int, second:int)->int{\nconst borrowed:int = first.borrow()\nvar other:int = second\nreturn borrowed\n}\nfn main()->int{\nreturn calculate(1, 2)\n}\n";
+        assert!(inspect(src).is_ok(), "不同參數的來源身分必須各自獨立");
+    }
+
+    #[test]
+    fn 借用第一參數時仍禁止直接使用同一參數() {
+        let src = "fn calculate(first:int, second:int)->int{\nconst borrowed:int = first.borrow()\nvar other:int = first\nreturn borrowed\n}\nfn main()->int{\nreturn calculate(1, 2)\n}\n";
+        let error=inspect(src).expect_err("來源仍被借用時應拒絕直接使用");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
     }
 }
