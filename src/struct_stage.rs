@@ -4057,3 +4057,57 @@ mod p15_遮蔽借用最後使用點精度 {
         assert!(error.message.contains("借用"));
     }
 }
+
+#[cfg(test)]
+mod p16_真正來源至字串資源生命週期 {
+    use super::trace_string_struct_source;
+    use crate::struct_initialization::BuildStatus;
+    use crate::owned_str_runtime::ResourceEvent;
+
+    const SOURCE: &str = "struct Message{\nvar first:str = \"甲預設\"\nvar second:str = \"乙預設\"\nvar third:str = \"丙預設\"\n}\nfn main()->int{\nvar item:Message = Message(second=\"乙具名\",first=\"甲具名\")\nreturn 0\n}\n";
+
+    fn created(events: &[ResourceEvent]) -> Vec<u64> {
+        events.iter().filter_map(|event| match event {
+            ResourceEvent::Created(id) => Some(*id), _ => None,
+        }).collect()
+    }
+    fn released(events: &[ResourceEvent]) -> Vec<u64> {
+        events.iter().filter_map(|event| match event {
+            ResourceEvent::Released(id) => Some(*id), _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn 來源具名及預設欄位按核准次序配置真實字串並逆序清理() {
+        let trace=trace_string_struct_source(SOURCE, "item", None).unwrap();
+        assert_eq!(trace.status,BuildStatus::Complete);
+        assert_eq!(trace.evaluated.iter().map(|step|step.field.as_str()).collect::<Vec<_>>(),
+            vec!["second","first","third"]);
+        assert_eq!(trace.lifetime_values,vec![
+            ("second".into(),"乙具名".into()),
+            ("first".into(),"甲具名".into()),
+            ("third".into(),"丙預設".into())]);
+        assert_eq!(created(&trace.resources),vec![1,2,3]);
+        assert_eq!(released(&trace.resources),vec![3,2,1]);
+    }
+
+    #[test]
+    fn 來源構造失敗切點只釋放先前成功的資源() {
+        for (failed,expected) in [
+            ("second",vec![1]),("first",vec![2,1]),("third",vec![3,2,1])
+        ] {
+            let trace=trace_string_struct_source(SOURCE,"item",Some(failed)).unwrap();
+            assert_eq!(trace.status,BuildStatus::EvaluationFailed(failed.into()));
+            assert_eq!(released(&trace.resources),expected);
+            let mut all=created(&trace.resources);
+            all.reverse();
+            assert_eq!(released(&trace.resources),all);
+        }
+    }
+
+    #[test]
+    fn 來源非字串欄位不得假冒資源執行模型已支援() {
+        let src="struct Mixed{\nvar text:str = \"甲\"\nvar amount:int = 1\n}\nfn main()->int{\nvar item:Mixed = Mixed()\nreturn 0\n}\n";
+        assert!(trace_string_struct_source(src,"item",None).is_err());
+    }
+}
