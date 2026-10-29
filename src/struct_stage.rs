@@ -3503,3 +3503,35 @@ mod p13_方法回傳與借用權限交叉來源 {
         assert!(error.message.contains("方法參數"));
     }
 }
+
+#[cfg(test)]
+mod p13_函式呼叫簽章與資源移交交叉驗證 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 函式呼叫不得引用不存在的名稱() {
+        let src="fn main()->int{\nreturn missing()\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 資源引數不可透過普通名稱隱含複製() {
+        let src="fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"x\"\nreturn use_it(item)\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("非 Copyable 函式引數"));
+    }
+
+    #[test]
+    fn 資源引數明確移交後不可再次使用() {
+        let src="fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"x\"\nvar result:int = use_it(item.move())\nvar again:str = item.move()\nreturn result\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 資源引數明確移交與合法回傳保持可用() {
+        let src="fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"x\"\nreturn use_it(item.move())\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
