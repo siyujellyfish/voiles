@@ -1233,13 +1233,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     fun.body.last().map_or(0, |s| s.end))) });
         }
         let mut vars = vec![HashMap::new()];
-        let mut parameter_names = HashSet::new();
         for (name, ty) in &fun.params {
-            // 重複參數會覆蓋原綁定，使簽章與實際所有權來源不一致。
-            if !parameter_names.insert(name.as_str()) {
-                return Err(Diagnostic { kind: DiagnosticKind::Static,
-                    message: "P13：函式參數名稱重複，所有權綁定不唯一".into(), span: None });
-            }
             if !["int", "bool", "float", "str"].contains(&ty.as_str())
                 && !self.structs.contains_key(ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
@@ -3419,16 +3413,16 @@ mod p13_函式參數綁定唯一性 {
     fn 重複_copyable_參數名稱必須靜態拒絕() {
         let src="fn same(value:int,value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
         let error=inspect(src).unwrap_err();
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("參數名稱重複"));
+        assert_eq!(error.kind,DiagnosticKind::Syntax);
+        assert!(error.message.contains("函式參數名稱不得重複"));
     }
 
     #[test]
     fn 重複資源參數名稱不可掩蓋持有者() {
         let src="fn same(value:str,value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
         let error=inspect(src).unwrap_err();
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("參數名稱重複"));
+        assert_eq!(error.kind,DiagnosticKind::Syntax);
+        assert!(error.message.contains("函式參數名稱不得重複"));
     }
 
     #[test]
