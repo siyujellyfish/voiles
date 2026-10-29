@@ -1096,7 +1096,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let expected = &parameter.ty;
                     if self.permission(expected) != CopyPermission::Allowed {
                         match &arg.kind {
-                            TermKind::Move(_) | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
+                            TermKind::Literal("str") | TermKind::Move(_)
+                                | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
                             _ => return Err(self.error(
                                 "P13：非 Copyable 函式引數須明確移動或產生獨立擁有值", arg)),
                         }
@@ -4300,6 +4301,38 @@ mod p13_非_copyable_方法參數與回傳移交 {
     #[test]
     fn str_方法參數可由新的字串常值直接建立獨立所有權() {
         let src="struct Holder{\nvar count:int = 1\nfn consume(text:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst holder:Holder = Holder()\nreturn holder.consume(\"新資源\")\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_新建資源函式位置引數 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 獨立字串常值可直接移交非_copyable_函式參數() {
+        let src = "fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nreturn use_it(\"新建資源\")\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 巢狀呼叫中新建字串可移交且不隱含複製既有來源() {
+        let src = "fn consume(item:str)->int{\nreturn 1\n}\nfn relay(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn relay(consume(\"獨立資源\"))\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 既有字串名稱作為參數仍禁止隱含複製() {
+        let src = "fn consume(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"原有資源\"\nreturn consume(item)\n}\n";
+        let error=inspect(src).expect_err("不得將新值例外擴張到名稱隱含複製");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("非 Copyable"));
+    }
+
+    #[test]
+    fn 明確移動既有字串仍合法() {
+        let src = "fn consume(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"原有資源\"\nreturn consume(item.move())\n}\n";
         assert!(inspect(src).is_ok());
     }
 }
