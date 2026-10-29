@@ -4176,3 +4176,59 @@ mod p13_方法位置引數明確整筆移動 {
         assert!(error.message.contains("借用"));
     }
 }
+
+#[cfg(test)]
+mod p13_3_所有權移動來源閉包 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn str_資源經函式引數及回傳可連續明確轉交() {
+        let src="fn relay(source:str)->str{\nreturn source.move()\n}\nfn main()->int{\nvar source:str = \"中文\"\nvar result:str = relay(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 含資源結構可整筆移動但不可隱含複製() {
+        let src="struct Box{\nvar content:str = \"內容\"\n}\nfn main()->int{\nvar source:Box = Box()\nvar destination:Box = source.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+        let invalid=src.replace("source.move()", "source");
+        let error=inspect(&invalid).expect_err("資源結構不可隱含複製");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn 具名欄位建立式明確轉交資源不得重複使用舊來源() {
+        let src="struct Box{\nvar content:str = \"預設\"\n}\nfn main()->int{\nvar source:str = \"獨立\"\nvar destination:Box = Box(content=source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+        let invalid=src.replace("return 0", "var again:str = source.move()\nreturn 0");
+        let error=inspect(&invalid).expect_err("資源建立後原持有者失效");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 移動借用別名不得偷轉成所有者() {
+        let src="fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nvar moved:int = alias.move()\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("借用別名不得移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 有效借用未歸還前不得移動原持有者() {
+        let src="fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nvar moved:int = source.move()\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("原持有者借用有效期間禁止 move");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 結構單欄位移動即使資源型別也不被接受() {
+        let src="struct Box{\nvar content:str = \"文字\"\n}\nfn main()->int{\nvar box:Box = Box()\nvar moved:str = box.content.move()\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("S21 禁止部分欄位移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("S21"));
+    }
+}
