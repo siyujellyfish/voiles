@@ -4584,3 +4584,50 @@ mod p14_1_p14_2_真實來源與衝突矩陣 {
         assert!(error.message.contains("再次借用"));
     }
 }
+
+#[cfg(test)]
+mod p14_5_p14_6_巢狀呼叫及_self_權限 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    const MODEL: &str="fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\n";
+
+    #[test]
+    fn const_共享別名透過巢狀函式與唯讀方法可取得獨立值() {
+        let src=format!("{MODEL}fn main()->int{{\nconst item:Item = Item()\nconst alias:Item = item.borrow()\nreturn relay(relay(alias.read()))\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn 巢狀函式不得在共享別名仍使用時直接操作原持有者() {
+        let src=format!("{MODEL}fn main()->int{{\nconst item:Item = Item()\nconst alias:Item = item.borrow()\nvar result:int = relay(item.read())\nreturn relay(alias.read())\n}}\n");
+        let error=inspect(&src).expect_err("共享別名活躍時不得繞過借用使用原來源");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn var_獨占別名可以呼叫寫入方法並於最後使用後歸還() {
+        let src=format!("{MODEL}fn main()->int{{\nvar item:Item = Item()\nvar alias:Item = item.borrow()\nvar computed:int = relay(alias.set(2))\nvar transferred:Item = item.move()\nreturn computed\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn const_共享別名不能呼叫會寫入_self_的方法() {
+        let src=format!("{MODEL}fn main()->int{{\nconst item:Item = Item()\nconst alias:Item = item.borrow()\nreturn alias.set(2)\n}}\n");
+        let error=inspect(&src).expect_err("共享唯讀借用不可升級為獨占寫入");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn var_借用期間不得以嵌套方法直接再次使用原持有者() {
+        let src=format!("{MODEL}fn main()->int{{\nvar item:Item = Item()\nvar alias:Item = item.borrow()\nvar result:int = relay(item.set(4))\nreturn relay(alias.read())\n}}\n");
+        assert_eq!(inspect(&src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 非擁有別名永遠不能藉_move_成為完整資源持有者() {
+        let src=format!("{MODEL}fn main()->int{{\nvar item:Item = Item()\nvar alias:Item = item.borrow()\nvar consumed:Item = alias.move()\nreturn 0\n}}\n");
+        assert_eq!(inspect(&src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
