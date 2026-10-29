@@ -1334,6 +1334,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if active.contains(name) {
                     return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
                 }
+                // 明確指定的欄位會覆蓋其預設式；不能把已覆蓋的
+                // 預設建構誤判為實際執行的循環。保留現行保守規則：
+                // 先檢查型別既有預設依賴，再遍歷具名引數。
                 self.check_default_type(name, active, checked)?;
                 // 具名欄位實際求值時，也不得在巢狀建立引數中形成循環。
                 for (_, value) in args {
@@ -3562,6 +3565,26 @@ mod p13_預設建構巢狀函式引數循環 {
     #[test]
     fn 合法非循環的巢狀預設建構仍可使用() {
         let src="struct Leaf{\nvar count:int = 1\n}\nstruct Holder{\nvar leaf:Leaf = Leaf()\n}\nfn main()->int{\nvar holder:Holder = Holder()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_預設值來源跨型別循環 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 兩種結構的預設建構互相依賴必須拒絕() {
+        let src="struct Alpha{\nvar other:Beta = Beta()\n}\nstruct Beta{\nvar other:Alpha = Alpha()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("循環"));
+    }
+
+    #[test]
+    fn 未使用的非循環預設結構可以宣告() {
+        let src="struct Leaf{\nvar value:int = 1\n}\nstruct Outer{\nvar inner:Leaf = Leaf()\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
     }
 }
