@@ -4350,10 +4350,8 @@ mod p13_2_一般賦值正式來源閉包 {
 
     #[test]
     fn copyable_巢狀結構可以複製給不同變數及覆寫並讀取欄位() {
-        let src="struct Inner{\nvar count:int = 1\n}\nstruct Outer{\nvar inner:Inner = Inner()\n}\nfn main()->int{\nvar first:Outer = Outer()\nvar second:Outer = first\nsecond = first\nreturn second.inner.count\n}\n";
-        // 此階段複合後綴不屬已核准私有 AST；以整值拷貝取代複合欄位讀取。
-        let supported=src.replace("return second.inner.count", "return 0");
-        assert!(inspect(&supported).is_ok());
+        let src="struct Inner{\nvar count:int = 1\n}\nstruct Outer{\nvar inner:Inner = Inner()\n}\nfn main()->int{\nvar first:Outer = Outer()\nvar second:Outer = first\nsecond = first\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
     }
 
     #[test]
