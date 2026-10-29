@@ -740,26 +740,61 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 在此明確受限子集，方法只能修改自身 var 欄位、讀取已核准 Copyable
     /// 的 self 欄位，並於最後回傳可靜態確定型別的值；其他行為保守拒絕。
     /// 只接受無副作用且可複製的布林條件。沒有取得獨立引用值。
+    /// 方法中的純值來源共用一套型別／Copyable 檢查，避免合法的
+    /// 已核准加減運算式僅因出現在方法內就被錯誤拒絕。
+    /// 不處理可移動的擁有者、借用建立、巢狀呼叫或副作用。
+    fn method_pure_value_type(&self, owner: &str, method: &Function, term: &Term)
+        -> Result<String, Diagnostic> {
+        match &term.kind {
+            TermKind::Literal(ty) => Ok((*ty).to_string()),
+            TermKind::Name(name) if name == "self" =>
+                Err(self.error("S15：方法不可回傳整個 self，涉及其他借用與消耗", term)),
+            TermKind::Name(name) => {
+                let param = method.params.iter().find(|param| param.name == *name)
+                    .ok_or_else(|| self.error("方法值來源參數不存在", term))?;
+                let permission = self.permission(&param.ty);
+                if permission != CopyPermission::Allowed {
+                    return Err(self.reject_noncopyable(permission, "方法參數值", term));
+                }
+                Ok(param.ty.clone())
+            }
+            TermKind::FieldRead(receiver, name) if receiver == "self" => {
+                let field = self.structs.get(owner)
+                    .and_then(|def| def.fields.iter().find(|field| field.name == *name))
+                    .ok_or_else(|| self.error("方法 self 欄位不存在", term))?;
+                let permission = self.permission(&field.ty);
+                if permission != CopyPermission::Allowed {
+                    let mut error = self.reject_noncopyable(permission, "P13 self 欄位", term);
+                    error.message = format!(
+                        "{}；不可借用回傳，留待 P15 有效期與逃逸驗證",
+                        error.message).into_boxed_str();
+                    return Err(error);
+                }
+                Ok(field.ty.clone())
+            }
+            TermKind::BinaryInt { left, operator, right } => {
+                let left_ty = self.method_pure_value_type(owner, method, left)?;
+                if left_ty != "int" {
+                    return Err(self.error("方法整數加減左運算元必須為 int", left));
+                }
+                let right_ty = self.method_pure_value_type(owner, method, right)?;
+                if right_ty != "int" {
+                    return Err(self.error("方法整數加減右運算元必須為 int", right));
+                }
+                debug_assert!(*operator == '+' || *operator == '-');
+                Ok("int".to_string())
+            }
+            _ => Err(self.error("方法值來源尚未證明可安全獨立求值", term)),
+        }
+    }
+
     fn method_bool_condition(&self, owner: &str, method: &Function, term: &Term)
         -> Result<(), Diagnostic> {
-        match &term.kind {
-            TermKind::Literal("bool") => Ok(()),
-            TermKind::Name(name) if method.params.iter()
-                .any(|p| &p.name == name && p.ty == "bool") => Ok(()),
-            TermKind::FieldRead(receiver, name) if receiver == "self" => {
-                let target = self.structs.get(owner)
-                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
-                    .ok_or_else(|| self.error("方法條件讀取的 self 欄位不存在", term))?;
-                if target.ty != "bool"
-                    || self.permission(&target.ty) != CopyPermission::Allowed {
-                    return Err(self.error(
-                        "if 條件的 self 欄位必須是可複製的 bool", term));
-                }
-                Ok(())
-            }
-            _ => Err(self.error(
-                "方法 if 條件只支援布林常值或已核准的 self.bool 欄位", term)),
+        let ty = self.method_pure_value_type(owner, method, term)?;
+        if ty != "bool" {
+            return Err(self.error("方法 if 條件必須為可複製的 bool", term));
         }
+        Ok(())
     }
 
     /// 以所有可能執行路徑的操作推導方法整體借用模式；
@@ -776,29 +811,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if target.immutable {
                         return Err(self.error("S18：const 欄位禁止透過方法寫入", value));
                     }
-                    // 受限方法可用獨立字面值，或從相同 self 的已核准
-                    // Copyable 欄位取得獨立複本；不得搬移單一欄位。
-                    let actual = match &value.kind {
-                        TermKind::Literal(ty) => *ty,
-                        TermKind::Name(name) => method.params.iter()
-                            .find(|p| p.name == *name)
-                            .map(|p| p.ty.as_str())
-                            .ok_or_else(|| self.error("方法欄位寫入的參數名稱不存在", value))?,
-                        TermKind::FieldRead(owner, source_name) if owner == "self" => {
-                            let source = definition.fields.iter()
-                                .find(|f| f.name == *source_name)
-                                .ok_or_else(|| self.error("來源 self 欄位不存在", value))?;
-                            let permission = self.permission(&source.ty);
-                            if permission != CopyPermission::Allowed {
-                                return Err(self.reject_noncopyable(permission,
-                                    "HA13／S19 來源欄位", value));
-                            }
-                            source.ty.as_str()
-                        }
-                        _ => return Err(self.error(
-                            "方法欄位寫入只接受獨立字面值或可複製的 self.欄位", value)),
-                    };
-                    if actual != target.ty.as_str() {
+                    let actual = self.method_pure_value_type(owner, method, value)?;
+                    if actual != target.ty {
                         return Err(self.error("方法欄位賦值型別與宣告不一致", value));
                     }
                     // 方法接收者在此子集已完整初始化，欄位寫入必然覆寫舊值。
@@ -837,7 +851,6 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             }
         }
         self.reject_method_statements(&method.body)?;
-        let def = self.structs.get(owner).expect("已確認方法所屬結構存在");
         let Some(Stmt { kind: StmtKind::Return(return_value), .. }) = method.body.last() else {
             return Err(Diagnostic { kind: DiagnosticKind::Static,
                 message: "目前方法必須以單一明確 return 結束".into(), span: None });
@@ -846,33 +859,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             &method.body[..method.body.len() - 1])? {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
-        let actual = match &return_value.kind {
-            TermKind::Literal(ty) => *ty,
-            TermKind::Name(name) if name == "self" => {
-                return Err(self.error("方法不可回傳整個 self，涉及其他借用與消耗", return_value));
-            }
-            TermKind::Name(name) => method.params.iter()
-                .find(|p| p.name == *name)
-                .map(|p| p.ty.as_str())
-                .ok_or_else(|| self.error("方法回傳的參數不存在", return_value))?,
-            TermKind::FieldRead(receiver, field) if receiver == "self" => {
-                let target = def.fields.iter().find(|f| f.name == *field)
-                    .ok_or_else(|| self.error("self 欄位不存在", return_value))?;
-                let permission = self.permission(&target.ty);
-                if permission != CopyPermission::Allowed {
-                    let mut error = self.reject_noncopyable(permission,
-                        "P13 self 欄位", return_value);
-                    error.message = format!(
-                        "{}；不可借用回傳，留待 P15 有效期與逃逸驗證",
-                        error.message).into_boxed_str();
-                    return Err(error);
-                }
-                target.ty.as_str()
-            }
-            _ => return Err(self.error(
-                "方法只支援唯讀 self.欄位或常值回傳；其他借用安全未驗證",
-                return_value)),
-        };
+        let actual = self.method_pure_value_type(owner, method, return_value)?;
         if actual != method.result_ty {
             return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
         }
@@ -3991,5 +3978,39 @@ mod p15_遮蔽借用最後使用點精度 {
         let error=inspect(src).expect_err("外層別名仍有效不得直接使用來源");
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("借用"));
+    }
+}
+
+#[cfg(test)]
+mod p13_方法純值運算式統一檢查 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 讀取_self_欄位與參數的加減可獨立回傳() {
+        let src = "struct Counter{\nvar count:int = 4\nfn plus(amount:int)->int{\nreturn (self.count + amount) - 1\n}\n}\nfn main()->int{\nconst counter:Counter = Counter()\nreturn counter.plus(3)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 可寫方法以純值加減更新_self_欄位() {
+        let src = "struct Counter{\nvar count:int = 4\nfn plus(amount:int)->int{\nself.count = self.count + amount\nreturn self.count\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nreturn counter.plus(3)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 可寫方法的_self_原欄位與加減型別必須匹配() {
+        let src = "struct Counter{\nvar count:int = 4\nfn wrong(amount:bool)->int{\nself.count = self.count + amount\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("方法加減必須驗證 int 運算元");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("int"));
+    }
+
+    #[test]
+    fn 方法不能把非_copyable_self_欄位藏進加減中() {
+        let src = "struct Counter{\nvar resource:str = \"x\"\nfn bad()->int{\nreturn self.resource + 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("巢狀資源欄位仍不得隱含複製");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
     }
 }
