@@ -68,6 +68,8 @@ struct Term {
 enum TermKind {
     Literal(&'static str),
     Name(String),
+    /// P01 已核准的 int 加減；計算前必須依序驗證兩端所有權。
+    BinaryInt { left: Box<Term>, operator: char, right: Box<Term> },
     Construct(String, Vec<(String, Term)>),
     /// 一般函式位置引數；呼叫端所有權資料流完成前不得接受。
     Call(String, Vec<Term>),
@@ -192,6 +194,23 @@ impl Parser<'_> {
     }
 
     fn term(&mut self) -> Result<Term, Diagnostic> {
+        // P01 加減為相同優先序、左結合；括號在原子解析處理。
+        let mut left = self.atom()?;
+        while self.symbol('+') || self.symbol('-') {
+            let operator = if self.symbol('+') { '+' } else { '-' };
+            self.cursor += 1;
+            let right = self.atom()?;
+            left = Term {
+                start: left.start, end: right.end,
+                kind: TermKind::BinaryInt {
+                    left: Box::new(left), operator, right: Box::new(right),
+                },
+            };
+        }
+        Ok(left)
+    }
+
+    fn atom(&mut self) -> Result<Term, Diagnostic> {
         let start = self.tok().start;
         let (kind, mut end) = match self.tok().kind.clone() {
             TokenKind::Integer(text) => {
@@ -218,6 +237,14 @@ impl Parser<'_> {
             TokenKind::Keyword(s) if s == "true" || s == "false" => {
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("bool"), end)
+            }
+            TokenKind::Symbol('(') => {
+                self.cursor += 1;
+                let mut expression = self.term()?;
+                self.take(')', "括號運算式缺少右括號")?;
+                expression.start = start;
+                expression.end = self.tokens[self.cursor - 1].end;
+                return Ok(expression);
             }
             TokenKind::Name(s) => {
                 let end = self.tok().end; self.cursor += 1;
@@ -610,6 +637,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
             TermKind::Call(_, arguments) =>
                 arguments.iter().any(|value| Self::term_mentions(value, name)),
+            TermKind::BinaryInt { left, right, .. } =>
+                Self::term_mentions(left, name) || Self::term_mentions(right, name),
             TermKind::Literal(_) => false,
         }
     }
@@ -780,6 +809,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
+            TermKind::BinaryInt { left, operator, right } => {
+                // 順序由 P01 左結合決定，不得跳過內層 .move() 狀態更新。
+                let (left_ty, left_ready) = self.evaluate(left, vars)?;
+                if left_ty != "int" || !left_ready {
+                    return Err(self.error("P13：加減左運算元必須為已初始化 int", left));
+                }
+                let (right_ty, right_ready) = self.evaluate(right, vars)?;
+                if right_ty != "int" || !right_ready {
+                    return Err(self.error("P13：加減右運算元必須為已初始化 int", right));
+                }
+                debug_assert!(*operator == '+' || *operator == '-');
+                Ok(("int".to_string(), true))
+            }
             TermKind::Name(name) => {
                 self.check_direct(vars, name, term)?;
                 let binding = Self::lookup(vars, name)
@@ -1281,6 +1323,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for value in args { self.reject_method_term(value)?; }
                 Err(self.error("P13：方法內一般函式呼叫尚未驗證所有權", term))
             }
+            TermKind::BinaryInt { left, right, .. } => {
+                self.reject_method_term(left)?;
+                self.reject_method_term(right)
+            }
             _ => Ok(()),
         }
     }
@@ -1362,6 +1408,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for value in args {
                     self.check_default_term(value, active, checked)?;
                 }
+            }
+            TermKind::BinaryInt { left, right, .. } => {
+                self.check_default_term(left, active, checked)?;
+                self.check_default_term(right, active, checked)?;
             }
             _ => {}
         }
@@ -3715,5 +3765,41 @@ mod p13_p14_函式參數真實宣告身分 {
         let error=inspect(src).expect_err("來源仍被借用時應拒絕直接使用");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("借用"));
+    }
+}
+
+#[cfg(test)]
+mod p13_2_一般加減及所有權來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准括號加減可使用多個可複製來源() {
+        let src = "fn sum(x:int, y:int)->int{\nvar first:int = (x + y) - 1\nreturn first + (y - 2)\n}\nfn main()->int{\nreturn sum(4, 5)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 明確移動值參與加減後來源必須失效() {
+        let src = "fn main()->int{\nvar number:int = 3\nvar result:int = number.move() + 1\nreturn number\n}\n";
+        let error=inspect(src).expect_err("明確移交的 int 來源已失效");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 加減不能藉括號隱含複製字串資源() {
+        let src = "fn main()->int{\nvar word:str = \"資源\"\nvar number:int = (word + 1)\nreturn number\n}\n";
+        let error=inspect(src).expect_err("非 Copyable 來源不得隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn 加減不能默許布林型別混入() {
+        let src = "fn main()->int{\nreturn true + 2\n}\n";
+        let error=inspect(src).expect_err("型別不符合 int 加減");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("int"));
     }
 }
