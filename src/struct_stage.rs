@@ -836,6 +836,23 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(())
     }
 
+    /// 方法可將合法具名參數的整筆持有權在 return 時明確移交。
+    /// 不推定 self 欄位的借用回傳或隱含複製；本階段方法在
+    /// 提前／最後 return 前只能使用已驗證的純 Copyable 語句。
+    fn method_return_type(&self, owner: &str, method: &Function, term: &Term)
+        -> Result<String, Diagnostic> {
+        if let TermKind::Move(name) = &term.kind {
+            if name == "self" {
+                return Err(self.error("S15：方法不可消耗整個 self", term));
+            }
+            let parameter = method.params.iter().find(|parameter| parameter.name == *name)
+                .ok_or_else(|| self.error(
+                    "方法僅能明確移動已取得持有權的具名參數", term))?;
+            return Ok(parameter.ty.clone());
+        }
+        self.method_pure_value_type(owner, method, term)
+    }
+
     /// 以所有可能執行路徑的操作推導方法整體借用模式；
     /// 任一路徑寫入都需要在方法入口取得獨占借用。
     fn method_writes(&self, owner: &str, method: &Function, body: &[Stmt])
@@ -866,7 +883,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::Return(value) => {
                     // P01 已核准可達分支提前 return；方法的每個出口
                     // 均須遵守相同回傳型別與 Copyable／self 借用限制。
-                    let actual = self.method_pure_value_type(owner, method, value)?;
+                    let actual = self.method_return_type(owner, method, value)?;
                     if actual != method.result_ty {
                         return Err(self.error("方法提前回傳型別與簽章不一致", value));
                     }
@@ -894,9 +911,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn check_method(&self, owner: &str, method: &Function)
         -> Result<BorrowKind, Diagnostic> {
         for parameter in &method.params {
-            if parameter.name == "self" || self.permission(&parameter.ty) != CopyPermission::Allowed {
+            if parameter.name == "self" {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
-                    message: "P13：方法參數目前僅准已核准 Copyable 型別；資源參數的借用與移交尚未驗證".into(), span: None });
+                    message: "S15：方法不得宣告遮蔽 self 的參數".into(), span: None });
+            }
+            if !["int", "bool", "float", "str"].contains(&parameter.ty.as_str())
+                && !self.structs.contains_key(&parameter.ty) {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：方法參數使用不存在的型別".into(), span: None });
             }
         }
         self.reject_method_statements(&method.body)?;
@@ -908,7 +930,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             &method.body[..method.body.len() - 1])? {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
-        let actual = self.method_pure_value_type(owner, method, return_value)?;
+        let actual = self.method_return_type(owner, method, return_value)?;
         if actual != method.result_ty {
             return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
         }
@@ -3982,11 +4004,9 @@ mod p13_2_有參數合法方法來源 {
     }
 
     #[test]
-    fn 資源參數未有借用與移交證明前仍必須保守拒絕() {
+    fn 資源方法參數使用已核准擁有權移交時可合法宣告() {
         let src = "struct Holder{\nvar count:int = 0\nfn use_text(text:str)->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("不可偷渡資源方法參數");
-        assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("Copyable"));
+        assert!(inspect(src).is_ok());
     }
 }
 
@@ -4230,5 +4250,53 @@ mod p13_3_所有權移動來源閉包 {
         let error=inspect(src).expect_err("S21 禁止部分欄位移動");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("S21"));
+    }
+}
+
+#[cfg(test)]
+mod p13_非_copyable_方法參數與回傳移交 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn str_可經明確整筆_move_交給方法參數() {
+        let src="struct Holder{\nvar count:int = 1\nfn consume(text:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar source:str = \"資源\"\nconst holder:Holder = Holder()\nreturn holder.consume(source.move())\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 非_copyable_方法參數禁止由具名來源隱含複製() {
+        let src="struct Holder{\nvar count:int = 1\nfn consume(text:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar source:str = \"資源\"\nconst holder:Holder = Holder()\nreturn holder.consume(source)\n}\n";
+        let error=inspect(src).expect_err("非 Copyable 參數不可隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn 方法可將取得的_str_參數再次明確轉交回傳值() {
+        let src="struct Holder{\nvar count:int = 1\nfn relay(text:str)->str{\nreturn text.move()\n}\n}\nfn main()->int{\nvar source:str = \"資源\"\nconst holder:Holder = Holder()\nvar result:str = holder.relay(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法不能藉一般名稱回傳_str_參數形成隱含複製() {
+        let src="struct Holder{\nvar count:int = 1\nfn invalid(text:str)->str{\nreturn text\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("資源參數不可隱含複製回傳");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn 方法仍禁止從_self_資源欄位明確偷移動() {
+        let src="struct Holder{\nvar text:str = \"資源\"\nfn invalid()->str{\nreturn self.text.move()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("S21 禁止個別移動結構欄位");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("S21"));
+    }
+
+    #[test]
+    fn str_方法參數可由新的字串常值直接建立獨立所有權() {
+        let src="struct Holder{\nvar count:int = 1\nfn consume(text:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst holder:Holder = Holder()\nreturn holder.consume(\"新資源\")\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
