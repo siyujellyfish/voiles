@@ -48,6 +48,14 @@ struct Stmt {
     end: usize,
 }
 
+/// 外層後繼保留其實際詞彙深度，避免巢狀區塊的同名
+/// 借用別名被父區塊無關的名稱使用錯誤延長有效期。
+#[derive(Clone, Copy)]
+struct Continuation<'a> {
+    depth: usize,
+    statements: &'a [Stmt],
+}
+
 #[derive(Debug, Clone)]
 enum StmtKind {
     Declare { name: String, ty: String, mutable: bool, init: Option<Term> },
@@ -711,22 +719,24 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         false
     }
 
-    /// VA15-01-A：在已知的當前作用域中，以來源順序及宣告遮蔽
-    /// 計算最後合法使用點。外層 continuation 尚未有完整的
-    /// 跨作用域已解析身分表，因此仍採名稱保守掃描，不能提早歸還。
-    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt], continuation: &[Stmt]) {
+    /// VA15-01-A：依來源順序與每一後繼所屬的真正詞彙深度，
+    /// 判斷別名的最後使用點；父區塊無法引用子區塊新宣告名稱。
+    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt],
+        continuation: &[Continuation<'_>]) {
+        let names: Vec<HashSet<String>> = vars.iter()
+            .map(|scope| scope.keys().cloned().collect()).collect();
         let mut younger_names = HashSet::new();
-        let current_scope = vars.len() - 1;
         for (depth, scope) in vars.iter_mut().enumerate().rev() {
             for (name, binding) in scope.iter_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
                     let needed_here = Self::scope_mentions_binding(
                         rest, name, younger_names.contains(name));
-                    // continuation 來自父區塊，不能引用在當前最內層
-                    // 區塊新宣告的同名別名；同名外層別名是不同來源。
-                    // 外層仍存活的別名繼續保守追蹤其父區塊後繼。
-                    let needed_later = depth != current_scope && continuation.iter()
-                        .any(|stmt| Self::statement_mentions(stmt, name));
+                    let needed_later = continuation.iter().any(|segment| {
+                        if depth > segment.depth { return false; }
+                        let obscured = (depth + 1..=segment.depth)
+                            .any(|level| names[level].contains(name));
+                        Self::scope_mentions_binding(segment.statements, name, obscured)
+                    });
                     if loan.active && !needed_here && !needed_later {
                         loan.active = false;
                     }
@@ -1221,7 +1231,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn statements_with_follow(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str, new_scope: bool,
-        continuation: &[Stmt]) -> Result<bool, Diagnostic> {
+        continuation: &[Continuation<'_>]) -> Result<bool, Diagnostic> {
         if new_scope { vars.push(HashMap::new()); }
         let result = self.statement_body(body, vars, expected_return, continuation);
         if new_scope { vars.pop(); }
@@ -1229,7 +1239,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 
     fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
-        expected_return: &str, continuation: &[Stmt]) -> Result<bool, Diagnostic> {
+        expected_return: &str, continuation: &[Continuation<'_>]) -> Result<bool, Diagnostic> {
         // 區塊入口若某外層借用在本條路徑及其外層後繼均不再使用，
         // 便已過最後使用點，不需要等到下一筆語句才歸還。
         Self::release_last_uses(vars, body, continuation);
@@ -1406,8 +1416,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 每條分支只能參考自己之後真正可達的語句。
                     // 外層後繼若還會使用某個借用別名，任何分支都
                     // 不得在提前歸還後直接使用原來源。
-                    let after_branch: Vec<Stmt> = body[position + 1..].iter()
-                        .chain(continuation.iter()).cloned().collect();
+                    let mut after_branch = vec![Continuation {
+                        depth: vars.len() - 1,
+                        statements: &body[position + 1..],
+                    }];
+                    after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
                     let live_true = self.statements_with_follow(
                         yes, &mut on_true, expected_return, true, &after_branch)?;
@@ -1416,7 +1429,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         self.statements_with_follow(
                             otherwise, &mut on_false, expected_return, true, &after_branch)?
                     } else {
-                        Self::release_last_uses(&mut on_false, &after_branch, &[]);
+                        Self::release_last_uses(
+                            &mut on_false, &body[position + 1..], continuation);
                         true
                     };
                     if !live_true && !live_false { return Ok(false); }
@@ -4673,5 +4687,31 @@ mod p15_1_父區塊後繼與內層宣告身分 {
         let error=inspect(src).expect_err("外層借用在分支後仍使用不得提前解除");
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("HC14"));
+    }
+}
+
+#[cfg(test)]
+mod p15_1_多層詞彙後繼深度 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 雙層_if_父區塊同名值不得誤延長最內層別名() {
+        let src="fn main()->int{\nvar source:int = 1\nconst alias:int = 99\nif(true){\nif(true){\nvar alias:int = source.borrow()\nvar copied:int = alias\nvar released:int = source\n}\n}\nreturn alias\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 父區塊借用在最內層分支之後仍被引用則不可提前歸還() {
+        let src="fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nif(true){\nif(true){\nvar illegal:int = source\n}\n}\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("父區塊借用仍有效，不可讀取來源");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 兄弟區塊同名借用不互相延長彼此的詞彙有效期() {
+        let src="fn main()->int{\nvar source:int = 1\nif(true){\nvar alias:int = source.borrow()\nvar left:int = alias\nvar released:int = source\n}\nif(true){\nvar alias:int = source.borrow()\nvar right:int = alias\nvar released:int = source\n}\nreturn source\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
