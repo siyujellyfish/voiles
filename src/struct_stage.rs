@@ -4631,3 +4631,23 @@ mod p14_5_p14_6_巢狀呼叫及_self_權限 {
         assert_eq!(inspect(&src).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p14_4_借用別名複製能力來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准_copyable_借用值可建立真正獨立複本() {
+        let src="fn main()->int{\nconst source:int = 9\nconst alias:int = source.borrow()\nvar copied:int = alias\nreturn copied + source\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 資源借用別名不得藉一般名稱轉為新擁有者() {
+        let src="fn main()->int{\nconst source:str = \"來源\"\nconst alias:str = source.borrow()\nvar copied:str = alias\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("非 Copyable 借用不能複製出第二持有者");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+}
