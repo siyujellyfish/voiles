@@ -893,6 +893,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Ok((function.result_ty.clone(), true))
             },
             TermKind::Construct(name, args) => {
+                // 零引數語法與結構建立式共用括號。只有不存在同名結構
+                // 且已宣告零參數函式時，才按函式呼叫處理。
+                if args.is_empty() && !self.structs.contains_key(name) {
+                    if let Some(function) = self.functions.iter().find(|function| function.name == *name) {
+                        if !function.params.is_empty() {
+                            return Err(self.error("P13：函式引數數量不符", term));
+                        }
+                        return Ok((function.result_ty.clone(), true));
+                    }
+                }
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
                 // VB16-01-A：嚴格依書寫順序先求值所有具名引數，之後
@@ -3223,5 +3233,29 @@ mod p13_跨函式資源分支合流 {
     fn p13_雙分支重新初始化後可再次移交() {
         let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nif (true){\nvar result:str = take(source.move())\nsource = \"again\"\n}else{\nvar result:str = take(source.move())\nsource = \"again\"\n}\nvar result:str = take(source.move())\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_零引數一般函式 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_零參數函式可回傳可複製值() {
+        let src="fn answer()->int{\nreturn 42\n}\nfn main()->int{\nreturn answer()\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_零參數函式可建立獨立資源() {
+        let src="fn make()->str{\nreturn \"hello\"\n}\nfn main()->int{\nvar result:str = make()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_缺少函式引數必須拒絕() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity()\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
