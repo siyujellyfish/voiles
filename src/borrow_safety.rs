@@ -55,16 +55,24 @@ impl BorrowSafety {
         Self { active: BTreeMap::new(), next_serial: 0, tracker_id }
     }
 
+    /// 單一 HC14-A 衝突規則，供抽象借用票據與真正 .voil 來源共同使用。
+    /// 無現存借用時任一權限可取得；共享／共享相容，任何獨占重疊衝突。
+    pub(crate) fn validate_new_borrow(
+        existing: &[BorrowKind], requested: BorrowKind,
+    ) -> Result<(), BorrowSafetyError> {
+        let occupied = !existing.is_empty();
+        let exclusive = existing.contains(&BorrowKind::ExclusiveWrite);
+        if (requested == BorrowKind::ExclusiveWrite && occupied)
+            || (requested == BorrowKind::SharedRead && exclusive) {
+            Err(BorrowSafetyError::BorrowConflict)
+        } else { Ok(()) }
+    }
+
     pub(crate) fn acquire(&mut self, declaration: DeclarationId, kind: BorrowKind)
         -> Result<BorrowTicket, BorrowSafetyError> {
-        let loans = self.active.get(&declaration);
-        let has_any = loans.is_some_and(|existing| !existing.is_empty());
-        let has_exclusive = loans.is_some_and(|existing|
-            existing.values().any(|held| *held == BorrowKind::ExclusiveWrite));
-        if (kind == BorrowKind::ExclusiveWrite && has_any)
-            || (kind == BorrowKind::SharedRead && has_exclusive) {
-            return Err(BorrowSafetyError::BorrowConflict);
-        }
+        let existing: Vec<BorrowKind> = self.active.get(&declaration)
+            .map(|loans| loans.values().copied().collect()).unwrap_or_default();
+        Self::validate_new_borrow(&existing, kind)?;
         let serial = self.next_serial;
         self.next_serial = self.next_serial
             .checked_add(1).ok_or(BorrowSafetyError::TooManySharedLoans)?;
@@ -260,5 +268,26 @@ mod tests {
         safety.finish_scope(&[shared1, shared2]).unwrap();
         assert!(safety.check_direct_access(source).is_ok());
         assert!(safety.acquire(source, BorrowKind::ExclusiveWrite).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p14_單一借用衝突規則 {
+    use super::*;
+
+    #[test]
+    fn 抽象票據與來源衝突規則維持相同共享獨占矩陣() {
+        assert_eq!(BorrowSafety::validate_new_borrow(&[],BorrowKind::SharedRead),Ok(()));
+        assert_eq!(BorrowSafety::validate_new_borrow(&[],BorrowKind::ExclusiveWrite),Ok(()));
+        assert_eq!(BorrowSafety::validate_new_borrow(
+            &[BorrowKind::SharedRead,BorrowKind::SharedRead],BorrowKind::SharedRead),Ok(()));
+        for (existing, requested) in [
+            (vec![BorrowKind::SharedRead],BorrowKind::ExclusiveWrite),
+            (vec![BorrowKind::ExclusiveWrite],BorrowKind::SharedRead),
+            (vec![BorrowKind::ExclusiveWrite],BorrowKind::ExclusiveWrite),
+        ] {
+            assert_eq!(BorrowSafety::validate_new_borrow(&existing,requested),
+                Err(BorrowSafetyError::BorrowConflict));
+        }
     }
 }
