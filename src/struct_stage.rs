@@ -221,7 +221,7 @@ impl Parser<'_> {
                     let named = matches!(self.tok().kind, TokenKind::Name(_))
                         && self.tokens.get(self.cursor + 1)
                             .is_some_and(|token| matches!(token.kind, TokenKind::Symbol('=')));
-                    if named {
+                    if named || self.symbol(')') {
                         let mut args = Vec::new();
                         let mut names = HashSet::new();
                         while !self.symbol(')') {
@@ -599,6 +599,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 | TermKind::MethodCall(id, _) => id == name,
             TermKind::Construct(_, arguments) =>
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
+            TermKind::Call(_, arguments) =>
+                arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::Literal(_) => false,
         }
     }
@@ -862,6 +864,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
                 Err(self.error("S21：結構欄位不能單獨移動", term))
             }
+            TermKind::Call(_, _) => Err(self.error(
+                "P13：一般函式呼叫已解析，但引數所有權傳遞尚未完整驗證，保守拒絕", term)),
             TermKind::Construct(name, args) => {
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
@@ -1228,6 +1232,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Construct(_, args) => {
                 for (_, value) in args { self.reject_method_term(value)?; }
                 Ok(())
+            }
+            TermKind::Call(_, args) => {
+                for value in args { self.reject_method_term(value)?; }
+                Err(self.error("P13：方法內一般函式呼叫尚未驗證所有權", term))
             }
             _ => Ok(()),
         }
@@ -3036,5 +3044,26 @@ mod p13_函式參數型別閉包 {
     fn p13_可複製的已宣告結構可作為受限函式參數() {
         let src="struct Item{\nvar n:int = 1\n}\nfn identity(value:Item)->int{\nreturn value.n\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_一般函式呼叫解析邊界 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_位置引數呼叫保守拒絕而非錯當結構欄位() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        let error=inspect(src).expect_err("一般函式呼叫所有權未驗證前不得放行");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("一般函式呼叫"));
+    }
+
+    #[test]
+    fn p13_位置引數巢狀移動不得繞過方法禁令() {
+        let src="struct Item{\nvar n:int = 1\nfn value()->int{\nreturn identity(self.move())\n}\n}\nfn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("方法中巢狀 self.move 不得通過");
+        assert_eq!(error.kind,DiagnosticKind::Static);
     }
 }
