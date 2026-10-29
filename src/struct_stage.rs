@@ -635,11 +635,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
         let kind = if mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
         let conflicts = Self::active_loans(vars, owner.declaration_start);
-        if (kind == BorrowKind::ExclusiveWrite && !conflicts.is_empty())
-            || (kind == BorrowKind::SharedRead
-                && conflicts.contains(&BorrowKind::ExclusiveWrite)) {
-            return Err(self.error("HC14：共享／獨占借用與現有別名衝突", term));
-        }
+        BorrowSafety::validate_new_borrow(&conflicts, kind)
+            .map_err(|_| self.error("HC14：共享／獨占借用與現有別名衝突", term))?;
         Ok((owner.ty.clone(), LoanBinding {
             source: owner.declaration_start, kind, active: true,
         }))
@@ -4527,5 +4524,63 @@ mod p13_4_正式來源閉包 {
     fn 分支局部宣告不能跨作用域逃逸() {
         let src="fn main()->int{\nif(true){\nvar temporary:str = \"內層\"\n}\nvar escaped:str = temporary.move()\nreturn 0\n}\n";
         assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
+
+#[cfg(test)]
+mod p14_1_p14_2_真實來源與衝突矩陣 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn const_來源兩個共享別名可以同時讀取且歸還後使用原來源() {
+        let src="fn main()->int{\nconst source:int = 1\nconst first:int = source.borrow()\nconst second:int = source.borrow()\nvar sum:int = first + second\nreturn source\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 不同持有者可各自保有獨占借用而不互相衝突() {
+        let src="fn main()->int{\nvar left:int = 1\nvar right:int = 2\nvar left_alias:int = left.borrow()\nvar right_alias:int = right.borrow()\nreturn left_alias + right_alias\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 同一持有者的兩個獨占借用不得重疊() {
+        let src="fn main()->int{\nvar source:int = 1\nvar first:int = source.borrow()\nvar second:int = source.borrow()\nreturn first + second\n}\n";
+        let error=inspect(src).expect_err("同源獨占借用衝突");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 有效獨占借用期間不得直接讀取原來源() {
+        let src="fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nvar copied:int = source\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("借用期間不可直接讀取");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"));
+    }
+
+    #[test]
+    fn const_來源不能冒充可變來源建立獨占別名() {
+        let src="fn main()->int{\nconst source:int = 1\nvar alias:int = source.borrow()\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("借用權限不可提升");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("權限"));
+    }
+
+    #[test]
+    fn 已移動資源不允許借用或憑別名建立第二所有者() {
+        let moved="fn main()->int{\nvar source:str = \"原始\"\nvar taken:str = source.move()\nvar alias:str = source.borrow()\nreturn 0\n}\n";
+        assert_eq!(inspect(moved).unwrap_err().kind,DiagnosticKind::Static);
+        let alias_move="fn main()->int{\nvar source:str = \"原始\"\nvar alias:str = source.borrow()\nvar taken:str = alias.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(alias_move).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 已存在借用別名不得在缺乏父子證明時再次借用() {
+        let src="fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nconst nested:int = alias.borrow()\nreturn nested\n}\n";
+        let error=inspect(src).expect_err("VB14-01-A 再借用仍保守拒絕");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("再次借用"));
     }
 }
