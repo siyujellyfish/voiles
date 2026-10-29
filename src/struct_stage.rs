@@ -3047,11 +3047,9 @@ mod p13_函式參數來源安全 {
     }
 
     #[test]
-    fn p13_非可複製參數在呼叫端移交未完成前保守拒絕() {
-        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("尚無呼叫端所有權來源證明");
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("P13"));
+    fn p13_非可複製參數須由明確移交的呼叫端供應() {
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nvar result:str = identity(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
     }
 
     #[test]
@@ -3133,7 +3131,7 @@ mod p13_可複製函式呼叫 {
 
     #[test]
     fn p13_資源參數呼叫不得隱含複製() {
-        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nvar result:str = identity(source)\nreturn 0\n}\n";
         assert!(inspect(src).is_err());
     }
 }
