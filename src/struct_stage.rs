@@ -871,12 +871,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if function.params.len() != args.len() {
                     return Err(self.error("P13：函式引數數量不符", term));
                 }
-                // 僅在所有參數與回傳型別均已證明 Copyable 時，
-                // 允許不移交所有權的位置引數呼叫；資源呼叫留待 C 批次。
-                if function.params.iter().any(|(_, ty)|
-                    self.permission(ty) != CopyPermission::Allowed)
-                    || self.permission(&function.result_ty) != CopyPermission::Allowed {
-                    return Err(self.error("P13：資源函式呼叫的所有權移交尚未驗證", term));
+                // 明確移動非 Copyable 具名來源；其餘資源運算式
+                // 需由自身求值產生獨立所有權，不能隱含複製。
+                // 所有參數預先核對型別與移交形式，避免型別錯誤
+                // 才發現時已消耗前面參數的來源。
+                for (arg, (_, expected)) in args.iter().zip(&function.params) {
+                    if self.permission(expected) != CopyPermission::Allowed {
+                        match &arg.kind {
+                            TermKind::Move(_) | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
+                            _ => return Err(self.error(
+                                "P13：非 Copyable 函式引數須明確移動或產生獨立擁有值", arg)),
+                        }
+                    }
                 }
                 for (arg, (_, expected)) in args.iter().zip(&function.params) {
                     let (actual, initialized) = self.evaluate(arg, vars)?;
@@ -1222,11 +1228,6 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 && !self.structs.contains_key(ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
-            }
-            if self.permission(ty) != CopyPermission::Allowed {
-                return Err(Diagnostic { kind: DiagnosticKind::Static,
-                    message: "P13：非 Copyable 函式參數的呼叫端移交與借用尚未完成，保守拒絕".into(),
-                    span: None });
             }
             vars[0].insert(name.clone(), Binding {
                 declaration_start: 0, ty: ty.clone(), mutable: false,
