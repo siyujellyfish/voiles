@@ -850,6 +850,36 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     "方法僅能明確移動已取得持有權的具名參數", term))?;
             return Ok(parameter.ty.clone());
         }
+        // 非 Copyable 結果可以由「不借用 self、不移動既有資源」
+        // 的一般函式呼叫直接新建並在 return 時整筆交接。
+        // 僅放行已核准 str 擁有值；尚無安全證明的其他資源保留拒絕。
+        let ordinary_call: Option<(&str, &[Term])> = match &term.kind {
+            TermKind::Call(name, args) => Some((name.as_str(), args.as_slice())),
+            TermKind::Construct(name, args) if args.is_empty()
+                && !self.structs.contains_key(name) => Some((name.as_str(), &[])),
+            _ => None,
+        };
+        if let Some((name, args)) = ordinary_call {
+            if let Some(function) = self.functions.iter().find(|f| f.name == name) {
+                if function.result_ty == "str" {
+                    if function.params.len() != args.len() {
+                        return Err(self.error("方法資源回傳的函式引數數量不符", term));
+                    }
+                    for (arg, parameter) in args.iter().zip(&function.params) {
+                        let permission = self.permission(&parameter.ty);
+                        if permission != CopyPermission::Allowed {
+                            return Err(self.reject_noncopyable(
+                                permission, "方法資源回傳呼叫引數", arg));
+                        }
+                        let actual = self.method_pure_value_type(owner, method, arg)?;
+                        if actual != parameter.ty {
+                            return Err(self.error("方法資源回傳呼叫引數型別不符", arg));
+                        }
+                    }
+                    return Ok("str".to_string());
+                }
+            }
+        }
         self.method_pure_value_type(owner, method, term)
     }
 
@@ -4133,11 +4163,9 @@ mod p13_方法呼叫純_copyable_一般函式 {
     }
 
     #[test]
-    fn 方法內一般函式回傳資源不可當成可複製結果() {
-        let src = "fn make_text()->str{\nreturn \"資源\"\n}\nstruct Box{\nvar count:int = 0\nfn bad()->str{\nreturn make_text()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("方法資源回傳的清理責任未完成");
-        assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("Copyable"));
+    fn 方法內一般函式新建資源可直接回傳獨立所有權() {
+        let src = "fn make_text()->str{\nreturn \"資源\"\n}\nstruct Box{\nvar count:int = 0\nfn fresh()->str{\nreturn make_text()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
 
@@ -4422,5 +4450,31 @@ mod p13_4_分支部分結構安全合流 {
     fn 某分支移動整個結構而另一分支未移動時不能靠欄位寫入復活() {
         let src = "struct Pair{\nvar first:int\nvar second:int\n}\nfn main()->int{\nvar pair:Pair = Pair()\npair.first = 1\npair.second = 2\nif(true){\nvar taken:Pair = pair.move()\n}\npair.first = 3\nreturn 0\n}\n";
         assert_eq!(inspect(src).unwrap_err().kind, DiagnosticKind::Static);
+    }
+}
+
+#[cfg(test)]
+mod p13_6_方法獨立資源回傳 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 唯讀方法可回傳一般函式新建的獨立_str_資源() {
+        let src="fn fresh()->str{\nreturn \"獨立資源\"\n}\nstruct Holder{\nvar count:int = 1\nfn acquire()->str{\nreturn fresh()\n}\n}\nfn main()->int{\nconst holder:Holder = Holder()\nvar result:str = holder.acquire()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法可將純_copyable_參數計算交給新建資源函式() {
+        let src="fn fresh(code:int)->str{\nreturn \"獨立資源\"\n}\nstruct Holder{\nvar count:int = 1\nfn acquire(increment:int)->str{\nreturn fresh(self.count + increment)\n}\n}\nfn main()->int{\nconst holder:Holder = Holder()\nvar result:str = holder.acquire(3)\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法不得將已繫結_str_當成純值引數偷偷複製() {
+        let src="fn passthrough(value:str)->str{\nreturn value.move()\n}\nstruct Holder{\nvar count:int = 1\nfn bad(value:str)->str{\nreturn passthrough(value)\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("方法新建資源的引數不得隱含複製 str");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable"));
     }
 }
