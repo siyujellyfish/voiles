@@ -1356,6 +1356,24 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     message: "P13：main 入口不可宣告參數".into(), span: None });
             }
         }
+        // 所有函式與方法簽章須先封閉型別名稱，不能只檢查參數或
+        // 等待 return 運算式碰巧揭露不存在的回傳型別。
+        for function in funcs {
+            if !["int", "bool", "float", "str"].contains(&function.result_ty.as_str())
+                && !self.structs.contains_key(&function.result_ty) {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：函式回傳型別不存在".into(), span: None });
+            }
+        }
+        for definition in self.structs.values() {
+            for method in &definition.methods {
+                if !["int", "bool", "float", "str"].contains(&method.result_ty.as_str())
+                    && !self.structs.contains_key(&method.result_ty) {
+                    return Err(Diagnostic { kind: DiagnosticKind::Static,
+                        message: "P13：方法回傳型別不存在".into(), span: None });
+                }
+            }
+        }
         self.check_default_constructor_cycles()?;
         for (struct_name, definition) in self.structs.iter() {
             for field in &definition.fields {
@@ -3428,6 +3446,34 @@ mod p13_函式參數綁定唯一性 {
     #[test]
     fn 不同名稱的資源參數可各自明確移交() {
         let src="fn choose(first:str,second:str)->str{\nreturn first.move()\n}\nfn main()->int{\nvar left:str = \"left\"\nvar right:str = \"right\"\nvar result:str = choose(left.move(),right.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_函式與方法回傳型別封閉 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 未呼叫的函式也不得宣告不存在的回傳型別() {
+        let src="fn unused()->Unknown{\nreturn 1\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("函式回傳型別不存在"));
+    }
+
+    #[test]
+    fn 未呼叫的方法也不得宣告不存在的回傳型別() {
+        let src="struct Boxed{\nvar value:int = 1\nfn get()->Unknown{\nreturn self.value\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("方法回傳型別不存在"));
+    }
+
+    #[test]
+    fn 合法結構回傳型別保持允許整筆移交() {
+        let src="struct Boxed{\nvar value:int = 1\n}\nfn make()->Boxed{\nreturn Boxed()\n}\nfn main()->int{\nvar item:Boxed = make()\nreturn item.value\n}\n";
         assert!(inspect(src).is_ok());
     }
 }
