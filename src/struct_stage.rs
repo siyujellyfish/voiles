@@ -2181,10 +2181,11 @@ mod conditional_self_inference_tests {
     }
 
     #[test]
-    fn 方法分支內返回或寫入未知來源維持拒絕() {
+    fn 方法分支提前返回已核准_未知接收者寫入仍拒絕() {
         let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
         let early = text.replace("self.value = 2", "return 1");
-        assert!(inspect(&early).is_err());
+        // 依已核准的分支提前回傳語意，此來源現在是合法正例。
+        assert!(inspect(&early).is_ok());
         let unknown = text.replace("self.value = 2", "other.value = 2");
         assert!(inspect(&unknown).is_err());
     }
