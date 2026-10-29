@@ -3857,3 +3857,41 @@ mod p13_2_一般加減及所有權來源 {
         assert!(error.message.contains("int"));
     }
 }
+
+#[cfg(test)]
+mod p13_2_有參數合法方法來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn copyable_參數可寫入_var_self_欄位並返回獨立值() {
+        let src = "struct Counter{\nvar count:int = 1\nfn replace(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nreturn counter.replace(3)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 唯讀方法可回傳_copyable_參數() {
+        let src = "struct Sample{\nvar number:int = 0\nfn choose(value:int)->int{\nreturn value\n}\n}\nfn main()->int{\nconst sample:Sample = Sample()\nreturn sample.choose(7)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn copyable_參數錯誤型別必須在來源檢查階段拒絕() {
+        let src = "struct Sample{\nvar number:int = 0\nfn choose(value:int)->int{\nreturn value\n}\n}\nfn main()->int{\nvar sample:Sample = Sample()\nreturn sample.choose(true)\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn const_方法接收者不得透過參數修改_self() {
+        let src = "struct Counter{\nvar count:int = 1\nfn replace(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nconst counter:Counter = Counter()\nreturn counter.replace(3)\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 資源參數未有借用與移交證明前仍必須保守拒絕() {
+        let src = "struct Holder{\nvar count:int = 0\nfn use_text(text:str)->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("不可偷渡資源方法參數");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+}
