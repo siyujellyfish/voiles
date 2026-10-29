@@ -1421,6 +1421,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             } else { None };
                             original.pending_fields = match (pending_true, pending_false) {
                                 (Some(left), Some(right)) if left == right => left.clone(),
+                                // 兩個可達分支皆持有尚未完整的相同結構，
+                                // 但完成欄位的順序不同時，只有「可能已初始化」
+                                // 的差異欄位全為 Copyable，才可安全合併缺失聯集：
+                                // 後續寫入若在某路徑是覆寫，也不會遺失資源責任。
+                                (Some(Some(left)), Some(Some(right)))
+                                    if original.value.state() == ValueState::Uninitialized
+                                        && left.symmetric_difference(right).all(|field_name| {
+                                            self.structs.get(&original.ty)
+                                                .and_then(|definition| definition.fields.iter()
+                                                    .find(|field| field.name == *field_name))
+                                                .is_some_and(|field|
+                                                    self.permission(&field.ty) == CopyPermission::Allowed)
+                                        }) =>
+                                    Some(left.union(right).cloned().collect()),
                                 (Some(one), None) | (None, Some(one)) => one.clone(),
                                 _ => None,
                             };
@@ -4384,5 +4398,29 @@ mod p13_2_一般賦值正式來源閉包 {
     fn 未初始化_copyable_值依然不能複製() {
         let src="fn main()->int{\nvar source:int\nvar duplicate:int = source\nreturn duplicate\n}\n";
         assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
+
+#[cfg(test)]
+mod p13_4_分支部分結構安全合流 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 不同分支各完成不同_copyable_欄位後可安全補完() {
+        let src = "struct Pair{\nvar first:int\nvar second:int\n}\nfn main()->int{\nvar pair:Pair = Pair()\nif(true){\npair.first = 1\n}else{\npair.second = 2\n}\npair.first = 3\npair.second = 4\nvar copy:Pair = pair\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok(), "所有可能覆寫的欄位皆 Copyable，允許聯集補完");
+    }
+
+    #[test]
+    fn 差異欄位包含資源時仍需保守拒絕未證明的舊值清理() {
+        let src = "struct Pair{\nvar text:str\nvar number:int\n}\nfn main()->int{\nvar pair:Pair = Pair()\nif(true){\npair.text = \"a\"\n}else{\npair.number = 1\n}\npair.text = \"b\"\npair.number = 2\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 某分支移動整個結構而另一分支未移動時不能靠欄位寫入復活() {
+        let src = "struct Pair{\nvar first:int\nvar second:int\n}\nfn main()->int{\nvar pair:Pair = Pair()\npair.first = 1\npair.second = 2\nif(true){\nvar taken:Pair = pair.move()\n}\npair.first = 3\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind, DiagnosticKind::Static);
     }
 }
