@@ -3339,3 +3339,37 @@ mod p13_h_巢狀函式資源來源 {
         assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p13_i_方法與_self_所有權來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_i_合法唯讀方法複製_copyable_欄位() {
+        let src="struct Counter{\nvar count:int = 1\nfn get()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get()\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_i_禁止方法移動整個_self() {
+        let src="struct Counter{\nvar count:int = 1\nfn take()->int{\nreturn self.move()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("S15"));
+    }
+
+    #[test]
+    fn p13_i_禁止方法回傳非_copyable_self_欄位() {
+        let src="struct Resource{\nvar content:str = \"hello\"\nfn get()->str{\nreturn self.content\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_i_禁止方法單欄位移動() {
+        let src="struct Counter{\nvar count:int = 1\nfn take()->int{\nreturn self.count.move()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("S21"));
+    }
+}
