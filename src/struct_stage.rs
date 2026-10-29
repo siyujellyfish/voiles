@@ -1329,15 +1329,25 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn check_default_term(&self, term: &Term, active: &mut HashSet<String>,
         checked: &mut HashSet<String>) -> Result<(), Diagnostic> {
-        if let TermKind::Construct(name, args) = &term.kind {
-            if active.contains(name) {
-                return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
+        match &term.kind {
+            TermKind::Construct(name, args) => {
+                if active.contains(name) {
+                    return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
+                }
+                self.check_default_type(name, active, checked)?;
+                // 具名欄位實際求值時，也不得在巢狀建立引數中形成循環。
+                for (_, value) in args {
+                    self.check_default_term(value, active, checked)?;
+                }
             }
-            self.check_default_type(name, active, checked)?;
-            // 具名欄位實際求值時，也不得在巢狀建立引數中形成循環。
-            for (_, value) in args {
-                self.check_default_term(value, active, checked)?;
+            TermKind::Call(_, args) => {
+                // 呼叫引數內的結構建立式亦屬預設值的巢狀來源，
+                // 不得繞過循環建構的靜態檢查。
+                for value in args {
+                    self.check_default_term(value, active, checked)?;
+                }
             }
+            _ => {}
         }
         Ok(())
     }
@@ -3532,6 +3542,26 @@ mod p13_函式呼叫簽章與資源移交交叉驗證 {
     #[test]
     fn 資源引數明確移交與合法回傳保持可用() {
         let src="fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"x\"\nreturn use_it(item.move())\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_預設建構巢狀函式引數循環 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 函式引數中的預設結構建構循環必須拒絕() {
+        let src="struct Loop{\nvar next:Loop = Loop()\n}\nfn identity(item:Loop)->Loop{\nreturn item.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("循環"));
+    }
+
+    #[test]
+    fn 合法非循環的巢狀預設建構仍可使用() {
+        let src="struct Leaf{\nvar count:int = 1\n}\nstruct Holder{\nvar leaf:Leaf = Leaf()\n}\nfn main()->int{\nvar holder:Holder = Holder()\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
     }
 }
