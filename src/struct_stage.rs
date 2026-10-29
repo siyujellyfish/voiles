@@ -4478,3 +4478,54 @@ mod p13_6_方法獨立資源回傳 {
         assert!(err.message.contains("Copyable"));
     }
 }
+
+#[cfg(test)]
+mod p13_4_正式來源閉包 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 提前回傳分支的移動不污染唯一可達的後續路徑() {
+        let src="fn choose(flag:bool)->int{\nvar text:str = \"原始\"\nif(flag){\nvar gone:str = text.move()\nreturn 1\n}\nvar retained:str = text.move()\nreturn 2\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 巢狀兩側均提前回傳時不允許錯誤合流來源() {
+        let src="fn choose(flag:bool)->int{\nvar text:str = \"原始\"\nif(flag){\nif(flag){\nvar gone:str = text.move()\nreturn 1\n}else{\nvar gone:str = text.move()\nreturn 2\n}\n}\nvar retained:str = text.move()\nreturn 3\n}\nfn main()->int{\nreturn choose(false)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 兩側資源移動後重新初始化可在合流後再移交() {
+        let src="fn main()->int{\nvar item:str = \"原值\"\nif(true){\nvar taken:str = item.move()\nitem = \"甲\"\n}else{\nvar taken:str = item.move()\nitem = \"乙\"\n}\nvar final_item:str = item.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 只有一側重新初始化不可在合流後當成有效資源() {
+        let src="fn main()->int{\nvar item:str = \"原值\"\nif(true){\nvar taken:str = item.move()\nitem = \"甲\"\n}else{\nvar taken:str = item.move()\n}\nvar final_item:str = item.move()\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("仍有可達路徑使來源已移動");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 內層同名資源移動不得污染外層宣告() {
+        let src="fn main()->int{\nvar item:str = \"外層\"\nif(true){\nvar item:str = \"內層\"\nvar taken:str = item.move()\n}\nvar retained:str = item.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 無_else_單側移動後必須拒絕合流再使用() {
+        let src="fn main()->int{\nvar item:str = \"原值\"\nif(true){\nvar taken:str = item.move()\n}\nvar again:str = item.move()\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("單側移動必須維持來源可能無效");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("可能") || err.message.contains("移動"));
+    }
+
+    #[test]
+    fn 分支局部宣告不能跨作用域逃逸() {
+        let src="fn main()->int{\nif(true){\nvar temporary:str = \"內層\"\n}\nvar escaped:str = temporary.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
