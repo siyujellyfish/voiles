@@ -3373,3 +3373,33 @@ mod p13_i_方法與_self_所有權來源 {
         assert!(error.message.contains("S21"));
     }
 }
+
+#[cfg(test)]
+mod p13_j_分支移交與重新初始化 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_j_兩條分支皆移交來源則合流不可再次使用() {
+        let src="fn main()->int{\nvar source:str = \"hello\"\nif (true){\nvar left:str = source.move()\n}else{\nvar right:str = source.move()\n}\nvar invalid:str = source.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_j_單側移交後合流不可假定來源有效() {
+        let src="fn main()->int{\nvar source:str = \"hello\"\nif (true){\nvar left:str = source.move()\n}\nvar invalid:str = source.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_j_分支合流後重新初始化恢復有效所有權() {
+        let src="fn main()->int{\nvar source:str = \"hello\"\nif (true){\nvar left:str = source.move()\n}\nsource = \"again\"\nvar valid:str = source.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_j_分支區域變數不得逃逸作用域() {
+        let src="fn main()->int{\nif (true){\nvar local:int = 1\n}\nreturn local\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
