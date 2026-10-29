@@ -339,6 +339,33 @@ impl Parser<'_> {
         if end < start { end = start; }
         Ok(Term { kind, start, end })
     }
+    /// 讓已核准的 else if 與獨立 if 共用同一個可達控制流程節點；
+    /// 不將 else if 視為不同所有權語法，三條分支均由後端合流追蹤。
+    fn if_statement_kind(&mut self) -> Result<StmtKind, Diagnostic> {
+        self.cursor += 1; // if
+        self.take('(', "if 條件需要左括號")?;
+        let condition = self.term()?;
+        self.take(')', "if 條件需要右括號")?;
+        let yes = self.body()?;
+        let saved = self.cursor;
+        self.lines();
+        let no = if self.keyword("else") {
+            self.cursor += 1;
+            if self.keyword("if") {
+                let start = self.tok().start;
+                let kind = self.if_statement_kind()?;
+                let end = self.tokens[self.cursor - 1].end;
+                Some(vec![Stmt { kind, start, end }])
+            } else {
+                Some(self.body()?)
+            }
+        } else {
+            self.cursor = saved;
+            None
+        };
+        Ok(StmtKind::If { condition, yes, no })
+    }
+
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.tok().start;
         let kind = if self.keyword("var") || self.keyword("const") {
@@ -356,21 +383,7 @@ impl Parser<'_> {
             }
             StmtKind::Declare { name, ty, mutable, init }
         } else if self.keyword("if") {
-            self.cursor += 1;
-            self.take('(', "if 條件需要左括號")?;
-            let condition = self.term()?;
-            self.take(')', "if 條件需要右括號")?;
-            let yes = self.body()?;
-            let saved = self.cursor;
-            self.lines();
-            let no = if self.keyword("else") {
-                self.cursor += 1;
-                Some(self.body()?)
-            } else {
-                self.cursor = saved;
-                None
-            };
-            StmtKind::If { condition, yes, no }
+            self.if_statement_kind()?
         } else if self.keyword("return") {
             self.cursor += 1;
             StmtKind::Return(self.term()?)
@@ -3896,5 +3909,30 @@ mod p13_2_有參數合法方法來源 {
         let error=inspect(src).expect_err("不可偷渡資源方法參數");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p13_4_else_if_來源合流 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准_else_if_中各分支_copyable_賦值都可安全合流() {
+        let src = "fn main()->int{\nvar value:int = 1\nif(true){\nvalue = value + 1\n} else if(false){\nvalue = value + 2\n} else {\nvalue = value + 3\n}\nreturn value\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn else_if_其中一路徑移動資源後合流不能再使用() {
+        let src = "fn main()->int{\nvar text:str = \"abc\"\nif(false){\nvar taken:str = text.move()\n} else if(true){\nvar keep:int = 1\n} else {\nvar keep:int = 2\n}\nvar again:str = text.move()\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("存在可達路徑已移動來源，不得使用");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn else_if_全部分支提前回傳不應被不可達移動干擾() {
+        let src = "fn main()->int{\nvar text:str = \"safe\"\nif(true){\nreturn 1\n} else if(false){\nreturn 2\n} else {\nreturn 3\n}\nreturn 4\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
