@@ -3283,3 +3283,29 @@ mod p13_零引數一般函式 {
         assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p13_巢狀結構資源正反來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    const PREFIX: &str = "struct Inner{\nvar content:str = \"hello\"\n}\nstruct Outer{\nvar inner:Inner = Inner()\n}\n";
+
+    #[test]
+    fn p13_巢狀非可複製結構可明確整筆移交() {
+        let source=format!("{PREFIX}fn main()->int{{\nvar source:Outer = Outer()\nvar target:Outer = source.move()\nreturn 0\n}}\n");
+        assert!(inspect(&source).is_ok());
+    }
+
+    #[test]
+    fn p13_巢狀資源不可隱含複製() {
+        let source=format!("{PREFIX}fn main()->int{{\nvar source:Outer = Outer()\nvar target:Outer = source\nreturn 0\n}}\n");
+        assert_eq!(inspect(&source).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_巢狀資源移交後不得再次使用() {
+        let source=format!("{PREFIX}fn main()->int{{\nvar source:Outer = Outer()\nvar target:Outer = source.move()\nvar again:Outer = source.move()\nreturn 0\n}}\n");
+        assert_eq!(inspect(&source).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
