@@ -3146,8 +3146,8 @@ mod p13_函式簽章唯一性 {
     fn p13_重名函式不可讓呼叫端選擇錯誤簽章() {
         let src="fn identity(value:int)->int{\nreturn value\n}\nfn identity(value:bool)->bool{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
         let error=inspect(src).expect_err("重名函式不得被任意挑選");
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("函式名稱重複"));
+        assert_eq!(error.kind,DiagnosticKind::Syntax);
+        assert!(error.message.contains("不得重複宣告函式名稱"));
     }
 
     #[test]
