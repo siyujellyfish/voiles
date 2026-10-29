@@ -3195,3 +3195,33 @@ mod p13_跨函式資源移交 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p13_跨函式資源分支合流 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_單側移交後合流不得再次使用來源() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nif true {\nvar result:str = take(source.move())\n}\nvar invalid:str = source.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_雙分支皆移交後合流不得再次使用來源() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nif true {\nvar result:str = take(source.move())\n} else {\nvar result:str = take(source.move())\n}\nvar invalid:str = source.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_分支內遮蔽資源移交不影響外層來源() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"outer\"\nif true {\nvar source:str = \"inner\"\nvar result:str = take(source.move())\n}\nvar result:str = take(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_雙分支重新初始化後可再次移交() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar source:str = \"hello\"\nif true {\nvar result:str = take(source.move())\nsource = \"again\"\n} else {\nvar result:str = take(source.move())\nsource = \"again\"\n}\nvar result:str = take(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
