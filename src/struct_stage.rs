@@ -41,6 +41,7 @@ struct Parameter {
     declaration_start: usize,
 }
 
+#[derive(Debug, Clone)]
 struct Stmt {
     kind: StmtKind,
     start: usize,
