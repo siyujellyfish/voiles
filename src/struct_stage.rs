@@ -3597,9 +3597,9 @@ mod p13_1_copyable_完整能力分類 {
     use crate::source::Source;
 
     fn permission(src: &str, ty: &str) -> CopyPermission {
-        let source = Source::new(src);
-        let tokens = super::lex(&source).expect("來源詞法合法");
-        let (structs, functions) = Parser::new(&source, &tokens).file().expect("來源語法合法");
+        let source = Source::new(src.as_bytes().to_vec());
+        let tokens = crate::lexer::scan(&source);
+        let (structs, functions) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file().expect("來源語法合法");
         let checker = Checker {
             source: &source, structs: &structs, functions: &functions,
             ability: approved_leaf_copy_permission,
