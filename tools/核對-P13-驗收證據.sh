@@ -48,4 +48,9 @@ verify_group 6 partial_completion struct_stage::p13_formal_partial_field_complet
 verify_group 6 field_write struct_stage::p13_formal_field_write_tests::
 verify_group 6 struct struct_ownership::tests::
 verify_group 6 method struct_stage::p13_deferred_borrowed_return_tests::
+# G～K 批次新增的真實來源／資源責任必須獨立出具非零成功證據。
+verify_group 2 nested_call struct_stage::p13_h_巢狀函式資源來源::
+verify_group 4 branch_reinit struct_stage::p13_j_分支移交與重新初始化::
+verify_group 5 unique_resource owned_str_runtime::tests::p13_k_
+verify_group 6 self_method struct_stage::p13_i_方法與_self_所有權來源::
 echo "P13.1～P13.6 私有測試候選門檻已取得證據；完整語意仍須正式驗收。"
