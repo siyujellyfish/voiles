@@ -3309,3 +3309,33 @@ mod p13_巢狀結構資源正反來源 {
         assert_eq!(inspect(&source).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p13_h_巢狀函式資源來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_h_巢狀函式可逐層移交新建資源() {
+        let src="fn make()->str{\nreturn \"hello\"\n}\nfn forward(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar owned:str = forward(make())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_h_巢狀函式不可隱含複製資源() {
+        let src="fn forward(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar owned:str = \"hello\"\nvar next:str = forward(owned)\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_h_巢狀函式移交後不得再次使用來源() {
+        let src="fn forward(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar owned:str = \"hello\"\nvar next:str = forward(owned.move())\nvar invalid:str = owned.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_h_巢狀函式引數型別必須匹配() {
+        let src="fn forward(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar owned:str = forward(1)\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+}
