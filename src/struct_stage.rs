@@ -863,6 +863,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     writes = true;
                 }
+                StmtKind::Return(value) => {
+                    // P01 已核准可達分支提前 return；方法的每個出口
+                    // 均須遵守相同回傳型別與 Copyable／self 借用限制。
+                    let actual = self.method_pure_value_type(owner, method, value)?;
+                    if actual != method.result_ty {
+                        return Err(self.error("方法提前回傳型別與簽章不一致", value));
+                    }
+                    // 後續同一條路徑已不可達，不得把它當作額外借用操作。
+                    return Ok(writes);
+                }
                 StmtKind::If { condition, yes, no } => {
                     self.method_bool_condition(owner, method, condition)?;
                     let yes_writes = self.method_writes(owner, method, yes)?;
@@ -4086,6 +4096,44 @@ mod p13_方法呼叫純_copyable_一般函式 {
         let src = "fn make_text()->str{\nreturn \"資源\"\n}\nstruct Box{\nvar count:int = 0\nfn bad()->str{\nreturn make_text()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         let error=inspect(src).expect_err("方法資源回傳的清理責任未完成");
         assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p13_方法可達分支提前回傳 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 方法分支可合法提前回傳_copyable_欄位及參數運算式() {
+        let src="struct Sample{\nvar amount:int = 4\nfn value(flag:bool, delta:int)->int{\nif(flag){\nreturn self.amount + delta\n}\nreturn self.amount\n}\n}\nfn main()->int{\nconst sample:Sample = Sample()\nreturn sample.value(true, 3)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 可寫方法的分支提前回傳仍須自動推導獨占_self() {
+        let src="struct Sample{\nvar amount:int = 4\nfn value(flag:bool, delta:int)->int{\nif(flag){\nself.amount = delta\nreturn self.amount\n}\nreturn self.amount\n}\n}\nfn main()->int{\nvar sample:Sample = Sample()\nreturn sample.value(true, 3)\n}\n";
+        assert!(inspect(src).is_ok());
+        let invalid=src.replace("var sample:Sample", "const sample:Sample");
+        let error=inspect(&invalid).expect_err("可寫方法要求獨占可變 self");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("const"));
+    }
+
+    #[test]
+    fn 提前回傳錯誤型別不得因最後_return_正確而漏檢() {
+        let src="struct Sample{\nvar amount:int = 4\nfn bad(flag:bool)->int{\nif(flag){\nreturn true\n}\nreturn self.amount\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("提前返回型別錯誤");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("回傳型別"));
+    }
+
+    #[test]
+    fn 提前回傳不得隱含複製非_copyable_self_欄位() {
+        let src="struct Sample{\nvar text:str = \"資源\"\nfn bad(flag:bool)->str{\nif(flag){\nreturn self.text\n}\nreturn \"ok\"\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("資源欄位不允許隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
     }
 }
