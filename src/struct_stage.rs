@@ -3742,11 +3742,14 @@ mod p13_方法回傳與借用權限交叉來源 {
     }
 
     #[test]
-    fn 非_copyable_方法參數仍保守拒絕直到借用安全完整驗證() {
+    fn 非_copyable_方法參數合法宣告但呼叫不得隱含複製() {
         let src="struct Counter{\nvar count:int = 1\nfn add(amount:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error=inspect(src).unwrap_err();
+        assert!(inspect(src).is_ok());
+        let invalid=src.replace("return 0\n}\n",
+            "var value:str = \"資源\"\nconst counter:Counter = Counter()\nreturn counter.add(value)\n}\n");
+        let error=inspect(&invalid).expect_err("具名 str 不得隱含複製移交");
         assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("方法參數"));
+        assert!(error.message.contains("Copyable"));
     }
 }
 
