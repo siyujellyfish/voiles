@@ -3073,11 +3073,9 @@ mod p13_一般函式呼叫解析邊界 {
     use crate::DiagnosticKind;
 
     #[test]
-    fn p13_位置引數呼叫保守拒絕而非錯當結構欄位() {
+    fn p13_位置引數呼叫通過已驗證_copyable_路徑() {
         let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
-        let error=inspect(src).expect_err("一般函式呼叫所有權未驗證前不得放行");
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("一般函式呼叫"));
+        assert!(inspect(src).is_ok(), "已核准 Copyable 函式呼叫應通過完整引數檢查");
     }
 
     #[test]
