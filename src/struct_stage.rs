@@ -497,6 +497,7 @@ type Scopes = Vec<HashMap<String, Binding>>;
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
+    functions: &'a [Function],
     ability: C,
 }
 
@@ -864,8 +865,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
                 Err(self.error("S21：結構欄位不能單獨移動", term))
             }
-            TermKind::Call(_, _) => Err(self.error(
-                "P13：一般函式呼叫已解析，但引數所有權傳遞尚未完整驗證，保守拒絕", term)),
+            TermKind::Call(name, args) => {
+                let function = self.functions.iter().find(|function| function.name == *name)
+                    .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
+                if function.params.len() != args.len() {
+                    return Err(self.error("P13：函式引數數量不符", term));
+                }
+                // 僅在所有參數與回傳型別均已證明 Copyable 時，
+                // 允許不移交所有權的位置引數呼叫；資源呼叫留待 C 批次。
+                if function.params.iter().any(|(_, ty)|
+                    self.permission(ty) != CopyPermission::Allowed)
+                    || self.permission(&function.result_ty) != CopyPermission::Allowed {
+                    return Err(self.error("P13：資源函式呼叫的所有權移交尚未驗證", term));
+                }
+                for (arg, (_, expected)) in args.iter().zip(&function.params) {
+                    let (actual, initialized) = self.evaluate(arg, vars)?;
+                    if actual != *expected || !initialized {
+                        return Err(self.error("P13：函式引數型別不符或尚未初始化", arg));
+                    }
+                }
+                Ok((function.result_ty.clone(), true))
+            },
             TermKind::Construct(name, args) => {
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
@@ -1362,7 +1382,7 @@ fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     let tokens = lexer::scan(&source);
     if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
     let (structs, funcs) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
-    Checker { source: &source, structs: &structs, ability }.all(&funcs)
+    Checker { source: &source, structs: &structs, functions: &funcs, ability }.all(&funcs)
 }
 
 /** P13 已核准 HA13-A/HB13-A 的真實來源受限靜態入口。
@@ -1799,7 +1819,7 @@ mod automatic_self_borrow_tests {
         let scan = crate::lexer::scan(&source);
         let (structs, _) = Parser {source: &source, tokens: &scan.tokens, cursor: 0}.file().unwrap();
         let methods = &structs["Counter"].methods;
-        let checker = Checker {source: &source, structs: &structs,
+        let checker = Checker {source: &source, structs: &structs, functions: &[],
             ability: crate::ownership_policy::approved_leaf_copy_permission};
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
             BorrowKind::SharedRead);
@@ -1862,7 +1882,7 @@ mod conditional_self_inference_tests {
         let source = crate::source::Source::new(text.as_bytes().to_vec());
         let scanned = crate::lexer::scan(&source);
         let (types, _) = Parser {source: &source, tokens: &scanned.tokens, cursor: 0}.file().unwrap();
-        let checker = Checker {source: &source, structs: &types,
+        let checker = Checker {source: &source, structs: &types, functions: &[],
             ability: crate::ownership_policy::approved_leaf_copy_permission};
         let method = &types["Counter"].methods[0];
         assert_eq!(checker.check_method("Counter", method).unwrap(), BorrowKind::ExclusiveWrite);
@@ -2234,7 +2254,7 @@ mod float_copyable_approved_tests {
             source: &source, tokens: &tokens.tokens, cursor: 0
         }.file().unwrap();
         let checker = Checker {
-            source: &source, structs: &structs,
+            source: &source, structs: &structs, functions: &[],
             ability: approved_leaf_copy_permission,
         };
         assert_eq!(checker.permission("FloatBox"), CopyPermission::Allowed);
@@ -2276,7 +2296,7 @@ mod float_copyable_method_tests {
             source: &source, tokens: &scan.tokens, cursor: 0
         }.file().unwrap();
         let checker = Checker {
-            source: &source, structs: &types,
+            source: &source, structs: &types, functions: &[],
             ability: approved_leaf_copy_permission,
         };
         assert_eq!(
@@ -2294,7 +2314,7 @@ mod float_copyable_method_tests {
             source: &source, tokens: &scan.tokens, cursor: 0
         }.file().unwrap();
         let checker = Checker {
-            source: &source, structs: &types,
+            source: &source, structs: &types, functions: &[],
             ability: approved_leaf_copy_permission,
         };
         assert_eq!(
@@ -3053,11 +3073,9 @@ mod p13_一般函式呼叫解析邊界 {
     use crate::DiagnosticKind;
 
     #[test]
-    fn p13_位置引數呼叫保守拒絕而非錯當結構欄位() {
+    fn p13_位置引數呼叫通過已驗證_copyable_路徑() {
         let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
-        let error=inspect(src).expect_err("一般函式呼叫所有權未驗證前不得放行");
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("一般函式呼叫"));
+        assert!(inspect(src).is_ok(), "已核准 Copyable 函式呼叫應通過完整引數檢查");
     }
 
     #[test]
@@ -3065,5 +3083,43 @@ mod p13_一般函式呼叫解析邊界 {
         let src="struct Item{\nvar n:int = 1\nfn value()->int{\nreturn identity(self.move())\n}\n}\nfn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
         let error=inspect(src).expect_err("方法中巢狀 self.move 不得通過");
         assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+}
+
+#[cfg(test)]
+mod p13_可複製函式呼叫 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_可複製參數與回傳可安全呼叫() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_巢狀可複製呼叫可通過() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(identity(1))\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_呼叫參數數量不符必須拒絕() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity()\n}\n";
+        let err=inspect(src).expect_err("引數數量不符");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_呼叫參數型別不符必須拒絕() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(true)\n}\n";
+        let err=inspect(src).expect_err("引數型別不符");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_資源參數呼叫不得隱含複製() {
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_err());
     }
 }
