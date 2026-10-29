@@ -3393,7 +3393,7 @@ mod p13_j_分支移交與重新初始化 {
 
     #[test]
     fn p13_j_分支合流後重新初始化恢復有效所有權() {
-        let src="fn main()->int{\nvar source:str = \"hello\"\nif (true){\nvar left:str = source.move()\n}\nsource = \"again\"\nvar valid:str = source.move()\nreturn 0\n}\n";
+        let src="fn main()->int{\nvar source:str = \"hello\"\nif (true){\nvar left:str = source.move()\n}else{\nvar right:str = source.move()\n}\nsource = \"again\"\nvar valid:str = source.move()\nreturn 0\n}\n";
         assert!(inspect(src).is_ok());
     }
 
