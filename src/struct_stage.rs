@@ -3477,3 +3477,29 @@ mod p13_函式與方法回傳型別封閉 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p13_方法回傳與借用權限交叉來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 合法唯讀方法回傳_copyable_欄位() {
+        let src="struct Counter{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nreturn counter.read()\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 不可寫接收者不得呼叫寫入方法() {
+        let src="struct Counter{\nvar count:int = 1\nfn reset()->int{\nself.count = 0\nreturn self.count\n}\n}\nfn main()->int{\nconst counter:Counter = Counter()\nreturn counter.reset()\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 方法宣告參數仍保守拒絕直到借用安全完整驗證() {
+        let src="struct Counter{\nvar count:int = 1\nfn add(amount:int)->int{\nreturn self.count\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("方法參數"));
+    }
+}
