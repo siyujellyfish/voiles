@@ -826,6 +826,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(mode)
     }
 
+    /// Copyable 方法位置引數在本階段不得有移動、再借用或未完成的
+    /// 巢狀呼叫副作用；可安全支援常值、名稱、欄位讀取及 int 加減。
+    fn method_argument_nonconsuming(term: &Term) -> bool {
+        match &term.kind {
+            TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
+            TermKind::BinaryInt { left, right, .. } =>
+                Self::method_argument_nonconsuming(left)
+                    && Self::method_argument_nonconsuming(right),
+            _ => false,
+        }
+    }
+
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
@@ -892,10 +904,37 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok((field.ty.clone(), true))
             }
-            TermKind::MethodCall(receiver, name) => {
+            TermKind::MethodCall(receiver, name, args) => {
                 if receiver == "self" {
                     return Err(self.error("重入 self 方法的借用安全尚未驗證", term));
                 }
+                self.check_direct(vars, receiver, term)?;
+                let owner_type = {
+                    let bound = Self::lookup(vars, receiver)
+                        .ok_or_else(|| self.error("找不到方法接收者來源", term))?;
+                    bound.value.read().map_err(|err| self.model_error(err, term))?;
+                    bound.ty.clone()
+                };
+                let method = self.structs.get(&owner_type)
+                    .and_then(|def| def.methods.iter().find(|m| m.name == *name))
+                    .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
+                let mode = self.check_method(&owner_type, method)?;
+                if method.params.len() != args.len() {
+                    return Err(self.error("P13：方法引數數量不符", term));
+                }
+                // 此階段只接受無移動／借用／建構副作用的 Copyable 引數：
+                // 不得藉引數求值偷偷消耗已借出的 self 接收者。
+                for (arg, parameter) in args.iter().zip(&method.params) {
+                    if !Self::method_argument_nonconsuming(arg) {
+                        return Err(self.error(
+                            "P13：方法引數目前只接受無資源移交的 Copyable 值運算式", arg));
+                    }
+                    let (actual, ready) = self.evaluate(arg, vars)?;
+                    if !ready || actual != parameter.ty {
+                        return Err(self.error("P13：方法引數型別錯誤或尚未初始化", arg));
+                    }
+                }
+                // 任何參數求值後再次驗證接收者與來源借用狀態。
                 self.check_direct(vars, receiver, term)?;
                 let bound = Self::lookup(vars, receiver)
                     .ok_or_else(|| self.error("找不到方法接收者來源", term))?;
@@ -903,17 +942,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error("P15：借用別名已不再有效", term));
                 }
                 bound.value.read().map_err(|err| self.model_error(err, term))?;
-                let method = self.structs.get(&bound.ty)
-                    .and_then(|def| def.methods.iter().find(|m| m.name == *name))
-                    .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
-                let mode = self.check_method(&bound.ty, method)?;
                 if mode == BorrowKind::ExclusiveWrite && !bound.mutable {
                     return Err(self.error(
                         "S18：const 結構實例不能呼叫會修改 self 欄位的方法", term));
                 }
                 if let Some(loan) = &bound.loan {
-                    // 方法透過已存在的非擁有別名使用來源，不可另取第二筆
-                    // 借用；共享別名只能執行真正唯讀的方法。
                     if mode == BorrowKind::ExclusiveWrite
                         && loan.kind != BorrowKind::ExclusiveWrite {
                         return Err(self.error("HC14：唯讀借用不可呼叫可寫方法", term));
