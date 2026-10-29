@@ -80,7 +80,7 @@ enum TermKind {
     /// 只讀欄位值的複製；需另外通過已初始化與 HA13/S19 Copyable 檢查。
     FieldRead(String, String),
     /// S16 已核准的 instance.method() 零參數子集；此處不推定其他簽章。
-    MethodCall(String, String),
+    MethodCall(String, String, Vec<Term>),
 }
 
 struct Parser<'a> {
@@ -312,8 +312,16 @@ impl Parser<'_> {
                             self.tokens[self.cursor - 1].end)
                     } else if self.symbol('(') {
                         self.cursor += 1;
-                        self.take(')', "此受限子集方法呼叫只接受空引數列表")?;
-                        (TermKind::MethodCall(s, field_or_move),
+                        let mut args = Vec::new();
+                        while !self.symbol(')') {
+                            args.push(self.term()?);
+                            if self.symbol(',') { self.cursor += 1; }
+                            else if !self.symbol(')') {
+                                return Err(self.syntax("方法位置引數之間需要逗號"));
+                            }
+                        }
+                        self.take(')', "方法呼叫缺少右括號")?;
+                        (TermKind::MethodCall(s, field_or_move, args),
                             self.tokens[self.cursor - 1].end)
                     } else {
                         (TermKind::FieldRead(s, field_or_move),
@@ -631,8 +639,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         match &term.kind {
             TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
-            TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _)
-                | TermKind::MethodCall(id, _) => id == name,
+            TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
+            TermKind::MethodCall(id, _, args) => id == name
+                || args.iter().any(|arg| Self::term_mentions(arg, name)),
             TermKind::Construct(_, arguments) =>
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
             TermKind::Call(_, arguments) =>
@@ -681,10 +690,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 在此明確受限子集，方法只能修改自身 var 欄位、讀取已核准 Copyable
     /// 的 self 欄位，並於最後回傳可靜態確定型別的值；其他行為保守拒絕。
     /// 只接受無副作用且可複製的布林條件。沒有取得獨立引用值。
-    fn method_bool_condition(&self, owner: &str, term: &Term)
+    fn method_bool_condition(&self, owner: &str, method: &Function, term: &Term)
         -> Result<(), Diagnostic> {
         match &term.kind {
             TermKind::Literal("bool") => Ok(()),
+            TermKind::Name(name) if method.params.iter()
+                .any(|p| &p.name == name && p.ty == "bool") => Ok(()),
             TermKind::FieldRead(receiver, name) if receiver == "self" => {
                 let target = self.structs.get(owner)
                     .and_then(|def| def.fields.iter().find(|f| f.name == *name))
@@ -703,7 +714,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// 以所有可能執行路徑的操作推導方法整體借用模式；
     /// 任一路徑寫入都需要在方法入口取得獨占借用。
-    fn method_writes(&self, owner: &str, body: &[Stmt])
+    fn method_writes(&self, owner: &str, method: &Function, body: &[Stmt])
         -> Result<bool, Diagnostic> {
         let definition = self.structs.get(owner).expect("方法所屬型別已確認");
         let mut writes = false;
@@ -719,6 +730,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // Copyable 欄位取得獨立複本；不得搬移單一欄位。
                     let actual = match &value.kind {
                         TermKind::Literal(ty) => *ty,
+                        TermKind::Name(name) => method.params.iter()
+                            .find(|p| p.name == *name)
+                            .map(|p| p.ty.as_str())
+                            .ok_or_else(|| self.error("方法欄位寫入的參數名稱不存在", value))?,
                         TermKind::FieldRead(owner, source_name) if owner == "self" => {
                             let source = definition.fields.iter()
                                 .find(|f| f.name == *source_name)
@@ -746,10 +761,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     writes = true;
                 }
                 StmtKind::If { condition, yes, no } => {
-                    self.method_bool_condition(owner, condition)?;
-                    let yes_writes = self.method_writes(owner, yes)?;
+                    self.method_bool_condition(owner, method, condition)?;
+                    let yes_writes = self.method_writes(owner, method, yes)?;
                     let no_writes = if let Some(otherwise) = no {
-                        self.method_writes(owner, otherwise)?
+                        self.method_writes(owner, method, otherwise)?
                     } else { false };
                     writes |= yes_writes || no_writes;
                 }
@@ -765,9 +780,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn check_method(&self, owner: &str, method: &Function)
         -> Result<BorrowKind, Diagnostic> {
-        if !method.params.is_empty() {
-            return Err(Diagnostic { kind: DiagnosticKind::Static,
-                message: "P13：方法參數借用與呼叫端所有權尚未驗證，保守拒絕".into(), span: None });
+        for parameter in &method.params {
+            if parameter.name == "self" || self.permission(&parameter.ty) != CopyPermission::Allowed {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：方法參數目前僅准已核准 Copyable 型別；資源參數的借用與移交尚未驗證".into(), span: None });
+            }
         }
         self.reject_method_statements(&method.body)?;
         let def = self.structs.get(owner).expect("已確認方法所屬結構存在");
@@ -775,12 +792,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             return Err(Diagnostic { kind: DiagnosticKind::Static,
                 message: "目前方法必須以單一明確 return 結束".into(), span: None });
         };
-        let mode = if self.method_writes(owner,
+        let mode = if self.method_writes(owner, method,
             &method.body[..method.body.len() - 1])? {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
         let actual = match &return_value.kind {
             TermKind::Literal(ty) => *ty,
+            TermKind::Name(name) => method.params.iter()
+                .find(|p| p.name == *name)
+                .map(|p| p.ty.as_str())
+                .ok_or_else(|| self.error("方法回傳的參數不存在", return_value))?,
             TermKind::FieldRead(receiver, field) if receiver == "self" => {
                 let target = def.fields.iter().find(|f| f.name == *field)
                     .ok_or_else(|| self.error("self 欄位不存在", return_value))?;
