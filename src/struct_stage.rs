@@ -3165,3 +3165,35 @@ mod p13_函式簽章唯一性 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p13_跨函式資源移交 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_資源參數明確移動並由函式回傳() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar received:str = take(item.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_移交後原來源不得再用() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar received:str = take(item.move())\nvar invalid:str = item.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn p13_非_copyable_具名引數不能隱含複製() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar invalid:str = take(item)\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("資源不能隱含複製");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("明確移動"));
+    }
+
+    #[test]
+    fn p13_資源函式呼叫結果可再移交() {
+        let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar received:str = take(take(item.move()))\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
