@@ -682,19 +682,56 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    /// VA15-01-A：各可達路徑的後續語句與外層延續語句共同決定
-    /// 真正最後合法使用點。只有該路徑的所有未來語句都不再引用
-    /// 相同借用別名，才解除來源直接存取封鎖。
-    /// 表面同名遮蔽只會延後釋放（安全假陽性），不會使借用提前失效。
-    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt], continuation: &[Stmt]) {
-        for scope in vars.iter_mut() {
-            for (name, binding) in scope.iter_mut() {
-                if let Some(loan) = binding.loan.as_mut() {
-                    let needed = rest.iter().chain(continuation.iter())
-                        .any(|stmt| Self::statement_mentions(stmt, name));
-                    if loan.active && !needed { loan.active = false; }
+    /// 依語句來源順序分辨「同名新宣告」與「原借用別名」：
+    /// 新宣告的初始化式先在外層環境求值，宣告完成後才遮蔽。
+    /// if 分支各有新作用域，不得把分支內遮蔽誤帶到另一分支。
+    fn scope_mentions_binding(body: &[Stmt], name: &str, initially_hidden: bool) -> bool {
+        let mut hidden = initially_hidden;
+        for statement in body {
+            match &statement.kind {
+                StmtKind::Declare { name: declared, init, .. } => {
+                    if !hidden && init.as_ref().is_some_and(|value|
+                        Self::term_mentions(value, name)) {
+                        return true;
+                    }
+                    if declared == name { hidden = true; }
+                }
+                StmtKind::If { condition, yes, no } => {
+                    if !hidden && (Self::term_mentions(condition, name)
+                        || Self::scope_mentions_binding(yes, name, false)
+                        || no.as_ref().is_some_and(|other|
+                            Self::scope_mentions_binding(other, name, false))) {
+                        return true;
+                    }
+                }
+                _ => {
+                    if !hidden && Self::statement_mentions(statement, name) {
+                        return true;
+                    }
                 }
             }
+        }
+        false
+    }
+
+    /// VA15-01-A：在已知的當前作用域中，以來源順序及宣告遮蔽
+    /// 計算最後合法使用點。外層 continuation 尚未有完整的
+    /// 跨作用域已解析身分表，因此仍採名稱保守掃描，不能提早歸還。
+    fn release_last_uses(vars: &mut Scopes, rest: &[Stmt], continuation: &[Stmt]) {
+        let mut younger_names = HashSet::new();
+        for scope in vars.iter_mut().rev() {
+            for (name, binding) in scope.iter_mut() {
+                if let Some(loan) = binding.loan.as_mut() {
+                    let needed_here = Self::scope_mentions_binding(
+                        rest, name, younger_names.contains(name));
+                    let needed_later = continuation.iter()
+                        .any(|stmt| Self::statement_mentions(stmt, name));
+                    if loan.active && !needed_here && !needed_later {
+                        loan.active = false;
+                    }
+                }
+            }
+            younger_names.extend(scope.keys().cloned());
         }
     }
 
@@ -3934,5 +3971,25 @@ mod p13_4_else_if_來源合流 {
     fn else_if_全部分支提前回傳不應被不可達移動干擾() {
         let src = "fn main()->int{\nvar text:str = \"safe\"\nif(true){\nreturn 1\n} else if(false){\nreturn 2\n} else {\nreturn 3\n}\nreturn 4\n}\n";
         assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p15_遮蔽借用最後使用點精度 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 分支內新別名遮蔽後不再引用外層借用_可歸還原來源() {
+        let src = "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nif(true){\nvar alias:int = 2\nvar copy:int = source\nreturn alias\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok(), "遮蔽後的別名使用不得誤延長外層借用");
+    }
+
+    #[test]
+    fn 分支內仍引用外層借用時不得提前解鎖來源() {
+        let src = "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nif(true){\nvar copy:int = source\nreturn alias\n}\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("外層別名仍有效不得直接使用來源");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
     }
 }
