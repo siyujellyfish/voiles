@@ -3561,9 +3561,7 @@ mod p13_預設建構巢狀函式引數循環 {
 
     #[test]
     fn 合法非循環的巢狀預設建構仍可使用() {
-        let src="struct Leaf{\nvar count:int = 1\n}\nstruct Holder{\nvar leaf:Leaf = Leaf()\n}\nfn main()->int{\nvar holder:Holder = Holder()\nreturn holder.leaf.count\n}\n";
-        let error=inspect(src);
-        // 此受限子集不支援複合欄位後綴，正例只需驗證建立。
-        assert!(error.is_err());
+        let src="struct Leaf{\nvar count:int = 1\n}\nstruct Holder{\nvar leaf:Leaf = Leaf()\n}\nfn main()->int{\nvar holder:Holder = Holder()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
