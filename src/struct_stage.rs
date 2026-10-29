@@ -4163,11 +4163,9 @@ mod p13_方法呼叫純_copyable_一般函式 {
     }
 
     #[test]
-    fn 方法內一般函式回傳資源不可當成可複製結果() {
-        let src = "fn make_text()->str{\nreturn \"資源\"\n}\nstruct Box{\nvar count:int = 0\nfn bad()->str{\nreturn make_text()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("方法資源回傳的清理責任未完成");
-        assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("Copyable"));
+    fn 方法內一般函式新建資源可直接回傳獨立所有權() {
+        let src = "fn make_text()->str{\\nreturn \\"資源\\"\\n}\\nstruct Box{\\nvar count:int = 0\\nfn fresh()->str{\\nreturn make_text()\\n}\\n}\\nfn main()->int{\\nreturn 0\\n}\\n";
+        assert!(inspect(src).is_ok());
     }
 }
 
