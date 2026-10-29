@@ -3403,3 +3403,31 @@ mod p13_j_分支移交與重新初始化 {
         assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p13_函式參數綁定唯一性 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 重複_copyable_參數名稱必須靜態拒絕() {
+        let src="fn same(value:int,value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Syntax);
+        assert!(error.message.contains("函式參數名稱不得重複"));
+    }
+
+    #[test]
+    fn 重複資源參數名稱不可掩蓋持有者() {
+        let src="fn same(value:str,value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).unwrap_err();
+        assert_eq!(error.kind,DiagnosticKind::Syntax);
+        assert!(error.message.contains("函式參數名稱不得重複"));
+    }
+
+    #[test]
+    fn 不同名稱的資源參數可各自明確移交() {
+        let src="fn choose(first:str,second:str)->str{\nreturn first.move()\n}\nfn main()->int{\nvar left:str = \"left\"\nvar right:str = \"right\"\nvar result:str = choose(left.move(),right.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
