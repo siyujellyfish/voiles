@@ -772,6 +772,45 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok(field.ty.clone())
             }
+            TermKind::Call(name, args) => {
+                // 一般函式可操作自己的局部來源，但方法目前僅准把
+                // Copyable 的獨立引數交給它，且回傳也須已核准 Copyable。
+                let function = self.functions.iter().find(|function| function.name == *name)
+                    .ok_or_else(|| self.error("方法呼叫不存在的一般函式", term))?;
+                if function.params.len() != args.len() {
+                    return Err(self.error("方法內函式引數數量不符", term));
+                }
+                if self.permission(&function.result_ty) != CopyPermission::Allowed {
+                    return Err(self.reject_noncopyable(
+                        self.permission(&function.result_ty), "方法內函式回傳值", term));
+                }
+                for (value, parameter) in args.iter().zip(&function.params) {
+                    if self.permission(&parameter.ty) != CopyPermission::Allowed {
+                        return Err(self.reject_noncopyable(
+                            self.permission(&parameter.ty), "方法內函式引數", value));
+                    }
+                    let actual = self.method_pure_value_type(owner, method, value)?;
+                    if actual != parameter.ty {
+                        return Err(self.error("方法內函式引數型別不一致", value));
+                    }
+                }
+                Ok(function.result_ty.clone())
+            }
+            TermKind::Construct(name, args) if args.is_empty()
+                && !self.structs.contains_key(name) => {
+                // helper() 與 Struct() 共用解析分支，只有已存在的
+                // 零參數一般函式可以作為純 Copyable 方法值來源。
+                let function = self.functions.iter().find(|function| function.name == *name)
+                    .ok_or_else(|| self.error("方法內零參數函式不存在", term))?;
+                if !function.params.is_empty() {
+                    return Err(self.error("方法內零參數函式實際需傳入引數", term));
+                }
+                let permission = self.permission(&function.result_ty);
+                if permission != CopyPermission::Allowed {
+                    return Err(self.reject_noncopyable(permission, "方法內函式回傳值", term));
+                }
+                Ok(function.result_ty.clone())
+            }
             TermKind::BinaryInt { left, operator, right } => {
                 let left_ty = self.method_pure_value_type(owner, method, left)?;
                 if left_ty != "int" {
@@ -1414,8 +1453,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Ok(())
             }
             TermKind::Call(_, args) => {
+                // 函式呼叫的合法型別、Copyable 資格與完整參數來源
+                // 由 method_pure_value_type 統一查核；仍先檢查 S15／S21。
                 for value in args { self.reject_method_term(value)?; }
-                Err(self.error("P13：方法內一般函式呼叫尚未驗證所有權", term))
+                Ok(())
             }
             TermKind::BinaryInt { left, right, .. } => {
                 self.reject_method_term(left)?;
@@ -4010,6 +4051,40 @@ mod p13_方法純值運算式統一檢查 {
     fn 方法不能把非_copyable_self_欄位藏進加減中() {
         let src = "struct Counter{\nvar resource:str = \"x\"\nfn bad()->int{\nreturn self.resource + 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
         let error=inspect(src).expect_err("巢狀資源欄位仍不得隱含複製");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p13_方法呼叫純_copyable_一般函式 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 方法回傳可引用合法純值函式計算與_self_欄位() {
+        let src = "fn add_one(value:int)->int{\nreturn value + 1\n}\nstruct Counter{\nvar amount:int = 5\nfn calculated(value:int)->int{\nreturn add_one(self.amount + value)\n}\n}\nfn main()->int{\nconst counter:Counter = Counter()\nreturn counter.calculated(3)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法能呼叫返回_copyable_的零引數一般函式() {
+        let src = "fn base()->int{\nreturn 9\n}\nstruct Box{\nvar count:int = 0\nfn read()->int{\nreturn base()\n}\n}\nfn main()->int{\nconst instance:Box = Box()\nreturn instance.read()\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法內函式的資源引數不可隱含複製() {
+        let src = "fn use_text(text:str)->int{\nreturn 1\n}\nstruct Box{\nvar text:str = \"資源\"\nfn bad()->int{\nreturn use_text(self.text)\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("方法不能偷複製資源欄位");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"));
+    }
+
+    #[test]
+    fn 方法內一般函式回傳資源不可當成可複製結果() {
+        let src = "fn make_text()->str{\nreturn \"資源\"\n}\nstruct Box{\nvar count:int = 0\nfn bad()->str{\nreturn make_text()\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("方法資源回傳的清理責任未完成");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
     }
