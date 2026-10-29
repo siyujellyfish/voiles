@@ -1332,6 +1332,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 
     fn all(&self, funcs: &[Function]) -> Result<(), Diagnostic> {
+        // 一般呼叫以名稱查找簽章；若允許重名，呼叫端可能
+        // 檢查第一份簽章而執行其他定義，破壞型別／所有權安全。
+        let mut seen = HashSet::new();
+        for function in funcs {
+            if !seen.insert(function.name.as_str()) {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：函式名稱重複，呼叫簽章不唯一".into(), span: None });
+            }
+            if function.name == "main" && !function.params.is_empty() {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：main 入口不可宣告參數".into(), span: None });
+            }
+        }
         self.check_default_constructor_cycles()?;
         for (struct_name, definition) in self.structs.iter() {
             for field in &definition.fields {
@@ -3121,5 +3134,33 @@ mod p13_可複製函式呼叫 {
     fn p13_資源參數呼叫不得隱含複製() {
         let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_err());
+    }
+}
+
+#[cfg(test)]
+mod p13_函式簽章唯一性 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_重名函式不可讓呼叫端選擇錯誤簽章() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn identity(value:bool)->bool{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        let error=inspect(src).expect_err("重名函式不得被任意挑選");
+        assert_eq!(error.kind,DiagnosticKind::Syntax);
+        assert!(error.message.contains("不得重複宣告函式名稱"));
+    }
+
+    #[test]
+    fn p13_main_不可接受未經入口供應的參數() {
+        let src="fn main(value:int)->int{\nreturn value\n}\n";
+        let error=inspect(src).expect_err("main 參數不可被視為已初始化來源");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("main 入口不可宣告參數"));
+    }
+
+    #[test]
+    fn p13_唯一函式簽章與合法入口仍可呼叫() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(1)\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
