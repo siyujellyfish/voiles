@@ -1600,6 +1600,70 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 }
 
 /// 成功僅代表完整檢查了這個明確受限的 P13 子集，不代表 P13 Phase 已通過。
+/// P16 私有來源－資源橋接：只有已通過靜態檢查的單一具名字串結構
+/// 與直接字串常值，才能連接到真正 UTF-8 緩衝區模型。
+/// 不自稱已實作一般執行期、任意資源表達式或 P17 直譯器。
+#[cfg(test)]
+pub(crate) fn trace_string_struct_source(
+    text: &str, variable: &str, fail_after: Option<&str>,
+) -> Result<crate::struct_initialization::BuildTrace, Diagnostic> {
+    use crate::struct_initialization::{build_string_struct, NamedString, StringField};
+    let unsupported = |message: &str| Diagnostic {
+        kind: DiagnosticKind::Static, message: message.into(), span: None,
+    };
+    fn literal<'a>(text: &'a str, term: &Term) -> Option<&'a str> {
+        if !matches!(term.kind, TermKind::Literal("str")) { return None; }
+        let raw = text.get(term.start..term.end)?;
+        let content = raw.strip_prefix('"')?.strip_suffix('"')?;
+        if content.contains('\\') { return None; }
+        Some(content)
+    }
+    let source = Source::new(text.as_bytes().to_vec());
+    if let Some(error) = source.lexical_diagnostics().into_iter().next() { return Err(error); }
+    let tokens = lexer::scan(&source);
+    if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
+    let (structs, funcs) = Parser {
+        source: &source, tokens: &tokens.tokens, cursor: 0,
+    }.file()?;
+    Checker {
+        source: &source, structs: &structs, functions: &funcs,
+        ability: crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&funcs)?;
+    let main = funcs.iter().find(|fun| fun.name == "main")
+        .ok_or_else(|| unsupported("P16：來源沒有 main"))?;
+    let (ty, args) = main.body.iter().find_map(|stmt| {
+        if let StmtKind::Declare {
+            name, ty, init: Some(Term { kind: TermKind::Construct(owner, args), .. }), ..
+        } = &stmt.kind {
+            if name == variable && ty == owner { return Some((ty.as_str(), args)); }
+        }
+        None
+    }).ok_or_else(|| unsupported("P16：沒有可追蹤的具名字串結構建立來源"))?;
+    let definition = structs.get(ty)
+        .ok_or_else(|| unsupported("P16：結構型別不存在"))?;
+    let mut fields = Vec::new();
+    for field in &definition.fields {
+        if field.ty != "str" {
+            return Err(unsupported("P16：此橋接只支援 str 欄位，不代表其他型別已驗收"));
+        }
+        let default = match &field.default {
+            Some(term) => Some(literal(text, term)
+                .ok_or_else(|| unsupported("P16：此橋接只接受無跳脫字串預設常值"))?),
+            None => None,
+        };
+        fields.push(StringField {
+            name: &field.name, default, immutable: field.immutable,
+        });
+    }
+    let mut named = Vec::new();
+    for (field, term) in args {
+        let value = literal(text, term)
+            .ok_or_else(|| unsupported("P16：此橋接不支援非字面值資源引數"))?;
+        named.push(NamedString { field, value });
+    }
+    Ok(build_string_struct(&fields, &named, fail_after))
+}
+
 fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<(), Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
@@ -3991,5 +4055,59 @@ mod p15_遮蔽借用最後使用點精度 {
         let error=inspect(src).expect_err("外層別名仍有效不得直接使用來源");
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("借用"));
+    }
+}
+
+#[cfg(test)]
+mod p16_真正來源至字串資源生命週期 {
+    use super::trace_string_struct_source;
+    use crate::struct_initialization::BuildStatus;
+    use crate::owned_str_runtime::ResourceEvent;
+
+    const SOURCE: &str = "struct Message{\nvar first:str = \"甲預設\"\nvar second:str = \"乙預設\"\nvar third:str = \"丙預設\"\n}\nfn main()->int{\nvar item:Message = Message(second=\"乙具名\",first=\"甲具名\")\nreturn 0\n}\n";
+
+    fn created(events: &[ResourceEvent]) -> Vec<u64> {
+        events.iter().filter_map(|event| match event {
+            ResourceEvent::Created(id) => Some(*id), _ => None,
+        }).collect()
+    }
+    fn released(events: &[ResourceEvent]) -> Vec<u64> {
+        events.iter().filter_map(|event| match event {
+            ResourceEvent::Released(id) => Some(*id), _ => None,
+        }).collect()
+    }
+
+    #[test]
+    fn 來源具名及預設欄位按核准次序配置真實字串並逆序清理() {
+        let trace=trace_string_struct_source(SOURCE, "item", None).unwrap();
+        assert_eq!(trace.status,BuildStatus::Complete);
+        assert_eq!(trace.evaluated.iter().map(|step|step.field.as_str()).collect::<Vec<_>>(),
+            vec!["second","first","third"]);
+        assert_eq!(trace.lifetime_values,vec![
+            ("second".into(),"乙具名".into()),
+            ("first".into(),"甲具名".into()),
+            ("third".into(),"丙預設".into())]);
+        assert_eq!(created(&trace.resources),vec![1,2,3]);
+        assert_eq!(released(&trace.resources),vec![3,2,1]);
+    }
+
+    #[test]
+    fn 來源構造失敗切點只釋放先前成功的資源() {
+        for (failed,expected) in [
+            ("second",vec![1]),("first",vec![2,1]),("third",vec![3,2,1])
+        ] {
+            let trace=trace_string_struct_source(SOURCE,"item",Some(failed)).unwrap();
+            assert_eq!(trace.status,BuildStatus::EvaluationFailed(failed.into()));
+            assert_eq!(released(&trace.resources),expected);
+            let mut all=created(&trace.resources);
+            all.reverse();
+            assert_eq!(released(&trace.resources),all);
+        }
+    }
+
+    #[test]
+    fn 來源非字串欄位不得假冒資源執行模型已支援() {
+        let src="struct Mixed{\nvar text:str = \"甲\"\nvar amount:int = 1\n}\nfn main()->int{\nvar item:Mixed = Mixed()\nreturn 0\n}\n";
+        assert!(trace_string_struct_source(src,"item",None).is_err());
     }
 }
