@@ -497,6 +497,7 @@ type Scopes = Vec<HashMap<String, Binding>>;
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
+    functions: &'a [Function],
     ability: C,
 }
 
@@ -864,8 +865,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
                 Err(self.error("S21：結構欄位不能單獨移動", term))
             }
-            TermKind::Call(_, _) => Err(self.error(
-                "P13：一般函式呼叫已解析，但引數所有權傳遞尚未完整驗證，保守拒絕", term)),
+            TermKind::Call(name, args) => {
+                let function = self.functions.iter().find(|function| function.name == *name)
+                    .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
+                if function.params.len() != args.len() {
+                    return Err(self.error("P13：函式引數數量不符", term));
+                }
+                // 僅在所有參數與回傳型別均已證明 Copyable 時，
+                // 允許不移交所有權的位置引數呼叫；資源呼叫留待 C 批次。
+                if function.params.iter().any(|(_, ty)|
+                    self.permission(ty) != CopyPermission::Allowed)
+                    || self.permission(&function.result_ty) != CopyPermission::Allowed {
+                    return Err(self.error("P13：資源函式呼叫的所有權移交尚未驗證", term));
+                }
+                for (arg, (_, expected)) in args.iter().zip(&function.params) {
+                    let (actual, initialized) = self.evaluate(arg, vars)?;
+                    if actual != *expected || !initialized {
+                        return Err(self.error("P13：函式引數型別不符或尚未初始化", arg));
+                    }
+                }
+                Ok((function.result_ty.clone(), true))
+            },
             TermKind::Construct(name, args) => {
                 let definition = self.structs.get(name)
                     .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
@@ -1362,7 +1382,7 @@ fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     let tokens = lexer::scan(&source);
     if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
     let (structs, funcs) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
-    Checker { source: &source, structs: &structs, ability }.all(&funcs)
+    Checker { source: &source, structs: &structs, functions: &funcs, ability }.all(&funcs)
 }
 
 /** P13 已核准 HA13-A/HB13-A 的真實來源受限靜態入口。
@@ -1799,7 +1819,7 @@ mod automatic_self_borrow_tests {
         let scan = crate::lexer::scan(&source);
         let (structs, _) = Parser {source: &source, tokens: &scan.tokens, cursor: 0}.file().unwrap();
         let methods = &structs["Counter"].methods;
-        let checker = Checker {source: &source, structs: &structs,
+        let checker = Checker {source: &source, structs: &structs, functions: &[],
             ability: crate::ownership_policy::approved_leaf_copy_permission};
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
             BorrowKind::SharedRead);
@@ -1862,7 +1882,7 @@ mod conditional_self_inference_tests {
         let source = crate::source::Source::new(text.as_bytes().to_vec());
         let scanned = crate::lexer::scan(&source);
         let (types, _) = Parser {source: &source, tokens: &scanned.tokens, cursor: 0}.file().unwrap();
-        let checker = Checker {source: &source, structs: &types,
+        let checker = Checker {source: &source, structs: &types, functions: &[],
             ability: crate::ownership_policy::approved_leaf_copy_permission};
         let method = &types["Counter"].methods[0];
         assert_eq!(checker.check_method("Counter", method).unwrap(), BorrowKind::ExclusiveWrite);
@@ -2234,7 +2254,7 @@ mod float_copyable_approved_tests {
             source: &source, tokens: &tokens.tokens, cursor: 0
         }.file().unwrap();
         let checker = Checker {
-            source: &source, structs: &structs,
+            source: &source, structs: &structs, functions: &[],
             ability: approved_leaf_copy_permission,
         };
         assert_eq!(checker.permission("FloatBox"), CopyPermission::Allowed);
@@ -2276,7 +2296,7 @@ mod float_copyable_method_tests {
             source: &source, tokens: &scan.tokens, cursor: 0
         }.file().unwrap();
         let checker = Checker {
-            source: &source, structs: &types,
+            source: &source, structs: &types, functions: &[],
             ability: approved_leaf_copy_permission,
         };
         assert_eq!(
@@ -2294,7 +2314,7 @@ mod float_copyable_method_tests {
             source: &source, tokens: &scan.tokens, cursor: 0
         }.file().unwrap();
         let checker = Checker {
-            source: &source, structs: &types,
+            source: &source, structs: &types, functions: &[],
             ability: approved_leaf_copy_permission,
         };
         assert_eq!(
