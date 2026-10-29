@@ -1174,6 +1174,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
         let mut vars = vec![HashMap::new()];
         for (name, ty) in &fun.params {
+            if !["int", "bool", "float", "str"].contains(&ty.as_str())
+                && !self.structs.contains_key(ty) {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：函式參數使用不存在的型別".into(), span: None });
+            }
             if self.permission(ty) != CopyPermission::Allowed {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：非 Copyable 函式參數的呼叫端移交與借用尚未完成，保守拒絕".into(),
@@ -2991,5 +2996,25 @@ mod p13_函式參數來源安全 {
     fn p13_參數名稱不可重複() {
         let src="fn identity(value:int,value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
         assert!(inspect(src).is_err());
+    }
+}
+
+#[cfg(test)]
+mod p13_函式參數型別閉包 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_函式參數不得以不存在的型別建立虛構所有權() {
+        let src="fn identity(value:Missing)->int{\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("參數型別必須在現有型別環境中可解析");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("不存在的型別"));
+    }
+
+    #[test]
+    fn p13_可複製的已宣告結構可作為受限函式參數() {
+        let src="struct Item{\nvar n:int = 1\n}\nfn identity(value:Item)->int{\nreturn value.n\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
     }
 }
