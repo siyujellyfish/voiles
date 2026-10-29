@@ -915,14 +915,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(mode)
     }
 
-    /// Copyable 方法位置引數在本階段不得有移動、再借用或未完成的
-    /// 巢狀呼叫副作用；可安全支援常值、名稱、欄位讀取及 int 加減。
-    fn method_argument_nonconsuming(term: &Term) -> bool {
+    /// 方法引數依來源順序在取得 self 借用前求值。
+    /// 已核准 Copyable 參數可接受具名整筆 .move()；求值後必須
+    /// 再查核接收者仍有效。仍禁止未完成的再借用／巢狀呼叫資源副作用。
+    fn method_argument_safe_before_borrow(term: &Term) -> bool {
         match &term.kind {
-            TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
+            TermKind::Literal(_) | TermKind::Name(_) | TermKind::Move(_)
+                | TermKind::FieldRead(_, _) => true,
             TermKind::BinaryInt { left, right, .. } =>
-                Self::method_argument_nonconsuming(left)
-                    && Self::method_argument_nonconsuming(right),
+                Self::method_argument_safe_before_borrow(left)
+                    && Self::method_argument_safe_before_borrow(right),
             _ => false,
         }
     }
@@ -1011,12 +1013,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if method.params.len() != args.len() {
                     return Err(self.error("P13：方法引數數量不符", term));
                 }
-                // 此階段只接受無移動／借用／建構副作用的 Copyable 引數：
-                // 不得藉引數求值偷偷消耗已借出的 self 接收者。
+                // 引數在 self 借用前求值：明確移動 Copyable 來源合法，
+                // 但下方將再次查核 self，禁止移交接收者後仍呼叫方法。
                 for (arg, parameter) in args.iter().zip(&method.params) {
-                    if !Self::method_argument_nonconsuming(arg) {
+                    if !Self::method_argument_safe_before_borrow(arg) {
                         return Err(self.error(
-                            "P13：方法引數目前只接受無資源移交的 Copyable 值運算式", arg));
+                            "P13：方法引數僅接受已證明安全的 Copyable 值或具名整筆移動", arg));
                     }
                     let (actual, ready) = self.evaluate(arg, vars)?;
                     if !ready || actual != parameter.ty {
@@ -4136,5 +4138,41 @@ mod p13_方法可達分支提前回傳 {
         let error=inspect(src).expect_err("資源欄位不允許隱含複製");
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p13_方法位置引數明確整筆移動 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn copyable_具名整筆_move_可作方法位置引數() {
+        let src="struct Counter{\nvar count:int = 1\nfn use_value(value:int)->int{\nreturn value\n}\n}\nfn main()->int{\nvar input:int = 5\nconst counter:Counter = Counter()\nreturn counter.use_value(input.move())\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法引數移動後來源不可再讀() {
+        let src="struct Counter{\nvar count:int = 1\nfn use_value(value:int)->int{\nreturn value\n}\n}\nfn main()->int{\nvar input:int = 5\nconst counter:Counter = Counter()\nvar result:int = counter.use_value(input.move())\nreturn input\n}\n";
+        let error=inspect(src).expect_err("輸入來源已明確移動");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 方法引數不得移動同一接收者後仍借用_self() {
+        let src="struct Counter{\nvar count:int = 1\nfn compare(other:Counter)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nreturn counter.compare(counter.move())\n}\n";
+        let error=inspect(src).expect_err("方法借用前接收者已被移動");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 方法引數仍不可移動已借出來源() {
+        let src="struct Counter{\nvar count:int = 1\nfn use_value(value:int)->int{\nreturn value\n}\n}\nfn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nconst counter:Counter = Counter()\nvar result:int = counter.use_value(source.move())\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("有效別名期間不得移動來源");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
     }
 }
