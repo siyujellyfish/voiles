@@ -42,4 +42,13 @@ check_phase P16_STRUCT_PLAN struct_eval_plan::tests::
 check_phase P16_STRUCT_RUNTIME struct_initialization::tests::
 check_phase P16_REAL_SOURCE vb16_constructor_source_tests::tests::
 check_phase P14_P16 resource_borrow_pipeline::tests::
+# P14 原始六項的來源組應個別列名且通過，不只核對總測試數。
+check_phase P14_1_RECORD borrow_safety::tests::
+check_phase P14_1_SOURCE struct_stage::p14_1_p14_2_真實來源與衝突矩陣::
+check_phase P14_2_CONFLICT struct_stage::p14_1_p14_2_真實來源與衝突矩陣::
+check_phase P14_3_SOURCE struct_stage::va14_va15_borrow_source_tests::
+check_phase P14_4_ALIAS struct_stage::p14_4_借用別名複製能力來源::
+check_phase P14_5_NESTED struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::
+check_phase P14_6_SELF struct_stage::automatic_self_borrow_tests::
+check_phase P14_6_CROSS struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::
 echo "P14～P16 工程候選證據可重現，正式 Phase 依原規格及相依階段另行驗收。"
