@@ -29,6 +29,7 @@ struct StructDecl {
 #[derive(Debug, Clone)]
 struct Function {
     name: String,
+    params: Vec<(String, String)>,
     result_ty: String,
     body: Vec<Stmt>,
 }
@@ -348,14 +349,27 @@ impl Parser<'_> {
         self.cursor += 1;
         let name = self.name()?;
         self.take('(', "函式名稱後需左括號")?;
-        self.take(')', "受限驗證子集僅接受零參數函式")?;
+        let mut params = Vec::new();
+        let mut seen = HashSet::new();
+        while !self.symbol(')') {
+            let parameter = self.name()?;
+            if !seen.insert(parameter.clone()) {
+                return Err(self.syntax("函式參數名稱不得重複"));
+            }
+            self.take(':', "函式參數需要明確型別")?;
+            let ty = self.name()?;
+            params.push((parameter, ty));
+            if self.symbol(',') { self.cursor += 1; }
+            else if !self.symbol(')') { return Err(self.syntax("函式參數之間需要逗號")); }
+        }
+        self.take(')', "函式參數缺少右括號")?;
         if !matches!(self.tok().kind, TokenKind::Arrow) {
             return Err(self.syntax("函式需要回傳型別標註"));
         }
         self.cursor += 1;
         let result_ty = self.name()?;
         let body = self.body()?;
-        Ok(Function { name, result_ty, body })
+        Ok(Function { name, params, result_ty, body })
     }
     fn strukt(&mut self) -> Result<(String, StructDecl), Diagnostic> {
         self.cursor += 1; // struct
@@ -691,6 +705,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn check_method(&self, owner: &str, method: &Function)
         -> Result<BorrowKind, Diagnostic> {
+        if !method.params.is_empty() {
+            return Err(Diagnostic { kind: DiagnosticKind::Static,
+                message: "P13：方法參數借用與呼叫端所有權尚未驗證，保守拒絕".into(), span: None });
+        }
         self.reject_method_statements(&method.body)?;
         let def = self.structs.get(owner).expect("已確認方法所屬結構存在");
         let Some(Stmt { kind: StmtKind::Return(return_value), .. }) = method.body.last() else {
@@ -1155,6 +1173,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     fun.body.last().map_or(0, |s| s.end))) });
         }
         let mut vars = vec![HashMap::new()];
+        for (name, ty) in &fun.params {
+            if self.permission(ty) != CopyPermission::Allowed {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "P13：非 Copyable 函式參數的呼叫端移交與借用尚未完成，保守拒絕".into(),
+                    span: None });
+            }
+            vars[0].insert(name.clone(), Binding {
+                declaration_start: 0, ty: ty.clone(), mutable: false,
+                value: ValueSlot::initialized(self.permission(ty)),
+                pending_fields: None, loan: None,
+            });
+        }
         self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
         Ok(())
     }
@@ -2935,5 +2965,31 @@ mod p13_5_資源與可複製值來源對照矩陣 {
     fn p13_5_資源重新初始化後可再次明確移動() {
         let source="fn main()->int{\nvar resource:str = \"first\"\nvar first:str = resource.move()\nresource = \"second\"\nvar second:str = resource.move()\nreturn 0\n}\n";
         assert!(inspect(source).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p13_函式參數來源安全 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn p13_可複製型別參數允許函式內讀取與回傳() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn p13_非可複製參數在呼叫端移交未完成前保守拒絕() {
+        let src="fn identity(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("尚無呼叫端所有權來源證明");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("P13"));
+    }
+
+    #[test]
+    fn p13_參數名稱不可重複() {
+        let src="fn identity(value:int,value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(src).is_err());
     }
 }
