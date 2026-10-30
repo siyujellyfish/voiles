@@ -91,6 +91,9 @@ pub(crate) enum StructRuntimeError {
     MissingBinding,
     MovedBinding,
     UninitializedField,
+    UnknownField,
+    ImmutableField,
+    ImmutableOwner,
     NoInnerScope,
     EvaluationFailed(String),
     UnknownFailurePoint,
@@ -109,11 +112,14 @@ struct StructOwnedValue {
     // 順序是 VB16-01-A 真正完成初始化的順序，非宣告順序。
     fields: Vec<StructResource>,
     missing: Vec<String>,
+    /// 以宣告欄位為準，不能依欄位目前是否已有資源推定可寫。
+    field_immutable: Vec<(String,bool)>,
 }
 
 #[derive(Debug)]
 struct StructOwnerSlot {
     name: String,
+    mutable: bool,
     owned: Option<StructOwnedValue>,
 }
 
@@ -170,6 +176,15 @@ impl OwnedStructRuntime {
         fields: &[StringField<'_>], named: &[NamedString<'_>],
         fail_after_field: Option<&str>,
     ) -> Result<BuildStatus, StructRuntimeError> {
+        self.construct_with_access(name, true, fields, named, fail_after_field)
+    }
+
+    /// const／var 結構實例可寫權限取自已確認的宣告，不由
+    /// String 緩衝區或目前欄位是否已初始化推定。
+    pub(crate) fn construct_with_access(&mut self, name: &str, mutable: bool,
+        fields: &[StringField<'_>], named: &[NamedString<'_>],
+        fail_after_field: Option<&str>,
+    ) -> Result<BuildStatus, StructRuntimeError> {
         self.current_name_free(name)?;
         let schema: Vec<_> = fields.iter().map(|field| FieldInfo {
             name: field.name, has_default: field.default.is_some(),
@@ -184,6 +199,8 @@ impl OwnedStructRuntime {
         }
         let mut pending = StructOwnedValue {
             fields: Vec::new(), missing: plan.missing_mutable_fields.clone(),
+            field_immutable: fields.iter()
+                .map(|field|(field.name.to_owned(),field.immutable)).collect(),
         };
         for step in &plan.steps {
             let content = match step.origin {
@@ -212,7 +229,7 @@ impl OwnedStructRuntime {
             BuildStatus::PartiallyInitialized(pending.missing.clone())
         };
         self.scopes.last_mut().expect("根作用域存在").push(StructOwnerSlot {
-            name: name.to_owned(), owned: Some(pending),
+            name: name.to_owned(), mutable, owned: Some(pending),
         });
         Ok(status)
     }
@@ -230,6 +247,46 @@ impl OwnedStructRuntime {
             .ok_or(StructRuntimeError::UninitializedField)
     }
 
+    /// VA16-03-A：僅供已核准 str 欄位右側獨立字面值的
+    /// 受限原子覆寫模型。先驗證實例與欄位可寫性、再建立
+    /// 唯一 UTF-8 暫存資源；模擬 RHS 失敗只釋放暫存，
+    /// 成功時提交新欄位、最後才清理舊資源。
+    pub(crate) fn assign_field_checked(&mut self,
+        owner: &str, field: &str, right: &str, fail_after_eval: bool,
+    ) -> Result<(), StructRuntimeError> {
+        let (i,j)=self.location(owner)?;
+        let slot=&self.scopes[i][j];
+        if !slot.mutable { return Err(StructRuntimeError::ImmutableOwner); }
+        let original=slot.owned.as_ref()
+            .ok_or(StructRuntimeError::MovedBinding)?;
+        let immutable=original.field_immutable.iter()
+            .find(|(name,_)|name==field)
+            .map(|(_,immutable)|*immutable)
+            .ok_or(StructRuntimeError::UnknownField)?;
+        if immutable { return Err(StructRuntimeError::ImmutableField); }
+
+        let new=self.ledger.create_detached(right)
+            .map_err(StructRuntimeError::Resource)?;
+        if fail_after_eval {
+            self.ledger.release_detached(new);
+            return Err(StructRuntimeError::EvaluationFailed(field.to_owned()));
+        }
+        // 值已成功建立；此後沒有可失敗操作。
+        // 覆寫後欄位以新完成初始化順序清理，不把舊
+        // 資源在 RHS 尚未成功時釋放。
+        let value=self.scopes[i][j].owned.as_mut().expect("已預檢持有者");
+        let previous=value.fields.iter().position(|item|item.name==field)
+            .map(|position|value.fields.remove(position));
+        value.fields.push(StructResource {
+            name:field.to_owned(),value:new,
+        });
+        value.missing.retain(|name|name!=field);
+        if let Some(old)=previous {
+            self.ledger.release_detached(old.value);
+        }
+        Ok(())
+    }
+
     /// 一個已建構實例的所有欄位資源必須一起轉交；
     /// 所有會失敗的名稱及來源檢查都在取走任何資源之前執行。
     pub(crate) fn move_whole(&mut self, from: &str, to: &str)
@@ -244,7 +301,7 @@ impl OwnedStructRuntime {
             self.ledger.mark_detached_move(&field.value);
         }
         self.scopes.last_mut().expect("根作用域存在").push(StructOwnerSlot {
-            name: to.to_owned(), owned: Some(moved),
+            name: to.to_owned(), mutable: true, owned: Some(moved),
         });
         Ok(())
     }
@@ -270,7 +327,7 @@ impl OwnedStructRuntime {
             return Err((err, result));
         }
         self.scopes.last_mut().expect("根作用域存在").push(StructOwnerSlot {
-            name: name.to_owned(), owned: Some(result.value),
+            name: name.to_owned(), mutable: true, owned: Some(result.value),
         });
         Ok(())
     }
@@ -605,5 +662,132 @@ mod p16_真實持續存活結構值資源責任 {
         assert_eq!(rt.move_whole("a","again"),Err(StructRuntimeError::MovedBinding));
         assert_eq!(rt.read_field("moved","a"),Ok("甲"));
         assert_eq!(ids(&rt.finish().unwrap(),false),vec![3,2,1,6,5,4]);
+    }
+}
+
+#[cfg(test)]
+mod p16_持續結構欄位原子覆寫安全 {
+    use super::*;
+
+    fn fields()->[StringField<'static>;3] {
+        [
+            StringField{name:"a",default:Some("舊甲"),immutable:false},
+            StringField{name:"b",default:Some("原乙"),immutable:false},
+            StringField{name:"fixed",default:Some("固定🪼"),immutable:true},
+        ]
+    }
+    fn released(events:&[ResourceEvent])->Vec<u64> {
+        events.iter().filter_map(|item|
+            if let ResourceEvent::Released(id)=item {Some(*id)}else{None}
+        ).collect()
+    }
+
+    #[test]
+    fn 覆寫先建立新字串後立即釋放舊欄位_最後按更新初始化次序清理() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        rt.assign_field_checked("owner","a","新甲🪼",false).unwrap();
+        assert_eq!(rt.read_field("owner","a"),Ok("新甲🪼"));
+        assert_eq!(rt.read_field("owner","b"),Ok("原乙"));
+        assert_eq!(released(rt.events()),vec![1]);
+        assert_eq!(rt.finish().unwrap(),vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Created(3),ResourceEvent::Created(4),
+            ResourceEvent::Released(1),
+            ResourceEvent::Released(4),ResourceEvent::Released(3),
+            ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn 右側求值失敗只釋放暫存不改原欄位() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        assert_eq!(rt.assign_field_checked("owner","a","不應提交",true),
+            Err(StructRuntimeError::EvaluationFailed("a".into())));
+        assert_eq!(rt.read_field("owner","a"),Ok("舊甲"));
+        assert_eq!(released(rt.events()),vec![4]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![4,3,2,1]);
+    }
+
+    #[test]
+    fn const_欄位拒絕覆寫且無任何新資源建立() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        let before=rt.events().len();
+        assert_eq!(rt.assign_field_checked("owner","fixed","非法",false),
+            Err(StructRuntimeError::ImmutableField));
+        assert_eq!(rt.events().len(),before);
+        assert_eq!(rt.read_field("owner","fixed"),Ok("固定🪼"));
+        assert_eq!(released(&rt.finish().unwrap()),vec![3,2,1]);
+    }
+
+    #[test]
+    fn const_結構實例不能因_var_欄位可寫就繞過_s18() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct_with_access("owner",false,&fields(),&[],None).unwrap();
+        let before=rt.events().len();
+        assert_eq!(rt.assign_field_checked("owner","a","非法",false),
+            Err(StructRuntimeError::ImmutableOwner));
+        assert_eq!(rt.events().len(),before);
+        assert_eq!(rt.read_field("owner","a"),Ok("舊甲"));
+        assert_eq!(released(&rt.finish().unwrap()),vec![3,2,1]);
+    }
+
+    #[test]
+    fn 無預設_var_欄位首次完整初始化不需釋放不存在舊資源() {
+        let schema=[
+            StringField{name:"pending",default:None,immutable:false},
+            StringField{name:"fixed",default:Some("固定"),immutable:true},
+        ];
+        let mut rt=OwnedStructRuntime::new();
+        assert_eq!(rt.construct("owner",&schema,&[],None),
+            Ok(BuildStatus::PartiallyInitialized(vec!["pending".into()])));
+        assert_eq!(rt.read_field("owner","pending"),
+            Err(StructRuntimeError::UninitializedField));
+        rt.assign_field_checked("owner","pending","首次🪼",false).unwrap();
+        assert_eq!(rt.read_field("owner","pending"),Ok("首次🪼"));
+        assert_eq!(rt.events(),&[
+            ResourceEvent::Created(1),ResourceEvent::Created(2)
+        ]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![2,1]);
+    }
+
+    #[test]
+    fn 不存在欄位不得先建立新資源() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        let before=rt.events().len();
+        assert_eq!(rt.assign_field_checked("owner","missing","不應存在",false),
+            Err(StructRuntimeError::UnknownField));
+        assert_eq!(rt.events().len(),before);
+        assert_eq!(released(&rt.finish().unwrap()),vec![3,2,1]);
+    }
+
+    #[test]
+    fn 整筆轉移後舊持有者不可覆寫_新持有者仍可安全原子覆寫() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        rt.move_whole("owner","moved").unwrap();
+        assert_eq!(rt.assign_field_checked("owner","a","非法",false),
+            Err(StructRuntimeError::MovedBinding));
+        rt.assign_field_checked("moved","a","新持有者",false).unwrap();
+        assert_eq!(rt.read_field("moved","a"),Ok("新持有者"));
+        assert_eq!(released(rt.events()),vec![1]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![1,4,3,2]);
+    }
+
+    #[test]
+    fn 先失敗再成功覆寫仍不提前釋放原值或重複釋放() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        assert_eq!(rt.assign_field_checked("owner","b","先失敗",true),
+            Err(StructRuntimeError::EvaluationFailed("b".into())));
+        assert_eq!(rt.read_field("owner","b"),Ok("原乙"));
+        rt.assign_field_checked("owner","b","後成功",false).unwrap();
+        assert_eq!(rt.read_field("owner","b"),Ok("後成功"));
+        // 失敗暫存 id4，成功欄位 id5，舊欄位 id2 僅成功後釋放。
+        assert_eq!(released(rt.events()),vec![4,2]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![4,2,5,3,1]);
     }
 }
