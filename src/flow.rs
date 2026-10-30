@@ -8,10 +8,11 @@ use crate::{Diagnostic, DiagnosticKind};
 use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind};
 use crate::source::Source;
+use crate::ownership_ledger::DeclarationId;
 
 #[derive(Debug, Clone, Copy)]
 struct Variable {
-    declaration_start: usize,
+    declaration_start: DeclarationId,
     initialized: bool,
     mutable: bool,
 }
@@ -82,7 +83,7 @@ impl Analyzer<'_> {
         // 首版局部 var 允許延後初始化，但不能因宣告本身當成已初始化。
         let scope = state.scopes.last_mut().expect("全檔至少有頂層作用域");
         Rc::make_mut(scope).insert(b.name.clone(), Variable {
-            declaration_start: b.start,
+            declaration_start: DeclarationId(b.start),
             initialized: b.initializer.is_some(),
             mutable: b.mutable,
         });
@@ -255,7 +256,7 @@ mod tests {
     fn p16_6_r04_分支快照共用作用域並在寫入時隔離() {
         let mut scope = HashMap::new();
         scope.insert("value".to_owned(), Variable {
-            declaration_start: 10, initialized: false, mutable: true,
+            declaration_start: DeclarationId(10), initialized: false, mutable: true,
         });
         let original = Flow { scopes: vec![Rc::new(scope)], reachable: true };
         let mut changed = original.clone();
@@ -264,7 +265,7 @@ mod tests {
         assert!(!Rc::ptr_eq(&original.scopes[0], &changed.scopes[0]));
         assert!(!original.lookup("value").unwrap().initialized);
         assert!(changed.lookup("value").unwrap().initialized);
-        assert_eq!(changed.lookup("value").unwrap().declaration_start, 10);
+        assert_eq!(changed.lookup("value").unwrap().declaration_start, DeclarationId(10));
     }
 
     #[test]
