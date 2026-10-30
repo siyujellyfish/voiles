@@ -13,6 +13,7 @@ pub(crate) enum Type {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct File {
     pub(crate) items: Vec<Item>,
     pub(crate) start: usize,
@@ -35,6 +36,7 @@ pub(crate) struct Function {
 }
 
 #[derive(Debug, Clone)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) struct Block {
     pub(crate) statements: Vec<Stmt>,
     pub(crate) start: usize,
