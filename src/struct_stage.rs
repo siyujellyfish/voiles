@@ -5027,3 +5027,51 @@ mod p15_3_for_半開區間借用來源 {
         assert_eq!(error.kind, DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p15_5_懸空與合法重新借用來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 前一筆借用最後使用後可重新借用同一原持有者() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar copy:int = first\nvar direct:int = owner\nvar second:int = owner.borrow()\nvar another:int = second\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok(), "兩次不重疊的直接原持有者借用必須合法");
+    }
+
+    #[test]
+    fn 第二筆借用不可與仍有未來使用的獨占借用重疊() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar second:int = owner.borrow()\nreturn first\n}\n";
+        let err = inspect(src).expect_err("原來源仍有有效獨占別名");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("借用"));
+    }
+
+    #[test]
+    fn 局部借用不能逃逸作用域成為懸空名稱() {
+        let src = "fn main()->int{\nvar owner:int = 1\nif (true){\nvar alias:int = owner.borrow()\nvar copy:int = alias\n}\nreturn alias\n}\n";
+        assert_eq!(inspect(src).unwrap_err().kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 未來仍會使用的借用不得允許原持有者先移動() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar moved:int = owner.move()\nreturn alias\n}\n";
+        let err = inspect(src).expect_err("原持有者不得早於活躍別名移動");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("借用"));
+    }
+
+    #[test]
+    fn 借用別名再次借用仍保持_vb14_階段性拒絕() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar invalid:int = alias.borrow()\nreturn invalid\n}\n";
+        let err = inspect(src).expect_err("不推定父子借用及重新借用的有效期");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("再") || err.message.contains("借用"));
+    }
+
+    #[test]
+    fn 巢狀區塊的借用歸還不應污染外層再次借用() {
+        let src = "fn main()->int{\nvar owner:int = 1\nif (true){\nvar scoped:int = owner.borrow()\nvar value:int = scoped\n}\nvar second:int = owner.borrow()\nvar copied:int = second\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
