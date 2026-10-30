@@ -7299,3 +7299,84 @@ mod p16_真正_voil_混合純值與_utf8_結構來源 {
         assert_eq!(err.kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p16_真實_voil_分支提前返回資源清理 {
+    use super::trace_scope_struct_source;
+    use crate::owned_str_runtime::ResourceEvent as E;
+    use crate::DiagnosticKind;
+
+    const SOURCE:&str="struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(true){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n";
+    const CLEAN:&[E]=&[
+        E::Created(1),E::Created(2),E::Released(2),E::Released(1),
+    ];
+
+    #[test]
+    fn 真正_voil_if_true_內層先清理_外層最後清理() {
+        assert_eq!(trace_scope_struct_source(SOURCE,None).unwrap(),CLEAN);
+    }
+    #[test]
+    fn 真正_voil_if_false_有_else_只配置實際執行的分支() {
+        let source=SOURCE.replace("if(true){\nvar inner:Holder = Holder(text=\"內層\")\n}",
+            "if(false){\nvar inner:Holder = Holder(text=\"未執行\")\n}else{\nvar other:Holder = Holder(text=\"執行\")\n}");
+        assert_eq!(trace_scope_struct_source(&source,None).unwrap(),CLEAN);
+    }
+    #[test]
+    fn 真正_voil_if_false_無_else_不能分配虛構的內層資源() {
+        let source=SOURCE.replace("if(true)","if(false)");
+        assert_eq!(trace_scope_struct_source(&source,None).unwrap(),vec![
+            E::Created(1),E::Released(1),
+        ]);
+    }
+    #[test]
+    fn 真正_voil_內層資源初始化後故障須先回滾再清理外層() {
+        assert_eq!(trace_scope_struct_source(SOURCE,Some("text")).unwrap(),CLEAN);
+    }
+    #[test]
+    fn 真正_voil_if_分支內提前_return_離開函式按逆序清理() {
+        let source=SOURCE.replace(
+            "var inner:Holder = Holder(text=\"內層\")\n}",
+            "var inner:Holder = Holder(text=\"內層\")\nreturn 0\n}");
+        assert_eq!(trace_scope_struct_source(&source,None).unwrap(),CLEAN);
+    }
+    #[test]
+    fn 真正_voil_if_分支提前返回且故障時不得遺失外層() {
+        let source=SOURCE.replace(
+            "var inner:Holder = Holder(text=\"內層\")\n}",
+            "var inner:Holder = Holder(text=\"內層\")\nreturn 0\n}");
+        assert_eq!(trace_scope_struct_source(&source,Some("text")).unwrap(),CLEAN);
+    }
+    #[test]
+    fn 真正_voil_未知條件不能被當作已確定執行的分支() {
+        let source=SOURCE.replace("if(true)","if(1==1)");
+        let err=trace_scope_struct_source(&source,None)
+            .expect_err("沒有布林值運算式執行器不能造假清理來源");
+        assert!(matches!(err.kind,DiagnosticKind::Static|
+            DiagnosticKind::Syntax|DiagnosticKind::Lexical));
+    }
+    #[test]
+    fn 真正_voil_分支中的額外副作用不能被跳過仍宣稱完整資源清理() {
+        let source=SOURCE.replace(
+            "var inner:Holder = Holder(text=\"內層\")",
+            "var inner:Holder = Holder(text=\"內層\")\nvar x:int = 2");
+        let err=trace_scope_struct_source(&source,None)
+            .expect_err("尚未接通的額外語句不能被模型忽略");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+    #[test]
+    fn 真正_voil_不執行的分支不能注入不存在的失敗事件() {
+        let source=SOURCE.replace("if(true)","if(false)");
+        let err=trace_scope_struct_source(&source,Some("text"))
+            .expect_err("不得將未執行的分支資源當成已配置");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+    #[test]
+    fn 真正_voil_分支內未支援的多層嵌套不能直接推定清理() {
+        let source=SOURCE.replace(
+            "var inner:Holder = Holder(text=\"內層\")",
+            "if(true){\nvar inner:Holder = Holder(text=\"內層\")\n}");
+        let err=trace_scope_struct_source(&source,None)
+            .expect_err("不能把未模擬的嵌套資源當已追蹤");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+}
