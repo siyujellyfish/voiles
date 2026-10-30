@@ -2126,9 +2126,17 @@ fn trace_string_struct_source(
                 .ok_or_else(|| unsupported("P16：僅接受未經轉義的具名字串常值"))?,
         });
     }
-    if fail_after.is_some_and(|name|
-        !fields.iter().any(|field| field.name == name)) {
-        return Err(unsupported("P16：失敗注入欄位不存在"));
+    // 模擬失敗只能放在此次真正會求值的具名或未覆蓋預設步驟。
+    // 沒有預設、也未被具名提供的 var 欄位雖存在於結構宣告中，
+    // 卻不會建立資源，不可把「指定失敗卻未發生」算成清理證據。
+    if let Some(name) = fail_after {
+        let in_named = named.iter().any(|arg| arg.field == name);
+        let in_defaults = fields.iter().any(|field|
+            field.name == name && field.default.is_some());
+        if !in_named && !in_defaults {
+            return Err(unsupported(
+                "P16：失敗注入欄位不存在，或未被此結構求值計畫執行"));
+        }
     }
     Ok(build_string_struct(&fields, &named, fail_after))
 }
@@ -5715,5 +5723,47 @@ mod p16_真正_voil_來源至_utf8_緩衝區清理 {
         let error = trace_string_struct_source(&source, "item", None).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("型別"));
+    }
+}
+
+#[cfg(test)]
+mod p16_結構來源失敗注入實際求值步驟 {
+    use super::trace_string_struct_source;
+    use crate::struct_initialization::BuildStatus;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const PARTIAL: &str = "struct Message{\nvar optional:str\nconst id:str = \"固定\"\n}\nfn main()->int{\nvar item:Message = Message()\nreturn 0\n}\n";
+
+    #[test]
+    fn 沒有預設也沒有提供的_var_不可當成失敗注入已執行() {
+        let trace = trace_string_struct_source(PARTIAL, "item", None).unwrap();
+        assert_eq!(trace.status, BuildStatus::PartiallyInitialized(
+            vec!["optional".to_owned()]));
+        assert_eq!(trace.resources, vec![
+            ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+        let error = trace_string_struct_source(PARTIAL, "item", Some("optional"))
+            .expect_err("var optional 沒有求值步驟，不可虛報注入成功");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("失敗注入"));
+    }
+
+    #[test]
+    fn 已執行的預設欄位仍可真實失敗並釋放唯一資源() {
+        let trace = trace_string_struct_source(PARTIAL, "item", Some("id")).unwrap();
+        assert_eq!(trace.status, BuildStatus::EvaluationFailed("id".into()));
+        assert_eq!(trace.resources, vec![
+            ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn 具名提供原本未初始化的_var_是真正求值步驟() {
+        let source = PARTIAL.replace("Message()",
+            "Message(optional=\"中文資源\")");
+        let trace = trace_string_struct_source(&source, "item", Some("optional")).unwrap();
+        assert_eq!(trace.status,
+            BuildStatus::EvaluationFailed("optional".into()));
+        assert_eq!(trace.resources, vec![
+            ResourceEvent::Created(1), ResourceEvent::Released(1)]);
     }
 }
