@@ -85,16 +85,16 @@ impl<'a> Parser<'a> {
         value
     }
     fn symbol(&self, ch: char) -> bool {
-        matches!(self.current().map(|t| &t.kind), Some(TokenKind::Symbol(c)) if *c == ch)
+        crate::syntax_shared::symbol(self.tokens, self.cursor, ch)
     }
     fn keyword(&self, expected: &str) -> bool {
-        matches!(self.current().map(|t| &t.kind), Some(TokenKind::Keyword(s)) if s == expected)
+        crate::syntax_shared::keyword(self.tokens, self.cursor, expected)
     }
     fn at_end(&self) -> bool {
-        matches!(self.current().map(|t| &t.kind), Some(TokenKind::End) | None)
+        crate::syntax_shared::end(self.tokens, self.cursor)
     }
     fn at_newline(&self) -> bool {
-        matches!(self.current().map(|t| &t.kind), Some(TokenKind::Newline))
+        crate::syntax_shared::newline(self.tokens, self.cursor)
     }
     fn skip_newlines(&mut self) {
         while self.at_newline() { self.cursor += 1; }
