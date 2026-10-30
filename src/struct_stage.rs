@@ -665,6 +665,44 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
     }
 
+    /// 在受限來源中，只有真正包含具名整筆 .move() 的形狀
+    /// 才能消耗參數；否則非 Copyable 參數不可被虛構成獨立所有者。
+    /// 此檢查不推定一般間接副作用、別名再借用或跨例外逃逸。
+    fn term_moves_name(term: &Term, name: &str) -> bool {
+        match &term.kind {
+            TermKind::Move(source) => source == name,
+            TermKind::Construct(_, args) =>
+                args.iter().any(|(_, t)| Self::term_moves_name(t, name)),
+            TermKind::Call(_, args) | TermKind::MethodCall(_, _, args) =>
+                args.iter().any(|t| Self::term_moves_name(t, name)),
+            TermKind::BinaryInt {left, right, ..} =>
+                Self::term_moves_name(left, name) || Self::term_moves_name(right, name),
+            _ => false,
+        }
+    }
+
+    fn statements_move_name(body: &[Stmt], name: &str) -> bool {
+        body.iter().any(|stmt| match &stmt.kind {
+            StmtKind::Declare { init, .. } => init.as_ref()
+                .is_some_and(|t| Self::term_moves_name(t, name)),
+            StmtKind::Assign { value, .. } | StmtKind::FieldAssign { value, .. }
+                | StmtKind::Return(value) => Self::term_moves_name(value, name),
+            StmtKind::If {condition, yes, no} =>
+                Self::term_moves_name(condition, name)
+                    || Self::statements_move_name(yes, name)
+                    || no.as_ref().is_some_and(|b| Self::statements_move_name(b, name)),
+            StmtKind::While {condition, body} =>
+                Self::term_moves_name(condition, name)
+                    || Self::statements_move_name(body, name),
+            StmtKind::ForRange {body, ..} => Self::statements_move_name(body, name),
+            StmtKind::Break | StmtKind::Continue => false,
+        })
+    }
+
+    fn parameter_is_consumed(function: &Function, name: &str) -> bool {
+        Self::statements_move_name(&function.body, name)
+    }
+
     /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
     /// 不能只以目前作用域或表面名稱判斷，否則遮蔽可繞過來源封鎖。
     fn active_loans(vars: &Scopes, source: usize) -> Vec<BorrowKind> {
@@ -815,7 +853,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                     .any(|known| known.contains(name)))
                             && Self::scope_mentions_binding(following, name, false)
                     });
-                    if loan.active && !needed_here && !needed_later {
+                    // 函式預設借用參數以其本身宣告身分保存非擁有
+                    // 借用票據代理，直到函式作用域真正退出才歸還。
+                    // 一般 owner.borrow() 來源不同，仍以最後使用點歸還。
+                    let parameter_scope_loan = loan.source == binding.declaration_start;
+                    if loan.active && !parameter_scope_loan
+                        && !needed_here && !needed_later {
                         loan.active = false;
                     }
                 }
@@ -1242,28 +1285,77 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if function.params.len() != args.len() {
                     return Err(self.error("P13：函式引數數量不符", term));
                 }
-                // 明確移動非 Copyable 具名來源；其餘資源運算式
-                // 需由自身求值產生獨立所有權，不能隱含複製。
-                // 所有參數預先核對型別與移交形式，避免型別錯誤
-                // 才發現時已消耗前面參數的來源。
+                // P15.6：函式參數預設借用。若被呼叫端確實包含
+                // 該參數的整筆 .move()，則呼叫端必須明確移交來源；
+                // 不得把非擁有別名假裝成能被消耗的資源持有者。
+                // 引數形式先全部預檢，避免驗到後面的錯誤時已
+                // 將前面具名資源移走。
                 for (arg, parameter) in args.iter().zip(&function.params) {
                     let expected = &parameter.ty;
                     if self.permission(expected) != CopyPermission::Allowed {
                         match &arg.kind {
+                            TermKind::Name(_) if !Self::parameter_is_consumed(
+                                function, &parameter.name) => {}
                             TermKind::Literal("str") | TermKind::Move(_)
                                 | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
                             _ => return Err(self.error(
-                                "P13：非 Copyable 函式引數須明確移動或產生獨立擁有值", arg)),
+                                "P15.6：非 Copyable 參數只接受可證明的預設借用或明確擁有權轉交", arg)),
                         }
                     }
                 }
+                // 使用同一套 HC14 借用衝突與票據模型，票據只存活
+                // 於函式呼叫期間。不能讓同一呼叫較後的引數提前
+                // 移動、覆寫或再次獨占借用仍被傳入的來源。
+                let mut call_loans = BorrowSafety::new();
+                let mut tickets = Vec::new();
+                let mut borrowed_names: Vec<String> = Vec::new();
                 for (arg, parameter) in args.iter().zip(&function.params) {
                     let expected = &parameter.ty;
+                    let new_borrow = self.permission(expected) != CopyPermission::Allowed
+                        && matches!(&arg.kind, TermKind::Name(_))
+                        && !Self::parameter_is_consumed(function, &parameter.name);
+                    if !new_borrow && borrowed_names.iter()
+                        .any(|name| Self::term_mentions(arg, name)) {
+                        return Err(self.error(
+                            "P15.6：同一呼叫的後續引數不可使用尚未歸還的借用來源", arg));
+                    }
+                    if self.permission(expected) != CopyPermission::Allowed {
+                        if let TermKind::Name(name) = &arg.kind {
+                            if !Self::parameter_is_consumed(function, &parameter.name) {
+                                let original = Self::lookup(vars, name)
+                                    .ok_or_else(|| self.error("P15.6：函式借用來源不存在", arg))?;
+                                if original.loan.is_some() {
+                                    return Err(self.error(
+                                        "VB14：借用別名不能在缺少重借用證明時傳入函式", arg));
+                                }
+                                original.value.read().map_err(|err| self.model_error(err, arg))?;
+                                if original.ty != *expected {
+                                    return Err(self.error("P15.6：函式借用實參型別不符", arg));
+                                }
+                                let kind = if original.mutable {
+                                    BorrowKind::ExclusiveWrite
+                                } else { BorrowKind::SharedRead };
+                                BorrowSafety::validate_new_borrow(
+                                    &Self::active_loans(vars, original.declaration_start), kind)
+                                    .map_err(|_| self.error(
+                                        "HC14：函式參數借用與仍有效別名衝突", arg))?;
+                                let ticket = call_loans.acquire(
+                                    DeclarationId(original.declaration_start), kind)
+                                    .map_err(|_| self.error(
+                                        "HC14：同一呼叫內函式借用來源衝突", arg))?;
+                                tickets.push(ticket);
+                                borrowed_names.push(name.clone());
+                                continue;
+                            }
+                        }
+                    }
                     let (actual, initialized) = self.evaluate(arg, vars)?;
                     if actual != *expected || !initialized {
                         return Err(self.error("P13：函式引數型別不符或尚未初始化", arg));
                     }
                 }
+                call_loans.finish_scope(&tickets)
+                    .map_err(|_| self.error("P15.6：函式退出時借用票據未完整歸還", term))?;
                 Ok((function.result_ty.clone(), true))
             },
             TermKind::Construct(name, args) => {
@@ -1837,7 +1929,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 declaration_start: parameter.declaration_start,
                 ty: ty.clone(), mutable: false,
                 value: ValueSlot::initialized(self.permission(ty)),
-                pending_fields: None, loan: None,
+                pending_fields: None,
+                loan: (self.permission(ty) != CopyPermission::Allowed
+                    && !Self::parameter_is_consumed(fun, name)).then_some(LoanBinding {
+                        // 只在被呼叫端本地使用代理宣告身份，真正來源
+                        // 的借用票據由呼叫端持有至呼叫結束。
+                        source: parameter.declaration_start,
+                        kind: BorrowKind::SharedRead, active: true,
+                    }),
             });
         }
         self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
@@ -4091,9 +4190,9 @@ mod p13_跨函式資源移交 {
     #[test]
     fn p13_非_copyable_具名引數不能隱含複製() {
         let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar invalid:str = take(item)\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("資源不能隱含複製");
+        let error=inspect(src).expect_err("被呼叫端須移動資源，不能只把來源借出");
         assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("明確移動"));
+        assert!(error.message.contains("P15.6"));
     }
 
     #[test]
@@ -4139,9 +4238,9 @@ mod p13_函式呼叫所有權預檢 {
     use crate::DiagnosticKind;
 
     #[test]
-    fn p13_非可複製參數拒絕具名隱含複製() {
+    fn p13_非可複製參數唯讀預設借用不隱含複製() {
         let src="fn consume(value:str)->int{\nreturn 0\n}\nfn main()->int{\nvar source:str = \"hello\"\nreturn consume(source)\n}\n";
-        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+        assert!(inspect(src).is_ok(), "已核准函式參數預設借用，來源不需複製");
     }
 
     #[test]
@@ -4398,11 +4497,9 @@ mod p13_函式呼叫簽章與資源移交交叉驗證 {
     }
 
     #[test]
-    fn 資源引數不可透過普通名稱隱含複製() {
+    fn 資源引數普通名稱可預設借用但不隱含複製() {
         let src="fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"x\"\nreturn use_it(item)\n}\n";
-        let error=inspect(src).unwrap_err();
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("非 Copyable 函式引數"));
+        assert!(inspect(src).is_ok(), "函式唯讀借用不是建立第二所有者");
     }
 
     #[test]
@@ -4953,11 +5050,9 @@ mod p13_新建資源函式位置引數 {
     }
 
     #[test]
-    fn 既有字串名稱作為參數仍禁止隱含複製() {
+    fn 既有字串名稱作為唯讀函式參數採預設借用() {
         let src = "fn consume(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"原有資源\"\nreturn consume(item)\n}\n";
-        let error=inspect(src).expect_err("不得將新值例外擴張到名稱隱含複製");
-        assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("非 Copyable"));
+        assert!(inspect(src).is_ok(), "已核准預設借用，不是 str 隱含複製");
     }
 
     #[test]
@@ -6045,5 +6140,71 @@ mod p16_真正_voil_具名_str_移動資源事件 {
             .expect_err("多語句執行期尚未證明");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("連續建立"));
+    }
+}
+
+#[cfg(test)]
+mod p15_6_非_copyable_函式預設借用來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 具名字串唯讀借用_函式退出後可整筆移動() {
+        let src = "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"水母🪼\"\nvar seen:int = see(owner)\nvar target:str = owner.move()\nreturn seen\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 會消耗參數的函式仍要求呼叫端明確移動() {
+        let src = "fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar owner:str = \"資源\"\nvar invalid:str = take(owner)\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("被呼叫端消耗參數時不能將借用誤當所有者");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.6"));
+    }
+
+    #[test]
+    fn 函式預設借用參數內不得再次移交或建立不安全別名() {
+        let src = "fn see(value:str)->int{\nvar alias:str = value.borrow()\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn see(owner)\n}\n";
+        let err=inspect(src).expect_err("借用函式參數不持有原資源，無法保證別名再借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("再") || err.message.contains("借用"));
+    }
+
+    #[test]
+    fn 同一函式呼叫中可寫字串的雙重獨占借用拒絕() {
+        let src = "fn both(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn both(owner,owner)\n}\n";
+        let err=inspect(src).expect_err("可變來源不得在同一次呼叫中有兩份獨占借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 同一函式呼叫中唯讀常數可以共享兩個借用() {
+        let src = "fn both(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nconst owner:str = \"資源\"\nreturn both(owner,owner)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 同一呼叫先借用後明確移動同一來源須拒絕() {
+        let src = "fn mixed(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn mixed(owner,owner.move())\n}\n";
+        let err=inspect(src).expect_err("呼叫中的借用尚未歸還，不能移動原來源");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.6"));
+    }
+
+    #[test]
+    fn 已存在獨占別名時不得再次以函式預設借用原來源() {
+        let src = "struct Boxed{\nvar text:str = \"資源\"\nvar count:int = 1\n}\nfn see(value:Boxed)->int{\nreturn value.count\n}\nfn main()->int{\nvar owner:Boxed = Boxed()\nvar alias:Boxed = owner.borrow()\nvar result:int = see(owner)\nreturn alias.count\n}\n";
+        let err=inspect(src).expect_err("別名仍會被使用，函式不得取得新的獨占借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 借用參數不能以一般名稱回傳為第二個_str_所有者() {
+        let src = "fn leak(value:str)->str{\nreturn value\n}\nfn main()->int{\nvar owner:str = \"資源\"\nvar result:str = leak(owner)\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("borrowed str 不可由回傳變成擁有值");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable"));
     }
 }
