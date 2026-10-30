@@ -5242,3 +5242,58 @@ mod p15_6_最後使用點與_self_退出邊界來源 {
         assert!(inspect(src).is_err(), "未證明例外歸還語意不得接受");
     }
 }
+
+#[cfg(test)]
+mod p15_3_break_continue_轉移路徑來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 迭代區域別名可於_continue_前合法結束() {
+        let src="fn main()->int{\nvar owner:int = 1\nfor i in 1..4{\nvar alias:int = owner.borrow()\nvar copy:int = alias\ncontinue\n}\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn while_分支內_break_不能被當作函式_return() {
+        let src="fn main()->int{\nvar value:int = 1\nwhile(true){\nif(true){\nbreak\n}\nvar untouched:int = value\n}\nreturn value\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 巢狀_for_的_break_只離開最近一層迴圈() {
+        let src="fn main()->int{\nfor i in 1..4{\nfor j in 1..3{\nbreak\n}\ncontinue\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 移動外層資源後_break_不得把退出狀態假裝成入口() {
+        let src="fn main()->int{\nvar owner:str = \"text\"\nfor i in 1..4{\nvar moved:str = owner.move()\nbreak\n}\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("break 外層資源狀態不能變更");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("break") || error.message.contains("不穩定"));
+    }
+
+    #[test]
+    fn 移動外層資源後_continue_不可再進下一輪() {
+        let src="fn main()->int{\nvar owner:str = \"text\"\nwhile(true){\nvar moved:str = owner.move()\ncontinue\n}\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("continue 的反向邊不得保留已移動值");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("continue") || error.message.contains("不穩定"));
+    }
+
+    #[test]
+    fn 非迴圈區塊的_break_與_continue_都必須拒絕() {
+        for keyword in ["break","continue"] {
+            let src=format!("fn main()->int{{\n{}\nreturn 0\n}}\n",keyword);
+            let error=inspect(&src).expect_err("只有迴圈中才能控制迭代");
+            assert_eq!(error.kind,DiagnosticKind::Static);
+        }
+    }
+
+    #[test]
+    fn 函式內迴圈跨迭代讀取有效借用值仍合法() {
+        let src="fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nfor i in 1..4{\nvar result:int = identity(alias)\ncontinue\n}\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
