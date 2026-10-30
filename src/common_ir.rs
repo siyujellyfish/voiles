@@ -19,11 +19,7 @@ impl ScalarType {
     }
 }
 
-impl From<parser::Type> for ScalarType {
-    fn from(ty: parser::Type) -> Self {
-        match ty { parser::Type::Int => Self::Int, parser::Type::Bool => Self::Bool }
-    }
-}
+// parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +86,7 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
             PublicStmtKind::Binding(binding) => ScalarStmt::Declare {
                 declaration: DeclarationId(binding.start),
                 name: binding.name.clone(),
-                ty: binding.ty.into(),
+                ty: binding.ty,
                 mutable: binding.mutable,
                 init: map_optional(binding.initializer.as_ref(), public_expression)?,
             },
@@ -124,7 +120,7 @@ pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
         let Item::Function(fun) = item else { return None };
         Some(ScalarFunction {
             name: fun.name.clone(),
-            result_ty: fun.returns.into(),
+            result_ty: fun.returns,
             body: public_statements(&fun.body.statements)?,
         })
     }).collect::<Option<Vec<_>>>()?;
