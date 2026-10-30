@@ -375,6 +375,8 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     use crate::mixed_struct_runtime::{
         MixedStructRuntime,MixedFieldSpec,NamedMixed,SeedValue,ScalarKind,Observed,MixedError,
     };
+    use crate::struct_eval_plan::{self,FieldInfo};
+    use crate::verified_resource_ir::MixedResourcePlan;
     let reject=|message:&str| Diagnostic {
         kind:DiagnosticKind::Static,message:message.into(),span:None,
     };
@@ -451,12 +453,38 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
             .ok_or_else(||reject("P16：只接受可完整解碼的混合欄位獨立常值"))?;
         named.push(NamedMixed {field:name.as_str(),value});
     }
+    // 只採已通過靜態來源驗證的原始具名／預設求值次序。
+    // int／bool 是純值：不得把其求值步驟記成虛構 UTF-8 資源。
+    let schema:Vec<_>=fields.iter().map(|field|FieldInfo {
+        name:field.name,has_default:field.default.is_some(),
+        immutable:field.immutable,
+    }).collect();
+    let provided:Vec<_>=named.iter().map(|value|value.field).collect();
+    let eval_plan=struct_eval_plan::plan(&schema,&provided)
+        .map_err(|_|reject("P16：混合結構求值計畫不能建立安全資源次序"))?;
+    let step_str=|name:&str|fields.iter().find(|f|f.name==name)
+        .is_some_and(|f|f.kind==ScalarKind::Str);
+    let total_str=eval_plan.steps.iter()
+        .filter(|step|step_str(&step.field)).count();
+    let mut before_failure=0usize;
+    if let Some(cut)=fail_after {
+        for step in &eval_plan.steps {
+            if step_str(&step.field) { before_failure+=1; }
+            if step.field==cut { break; }
+        }
+    }
+    let proof=MixedResourcePlan::new(
+        DeclarationId(declare.start),DeclarationId(transfer.start),total_str)
+        .map_err(|_|reject("P16：混合結構宣告來源不可重疊"))?;
     let mut rt=MixedStructRuntime::new();
     match rt.construct(owner,&fields,&named,fail_after) {
         Ok(())=>{},
         Err(MixedError::EvaluationFailed(_))=>{
-            return Ok((None,rt.finish().map_err(|_|
-                reject("P16：混合欄位失敗未能逆序清理資源"))?));
+            let events=rt.finish().map_err(|_|
+                reject("P16：混合欄位失敗未能逆序清理資源"))?;
+            proof.verify_failed_build(&events,before_failure)
+                .map_err(|_|reject("P16：混合失敗點已建立的 str 清理責任與資源 IR 不一致"))?;
+            return Ok((None,events));
         },
         Err(_)=>return Err(reject("P16：混合結構求值計畫無法安全完成")),
     }
@@ -473,6 +501,8 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     };
     let events=rt.finish().map_err(|_|
         reject("P16：混合結構退出後資源身分未平衡"))?;
+    proof.verify_completed(&events,moved)
+        .map_err(|_|reject("P16：混合純值複製／唯一 str 移交與兩張安全責任表不一致"))?;
     Ok((Some(number),events))
 }
 
