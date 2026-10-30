@@ -65,12 +65,12 @@ mod tests {
     #[test]
     fn 實體_voil_素材須由完整受限_ast_及型別所有權檢查處理() {
         const GOOD: &[&str] = &[
-            include_str!("../tests/fixtures/p13_stage/整筆移動.voil"),
-            include_str!("../tests/fixtures/p13_stage/結構重新初始化.voil"),
+            include_str!("../../tests/fixtures/p13_stage/整筆移動.voil"),
+            include_str!("../../tests/fixtures/p13_stage/結構重新初始化.voil"),
         ];
         const BAD: &[&str] = &[
-            include_str!("../tests/fixtures/p13_stage/移動後重複使用.voil"),
-            include_str!("../tests/fixtures/p13_stage/禁止欄位移動.voil"),
+            include_str!("../../tests/fixtures/p13_stage/移動後重複使用.voil"),
+            include_str!("../../tests/fixtures/p13_stage/禁止欄位移動.voil"),
         ];
         for source in GOOD {
             assert!(inspect_with_test_ability(source, |_| Undecided).is_ok(), "合法整筆移動案例");
@@ -80,7 +80,7 @@ mod tests {
             assert_eq!(error.kind, DiagnosticKind::Static);
         }
         const UNKNOWN_COPY: &str =
-            include_str!("../tests/fixtures/p13_stage/未知複製資格.voil");
+            include_str!("../../tests/fixtures/p13_stage/未知複製資格.voil");
         assert!(inspect_with_test_ability(UNKNOWN_COPY, |_| Undecided).is_err());
         assert!(inspect_with_test_ability(UNKNOWN_COPY, |_| Allowed).is_ok());
     }
@@ -93,7 +93,7 @@ mod tests {
 
     #[test]
     fn 真正結構來源_單分支移動合流後必須拒絕() {
-        let text = include_str!("../tests/fixtures/p13_stage/單分支移動後讀取.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/單分支移動後讀取.voil");
         let error = inspect_with_test_ability(text, |_| Allowed).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("可能") || error.message.contains("無效"));
@@ -101,19 +101,19 @@ mod tests {
 
     #[test]
     fn 真正結構來源_雙分支重新初始化合流後可合法移動() {
-        let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/雙分支重新初始化.voil");
         assert!(inspect_with_test_ability(text, |_| Undecided).is_ok());
     }
 
     #[test]
     fn 真正結構來源_已提前_return_分支不得污染可達路徑() {
-        let text = include_str!("../tests/fixtures/p13_stage/提前回傳分支.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/提前回傳分支.voil");
         assert!(inspect_with_test_ability(text, |_| Undecided).is_ok());
     }
 
     #[test]
     fn 分支區域內宣告不得外洩到外層() {
-        let text = include_str!("../tests/fixtures/p13_stage/雙分支重新初始化.voil")
+        let text = include_str!("../../tests/fixtures/p13_stage/雙分支重新初始化.voil")
             .replace("var d:Sample = a.move()", "var d:Sample = b");
         assert!(inspect_with_test_ability(&text, |_| Allowed).is_err());
     }
@@ -163,14 +163,14 @@ mod readonly_self_tests {
     #[test]
     fn 已核准_copyable_欄位可藉共享唯讀_self_方法複製() {
         const CODE: &str =
-            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+            include_str!("../../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
         assert!(inspect(CODE).is_ok());
     }
 
     #[test]
     fn self_唯讀借用於方法結束後歸還_仍可明確整筆移動() {
         const CODE: &str =
-            include_str!("../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
+            include_str!("../../tests/fixtures/p13_stage/唯讀方法複製與呼叫後移動.voil");
         let invalid = CODE.replace("return copied", "var double:Counter = source.move()\nreturn copied");
         assert!(inspect(&invalid).unwrap_err().message.contains("已移動"));
     }
@@ -178,7 +178,7 @@ mod readonly_self_tests {
     #[test]
     fn 尚未核准_copyable_的_self_欄位不得從借用偷複製() {
         const CODE: &str =
-            include_str!("../tests/fixtures/p13_stage/未知欄位複製能力的唯讀方法.voil");
+            include_str!("../../tests/fixtures/p13_stage/未知欄位複製能力的唯讀方法.voil");
         let error = inspect(CODE).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
@@ -188,14 +188,14 @@ mod readonly_self_tests {
     #[test]
     fn 方法呼叫者在移動後不可再被借用() {
         const CODE: &str =
-            include_str!("../tests/fixtures/p13_stage/移動後不可呼叫唯讀方法.voil");
+            include_str!("../../tests/fixtures/p13_stage/移動後不可呼叫唯讀方法.voil");
         assert!(inspect(CODE).unwrap_err().message.contains("已移動"));
     }
 
     #[test]
     fn 尚未初始化的結構不可從方法讀取欄位() {
         const CODE: &str =
-            include_str!("../tests/fixtures/p13_stage/未初始化欄位不可呼叫方法.voil");
+            include_str!("../../tests/fixtures/p13_stage/未初始化欄位不可呼叫方法.voil");
         assert!(inspect(CODE).unwrap_err().message.contains("初始化"));
     }
 
@@ -225,7 +225,7 @@ mod default_constructor_cycle_tests {
 
     #[test]
     fn 相同結構的預設建構不得無限遞迴() {
-        let code = include_str!("../tests/fixtures/p13_stage/自身預設建構循環.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/自身預設建構循環.voil");
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("循環"));
@@ -234,7 +234,7 @@ mod default_constructor_cycle_tests {
 
     #[test]
     fn 多結構互相建立的預設值亦需保守拒絕() {
-        let code = include_str!("../tests/fixtures/p13_stage/跨結構預設建構循環.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/跨結構預設建構循環.voil");
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("循環"));
@@ -243,7 +243,7 @@ mod default_constructor_cycle_tests {
 
     #[test]
     fn 合法無循環巢狀預設值保留受限子集可用性() {
-        let code = include_str!("../tests/fixtures/p13_stage/無循環巢狀預設建構.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/無循環巢狀預設建構.voil");
         assert!(inspect(code).is_ok());
     }
 
@@ -261,7 +261,7 @@ mod method_safety_tests {
 
     #[test]
     fn s15_方法_if_內消耗_self_精準拒絕() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法分支內消耗_self.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法分支內消耗_self.voil");
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("S15"));
@@ -270,7 +270,7 @@ mod method_safety_tests {
 
     #[test]
     fn s15_方法結構建立引數內消耗_self_亦應拒絕() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法建構引數內消耗_self.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法建構引數內消耗_self.voil");
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("S15"));
@@ -279,7 +279,7 @@ mod method_safety_tests {
 
     #[test]
     fn s21_方法分支內局部欄位移動應保有來源位置() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法分支內局部欄位移動.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法分支內局部欄位移動.voil");
         let error = inspect(code).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("S21"));
@@ -302,13 +302,13 @@ mod lexical_ownership_tests {
 
     #[test]
     fn h06_內層同名結構移動不得毀損外層所有權() {
-        let code = include_str!("../tests/fixtures/p13_stage/內層遮蔽移動不傷外層.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/內層遮蔽移動不傷外層.voil");
         assert!(inspect(code).is_ok());
     }
 
     #[test]
     fn 內層同名移動後不能透過同名重新複製() {
-        let code = include_str!("../tests/fixtures/p13_stage/內層移動後誤讀.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/內層移動後誤讀.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("移動"));
@@ -316,7 +316,7 @@ mod lexical_ownership_tests {
 
     #[test]
     fn 外層移動後不可藉內層重新宣告偷恢復來源() {
-        let code = include_str!("../tests/fixtures/p13_stage/外層已移動不被內層遮蔽復原.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/外層已移動不被內層遮蔽復原.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("移動"));
@@ -324,7 +324,7 @@ mod lexical_ownership_tests {
 
     #[test]
     fn 同作用域重複宣告繼續拒絕() {
-        let code = include_str!("../tests/fixtures/p13_stage/同層重複宣告拒絕.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/同層重複宣告拒絕.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("重複宣告"));
@@ -351,14 +351,14 @@ mod approved_policy_tests {
     #[test]
     fn ha13_核准_int_bool_且所有欄位可複製的_struct_可獨立複製() {
         const SOURCE: &str =
-            include_str!("../tests/fixtures/p13_approved/整體自動複製.voil");
+            include_str!("../../tests/fixtures/p13_approved/整體自動複製.voil");
         assert!(inspect(SOURCE).is_ok());
     }
 
     #[test]
     fn str_已禁止_copyable_及含_str_欄位的_struct_都不可隱含複製() {
         const SOURCE: &str =
-            include_str!("../tests/fixtures/p13_approved/未知字串資格拒絕複製.voil");
+            include_str!("../../tests/fixtures/p13_approved/未知字串資格拒絕複製.voil");
         let error = inspect(SOURCE).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
@@ -369,7 +369,7 @@ mod approved_policy_tests {
     #[test]
     fn hb13_未知複製資格不應擋住明確的整筆具名移動() {
         const SOURCE: &str =
-            include_str!("../tests/fixtures/p13_approved/未知字串允許具名整筆移動.voil");
+            include_str!("../../tests/fixtures/p13_approved/未知字串允許具名整筆移動.voil");
         assert!(inspect(SOURCE).is_ok());
         let double_move = SOURCE.replace("return 0", "var c:Note = a.move()\nreturn 0");
         assert!(inspect(&double_move).unwrap_err().message.contains("已移動"));
@@ -378,7 +378,7 @@ mod approved_policy_tests {
     #[test]
     fn hb13_不允許單欄位_未綁定來源或方法消耗_self() {
         const FIELD: &str =
-            include_str!("../tests/fixtures/p13_approved/禁止欄位單獨移動.voil");
+            include_str!("../../tests/fixtures/p13_approved/禁止欄位單獨移動.voil");
         assert!(inspect(FIELD).unwrap_err().message.contains("S21"));
         let missing = "fn main()->int{\nvar b:int = not_declared.move()\nreturn 0\n}\n";
         assert!(inspect(missing).unwrap_err().message.contains("找不到"));
@@ -410,7 +410,7 @@ mod automatic_self_borrow_tests {
 
     #[test]
     fn 方案_a_依欄位寫入推導方法共享或獨占借用() {
-        let text = include_str!("../tests/fixtures/p13_stage/自動獨占與共享方法.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/自動獨占與共享方法.voil");
         assert!(inspect(text).is_ok());
         let source = crate::source::Source::new(text.as_bytes().to_vec());
         let scan = crate::lexer::scan(&source);
@@ -426,7 +426,7 @@ mod automatic_self_borrow_tests {
 
     #[test]
     fn s18_const_實例不得呼叫自動推導的獨占方法() {
-        let code = include_str!("../tests/fixtures/p13_stage/const實例禁止可變方法.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/const實例禁止可變方法.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("const 結構實例"));
@@ -434,7 +434,7 @@ mod automatic_self_borrow_tests {
 
     #[test]
     fn s18_const_欄位不得被方法修改() {
-        let code = include_str!("../tests/fixtures/p13_stage/const欄位禁止方法寫入.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/const欄位禁止方法寫入.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("const 欄位"));
@@ -442,13 +442,13 @@ mod automatic_self_borrow_tests {
 
     #[test]
     fn 方法對_self_欄位的錯誤型別必須拒絕() {
-        let code = include_str!("../tests/fixtures/p13_stage/可變方法錯誤型別.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/可變方法錯誤型別.voil");
         assert!(inspect(code).unwrap_err().message.contains("型別"));
     }
 
     #[test]
     fn 已移動來源不得藉可變方法存取() {
-        let code = include_str!("../tests/fixtures/p13_stage/移動後禁止可變方法.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/移動後禁止可變方法.voil");
         assert!(inspect(code).unwrap_err().message.contains("已移動"));
     }
 
@@ -474,7 +474,7 @@ mod conditional_self_inference_tests {
 
     #[test]
     fn 任一分支修改_self_即推導獨占借用() {
-        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
         assert!(inspect(text).is_ok());
         let source = crate::source::Source::new(text.as_bytes().to_vec());
         let scanned = crate::lexer::scan(&source);
@@ -487,27 +487,27 @@ mod conditional_self_inference_tests {
 
     #[test]
     fn const_實例不得呼叫只在某條分支寫入的方法() {
-        let text = include_str!("../tests/fixtures/p13_stage/const實例禁止分支寫入.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/const實例禁止分支寫入.voil");
         assert!(inspect(text).unwrap_err().message.contains("const 結構實例"));
     }
 
     #[test]
     fn 自動借用推導也必須檢查兩條分支的欄位寫入型別() {
-        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
         let bad = text.replace("self.value = 3", "self.value = false");
         assert!(inspect(&bad).unwrap_err().message.contains("型別"));
     }
 
     #[test]
     fn self_非布林欄位不可用作條件() {
-        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
         let bad = text.replace("if (self.active)", "if (self.value)");
         assert!(inspect(&bad).unwrap_err().message.contains("bool"));
     }
 
     #[test]
     fn 無副作用常值_巢狀條件可保守推導獨占而非放行別名() {
-        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
         let nested = text.replace("self.value = 2", "if (true){\nself.value = 2\n}");
         assert!(inspect(&nested).is_ok());
         let unknown = text.replace("if (self.active)", "if (other())");
@@ -516,7 +516,7 @@ mod conditional_self_inference_tests {
 
     #[test]
     fn 方法分支提前返回已核准_未知接收者寫入仍拒絕() {
-        let text = include_str!("../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/分支寫入推導獨占方法.voil");
         let early = text.replace("self.value = 2", "return 1");
         // 依已核准的分支提前回傳語意，此來源現在是合法正例。
         assert!(inspect(&early).is_ok());
@@ -532,13 +532,13 @@ mod copyable_self_field_tests {
 
     #[test]
     fn 已核准可複製的_self_欄位可作方法獨占寫入來源() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
         assert!(inspect(code).is_ok());
     }
 
     #[test]
     fn 已禁止_str_複製能力不可在方法裡隱含複製() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法不可複製未知欄位.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法不可複製未知欄位.voil");
         let err = inspect(code).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("Copyable"));
@@ -547,13 +547,13 @@ mod copyable_self_field_tests {
 
     #[test]
     fn 已核准可複製來源若型別不一致亦不可寫入() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法來源欄位錯誤型別.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法來源欄位錯誤型別.voil");
         assert!(inspect(code).unwrap_err().message.contains("型別"));
     }
 
     #[test]
     fn 不存在或非法_self_欄位不能假借複製模式跳過解析() {
-        let code = include_str!("../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
+        let code = include_str!("../../tests/fixtures/p13_stage/方法複製自身可複製欄位.voil");
         let invalid = code.replace("self.left = self.right", "self.left = self.missing");
         assert!(inspect(&invalid).unwrap_err().message.contains("不存在"));
     }
@@ -600,7 +600,7 @@ mod p13_deferred_borrowed_return_tests {
 
     #[test]
     fn p13_a_非_copyable_self_字串欄位借用回傳必須拒絕() {
-        let src = include_str!("../tests/fixtures/p13_stage/禁止回傳未決字串欄位.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/禁止回傳未決字串欄位.voil");
         let error = inspect(src).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable"));
@@ -610,7 +610,7 @@ mod p13_deferred_borrowed_return_tests {
 
     #[test]
     fn p13_a_巢狀結構含未決能力欄位不得從_self_逸出() {
-        let src = include_str!("../tests/fixtures/p13_stage/禁止回傳包含未決欄位的結構.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/禁止回傳包含未決欄位的結構.voil");
         let error = inspect(src).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("P15"));
@@ -618,19 +618,19 @@ mod p13_deferred_borrowed_return_tests {
 
     #[test]
     fn p13_a_全部欄位已核准_copyable_的巢狀結構可返回獨立複本() {
-        let src = include_str!("../tests/fixtures/p13_stage/允許回傳完全Copyable結構副本.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/允許回傳完全Copyable結構副本.voil");
         assert!(inspect(src).is_ok());
     }
 
     #[test]
     fn p13_a_與_self_無關的字串常值是新值_不是借用回傳() {
-        let src = include_str!("../tests/fixtures/p13_stage/合法獨立字串常值回傳.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/合法獨立字串常值回傳.voil");
         assert!(inspect(src).is_ok());
     }
 
     #[test]
     fn s21_即使回傳型別標註正確_仍不可移動單一_self_欄位() {
-        let src = include_str!("../tests/fixtures/p13_stage/拒絕移動self單一欄位回傳.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/拒絕移動self單一欄位回傳.voil");
         let error = inspect(src).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("S21"));
@@ -650,7 +650,7 @@ mod nested_default_initialization_tests {
 
     #[test]
     fn s07_有預設運算式不代表子結構已完整初始化() {
-        let src = include_str!("../tests/fixtures/p13_stage/拒絕巢狀預設不完整值.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/拒絕巢狀預設不完整值.voil");
         let err = inspect(src).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("未初始化"));
@@ -659,7 +659,7 @@ mod nested_default_initialization_tests {
 
     #[test]
     fn f01_const_欄位預設值也不可包含不完整子結構() {
-        let src = include_str!("../tests/fixtures/p13_stage/拒絕const巢狀預設不完整值.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/拒絕const巢狀預設不完整值.voil");
         let err = inspect(src).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("未初始化"));
@@ -667,13 +667,13 @@ mod nested_default_initialization_tests {
 
     #[test]
     fn s05_具名提供所有必要欄位的巢狀預設值可通過() {
-        let src = include_str!("../tests/fixtures/p13_stage/已初始化巢狀具名預設值.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/已初始化巢狀具名預設值.voil");
         assert!(inspect(src).is_ok());
     }
 
     #[test]
     fn s07_var_欄位沒有預設依舊合法_只要求在使用前完成初始化() {
-        let src = include_str!("../tests/fixtures/p13_stage/沒有預設值的var欄位仍合法宣告.voil");
+        let src = include_str!("../../tests/fixtures/p13_stage/沒有預設值的var欄位仍合法宣告.voil");
         assert!(inspect(src).is_ok());
         let incomplete = src.replace("Parent(child=Child(count=5))", "Parent()");
         // 可建立未完成初始化的具名 var，但不能將其誤當作合法回傳值。
@@ -697,7 +697,7 @@ mod str_noncopyable_policy_tests {
     #[test]
     fn str_明確禁止名稱隱含複製並保留來源位置() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/禁止字串名稱隱含複製.voil");
+            include_str!("../../tests/fixtures/p13_stage/禁止字串名稱隱含複製.voil");
         let error = inspect(source).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable 已明確禁止"));
@@ -707,14 +707,14 @@ mod str_noncopyable_policy_tests {
     #[test]
     fn str_具名整筆移動及重新初始化不需_copyable() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil");
+            include_str!("../../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil");
         assert!(inspect(source).is_ok());
     }
 
     #[test]
     fn str_移動後的原來源讀取必須失敗() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/移動字串後不能再次讀取.voil");
+            include_str!("../../tests/fixtures/p13_stage/移動字串後不能再次讀取.voil");
         let error = inspect(source).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("已移動"));
@@ -723,7 +723,7 @@ mod str_noncopyable_policy_tests {
     #[test]
     fn s19_包含非copyable字串欄位的結構確定禁止隱含複製() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/包含字串欄位的結構禁止複製.voil");
+            include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構禁止複製.voil");
         let error = inspect(source).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable 已明確禁止"));
@@ -732,14 +732,14 @@ mod str_noncopyable_policy_tests {
     #[test]
     fn s19_包含字串欄位的結構仍可合法整筆移動() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+            include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
         assert!(inspect(source).is_ok());
     }
 
     #[test]
     fn p13_禁止借用回傳已確定非copyable的字串欄位_不提前p15() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/禁止方法複製確定非Copyable字串欄位.voil");
+            include_str!("../../tests/fixtures/p13_stage/禁止方法複製確定非Copyable字串欄位.voil");
         let error = inspect(source).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("Copyable 已明確禁止"));
@@ -764,14 +764,14 @@ mod str_ownership_branch_tests {
     #[test]
     fn 非copyable字串雙分支皆重新初始化可再次整筆移動() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
+            include_str!("../../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
         assert!(inspect(source).is_ok());
     }
 
     #[test]
     fn 非copyable字串只有一條路徑移動合流後必須拒絕() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/字串單分支移動合流後不得使用.voil");
+            include_str!("../../tests/fixtures/p13_stage/字串單分支移動合流後不得使用.voil");
         let err = inspect(source).unwrap_err();
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("可能"));
@@ -781,21 +781,21 @@ mod str_ownership_branch_tests {
     #[test]
     fn 已提前回傳的字串移動路徑不污染後續可達路徑() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/字串提前回傳後合流可合法移動.voil");
+            include_str!("../../tests/fixtures/p13_stage/字串提前回傳後合流可合法移動.voil");
         assert!(inspect(source).is_ok());
     }
 
     #[test]
     fn 分支內遮蔽的字串所有權不得混入外層來源() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/字串遮蔽來源移動不影響外層.voil");
+            include_str!("../../tests/fixtures/p13_stage/字串遮蔽來源移動不影響外層.voil");
         assert!(inspect(source).is_ok());
     }
 
     #[test]
     fn str_巢狀提前_return_不可達移動不污染可達合流() {
         let source = include_str!(
-            "../tests/fixtures/p13_stage/字串巢狀分支提前回傳不污染合流.voil"
+            "../../tests/fixtures/p13_stage/字串巢狀分支提前回傳不污染合流.voil"
         );
         assert!(inspect(source).is_ok());
     }
@@ -803,7 +803,7 @@ mod str_ownership_branch_tests {
     #[test]
     fn str_巢狀分支有可達移動時合流後須拒絕再次使用() {
         let source = include_str!(
-            "../tests/fixtures/p13_stage/字串巢狀分支有可達移動不得再次使用.voil"
+            "../../tests/fixtures/p13_stage/字串巢狀分支有可達移動不得再次使用.voil"
         );
         // VA16-03-A 已正式核准可證明安全的 str 常值覆寫。
         // 分支另一側仍可能已移動，不能因覆寫路徑合法就擅自宣稱
@@ -822,7 +822,7 @@ mod str_ownership_branch_tests {
     #[test]
     fn 字串在重新初始化前仍不得隱含複製且禁止讀取已移動來源() {
         let source =
-            include_str!("../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
+            include_str!("../../tests/fixtures/p13_stage/字串雙分支移動後重新初始化.voil");
         let illegal = source.replace(
             "original = \"true\"", "var illegal:str = original");
         assert!(inspect(&illegal).unwrap_err().message.contains("已移動"));
@@ -844,7 +844,7 @@ mod float_copyable_approved_tests {
     /// 結構體的 float 欄位可在無具體 decimal64 常值求值的情況下驗證 Copyable。
     #[test]
     fn float_與遞迴全部_copyable_結構已核准_但包含_str_的結構不准複製() {
-        let source_text = include_str!("../tests/fixtures/p13_stage/浮點與混合結構複製能力.voil");
+        let source_text = include_str!("../../tests/fixtures/p13_stage/浮點與混合結構複製能力.voil");
         assert!(inspect(source_text).is_ok());
         let source = Source::new(source_text.as_bytes().to_vec());
         let tokens = lexer::scan(&source);
@@ -886,7 +886,7 @@ mod float_copyable_method_tests {
 
     #[test]
     fn float_已准_copyable_故唯讀_self_欄位方法可以靜態驗證() {
-        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位唯讀方法型別能力.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/浮點欄位唯讀方法型別能力.voil");
         assert!(inspect(text).is_ok());
         let source = Source::new(text.as_bytes().to_vec());
         let scan = lexer::scan(&source);
@@ -904,7 +904,7 @@ mod float_copyable_method_tests {
 
     #[test]
     fn float_欄位之間複製已准但仍必須推導獨占_self_借用() {
-        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位複製至同型別欄位.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/浮點欄位複製至同型別欄位.voil");
         assert!(inspect(text).is_ok());
         let source = Source::new(text.as_bytes().to_vec());
         let scan = lexer::scan(&source);
@@ -922,13 +922,13 @@ mod float_copyable_method_tests {
 
     #[test]
     fn float_可複製並不解除方法回傳型別一致的要求() {
-        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位回傳型別不一致.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/浮點欄位回傳型別不一致.voil");
         assert!(inspect(text).unwrap_err().message.contains("回傳型別"));
     }
 
     #[test]
     fn float_未初始化的接收者仍不能直接呼叫方法() {
-        let text = include_str!("../tests/fixtures/p13_stage/浮點欄位唯讀方法型別能力.voil");
+        let text = include_str!("../../tests/fixtures/p13_stage/浮點欄位唯讀方法型別能力.voil");
         let invalid = text.replace("return 0\n}", "var value:FloatHolder = FloatHolder()\nvar copy:float = value.read()\nreturn 0\n}");
         let err = inspect(&invalid).unwrap_err();
         assert!(err.message.contains("初始化"));
@@ -942,7 +942,7 @@ mod conservative_decimal64_tests {
 
     #[test]
     fn decimal64_有限子集與尾端小數點_前導零_底線可解析() {
-        let source = include_str!("../tests/fixtures/p13_stage/decimal64有限合法常值.voil");
+        let source = include_str!("../../tests/fixtures/p13_stage/decimal64有限合法常值.voil");
         assert!(inspect(source).is_ok());
         for text in ["0.", "00.5", "1._2", "1.25", "12.345_678_901_234_5"] {
             assert!(Parser::decimal64_checked_subset(text).is_some(), "{text}");
@@ -965,7 +965,7 @@ mod conservative_decimal64_tests {
 
     #[test]
     fn decimal64_極端下溢與超出驗證範圍均保守拒絕() {
-        let source = include_str!("../tests/fixtures/p13_stage/decimal64超出安全子集.voil");
+        let source = include_str!("../../tests/fixtures/p13_stage/decimal64超出安全子集.voil");
         let error = inspect(source).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Syntax);
         assert!(error.message.contains("decimal64"));
@@ -1399,7 +1399,7 @@ mod p13_d02_const_partial_safety_tests {
     use crate::DiagnosticKind;
 
     fn partial() -> &'static str {
-        include_str!("../tests/fixtures/p13_stage/D02_const結構允許保留未初始化var欄位.voil")
+        include_str!("../../tests/fixtures/p13_stage/D02_const結構允許保留未初始化var欄位.voil")
     }
 
     #[test]
@@ -1448,7 +1448,7 @@ mod p13_d02_const_partial_safety_tests {
 
     #[test]
     fn d02_a_const_來源未完整初始化禁止方法借用讀取() {
-        let bad = include_str!("../tests/fixtures/p13_stage/D02_const結構未初始化欄位不得藉方法使用.voil");
+        let bad = include_str!("../../tests/fixtures/p13_stage/D02_const結構未初始化欄位不得藉方法使用.voil");
         assert!(inspect(bad).unwrap_err().message.contains("初始化"));
     }
 
@@ -1463,14 +1463,14 @@ mod p13_d02_const_partial_safety_tests {
     #[test]
     fn d02_a_已完整初始化的_const_結構仍可安全複製讀取及使用唯讀方法() {
         let positive =
-            include_str!("../tests/fixtures/p13_stage/D02_const結構完整初始化允許安全使用.voil");
+            include_str!("../../tests/fixtures/p13_stage/D02_const結構完整初始化允許安全使用.voil");
         assert!(inspect(positive).is_ok());
     }
 
     #[test]
     fn d02_a_完整初始化_const_可讀取有預設值欄位並合法複製至另一_const() {
         let ready = include_str!(
-            "../tests/fixtures/p13_stage/D02_const結構完整初始化允許安全使用.voil"
+            "../../tests/fixtures/p13_stage/D02_const結構完整初始化允許安全使用.voil"
         );
         let positive = ready.replace(
             "return result",
