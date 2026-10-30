@@ -81,11 +81,8 @@ impl<'a> ExprParser<'a> {
     pub(crate) fn expression(&mut self) -> Result<Expr, Diagnostic> {
         let mut left = self.postfix()?;
         loop {
-            let operator = match self.peek().map(|t| &t.kind) {
-                Some(TokenKind::Symbol('+')) => Some('+'),
-                Some(TokenKind::Symbol('-')) => Some('-'),
-                _ => None,
-            };
+            let operator = crate::syntax_shared::additive_operator(
+                self.tokens, self.cursor);
             let Some(op) = operator else { break; };
             self.next();
             let right = self.postfix()?;

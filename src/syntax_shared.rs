@@ -19,6 +19,16 @@ pub(crate) fn end(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::End) | None)
 }
 
+/// R02.7：真正供公開 P06 與私有 P13 運算式解析器共用的
+/// 整數加減運算子判讀，僅允許兩者均已核准的 +／-。
+/// 左結合及來源跨度由呼叫者既有遞迴解析程序維持。
+pub(crate) fn additive_operator(tokens: &[Token], cursor: usize) -> Option<char> {
+    match tokens.get(cursor).map(|token| &token.kind) {
+        Some(TokenKind::Symbol(ch)) if *ch == '+' || *ch == '-' => Some(*ch),
+        _ => None,
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegerError {
     InvalidDigits,
@@ -52,6 +62,18 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 兩套真正解析器共用的加減規則只能回傳核准二元運算子() {
+        let source = Source::new(b"+ - * /".to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        assert_eq!(additive_operator(&tokens.tokens, 0), Some('+'));
+        assert_eq!(additive_operator(&tokens.tokens, 1), Some('-'));
+        for cursor in 2..=tokens.tokens.len() {
+            assert_eq!(additive_operator(&tokens.tokens, cursor), None);
+        }
+    }
 
     #[test]
     fn p16_6_r02_字面值正反界線在共用規則中一致() {

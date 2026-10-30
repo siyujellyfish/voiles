@@ -92,8 +92,8 @@ impl Parser<'_> {
     fn term(&mut self) -> Result<Term, Diagnostic> {
         // P01 加減為相同優先序、左結合；括號在原子解析處理。
         let mut left = self.atom()?;
-        while self.symbol('+') || self.symbol('-') {
-            let operator = if self.symbol('+') { '+' } else { '-' };
+        while let Some(operator) =
+            crate::syntax_shared::additive_operator(self.tokens, self.cursor) {
             self.cursor += 1;
             let right = self.atom()?;
             left = Term {
