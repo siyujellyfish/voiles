@@ -4984,3 +4984,44 @@ mod p15_3_while_反向邊安全來源 {
         assert_eq!(error.kind, DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p15_3_for_半開區間借用來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 核准半開區間的迭代名稱是可複製的局部整數() {
+        let src = "fn main()->int{\nfor i in 1..4{\nvar number:int = i\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 每次迭代局部借用在最後使用後可再讀來源() {
+        let src = "fn main()->int{\nfor i in 1..4{\nvar owner:int = i\nvar alias:int = owner.borrow()\nvar value:int = alias\nvar direct:int = owner\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn for_反向邊不得再次讀取已移動資源() {
+        let src = "fn main()->int{\nvar owner:str = \"resource\"\nfor i in 1..4{\nvar moved:str = owner.move()\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("外層來源在每次迭代後不可變成已移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("反向邊"));
+    }
+
+    #[test]
+    fn 迴圈外仍有效的借用必須封鎖本體直接讀取原來源() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nfor i in 1..4{\nvar copy:int = owner\n}\nreturn alias\n}\n";
+        let error = inspect(src).expect_err("外層借用在迴圈後仍有效");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 區間迭代器不應逃逸迴圈作用域() {
+        let src = "fn main()->int{\nfor index in 1..4{\nvar value:int = index\n}\nreturn index\n}\n";
+        let error = inspect(src).expect_err("for 迭代變數不可跨作用域逃逸");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+}
