@@ -2485,6 +2485,105 @@ fn trace_string_return_source(
     Ok((retained, events))
 }
 
+/// VA16-03-A：真正 .voil 受限「建構→var str 欄位賦值」
+/// 由同一靜態檢查過的 AST 交由 UTF-8 持續資源模型執行。
+/// 其他操作及未核准右值不能被資源橋接假裝成已執行。
+#[cfg(test)]
+fn trace_persistent_struct_field_write_source(
+    text: &str, fail_after_rhs: bool,
+) -> Result<(String, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
+    use crate::struct_initialization::{BuildStatus, NamedString,
+        OwnedStructRuntime, StringField, StructRuntimeError};
+    let reject=|message:&str| Diagnostic {
+        kind:DiagnosticKind::Static,message:message.into(),span:None,
+    };
+    fn unescaped_literal<'a>(source:&'a str, term:&Term)->Option<&'a str> {
+        if !matches!(&term.kind,TermKind::Literal("str")) { return None; }
+        let raw=source.get(term.start..term.end)?
+            .strip_prefix('"')?.strip_suffix('"')?;
+        (!raw.contains('\\')&&!raw.contains('\n')
+            &&!raw.contains('\r')).then_some(raw)
+    }
+    let source=Source::new(text.as_bytes().to_vec());
+    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens=lexer::scan(&source);
+    if let Some(error)=tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs,functions)=Parser {
+        source:&source,tokens:&tokens.tokens,cursor:0,
+    }.file()?;
+    Checker {
+        source:&source,structs:&structs,functions:&functions,
+        ability:crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&functions)?;
+    let main=functions.iter().find(|function|function.name=="main")
+        .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
+    let [declaration,assignment,last]=main.body.as_slice() else {
+        return Err(reject("P16：僅支援一次結構建構、欄位賦值與直接返回"));
+    };
+    if !matches!(&last.kind,StmtKind::Return(Term {
+        kind:TermKind::Literal("int"),start,end,
+    }) if text.get(*start..*end)==Some("0")) {
+        return Err(reject("P16：欄位資源清理僅證明直接 return 0"));
+    }
+    let (owner,ty,mutable,args)=match &declaration.kind {
+        StmtKind::Declare {
+            name,ty,mutable,init:Some(Term {
+                kind:TermKind::Construct(ctor,args),..
+            }),
+        } if ty==ctor =>(name.as_str(),ty.as_str(),*mutable,args),
+        _=>return Err(reject("P16：來源須先宣告具名字串結構")),
+    };
+    let (field,new_value)=match &assignment.kind {
+        StmtKind::FieldAssign {receiver,field,value} if receiver==owner=>
+            (field.as_str(),unescaped_literal(text,value)
+                .ok_or_else(||reject("P16：欄位覆寫只支援未轉義的獨立 str 常值"))?),
+        _=>return Err(reject("P16：來源須有針對同一結構的欄位賦值")),
+    };
+    let definition=structs.get(ty)
+        .ok_or_else(||reject("P16：結構型別不存在"))?;
+    let fields=definition.fields.iter().map(|member| {
+        if member.ty!="str" {
+            return Err(reject("P16：此私有執行期僅接通 str 欄位"));
+        }
+        let default=member.default.as_ref().map(|term|
+            unescaped_literal(text,term).ok_or_else(||
+                reject("P16：尚無被核准的字串轉義求值器")))
+            .transpose()?;
+        Ok(StringField {
+            name:member.name.as_str(),default,immutable:member.immutable,
+        })
+    }).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let named=args.iter().map(|(field,value)|
+        unescaped_literal(text,value).map(|text_value|NamedString {
+            field:field.as_str(),value:text_value,
+        }).ok_or_else(||reject("P16：具名引數只支援未轉義 str 常值"))
+    ).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let mut rt=OwnedStructRuntime::new();
+    let ready=rt.construct_with_access(owner,mutable,&fields,&named,None)
+        .map_err(|_|reject("P16：真實來源結構無法安全完成建立"))?;
+    if !matches!(ready,BuildStatus::Complete|BuildStatus::PartiallyInitialized(_)) {
+        return Err(reject("P16：非可執行的結構狀態"));
+    }
+    let actual=rt.assign_field_checked(owner,field,new_value,fail_after_rhs);
+    if fail_after_rhs {
+        if !matches!(actual,Err(StructRuntimeError::EvaluationFailed(_))) {
+            return Err(reject("P16：右值失敗注入未由資源模型確實發生"));
+        }
+    } else {
+        actual.map_err(|_|reject("P16：合法右值未能安全原子提交"))?;
+    }
+    let observed=rt.read_field(owner,field)
+        .map_err(|_|reject("P16：原持有者欄位沒有可讀資源"))?
+        .to_owned();
+    let resources=rt.finish()
+        .map_err(|_|reject("P16：結構欄位覆寫未完整平衡資源身分"))?;
+    Ok((observed,resources))
+}
+
 /// P16：真實 .voil 結構函式返回的私有所有權證據。
 /// 限無參數 provider 單次建構與具名整筆 .move() 返回，
 /// main 以唯一全新結構綁定接收，避免虛構任意函式執行期。
