@@ -5890,7 +5890,8 @@ mod p16_真正_voil_函式返回資源交接 {
         let source = "fn provide()->str{\nvar payload:str = \"資源\"\nreturn payload.borrow()\n}\nfn main()->int{\nvar received:str = provide()\nreturn 0\n}\n";
         let error = trace_string_return_source(source, "provide", "received").unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("借用"));
+        assert!(error.message.contains("borrow") || error.message.contains("逃逸"),
+            "必須明確拒絕借用逃逸而非依賴特定中文同義詞：{}", error.message);
     }
 
     #[test]
