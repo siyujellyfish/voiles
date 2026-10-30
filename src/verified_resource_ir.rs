@@ -287,6 +287,77 @@ impl FieldOverwritePlan {
     }
 }
 
+/// P16 已核准的混合純值／唯一 str 結構整筆複製或移動責任。
+/// Copyable int/bool 不分配 UTF-8；含 str 時只能驗證真正移動與清理。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct MixedResourcePlan {
+    source: DeclarationId,
+    target: DeclarationId,
+    str_count: usize,
+}
+
+impl MixedResourcePlan {
+    pub(crate) fn new(source: DeclarationId, target: DeclarationId, str_count: usize)
+        -> Result<Self, ResourcePlanError> {
+        if source == target { return Err(ResourcePlanError::SameDeclaration); }
+        Ok(Self { source, target, str_count })
+    }
+
+    /// str 欄位全數轉交時沿用 WholeStructResourcePlan；
+    /// 沒有 str 的 Copyable 結構不虛構 Created／Moved／Released 事件。
+    pub(crate) fn verify_completed(
+        &self, events: &[ResourceEvent], moved: bool,
+    ) -> Result<usize, ResourcePlanError> {
+        if self.str_count > 0 {
+            if !moved { return Err(ResourcePlanError::EventOrder); }
+            let count = WholeStructResourcePlan::new(self.source, self.target)?
+                .verify_moved_events(events)?;
+            if count != self.str_count { return Err(ResourcePlanError::ResourceIdentity); }
+            return Ok(count);
+        }
+        if !events.is_empty() { return Err(ResourcePlanError::EventOrder); }
+
+        let mut ledger = SafetyPipeline::new();
+        ledger.declare(self.source, CopyPermission::Allowed)?;
+        if moved {
+            ledger.move_into(self.source, self.target)?;
+            if ledger.read(self.source).is_ok() || ledger.read(self.target).is_err() {
+                return Err(ResourcePlanError::MovedOwnerStillReadable);
+            }
+            if ledger.record_cleanup(self.target)? != 0 {
+                return Err(ResourcePlanError::OutstandingResource);
+            }
+        } else {
+            ledger.copy_into(self.source, self.target)?;
+            if ledger.read(self.source).is_err() || ledger.read(self.target).is_err() {
+                return Err(ResourcePlanError::TargetUnavailable);
+            }
+            if ledger.record_cleanup(self.target)? != 0
+                || ledger.record_cleanup(self.source)? != 0 {
+                return Err(ResourcePlanError::OutstandingResource);
+            }
+        }
+        ledger.audit_finished()?;
+        Ok(0)
+    }
+
+    /// 僅審核已核准求值計畫在失敗切點前真正完成的 str 建立：
+    /// 失敗之前的 int/bool 不產生任何資源身分。
+    pub(crate) fn verify_failed_build(
+        &self, events: &[ResourceEvent], str_before_failure: usize,
+    ) -> Result<usize, ResourcePlanError> {
+        if str_before_failure > self.str_count { return Err(ResourcePlanError::InvalidFieldPlan); }
+        if str_before_failure == 0 {
+            if !events.is_empty() { return Err(ResourcePlanError::EventOrder); }
+            return Ok(0);
+        }
+        let count = WholeStructResourcePlan::new(self.source, self.target)?
+            .verify_failed_build_events(events)?;
+        if count != str_before_failure { return Err(ResourcePlanError::ResourceIdentity); }
+        Ok(count)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -327,6 +398,40 @@ mod tests {
         ] {
             assert!(returned.verify_actual_events(&invalid).is_err());
         }
+    }
+
+    #[test]
+    fn 混合結構僅對真正_str_建立移交釋放_而純值複製不造假事件() {
+        let mixed = MixedResourcePlan::new(DeclarationId(10), DeclarationId(40), 1).unwrap();
+        assert_eq!(mixed.verify_completed(&[
+            ResourceEvent::Created(1),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Released(1),
+        ], true), Ok(1));
+        assert!(mixed.verify_completed(&[], false).is_err());
+        assert!(mixed.verify_completed(&[], true).is_err());
+        let pure = MixedResourcePlan::new(DeclarationId(10), DeclarationId(40), 0).unwrap();
+        assert_eq!(pure.verify_completed(&[], false), Ok(0));
+        assert_eq!(pure.verify_completed(&[], true), Ok(0));
+        assert!(pure.verify_completed(&[ResourceEvent::Created(1)], false).is_err());
+    }
+
+    #[test]
+    fn 混合欄位失敗只清理當時已完成之_str_不把純值當成資源() {
+        let plan = MixedResourcePlan::new(DeclarationId(10), DeclarationId(40), 2).unwrap();
+        assert_eq!(plan.verify_failed_build(&[], 0), Ok(0));
+        let first = [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ];
+        assert_eq!(plan.verify_failed_build(&first, 1), Ok(1));
+        assert!(plan.verify_failed_build(&first, 2).is_err());
+        assert!(plan.verify_failed_build(&first, 0).is_err());
+        assert!(plan.verify_failed_build(&first, 3).is_err());
+        assert!(plan.verify_failed_build(&[
+            ResourceEvent::Created(1), ResourceEvent::Moved(1),
+        ], 1).is_err());
+        assert_eq!(MixedResourcePlan::new(DeclarationId(10),DeclarationId(10),0),
+            Err(ResourcePlanError::SameDeclaration));
     }
 
     #[test]
