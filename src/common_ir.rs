@@ -137,3 +137,19 @@ fn map_optional<T, U>(
         None => Some(None),
     }
 }
+
+#[cfg(test)]
+mod p16_6_r02_6_共通型別即公開解析型別 {
+    use super::*;
+
+    #[test]
+    fn 公開_parser_與共同語意樹在編譯期就是相同型別() {
+        let from_parser: crate::parser::Type = crate::parser::Type::Int;
+        let common: ScalarType = from_parser;
+        assert_eq!(common, ScalarType::Int);
+        let back: crate::parser::Type = ScalarType::Bool;
+        assert_eq!(back, crate::parser::Type::Bool);
+        assert_eq!(ScalarType::from_name("int"), Some(from_parser));
+        assert_eq!(ScalarType::from_name("str"), None);
+    }
+}
