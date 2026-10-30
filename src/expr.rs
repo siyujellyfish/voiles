@@ -5,6 +5,7 @@ use crate::lexer::{Token, TokenKind};
 use crate::source::Source;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) enum ExprKind {
     IntLiteral(String),
     BoolLiteral(bool),
@@ -169,6 +170,7 @@ impl<'a> ExprParser<'a> {
 
     /// 只辨識已確認的第一層字串索引寫入運算式形狀。
     /// 不推導任何寫入權限、Unicode 字素數、拷貝或求值順序。
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn first_index_write(&mut self) -> Result<Expr, Diagnostic> {
         let target = self.postfix()?;
         let first_level = matches!(
