@@ -1978,7 +1978,7 @@ mod tests {
 
     #[test]
     fn 不得把限制外的控制流程直接當成已驗證() {
-        let source = BASE.replace("return 0", "for i in 1..4{\nreturn 0\n}\nreturn 0");
+        let source = BASE.replace("return 0", "for i in 1..4{\nbreak\n}\nreturn 0");
         assert!(inspect_with_test_ability(&source, |_| Allowed).is_err());
     }
     #[test]
