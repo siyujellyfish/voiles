@@ -86,6 +86,18 @@ impl SafetyPipeline {
         self.resources.release_batch(&[owner]).map_err(PipelineError::Resource)
     }
 
+    /// 真實欄位覆寫或 RHS 失敗後，只清理已由執行期確認釋放的資源。
+    /// 先檢查來源可用與資源歸屬，再對兩張表維持單一宣告身分。
+    pub(crate) fn record_resource_cleanup(
+        &mut self, owner: DeclarationId, resource: u64,
+    ) -> Result<(), PipelineError> {
+        self.ownership.read(owner).map_err(PipelineError::Ownership)?;
+        self.resources.check_release_resource(owner, resource)
+            .map_err(PipelineError::Resource)?;
+        self.resources.release_resource(owner, resource)
+            .map_err(PipelineError::Resource)
+    }
+
     pub(crate) fn read(&self, owner: DeclarationId) -> Result<(), PipelineError> {
         self.ownership.read(owner).map_err(PipelineError::Ownership)
     }
