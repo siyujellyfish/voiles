@@ -36,7 +36,7 @@ rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=
 
 ## 真正執行的自動測試
 
-[PR #263](https://github.com/siyujellyfish/voiles/pull/263) 的最新提交在必要 GitHub Actions 中記錄：Rust 核心 **709／709**、P01 正反語意 **50／50** 均通過；P13～P16 的個別原始驗收證據另見 [24 項正式矩陣](AI-build/P13-P16-原始24項正式驗收矩陣.md)。[PR #264](https://github.com/siyujellyfish/voiles/pull/264) 已將最後 P16 驗收文件 Squash merge 至 main。上述數字是特定提交的真實測試證據，**不是本次主線重新完整執行、不是 709 種語言能力，更不是效能測量**。
+[PR #277](https://github.com/siyujellyfish/voiles/pull/277) 的最新 HEAD 在必要 GitHub Actions 實際完成 Rust 核心 **729／729**、P01 正反語意與素材 **50／50**、Rust 獨立工程 **5／5**，失敗及忽略均為零。這些測試包含 P13～P16 既有受限安全驗收，詳細來源仍見 [24 項正式矩陣](AI-build/P13-P16-原始24項正式驗收矩陣.md)。P16.6-R 的技術債改善與尚未解決的跨前端／安全 IR 問題，見 [最新工程稽核](AI-build/P16.6-R-追加工程稽核結論-20261030.md)。以上仍是**特定 CI HEAD** 的結果，不代表 729 種語言能力、P17 直譯器已完成，或有受控 A／B 效能證據。
 
 ## 語言設計與後續階段
 
@@ -60,5 +60,6 @@ rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=
 - [建構階段](AI-build/建構階段.md)：P00～P30 相依、P10～P12 真實驗收證據（第五十一節）。
 - [待確認事項](AI-build/待確認事項.md)：仍未核准與未實作的完整語言語意。
 - [P16 工程總整理與效能稽核](AI-build/P16-總整理與程式碼稽核-20261030.md)：模組審查、性能測量方式、風險與後續重構優先序。
+- [P16.6-R 最新追加工程稽核](AI-build/P16.6-R-追加工程稽核結論-20261030.md)：六項技術債已完成、控制風險與待 R02／R03 共通 IR 工程的明確區分。
 
 儲存庫：[siyujellyfish/voiles](https://github.com/siyujellyfish/voiles)。
