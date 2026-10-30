@@ -2320,3 +2320,48 @@ mod p13_2_有參數合法方法來源 {
     }
 }
 
+
+// P16.6-R05：索引僅加速名稱查找，不可重排欄位宣告及允許重複名稱。
+#[cfg(test)]
+mod p16_6_r05_定義索引安全回歸 {
+    use super::*;
+
+    #[test]
+    fn 大量欄位與方法可按名稱找到且保留宣告順序() {
+        let mut text = String::from("struct Many{\n");
+        for i in 0..96 {
+            text.push_str(&format!("var field_{i}:int = {i}\n"));
+        }
+        for i in 0..24 {
+            text.push_str(&format!("fn method_{i}()->int{{\nreturn self.field_{i}\n}}\n"));
+        }
+        text.push_str("}\nfn main()->int{\nreturn 0\n}\n");
+        let source = Source::new(text.into_bytes());
+        let lexed = lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let (decls, _) = Parser { source: &source, tokens: &lexed.tokens, cursor: 0 }
+            .file().expect("欄位及方法應能正確解析");
+        let definition = decls.get("Many").expect("結構應存在");
+        assert_eq!(definition.fields.len(), 96);
+        assert_eq!(definition.methods.len(), 24);
+        assert_eq!(definition.field("field_95").unwrap().name, "field_95");
+        assert_eq!(definition.field("field_0").unwrap().name, "field_0");
+        assert_eq!(definition.method("method_23").unwrap().name, "method_23");
+        assert!(definition.field("field_96").is_none());
+        assert!(definition.method("method_24").is_none());
+        assert_eq!(definition.fields[0].name, "field_0");
+        assert_eq!(definition.fields[95].name, "field_95");
+    }
+
+    #[test]
+    fn 具相同欄位名稱仍按原有解析錯誤拒絕() {
+        let input = "struct S{\nvar n:int = 1\nvar n:int = 2\n}\nfn main()->int{\nreturn 0\n}\n";
+        let source = Source::new(input.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let error = Parser { source: &source, tokens: &lexed.tokens, cursor: 0 }
+            .file().unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Syntax);
+        assert!(error.span.is_some());
+    }
+}
