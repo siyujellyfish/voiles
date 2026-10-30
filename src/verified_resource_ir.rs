@@ -358,6 +358,75 @@ impl MixedResourcePlan {
     }
 }
 
+/// 僅限已通過 P16 私有安全驗證且條件為已知 bool 的單層 if；
+/// 最多只有外層持有者與真正執行分支中的一個內層持有者。
+/// 早退或失敗回滾均仍需內層先釋放，再清理外層。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ScopedResourcePlan {
+    outer: DeclarationId,
+    outer_count: usize,
+    executed_inner: Option<(DeclarationId, usize)>,
+}
+
+impl ScopedResourcePlan {
+    pub(crate) fn new(
+        outer: DeclarationId, outer_count: usize,
+        executed_inner: Option<(DeclarationId, usize)>,
+    ) -> Result<Self, ResourcePlanError> {
+        if executed_inner.is_some_and(|(id, _)| id == outer) {
+            return Err(ResourcePlanError::SameDeclaration);
+        }
+        Ok(Self { outer, outer_count, executed_inner })
+    }
+
+    pub(crate) fn verify_actual_events(&self, events: &[ResourceEvent])
+        -> Result<usize, ResourcePlanError> {
+        let inner_count = self.executed_inner.map_or(0, |(_, n)| n);
+        let total = self.outer_count.checked_add(inner_count)
+            .ok_or(ResourcePlanError::InvalidFieldPlan)?;
+        if events.len() != total.checked_mul(2)
+            .ok_or(ResourcePlanError::InvalidFieldPlan)? {
+            return Err(ResourcePlanError::EventOrder);
+        }
+        let (created, released) = events.split_at(total);
+        let ids = created.iter().map(|e|match e {
+            ResourceEvent::Created(id) => Ok(*id),
+            _ => Err(ResourcePlanError::EventOrder),
+        }).collect::<Result<Vec<_>,_>>()?;
+        let mut expected = Vec::with_capacity(total);
+        expected.extend(ids[self.outer_count..].iter().rev().copied());
+        expected.extend(ids[..self.outer_count].iter().rev().copied());
+        for (wanted,event) in expected.iter().zip(released) {
+            let ResourceEvent::Released(id) = event else {
+                return Err(ResourcePlanError::EventOrder);
+            };
+            if wanted != id { return Err(ResourcePlanError::ResourceIdentity); }
+        }
+
+        let mut ledger = SafetyPipeline::new();
+        ledger.declare(self.outer, CopyPermission::Forbidden)?;
+        for id in &ids[..self.outer_count] { ledger.register_resource(self.outer, *id)?; }
+        if let Some((inner, _)) = self.executed_inner {
+            ledger.declare(inner, CopyPermission::Forbidden)?;
+            for id in &ids[self.outer_count..] {
+                ledger.register_resource(inner, *id)?;
+            }
+            if ledger.outstanding() != total {
+                return Err(ResourcePlanError::OutstandingResource);
+            }
+            if ledger.record_cleanup(inner)? != inner_count {
+                return Err(ResourcePlanError::OutstandingResource);
+            }
+        }
+        if ledger.record_cleanup(self.outer)? != self.outer_count
+            || ledger.outstanding() != 0 {
+            return Err(ResourcePlanError::OutstandingResource);
+        }
+        ledger.audit_finished()?;
+        Ok(total)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,6 +466,52 @@ mod tests {
             vec![ResourceEvent::Returned(77), ResourceEvent::Created(77), ResourceEvent::Released(77)],
         ] {
             assert!(returned.verify_actual_events(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn 單層已知布林分支內層必須先於外層逆序清理() {
+        let plan = ScopedResourcePlan::new(
+            DeclarationId(10), 2, Some((DeclarationId(44), 2))).unwrap();
+        let events = [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Created(4),
+            ResourceEvent::Released(4), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ];
+        assert_eq!(plan.verify_actual_events(&events), Ok(4));
+    }
+
+    #[test]
+    fn 未執行的分支不得創造內層所有者或資源事件() {
+        let plan = ScopedResourcePlan::new(DeclarationId(10), 1, None).unwrap();
+        assert_eq!(plan.verify_actual_events(&[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]), Ok(1));
+        assert_eq!(ScopedResourcePlan::new(
+            DeclarationId(10),1,Some((DeclarationId(10),1))),
+            Err(ResourcePlanError::SameDeclaration));
+        assert!(plan.verify_actual_events(&[
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]).is_err());
+    }
+
+    #[test]
+    fn 作用域釋放順序錯置_移動事件_雙重資源身分都必須拒絕() {
+        let plan = ScopedResourcePlan::new(
+            DeclarationId(10),1,Some((DeclarationId(44),1))).unwrap();
+        for events in [
+            vec![ResourceEvent::Created(1),ResourceEvent::Created(2),
+                 ResourceEvent::Released(1),ResourceEvent::Released(2)],
+            vec![ResourceEvent::Created(1),ResourceEvent::Created(2),
+                 ResourceEvent::Moved(2),ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1),ResourceEvent::Created(1),
+                 ResourceEvent::Released(1),ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1),ResourceEvent::Created(2),
+                 ResourceEvent::Released(2)],
+        ] {
+            assert!(plan.verify_actual_events(&events).is_err());
         }
     }
 

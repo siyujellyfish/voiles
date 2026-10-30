@@ -515,6 +515,8 @@ fn trace_scope_struct_source(
 )->Result<Vec<crate::owned_str_runtime::ResourceEvent>,Diagnostic> {
     use crate::struct_initialization::{BuildStatus,NamedString,
         OwnedStructRuntime,StringField,StructRuntimeError};
+    use crate::struct_eval_plan::{self,FieldInfo};
+    use crate::verified_resource_ir::ScopedResourcePlan;
     let reject=|message:&str|Diagnostic{
         kind:DiagnosticKind::Static,message:message.into(),span:None,
     };
@@ -551,6 +553,43 @@ fn trace_scope_struct_source(
     };
     let executed=if condition {Some(yes.as_slice())}
         else {no.as_ref().map(Vec::as_slice)};
+    // 以同一真正已驗證 AST、具名／預設求值計畫計算每個
+    // *確實執行* 的作用域所取得 str 數量；未走到的 else 不得建帳。
+    let count_planned=|stmt:&Stmt,stop:Option<&str>|->Result<usize,Diagnostic> {
+        let (ty,args)=match &stmt.kind {
+            StmtKind::Declare {ty,init:Some(Term {
+                kind:TermKind::Construct(ctor,args),..
+            }),..} if ty==ctor => (ty.as_str(),args),
+            _=>return Err(reject("P16：單層分支僅證明已核准結構建立")),
+        };
+        let def=structs.get(ty)
+            .ok_or_else(||reject("P16：作用域建構類別不存在"))?;
+        let fields:Vec<_>=def.fields.iter().map(|member|FieldInfo {
+            name:member.name.as_str(),has_default:member.default.is_some(),
+            immutable:member.immutable,
+        }).collect();
+        let named:Vec<_>=args.iter().map(|(name,_)|name.as_str()).collect();
+        let order=struct_eval_plan::plan(&fields,&named)
+            .map_err(|_|reject("P16：作用域資源順序缺乏安全求值計畫"))?;
+        let mut count=0;
+        for step in &order.steps {
+            let field=def.fields.iter().find(|f|f.name==step.field)
+                .ok_or_else(||reject("P16：資源步驟缺少對應欄位"))?;
+            if field.ty!="str" {
+                return Err(reject("P16：作用域橋接限 str 資源欄位"));
+            }
+            count+=1;
+            if stop==Some(step.field.as_str()) { break; }
+        }
+        Ok(count)
+    };
+    let outer_count=count_planned(outside,None)?;
+    let scoped=executed.and_then(|body|body.first())
+        .map(|inner|count_planned(inner,fail_inner)
+            .map(|count|(DeclarationId(inner.start),count)))
+        .transpose()?;
+    let proof=ScopedResourcePlan::new(DeclarationId(outside.start),outer_count,scoped)
+        .map_err(|_|reject("P16：分支內外兩個宣告不可以共享資源來源身分"))?;
     let construct=|runtime:&mut OwnedStructRuntime,
         stmt:&Stmt,fail_after:Option<&str>|
         ->Result<Result<(),StructRuntimeError>,Diagnostic> {
@@ -606,8 +645,11 @@ fn trace_scope_struct_source(
                             reject("P16：分支失敗回滾區塊清理失敗"))?,
                     Err(_)=>return Err(reject("P16：區塊建構失敗")),
                 }
-                return rt.finish().map_err(|_|
-                    reject("P16：提前 return 外層資源未反序清理"));
+                let events=rt.finish().map_err(|_|
+                    reject("P16：提前 return 外層資源未反序清理"))?;
+                proof.verify_actual_events(&events).map_err(|_|
+                    reject("P16：提前返回分支的內外層資源責任次序不一致"))?;
+                return Ok(events);
             }
             return Err(reject("P16：分支不能省略未驗證的控制流程"));
         };
@@ -622,7 +664,11 @@ fn trace_scope_struct_source(
     } else if fail_inner.is_some() {
         return Err(reject("P16：未執行的 else 分支不能被當成失敗注入"));
     }
-    rt.finish().map_err(|_|reject("P16：外層退出後資源帳簿未平衡"))
+    let events=rt.finish().map_err(|_|
+        reject("P16：外層退出後資源帳簿未平衡"))?;
+    proof.verify_actual_events(&events).map_err(|_|
+        reject("P16：可達分支與未執行分支的清理責任不一致"))?;
+    Ok(events)
 }
 
 /// P16：真實 .voil 結構函式返回的私有所有權證據。
