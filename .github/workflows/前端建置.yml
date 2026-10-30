@@ -86,3 +86,6 @@ jobs:
           ./target/p02/p03_spec
       - name: 公開 CLI 效能觀測（不設定不穩定的硬性時間門檻）
         run: python3 tools/效能基準.py ./target/p02/voiles --repeat 7 --sizes 128 512 2048
+
+      - name: P16.6-R04 私有 if／for 靜態分析效能基準（僅觀測）
+        run: VOILES_PERF_RUN=1 ./target/p02/p04_source_internal --nocapture p16_6_r04_分支與迴圈負載擴展
