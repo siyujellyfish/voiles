@@ -2141,6 +2141,92 @@ fn trace_string_struct_source(
     Ok(build_string_struct(&fields, &named, fail_after))
 }
 
+/// P16 私有字串函式返回證據：只模擬已通過來源檢查且
+/// 呼叫端／被呼叫端都屬唯一可證明直線路徑的資源交接。
+/// 這不是一般函式直譯器，不能拿此入口運行任意控制流程。
+#[cfg(test)]
+fn trace_string_return_source(
+    text: &str, provider: &str, receiver: &str,
+) -> Result<(String, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
+    use crate::owned_str_runtime::OwnedStrRuntime;
+    let unsupported = |message: &str| Diagnostic {
+        kind: DiagnosticKind::Static, message: message.into(), span: None,
+    };
+    fn plain_literal<'a>(text: &'a str, term: &Term) -> Option<&'a str> {
+        if !matches!(term.kind, TermKind::Literal("str")) { return None; }
+        let bytes = text.get(term.start..term.end)?;
+        let raw = bytes.strip_prefix('"')?.strip_suffix('"')?;
+        if raw.contains('\\') || raw.contains('\n') || raw.contains('\r') {
+            return None;
+        }
+        Some(raw)
+    }
+    let source = Source::new(text.as_bytes().to_vec());
+    if let Some(error) = source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens = lexer::scan(&source);
+    if let Some(error) = tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs, funcs) = Parser {
+        source: &source, tokens: &tokens.tokens, cursor: 0,
+    }.file()?;
+    Checker {
+        source: &source, structs: &structs, functions: &funcs,
+        ability: crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&funcs)?;
+    let main = funcs.iter().find(|fun| fun.name == "main")
+        .ok_or_else(|| unsupported("P16：缺少 main"))?;
+    let called = funcs.iter().find(|fun| fun.name == provider
+        && fun.params.is_empty() && fun.result_ty == "str")
+        .ok_or_else(|| unsupported("P16：須為無參數且回傳 str 的函式"))?;
+    let [declaration, final_return] = main.body.as_slice() else {
+        return Err(unsupported("P16：呼叫端僅接受單次資源接收及直接返回"));
+    };
+    let valid_receiver = matches!(&declaration.kind, StmtKind::Declare {
+        name, ty, mutable: true,
+        init: Some(Term {kind: TermKind::Construct(name_called, args), ..}),
+    } if name == receiver && ty == "str" && name_called == provider && args.is_empty());
+    if !valid_receiver {
+        return Err(unsupported("P16：呼叫端須以 var str 接收單次函式返回"));
+    }
+    if !matches!(&final_return.kind, StmtKind::Return(Term {
+        kind: TermKind::Literal("int"), start, end,
+    }) if text.get(*start..*end) == Some("0")) {
+        return Err(unsupported("P16：呼叫端其他返回路徑尚未接通執行期"));
+    }
+    let content = match called.body.as_slice() {
+        [Stmt {kind: StmtKind::Return(term), ..}] =>
+            plain_literal(text, term),
+        [Stmt {kind: StmtKind::Declare {
+            name, ty, init: Some(value), ..
+        }, ..}, Stmt {kind: StmtKind::Return(Term {
+            kind: TermKind::Move(returned_name), ..
+        }), ..}] if ty == "str" && name == returned_name =>
+            plain_literal(text, value),
+        _ => None,
+    }.ok_or_else(|| unsupported(
+        "P16：被呼叫端僅接受獨立 str 常值或具名 str 的整筆移動返回"))?;
+    // 以 Rust 真正 String 的單一持有者驗證作用域交接。
+    // 呼叫端根作用域尚無同名來源，接收必須原子成功。
+    let mut runtime = OwnedStrRuntime::new();
+    runtime.enter_scope();
+    runtime.declare("__p16_result", true, content)
+        .expect("合法來源應可建立唯一 str 緩衝區");
+    let returned = runtime.return_named("__p16_result")
+        .expect("剛建立且仍有效的字串可返回");
+    runtime.leave_scope()
+        .expect("被呼叫端作用域必須能安全退出");
+    runtime.accept_return(receiver, returned)
+        .expect("呼叫端作用域預先為空且未耗盡資源身分");
+    let retained = runtime.read(receiver)
+        .expect("返回資源必須仍由呼叫端唯一持有").to_owned();
+    let events = runtime.finish()
+        .expect("呼叫端退出後每個資源必須恰好釋放一次");
+    Ok((retained, events))
+}
+
 fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<(), Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
@@ -5765,5 +5851,79 @@ mod p16_結構來源失敗注入實際求值步驟 {
             BuildStatus::EvaluationFailed("optional".into()));
         assert_eq!(trace.resources, vec![
             ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_函式返回資源交接 {
+    use super::trace_string_return_source;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const SOURCE: &str = "fn provide()->str{\nvar payload:str = \"水母🪼\"\nreturn payload.move()\n}\nfn main()->int{\nvar received:str = provide()\nreturn 0\n}\n";
+
+    #[test]
+    fn 真實來源具名整筆移動返回後只由呼叫端清理一次() {
+        let (value, events) = trace_string_return_source(SOURCE, "provide", "received").unwrap();
+        assert_eq!(value, "水母🪼");
+        assert_eq!(events, vec![
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 真實來源獨立字串常值返回不造成第二個所有者() {
+        let source = "fn provide()->str{\nreturn \"繁體中文\"\n}\nfn main()->int{\nvar received:str = provide()\nreturn 0\n}\n";
+        let (value, events) = trace_string_return_source(source, "provide", "received").unwrap();
+        assert_eq!(value, "繁體中文");
+        assert_eq!(events, vec![
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 真實來源直接借用逃逸不得進入資源交接模型() {
+        let source = "fn provide()->str{\nvar payload:str = \"資源\"\nreturn payload.borrow()\n}\nfn main()->int{\nvar received:str = provide()\nreturn 0\n}\n";
+        let error = trace_string_return_source(source, "provide", "received").unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("borrow") || error.message.contains("逃逸"),
+            "必須明確拒絕借用逃逸而非依賴特定中文同義詞：{}", error.message);
+    }
+
+    #[test]
+    fn 真實來源不可將局部字串隱含複製成返回資源() {
+        let source = SOURCE.replace("payload.move()", "payload");
+        let error = trace_string_return_source(&source, "provide", "received").unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("複製"));
+    }
+
+    #[test]
+    fn 真實來源其他控制流程不可假定被呼叫端只執行一次() {
+        let source = SOURCE.replace("return payload.move()",
+            "if(true){\nreturn payload.move()\n}\nreturn \"備用\"");
+        let error = trace_string_return_source(&source, "provide", "received").unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("被呼叫端"));
+    }
+
+    #[test]
+    fn 真實來源其他主程式操作不可被誤認為已完成執行() {
+        let source = SOURCE.replace("return 0", "var other:int = 1\nreturn 0");
+        let error = trace_string_return_source(&source, "provide", "received").unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("呼叫端"));
+    }
+
+    #[test]
+    fn 真實來源含轉義字串須待正確解碼器才可接資源() {
+        let source = SOURCE.replace("水母🪼", "水母\\n🪼");
+        let error = trace_string_return_source(&source, "provide", "received").unwrap_err();
+        assert!(error.message.contains("被呼叫端")
+            || error.kind == DiagnosticKind::Lexical || error.kind == DiagnosticKind::Syntax);
     }
 }
