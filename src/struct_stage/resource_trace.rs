@@ -35,7 +35,7 @@ fn trace_string_struct_source(
     }.file()?;
     Checker {
         source: &source, structs: &structs, functions: &funcs,
-        ability: crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&funcs)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
@@ -126,7 +126,7 @@ fn trace_persistent_struct_move_source(
     }.file()?;
     Checker {
         source:&source, structs:&structs, functions:&functions,
-        ability:crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&functions)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
@@ -229,7 +229,7 @@ fn trace_string_return_source(
     }.file()?;
     Checker {
         source: &source, structs: &structs, functions: &funcs,
-        ability: crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&funcs)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
@@ -314,7 +314,7 @@ fn trace_persistent_struct_field_write_source(
     }.file()?;
     Checker {
         source:&source,structs:&structs,functions:&functions,
-        ability:crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&functions)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
@@ -427,7 +427,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     }.file()?;
     Checker {
         source:&source,structs:&structs,functions:&functions,
-        ability:crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&functions)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：缺少 main"))?;
@@ -534,7 +534,7 @@ fn trace_scope_struct_source(
     }.file()?;
     Checker {
         source:&source,structs:&structs,functions:&functions,
-        ability:crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&functions)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
@@ -667,7 +667,7 @@ fn trace_persistent_struct_return_source(
     }.file()?;
     Checker {
         source:&source, structs:&structs, functions:&functions,
-        ability:crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&functions)?;
     let main=functions.iter().find(|function| function.name=="main")
         .ok_or_else(||unsupported("P16：缺少有效 main"))?;
@@ -775,7 +775,7 @@ fn trace_named_string_move_source(
     }.file()?;
     Checker {
         source: &source, structs: &structs, functions: &funcs,
-        ability: crate::ownership_policy::approved_leaf_copy_permission,
+        function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: crate::ownership_policy::approved_leaf_copy_permission,
     }.all(&funcs)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;

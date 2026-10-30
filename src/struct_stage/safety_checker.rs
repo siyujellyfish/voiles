@@ -1,5 +1,8 @@
 // 對應 P16.6-R01 無語意變更之實作拆檔。
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
+    fn find_function(&self, name: &str) -> Option<&Function> {
+        self.function_index.get(name).and_then(|index| self.functions.get(*index))
+    }
     fn error(&self, text: &str, term: &Term) -> Diagnostic {
         Diagnostic {
             kind: DiagnosticKind::Static,
@@ -271,7 +274,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             }
             TermKind::FieldRead(receiver, name) if receiver == "self" => {
                 let field = self.structs.get(owner)
-                    .and_then(|def| def.fields.iter().find(|field| field.name == *name))
+                    .and_then(|def| def.field(name))
                     .ok_or_else(|| self.error("方法 self 欄位不存在", term))?;
                 let permission = self.permission(&field.ty);
                 if permission != CopyPermission::Allowed {
@@ -286,7 +289,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Call(name, args) => {
                 // 一般函式可操作自己的局部來源，但方法目前僅准把
                 // Copyable 的獨立引數交給它，且回傳也須已核准 Copyable。
-                let function = self.functions.iter().find(|function| function.name == *name)
+                let function = self.find_function(name)
                     .ok_or_else(|| self.error("方法呼叫不存在的一般函式", term))?;
                 if function.params.len() != args.len() {
                     return Err(self.error("方法內函式引數數量不符", term));
@@ -311,7 +314,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 && !self.structs.contains_key(name) => {
                 // helper() 與 Struct() 共用解析分支，只有已存在的
                 // 零參數一般函式可以作為純 Copyable 方法值來源。
-                let function = self.functions.iter().find(|function| function.name == *name)
+                let function = self.find_function(name)
                     .ok_or_else(|| self.error("方法內零參數函式不存在", term))?;
                 if !function.params.is_empty() {
                     return Err(self.error("方法內零參數函式實際需傳入引數", term));
@@ -371,7 +374,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             _ => None,
         };
         if let Some((name, args)) = ordinary_call {
-            if let Some(function) = self.functions.iter().find(|f| f.name == name) {
+            if let Some(function) = self.find_function(name) {
                 if function.result_ty == "str" {
                     if function.params.len() != args.len() {
                         return Err(self.error("方法資源回傳的函式引數數量不符", term));
@@ -403,7 +406,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         for statement in body {
             match &statement.kind {
                 StmtKind::FieldAssign { receiver, field, value } if receiver == "self" => {
-                    let target = definition.fields.iter().find(|f| f.name == *field)
+                    let target = definition.field(field)
                         .ok_or_else(|| self.error("self 欄位不存在", value))?;
                     if target.immutable {
                         return Err(self.error("S18：const 欄位禁止透過方法寫入", value));
@@ -584,7 +587,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 bound.value.read().map_err(|err| self.model_error(err, term))?;
                 let field = self.structs.get(&bound.ty)
-                    .and_then(|def| def.fields.iter().find(|f| f.name == *name))
+                    .and_then(|def| def.field(name))
                     .ok_or_else(|| self.error("來源不是具有此欄位的結構", term))?;
                 let permission = self.permission(&field.ty);
                 if permission != CopyPermission::Allowed {
@@ -605,7 +608,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     bound.ty.clone()
                 };
                 let method = self.structs.get(&owner_type)
-                    .and_then(|def| def.methods.iter().find(|m| m.name == *name))
+                    .and_then(|def| def.method(name))
                     .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
                 let mode = self.check_method(&owner_type, method)?;
                 if method.params.len() != args.len() {
@@ -712,7 +715,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Err(self.error("S21：結構欄位不能單獨移動", term))
             }
             TermKind::Call(name, args) => {
-                let function = self.functions.iter().find(|function| function.name == *name)
+                let function = self.find_function(name)
                     .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
                 if function.params.len() != args.len() {
                     return Err(self.error("P13：函式引數數量不符", term));
@@ -794,7 +797,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // 零引數語法與結構建立式共用括號。只有不存在同名結構
                 // 且已宣告零參數函式時，才按函式呼叫處理。
                 if args.is_empty() && !self.structs.contains_key(name) {
-                    if let Some(function) = self.functions.iter().find(|function| function.name == *name) {
+                    if let Some(function) = self.find_function(name) {
                         if !function.params.is_empty() {
                             return Err(self.error("P13：函式引數數量不符", term));
                         }
@@ -1004,7 +1007,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error("S18：const 結構實例不可修改欄位", value));
                     }
                     let member = self.structs.get(&owner.ty)
-                        .and_then(|def| def.fields.iter().find(|f| f.name == *field))
+                        .and_then(|def| def.field(field))
                         .ok_or_else(|| self.error("欄位寫入的型別或欄位不存在", value))?;
                     if member.immutable {
                         return Err(self.error("S18：const 欄位不可重新賦值", value));

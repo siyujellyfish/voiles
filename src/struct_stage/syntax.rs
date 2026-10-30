@@ -443,7 +443,7 @@ impl Parser<'_> {
             return Err(self.syntax("K06：struct 至少需要一個欄位或方法"));
         }
         self.cursor += 1;
-        Ok((name, StructDecl { fields, methods }))
+        Ok((name, StructDecl::new(fields, methods)))
     }
     fn file(mut self) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
         let mut structs = HashMap::new();
