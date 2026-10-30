@@ -22,6 +22,7 @@ pub(crate) enum ResourcePlanError {
     MovedOwnerStillReadable,
     TargetUnavailable,
     OutstandingResource,
+    InvalidFieldPlan,
 }
 
 impl From<PipelineError> for ResourcePlanError {
@@ -217,6 +218,75 @@ impl WholeStructResourcePlan {
     }
 }
 
+/// P16 已核准的具名結構 str 欄位原子覆寫／失敗回滾證據。
+/// 初始欄位完成順序與覆寫欄位索引只由已完成靜態檢查的 AST 求值計畫取得。
+/// RHS 暫存資源在此抽象帳簿暫歸原宣告負責：不代表 P17 的暫存值佈局。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FieldOverwritePlan {
+    owner: DeclarationId,
+    initialized: usize,
+    old_index: Option<usize>,
+}
+
+impl FieldOverwritePlan {
+    pub(crate) fn new(
+        owner: DeclarationId, initialized: usize, old_index: Option<usize>,
+    ) -> Result<Self, ResourcePlanError> {
+        if old_index.is_some_and(|index| index >= initialized) {
+            return Err(ResourcePlanError::InvalidFieldPlan);
+        }
+        Ok(Self { owner, initialized, old_index })
+    }
+
+    /// 唯一合法事件序列：所有既有資源 Created、RHS Created 後才能清理。
+    /// 成功：舊欄位在提交後釋放，最終以最後成功初始化順序逆序清理；
+    /// 右側求值失敗：先清理新暫存，再逆序清理全部未變動的舊資源。
+    pub(crate) fn verify_actual_events(
+        &self, events: &[ResourceEvent], failed_rhs: bool,
+    ) -> Result<usize, ResourcePlanError> {
+        let total = self.initialized.checked_add(1)
+            .ok_or(ResourcePlanError::InvalidFieldPlan)?;
+        if events.len() != total.checked_mul(2)
+            .ok_or(ResourcePlanError::InvalidFieldPlan)? {
+            return Err(ResourcePlanError::EventOrder);
+        }
+        let (created, released) = events.split_at(total);
+        let ids = created.iter().map(|event| match event {
+            ResourceEvent::Created(id) => Ok(*id),
+            _ => Err(ResourcePlanError::EventOrder),
+        }).collect::<Result<Vec<_>,_>>()?;
+
+        let mut expected = Vec::with_capacity(total);
+        if !failed_rhs {
+            if let Some(index) = self.old_index { expected.push(ids[index]); }
+        }
+        expected.push(ids[self.initialized]);
+        for (index, id) in ids[..self.initialized].iter().enumerate().rev() {
+            if failed_rhs || self.old_index != Some(index) { expected.push(*id); }
+        }
+        if expected.len() != total { return Err(ResourcePlanError::InvalidFieldPlan); }
+        for (wanted, event) in expected.iter().zip(released) {
+            let ResourceEvent::Released(actual) = event else {
+                return Err(ResourcePlanError::EventOrder);
+            };
+            if wanted != actual { return Err(ResourcePlanError::ResourceIdentity); }
+        }
+
+        let mut ledger = SafetyPipeline::new();
+        ledger.declare(self.owner, CopyPermission::Forbidden)?;
+        for id in &ids { ledger.register_resource(self.owner, *id)?; }
+        if ledger.outstanding() != total { return Err(ResourcePlanError::OutstandingResource); }
+        for id in expected {
+            ledger.record_resource_cleanup(self.owner, id)?;
+        }
+        if ledger.outstanding() != 0 || ledger.record_cleanup(self.owner)? != 0 {
+            return Err(ResourcePlanError::OutstandingResource);
+        }
+        ledger.audit_finished()?;
+        Ok(total)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -256,6 +326,56 @@ mod tests {
             vec![ResourceEvent::Returned(77), ResourceEvent::Created(77), ResourceEvent::Released(77)],
         ] {
             assert!(returned.verify_actual_events(&invalid).is_err());
+        }
+    }
+
+    #[test]
+    fn 欄位原子覆寫舊資源先釋放而新資源由持有者退出清理() {
+        let plan = FieldOverwritePlan::new(DeclarationId(12), 2, Some(0)).unwrap();
+        assert_eq!(plan.verify_actual_events(&[
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(1),
+            ResourceEvent::Released(3), ResourceEvent::Released(2),
+        ], false), Ok(3));
+        assert_eq!(plan.verify_actual_events(&[
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ], true), Ok(3));
+    }
+
+    #[test]
+    fn 未初始化欄位第一次覆寫不得清理不存在的舊值() {
+        let plan = FieldOverwritePlan::new(DeclarationId(12), 1, None).unwrap();
+        let e = [ResourceEvent::Created(5), ResourceEvent::Created(6),
+                 ResourceEvent::Released(6), ResourceEvent::Released(5)];
+        assert_eq!(plan.verify_actual_events(&e, false), Ok(2));
+        assert_eq!(plan.verify_actual_events(&e, true), Ok(2));
+        assert_eq!(FieldOverwritePlan::new(DeclarationId(12), 1, Some(1)),
+            Err(ResourcePlanError::InvalidFieldPlan));
+    }
+
+    #[test]
+    fn 欄位覆寫拒絕先釋放舊值_雙重清理_混入移動及相同資源身分() {
+        let plan = FieldOverwritePlan::new(DeclarationId(12), 2, Some(0)).unwrap();
+        for e in [
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Released(1), ResourceEvent::Created(3),
+                 ResourceEvent::Released(3), ResourceEvent::Released(2)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Created(3), ResourceEvent::Released(1),
+                 ResourceEvent::Released(1), ResourceEvent::Released(2)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(1),
+                 ResourceEvent::Created(3), ResourceEvent::Released(1),
+                 ResourceEvent::Released(3), ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Created(3), ResourceEvent::Moved(1),
+                 ResourceEvent::Released(3), ResourceEvent::Released(2)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Created(3), ResourceEvent::Released(3),
+                 ResourceEvent::Released(1), ResourceEvent::Released(2)],
+        ] {
+            assert!(plan.verify_actual_events(&e, false).is_err());
         }
     }
 
