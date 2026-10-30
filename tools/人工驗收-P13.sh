@@ -9,9 +9,18 @@ echo "【1/7】Rust stable"
 rustup toolchain install stable --profile minimal
 rustup run stable rustc --version
 mkdir -p target/p13-accept target/p02
-echo "【2/7】重新建置核心與 CLI"
-rustup run stable rustc --edition=2021 --crate-name voiles_core --crate-type rlib src/lib.rs -o target/p13-accept/libvoiles_core.rlib
-rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p13-accept/libvoiles_core.rlib -L dependency=target/p13-accept src/main.rs -o target/p13-accept/voiles
+echo "【2/7】核心與 CLI（本機重新編譯；CI 只重用同一測試工作的產物）"
+if [[ "${VOILES_REUSE_CI_ARTIFACTS:-0}" == "1" ]]; then
+  # BK06 要求不同 GitHub 工作各自重編 rlib；同一個測試工作內可安全重用。
+  test -s target/p02/libvoiles_core.rlib
+  test -x target/p02/voiles
+  test -x target/p02/p04_source_internal
+  cp target/p02/libvoiles_core.rlib target/p13-accept/libvoiles_core.rlib
+  cp target/p02/voiles target/p13-accept/voiles
+else
+  rustup run stable rustc --edition=2021 --crate-name voiles_core --crate-type rlib src/lib.rs -o target/p13-accept/libvoiles_core.rlib
+  rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p13-accept/libvoiles_core.rlib -L dependency=target/p13-accept src/main.rs -o target/p13-accept/voiles
+fi
 echo "【3/7】首版正反例 CLI 退出碼與診斷"
 ./target/p13-accept/voiles tests/fixtures/voiles/P01-正01.voil >target/p13-accept/positive.out 2>target/p13-accept/positive.err
 test ! -s target/p13-accept/positive.out
@@ -24,7 +33,11 @@ grep -q "靜態錯誤" target/p13-accept/negative.err
 echo "【4/7】方案 B：檢查公開 MVP-A 未開放的 P13／容器語法"
 bash tools/檢查-P13-公開邊界.sh ./target/p13-accept/voiles target/p13-accept
 echo "【5/7】Rust 核心與 P13 內部模型測試"
-rustup run stable rustc --edition=2021 --test --crate-name voiles_internal src/lib.rs -o target/p13-accept/internal_tests
+if [[ "${VOILES_REUSE_CI_ARTIFACTS:-0}" == "1" ]]; then
+  cp target/p02/p04_source_internal target/p13-accept/internal_tests
+else
+  rustup run stable rustc --edition=2021 --test --crate-name voiles_internal src/lib.rs -o target/p13-accept/internal_tests
+fi
 ./target/p13-accept/internal_tests
 echo "【6/7】P13 真實 struct／Copyable／借用回傳安全來源證據"
 # 除全量回歸外，獨立保存 P13 受限來源與 HC14 借用證據，
