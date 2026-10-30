@@ -1058,6 +1058,28 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// 迴圈條件每次重新求值；不像方法位置引數，
     /// 整筆 .move() 在這裡不能視為可重複使用的安全來源。
+    /// D04-A 對來源整數常值的半開遞增區間：僅在端點相差一且
+    /// 可確定只迭代一次時消除不必要的反向邊。其他範圍仍保守驗證。
+    fn one_iteration_range(lower: &str, upper: &str) -> bool {
+        fn read_positive_int(text: &str) -> Option<u128> {
+            let (radix, digits) = if let Some(rest) = text.strip_prefix("0x") {
+                (16, rest)
+            } else if let Some(rest) = text.strip_prefix("0b") {
+                (2, rest)
+            } else if let Some(rest) = text.strip_prefix("0o") {
+                (8, rest)
+            } else {
+                (10, text)
+            };
+            let normalized: String = digits.chars().filter(|ch| *ch != '_').collect();
+            u128::from_str_radix(&normalized, radix).ok()
+        }
+        match (read_positive_int(lower), read_positive_int(upper)) {
+            (Some(start), Some(end)) => start.checked_add(1) == Some(end),
+            _ => false,
+        }
+    }
+
     fn while_condition_nonconsuming(term: &Term) -> bool {
         match &term.kind {
             TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
@@ -1488,7 +1510,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // D04-A 半開區間為已核准來源，但正式執行期的
                     // 整數計數器／步幅不屬 P15，本階段只驗證借用
                     // 與反向邊：一次以上迭代皆不能破壞外層狀態。
-                    let _bounds = (lower, upper);
+                    let one_iteration = Self::one_iteration_range(lower, upper);
                     let snapshot = vars.clone();
                     let mut simulated = snapshot.clone();
                     // for 迭代名稱每次重新建立，不能在出口沿用前
@@ -1503,13 +1525,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             pending_fields: None, loan: None,
                         });
                     let mut after_loop = Vec::with_capacity(continuation.len() + 2);
-                    after_loop.push((vars.len(), loop_body.clone()));
+                    // 已知恰好一次迭代時不存在下一次本體；
+                    // 不得將假想反向邊延長借用最後使用點。
+                    if !one_iteration {
+                        after_loop.push((vars.len(), loop_body.clone()));
+                    }
                     after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_loop.extend_from_slice(continuation);
                     let can_repeat = self.statements_with_follow(
                         loop_body, &mut simulated, expected_return, false, &after_loop)?;
                     simulated.pop();
-                    if can_repeat {
+                    if one_iteration {
+                        // 單次迭代執行的所有權／借用結果必須傳到後繼。
+                        if !can_repeat { return Ok(false); }
+                        *vars = simulated;
+                    } else if can_repeat {
                         for (depth, scope) in snapshot.iter().enumerate() {
                             for (name, original) in scope {
                                 let candidate = simulated[depth].get(name)
@@ -5173,5 +5203,46 @@ mod p15_6_最後使用點與_self_退出邊界來源 {
     fn 尚未建立_例外_歸還證明前不得將錯誤邊界當成合法來源() {
         let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\ntry{\nreturn alias\n}\nreturn 0\n}\n";
         assert!(inspect(src).is_err(), "未證明例外歸還語意不得接受");
+    }
+}
+#[cfg(test)]
+mod p15_3_單次區間與函式借用閉包 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 單次半開區間移動後可合法重新初始化() {
+        let src = "fn main()->int{\nvar owner:int = 1\nfor i in 0..1{\nvar transferred:int = owner.move()\n}\nowner = 2\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 單次半開區間已移動來源不可被後繼使用() {
+        let src = "fn main()->int{\nvar owner:int = 1\nfor i in 0..1{\nvar transferred:int = owner.move()\n}\nreturn owner\n}\n";
+        let error = inspect(src).expect_err("單次迭代後仍須保留移動狀態");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 多次區間仍須禁止未經證明的外層移動反向邊() {
+        let src = "fn main()->int{\nvar owner:int = 1\nfor i in 0..2{\nvar transferred:int = owner.move()\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("兩次以上迭代必須有反向邊安全證明");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("反向邊"));
+    }
+
+    #[test]
+    fn 借用別名經函式呼叫最後使用後原來源恢復可讀() {
+        let src = "fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar copied:int = identity(alias)\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok(), "函式呼叫引數必須納入最後使用點");
+    }
+
+    #[test]
+    fn 呼叫之前借用尚待使用不可提前存取原來源() {
+        let src = "fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar invalid:int = owner\nreturn identity(alias)\n}\n";
+        let error = inspect(src).expect_err("函式呼叫仍將使用別名，借用不得提前歸還");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
     }
 }
