@@ -1336,7 +1336,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         };
         self.error(message, term)
     }
-    /// true 表示分支仍會繼續執行；false 表示所有目前路徑已 return。
+    /// 只尋找會跳出目前 for／while 的控制轉移；內層迴圈的
+    /// break／continue 不屬於外層，不能因此封鎖合法單次移動。
+    fn has_current_loop_transfer(body: &[Stmt]) -> bool {
+        body.iter().any(|stmt| match &stmt.kind {
+            StmtKind::Break | StmtKind::Continue => true,
+            StmtKind::If { yes, no, .. } => Self::has_current_loop_transfer(yes)
+                || no.as_ref().is_some_and(|other| Self::has_current_loop_transfer(other)),
+            StmtKind::ForRange { .. } | StmtKind::While { .. } => false,
+            _ => false,
+        })
+    }
+
     /// P15.3：對 break／continue 的每條實際轉移路徑確認所有
     /// 外層持有者、部分初始化與借用票據均與迴圈入口一致。
     /// 不把未達不動點的資源變化偽裝成安全跳出或下一輪。
@@ -1360,7 +1371,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     || original_loan != candidate_loan {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
-                        message: "P15：break／continue 轉移時外層所有權或借用狀態不穩定".into(),
+                        message: if matches!(&statement.kind, StmtKind::ForRange { .. }) {
+                            "P15：單次 for 混合迴圈跳轉與正常路徑時外層所有權或借用狀態不穩定".into()
+                        } else {
+                            "P15：break／continue 轉移時外層所有權或借用狀態不穩定".into()
+                        },
                         span: Some(self.source.span(statement.start, statement.end)),
                     });
                 }
@@ -1609,7 +1624,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         match can_repeat {
                             FlowState::Returned => return Ok(FlowState::Returned),
                             FlowState::LoopTransfer => *vars = snapshot,
-                            FlowState::Fallthrough => *vars = simulated,
+                            FlowState::Fallthrough => {
+                                // 此三態回傳只記錄「可繼續」的分支狀態。
+                                // 若同一輪也存在 break／continue，不能把
+                                // 正常分支的重新初始化或移動當成所有出口
+                                // 都發生過；跳轉路徑已個別驗證與入口一致，
+                                // 正常路徑也必須一致才可安全合流。
+                                if Self::has_current_loop_transfer(loop_body) {
+                                    self.check_loop_exit_stability(&simulated, &snapshot, statement)?;
+                                }
+                                *vars = simulated;
+                            }
                         }
                     } else if can_repeat == FlowState::Fallthrough {
                         for (depth, scope) in snapshot.iter().enumerate() {
@@ -5475,5 +5500,47 @@ mod p15_6_函式參數與方法接收者歸還來源 {
         let error = inspect(src).expect_err("仍有效的別名封鎖來源，不能提前結束 self 關聯借用");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("借用"));
+    }
+}
+
+#[cfg(test)]
+mod p15_3_單次迴圈混合跳轉安全合流 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn break_與初始化分支混合不能假裝每條出口都已初始化() {
+        let source = "fn main()->int{\nvar result:str\nfor i in 0..1{\nif(true){\nbreak\n}else{\nresult = \"已建立\"\n}\n}\nvar moved:str = result.move()\nreturn 0\n}\n";
+        let error = inspect(source).expect_err("break 路徑仍是尚未初始化，不能沿用另一分支的狀態");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("混合迴圈跳轉"));
+    }
+
+    #[test]
+    fn continue_與資源移動分支混合不能捏造唯一出口狀態() {
+        let source = "fn main()->int{\nvar owner:str = \"資源\"\nfor i in 0..1{\nif(true){\ncontinue\n}else{\nvar consumed:str = owner.move()\n}\n}\nvar next:str = owner.move()\nreturn 0\n}\n";
+        let error = inspect(source).expect_err("單次 continue 路徑與資源移交路徑不能直接選其中一條");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("混合迴圈跳轉"));
+    }
+
+    #[test]
+    fn break_和正常分支都未改外層資源時仍安全() {
+        let source = "fn main()->int{\nvar owner:str = \"資源\"\nfor i in 0..1{\nif(true){\nbreak\n}else{\nvar local:int = 1\n}\n}\nvar moved:str = owner.move()\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok(), "兩條路徑外層狀態一致，單次迴圈可以退出");
+    }
+
+    #[test]
+    fn break_之後另一分支的後續寫入不能復活未初始化資源() {
+        let source = "fn main()->int{\nvar result:str\nfor i in 0..1{\nif(true){\nbreak\n}else{\nvar local:int = 1\n}\nresult = \"晚到的初始化\"\n}\nvar moved:str = result.move()\nreturn 0\n}\n";
+        let error = inspect(source).expect_err("跳轉路徑沒有執行 if 後面的初始化");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("混合迴圈跳轉"));
+    }
+
+    #[test]
+    fn 內層迴圈的_break_不會錯當外層單次迴圈出口() {
+        let source = "fn main()->int{\nvar owner:str = \"資源\"\nfor i in 0..1{\nfor j in 0..1{\nbreak\n}\nvar moved:str = owner.move()\n}\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok(), "內層 break 不應否決外層已證明單次的合法移動");
     }
 }
