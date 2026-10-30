@@ -2048,6 +2048,91 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 }
 
 /// 成功僅代表完整檢查了這個明確受限的 P13 子集，不代表 P13 Phase 已通過。
+/// P16 私有測試橋接：先完成真正 .voil 的來源／型別／所有權檢查，
+/// 再對可靜態確定的單一結構建立式建立真實 UTF-8 擁有者資源追蹤。
+/// 不推定主程式控制流程、一般運算式、轉義解碼或 P17 直譯執行。
+#[cfg(test)]
+fn trace_string_struct_source(
+    text: &str, variable: &str, fail_after: Option<&str>,
+) -> Result<crate::struct_initialization::BuildTrace, Diagnostic> {
+    use crate::struct_initialization::{build_string_struct, NamedString, StringField};
+    let unsupported = |message: &str| Diagnostic {
+        kind: DiagnosticKind::Static, message: message.into(), span: None,
+    };
+    fn plain_literal<'a>(text: &'a str, term: &Term) -> Option<&'a str> {
+        if !matches!(term.kind, TermKind::Literal("str")) { return None; }
+        let raw = text.get(term.start..term.end)?;
+        let content = raw.strip_prefix('"')?.strip_suffix('"')?;
+        // 此處沒有完整字串轉義求值器：不能把原始碼中的
+        // 反斜線轉義當成實際 UTF-8 緩衝區內容。
+        if content.contains('\\') || content.contains('\n') || content.contains('\r') {
+            return None;
+        }
+        Some(content)
+    }
+    let source = Source::new(text.as_bytes().to_vec());
+    if let Some(error) = source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens = lexer::scan(&source);
+    if let Some(error) = tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs, funcs) = Parser {
+        source: &source, tokens: &tokens.tokens, cursor: 0,
+    }.file()?;
+    Checker {
+        source: &source, structs: &structs, functions: &funcs,
+        ability: crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&funcs)?;
+    let main = funcs.iter().find(|fun| fun.name == "main")
+        .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
+    // 只接通單一確定執行的建立式，避免把不可達分支或
+    // 多次執行的程式偷當成已支援的執行期控制流程。
+    let [declaration, trailing_return] = main.body.as_slice() else {
+        return Err(unsupported("P16：來源追蹤只接受單次宣告接直接返回"));
+    };
+    if !matches!(&trailing_return.kind, StmtKind::Return(Term {
+        kind: TermKind::Literal("int"), start, end,
+    }) if text.get(*start..*end) == Some("0")) {
+        return Err(unsupported("P16：返回及控制流程尚未接通資源追蹤"));
+    }
+    let (ty, args) = match &declaration.kind {
+        StmtKind::Declare {
+            name, ty, init: Some(Term {kind: TermKind::Construct(owner, args), ..}), ..
+        } if name == variable && ty == owner => (ty.as_str(), args),
+        _ => return Err(unsupported("P16：不存在單次具名字串結構建立式")),
+    };
+    let definition = structs.get(ty)
+        .ok_or_else(|| unsupported("P16：結構型別不存在"))?;
+    let mut fields = Vec::new();
+    for field in &definition.fields {
+        if field.ty != "str" {
+            return Err(unsupported("P16：資源橋接只證明 str 欄位"));
+        }
+        let default = match &field.default {
+            Some(term) => Some(plain_literal(text, term)
+                .ok_or_else(|| unsupported("P16：僅接受未經轉義的字串預設常值"))?),
+            None => None,
+        };
+        fields.push(StringField {
+            name: &field.name, default, immutable: field.immutable,
+        });
+    }
+    let mut named = Vec::new();
+    for (field, term) in args {
+        named.push(NamedString {
+            field, value: plain_literal(text, term)
+                .ok_or_else(|| unsupported("P16：僅接受未經轉義的具名字串常值"))?,
+        });
+    }
+    if fail_after.is_some_and(|name|
+        !fields.iter().any(|field| field.name == name)) {
+        return Err(unsupported("P16：失敗注入欄位不存在"));
+    }
+    Ok(build_string_struct(&fields, &named, fail_after))
+}
+
 fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<(), Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
@@ -5542,5 +5627,93 @@ mod p15_3_單次迴圈混合跳轉安全合流 {
     fn 內層迴圈的_break_不會錯當外層單次迴圈出口() {
         let source = "fn main()->int{\nvar owner:str = \"資源\"\nfor i in 0..1{\nfor j in 0..1{\nbreak\n}\nvar moved:str = owner.move()\n}\nreturn 0\n}\n";
         assert!(inspect(source).is_ok(), "內層 break 不應否決外層已證明單次的合法移動");
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_來源至_utf8_緩衝區清理 {
+    use super::trace_string_struct_source;
+    use crate::struct_initialization::BuildStatus;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const SOURCE: &str = "struct Message{\nvar first:str = \"甲預設\"\nvar second:str = \"乙預設\"\nvar third:str = \"丙預設\"\n}\nfn main()->int{\nvar item:Message = Message(second=\"乙具名\",first=\"甲具名\")\nreturn 0\n}\n";
+    fn created(events: &[ResourceEvent]) -> Vec<u64> {
+        events.iter().filter_map(|event| match event {
+            ResourceEvent::Created(id) => Some(*id), _ => None
+        }).collect()
+    }
+    fn released(events: &[ResourceEvent]) -> Vec<u64> {
+        events.iter().filter_map(|event| match event {
+            ResourceEvent::Released(id) => Some(*id), _ => None
+        }).collect()
+    }
+
+    #[test]
+    fn 真實來源先依具名順序再依預設配置且反向釋放() {
+        let trace = trace_string_struct_source(SOURCE, "item", None).unwrap();
+        assert_eq!(trace.status, BuildStatus::Complete);
+        assert_eq!(trace.evaluated.iter().map(|step| step.field.as_str())
+            .collect::<Vec<_>>(), vec!["second", "first", "third"]);
+        assert_eq!(trace.lifetime_values, vec![
+            ("second".into(), "乙具名".into()),
+            ("first".into(), "甲具名".into()),
+            ("third".into(), "丙預設".into()),
+        ]);
+        assert_eq!(created(&trace.resources), vec![1,2,3]);
+        assert_eq!(released(&trace.resources), vec![3,2,1]);
+    }
+
+    #[test]
+    fn 真實來源每個已成功建立的失敗切點恰好反向清理() {
+        for (failed, expected) in [
+            ("second", vec![1]), ("first", vec![2,1]), ("third", vec![3,2,1])
+        ] {
+            let trace = trace_string_struct_source(SOURCE, "item", Some(failed)).unwrap();
+            assert_eq!(trace.status, BuildStatus::EvaluationFailed(failed.into()));
+            let mut reversed = created(&trace.resources);
+            reversed.reverse();
+            assert_eq!(released(&trace.resources), expected);
+            assert_eq!(released(&trace.resources), reversed);
+        }
+    }
+
+    #[test]
+    fn 真實來源不可把非字串欄位當成已驗證的字串資源() {
+        let source = "struct Mixed{\nvar label:str = \"中文\"\nvar count:int = 1\n}\nfn main()->int{\nvar item:Mixed = Mixed()\nreturn 0\n}\n";
+        let error = trace_string_struct_source(source, "item", None).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("str 欄位"));
+    }
+
+    #[test]
+    fn 真實來源不能把具有轉義的原文字節當成實際字串內容() {
+        let source = SOURCE.replace("乙具名", "乙\\n具名");
+        let error = trace_string_struct_source(&source, "item", None).unwrap_err();
+        assert!(error.message.contains("轉義") || error.kind == DiagnosticKind::Lexical
+            || error.kind == DiagnosticKind::Syntax);
+    }
+
+    #[test]
+    fn 真實來源不能推定分支或多語句之建立式一定執行() {
+        let source = SOURCE.replace("return 0", "var another:int = 1\nreturn 0");
+        let error = trace_string_struct_source(&source, "item", None).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("單次宣告"));
+    }
+
+    #[test]
+    fn 真實來源不存在的失敗切點不得偽稱已完成注入() {
+        let error = trace_string_struct_source(SOURCE, "item", Some("missing")).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("失敗注入"));
+    }
+
+    #[test]
+    fn 真實來源仍遵守靜態借用與型別拒絕優先於資源執行() {
+        let source = SOURCE.replace("first=\"甲具名\"", "first=1");
+        let error = trace_string_struct_source(&source, "item", None).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("型別"));
     }
 }
