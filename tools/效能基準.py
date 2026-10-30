@@ -19,6 +19,15 @@ def 產生合法來源(宣告數: int) -> str:
     return "\n".join(內容) + "\n"
 
 
+def 產生合法分支來源(分支數: int) -> str:
+    """每段 if/else 都讀寫同一外層變數，檢查分支狀態複製與安全合流。"""
+    內容 = ["fn main()->int{", "var value:int = 0"]
+    for _ in range(分支數):
+        內容.extend(["if (true){", "value = 1", "}else{", "value = 2", "}"])
+    內容.extend(["return value", "}"])
+    return "\n".join(內容) + "\n"
+
+
 def 產生非法位元組來源(錯誤數: int) -> bytes:
     return b"fn main()->int{\n" + b"\xff\n" * 錯誤數 + b"return 0\n}\n"
 
@@ -58,11 +67,14 @@ def 主程式() -> int:
     報告 = {"命令": str(cli), "注意": "包含程序啟動、檔案 IO、診斷輸出；非純語法分析 CPU 時間", "樣本": []}
     with tempfile.TemporaryDirectory(prefix="voiles-perf-") as 目錄:
         root = Path(目錄)
-        for 類型 in ("合法宣告", "非法UTF8診斷"):
+        for 類型 in ("合法宣告", "合法分支", "非法UTF8診斷"):
             for 數量 in args.sizes:
                 path = root / f"{類型}-{數量}.voil"
                 if 類型 == "合法宣告":
                     path.write_text(產生合法來源(數量), encoding="utf-8")
+                    exit_code = 0
+                elif 類型 == "合法分支":
+                    path.write_text(產生合法分支來源(數量), encoding="utf-8")
                     exit_code = 0
                 else:
                     path.write_bytes(產生非法位元組來源(數量))
