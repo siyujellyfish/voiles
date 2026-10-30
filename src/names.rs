@@ -6,18 +6,15 @@ use crate::{Diagnostic, DiagnosticKind};
 use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind, Type};
 use crate::source::Source;
+use crate::ownership_ledger::DeclarationId;
 
-/// 每筆變數宣告具有獨立的原始來源身分；名稱只是查找鍵。
-/// 不把同名遮蔽的內層變數誤當外層來源，亦不代表 Optional 旗標已實作。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct BindingId {
-    declaration_start: usize,
-}
+// 與 P13 安全檢查、共用 AST 及 P16 資源責任表採同一宣告身分型別。
+// 只改資料表示，不擴張 P09 的名稱可見性／前向參照規則。
 
 struct Resolver<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
-    globals: HashMap<String, BindingId>,
+    globals: HashMap<String, DeclarationId>,
 }
 
 impl<'a> Resolver<'a> {
@@ -32,14 +29,14 @@ impl<'a> Resolver<'a> {
     /// 查找實際宣告身分，而非只回傳同名字串是否存在。
     /// 函式前向參照由獨立函式表處理；一般頂層值仍遵守 AW04。
     fn binding_for_reference(&self, name: &str, pos: usize,
-        scopes: &[HashMap<String, BindingId>]) -> Option<BindingId> {
+        scopes: &[HashMap<String, DeclarationId>]) -> Option<DeclarationId> {
         for scope in scopes.iter().rev() {
             if let Some(id) = scope.get(name) { return Some(*id); }
         }
-        self.globals.get(name).copied().filter(|id| id.declaration_start < pos)
+        self.globals.get(name).copied().filter(|id| id.0 < pos)
     }
 
-    fn check_expr(&self, e: &Expr, scopes: &[HashMap<String, BindingId>]) -> Result<(), Diagnostic> {
+    fn check_expr(&self, e: &Expr, scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
         match &e.kind {
             ExprKind::Name(name) => {
                 if self.binding_for_reference(name, e.start, scopes).is_some() {
@@ -68,7 +65,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn initializer(&self, b: &Binding,
-        scopes: &[HashMap<String, BindingId>]) -> Result<(), Diagnostic> {
+        scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
         if let Some(value) = &b.initializer {
             self.check_expr(value, scopes)?;
         }
@@ -76,7 +73,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn block(&self, block: &Block,
-        scopes: &mut Vec<HashMap<String, BindingId>>) -> Result<(), Diagnostic> {
+        scopes: &mut Vec<HashMap<String, DeclarationId>>) -> Result<(), Diagnostic> {
         scopes.push(HashMap::new());
         for statement in &block.statements {
             match &statement.kind {
@@ -87,7 +84,7 @@ impl<'a> Resolver<'a> {
                     // 先檢查初始化來源，再加入當前作用域名稱。
                     // 不因同名宣告預設自己能讀取尚未建立的變數。
                     self.initializer(b, scopes)?;
-                    scopes.last_mut().unwrap().insert(b.name.clone(), BindingId { declaration_start: b.start });
+                    scopes.last_mut().unwrap().insert(b.name.clone(), DeclarationId(b.start));
                 }
                 StmtKind::Assignment { name, value } => {
                     if self.binding_for_reference(name, statement.start, scopes).is_none() {
@@ -128,7 +125,7 @@ pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
                 }
             }
             Item::Binding(b) => {
-                if globals.insert(b.name.clone(), BindingId { declaration_start: b.start }).is_some() {
+                if globals.insert(b.name.clone(), DeclarationId(b.start)).is_some() {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
                         message: "頂層作用域重複宣告變數".into(),
@@ -158,7 +155,7 @@ pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve, BindingId, Resolver};
+    use super::{resolve, DeclarationId, Resolver};
     use std::collections::HashMap;
     use crate::{lexer::scan, parser::{parse, Item, StmtKind}, source::Source, DiagnosticKind};
 
@@ -238,13 +235,13 @@ mod tests {
             globals: HashMap::new(),
         };
         let mut scopes = vec![HashMap::new()];
-        scopes[0].insert(outer.name.clone(), BindingId { declaration_start: outer.start });
+        scopes[0].insert(outer.name.clone(), DeclarationId(outer.start));
         let outer_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
         scopes.push(HashMap::new());
-        scopes[1].insert(inner.name.clone(), BindingId { declaration_start: inner.start });
+        scopes[1].insert(inner.name.clone(), DeclarationId(inner.start));
         let inner_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
         assert_ne!(outer_id, inner_id, "H06／AH04 遮蔽不能覆蓋來源身分");
-        assert_eq!(inner_id.declaration_start, inner.start);
+        assert_eq!(inner_id.0, inner.start);
         scopes.pop();
         assert_eq!(
             resolver.binding_for_reference("n", function.end, &scopes),
