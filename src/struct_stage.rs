@@ -232,3 +232,6 @@ include!("struct_stage/parity_tests.rs");
 // P16.6-R03：相同來源身分的 UTF-8 事件與借用／資源責任表對照。
 #[cfg(test)]
 include!("struct_stage/resource_contract_tests.rs");
+
+// P16.6-R02.2：僅投影已核准公開／私有交集，不放寬 P13 私有邊界。
+include!("struct_stage/ir_projection.rs");

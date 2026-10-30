@@ -6,6 +6,7 @@ mod lexer;
 mod expr;
 mod parser;
 mod syntax_shared;
+mod common_ir;
 mod ast_debug;
 mod diagnostics;
 mod names;
