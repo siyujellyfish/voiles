@@ -20,6 +20,8 @@ pub(crate) enum ExprKind {
     /// 對已確認完整語言方法／move／borrow 的語法辨識；不核准所有權語意。
     ZeroArgMethod(Box<Expr>, String),
     /// 專用的字串第一層索引寫入運算式，不能泛化為其他賦值表達式。
+    // 完整語言保留的私有辨識結點，MVP-A parser 尚不建構。
+    #[allow(dead_code)]
     FirstIndexWrite(Box<Expr>, Box<Expr>),
 }
 
@@ -169,6 +171,7 @@ impl<'a> ExprParser<'a> {
 
     /// 只辨識已確認的第一層字串索引寫入運算式形狀。
     /// 不推導任何寫入權限、Unicode 字素數、拷貝或求值順序。
+    #[allow(dead_code)] // 只供已規劃的完整語言第一層索引寫入，不公開 MVP-A。
     pub(crate) fn first_index_write(&mut self) -> Result<Expr, Diagnostic> {
         let target = self.postfix()?;
         let first_level = matches!(
