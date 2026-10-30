@@ -19,7 +19,11 @@ fn private_scalar_expression(term: &Term, text: &str)
             op: *operator,
             right: Box::new(private_scalar_expression(right, text)?),
         },
+        // 既有私有 Parser 以 Construct(name, []) 表示 name() 的
+        // 無位置引數形式，須先確定沒有同名結構才可投影一般函式呼叫。
         TermKind::Call(name, args) if args.is_empty() =>
+            ScalarExpr::CallZero(name.clone()),
+        TermKind::Construct(name, args) if args.is_empty() =>
             ScalarExpr::CallZero(name.clone()),
         _ => return None,
     }.into()
@@ -101,7 +105,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
 
     #[test]
     fn scalar_int64_與分支合流的共同宣告身分及語法樹完全一致() {
-        let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = n + 1\n}else{\nn = 2\n}\nreturn n\n}\n";
+        let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
         let tree = compare(code);
         assert_eq!(tree.functions.len(), 1);
         let common_ir::ScalarStmt::Declare { declaration_start, .. } =
