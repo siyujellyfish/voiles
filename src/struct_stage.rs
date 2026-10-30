@@ -725,8 +725,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // continuation 來自父區塊，不能引用在當前最內層
                     // 區塊新宣告的同名別名；同名外層別名是不同來源。
                     // 外層仍存活的別名繼續保守追蹤其父區塊後繼。
-                    let needed_later = depth != current_scope && continuation.iter()
-                        .any(|stmt| Self::statement_mentions(stmt, name));
+                    // 父區塊後繼也要依來源順序辨識子分支內的新宣告。
+                    // 單純遞迴搜尋同名字串會把子分支新借用別名的使用
+                    // 錯算成舊別名仍存活，導致合法原來源讀取遭拒絕。
+                    let needed_later = depth != current_scope
+                        && Self::scope_mentions_binding(continuation, name, false);
                     if loan.active && !needed_here && !needed_later {
                         loan.active = false;
                     }
@@ -4673,5 +4676,25 @@ mod p15_1_父區塊後繼與內層宣告身分 {
         let error=inspect(src).expect_err("外層借用在分支後仍使用不得提前解除");
         assert_eq!(error.kind,DiagnosticKind::Static);
         assert!(error.message.contains("HC14"));
+    }
+}
+
+#[cfg(test)]
+mod p15_父區塊續行借用來源身分 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 後續分支遮蔽同名借用不應延長舊借用有效期() {
+        let src = "fn main()->int{\nconst owner:bool = true\nconst alias:bool = owner.borrow()\nif(alias){\nvar copied:bool = owner\n}else{\nvar copied:bool = false\n}\nif(true){\nconst alias:bool = false\nreturn 1\n}else{\nreturn 0\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok(), "後續新作用域同名變數不得延長原借用");
+    }
+
+    #[test]
+    fn 後續真正使用外層借用仍須封鎖來源() {
+        let src = "fn main()->int{\nconst owner:bool = true\nconst alias:bool = owner.borrow()\nif(alias){\nvar copied:bool = owner\n}else{\nvar copied:bool = false\n}\nif(alias){\nreturn 1\n}else{\nreturn 0\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("後續仍使用原借用，不可提早歸還");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
     }
 }
