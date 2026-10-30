@@ -192,6 +192,18 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 公開與私有解析器真正共用的加減運算維持左結合及括號次序() {
+        let src = "fn main()->int{\nvar n:int = 10\nreturn n - 3 + (2 - 1)\n}\n";
+        let ast = compare(src);
+        let crate::common_ir::ScalarStmt::Return(expr) =
+            &ast.functions[0].body[1] else {panic!("應保留 return 表達式");};
+        let crate::common_ir::ScalarExpr::Binary {left,op:'+',right} = expr
+            else {panic!("最外層應是最後一個加號運算");};
+        assert!(matches!(&**left,crate::common_ir::ScalarExpr::Binary {op:'-',..}));
+        assert!(matches!(&**right,crate::common_ir::ScalarExpr::Binary {op:'-',..}));
+    }
+
+    #[test]
     fn 非共有的資源語法不得冒充共同標量_ir() {
         let text = "fn main()->int{\nvar text:str = \"中文\"\nreturn 0\n}\n";
         let source = Source::new(text.as_bytes().to_vec());
