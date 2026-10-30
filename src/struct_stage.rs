@@ -1007,6 +1007,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// 迴圈條件每次重新求值；不像方法位置引數，
+    /// 整筆 .move() 在這裡不能視為可重複使用的安全來源。
+    fn while_condition_nonconsuming(term: &Term) -> bool {
+        match &term.kind {
+            TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
+            TermKind::BinaryInt { left, right, .. } =>
+                Self::while_condition_nonconsuming(left)
+                    && Self::while_condition_nonconsuming(right),
+            _ => false,
+        }
+    }
+
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
@@ -1425,7 +1437,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::While { condition, body: loop_body } => {
                     // 條件於每次迭代重新求值；不得讓條件本身移動
                     // 所有者、建立借用或觸發未受控函式副作用。
-                    if !Self::method_argument_safe_before_borrow(condition) {
+                    if !Self::while_condition_nonconsuming(condition) {
                         return Err(self.error(
                             "P15：while 條件只能使用無資源副作用的合法純值", condition));
                     }
@@ -1877,7 +1889,7 @@ mod tests {
 
     #[test]
     fn 不得把限制外的控制流程直接當成已驗證() {
-        let source = BASE.replace("return 0", "while (true){\nreturn 0\n}\nreturn 0");
+        let source = BASE.replace("return 0", "for i in 1..4{\nreturn 0\n}\nreturn 0");
         assert!(inspect_with_test_ability(&source, |_| Allowed).is_err());
     }
     #[test]
