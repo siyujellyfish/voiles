@@ -5131,3 +5131,47 @@ mod p15_4_欄位索引與容器借用界線 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p15_6_最後使用點與_self_退出邊界來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 一般借用不必等函式區塊出口即可歸還() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar snapshot:int = alias\nvar direct:int = owner\nreturn direct\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn self_借用於唯讀方法返回後才歸還並允許接收者整筆移動() {
+        let src = "struct Holder{\nvar count:int = 1\nfn view()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:Holder = Holder()\nvar observed:int = owner.view()\nvar moved:Holder = owner.move()\nreturn observed\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn self_方法不可在仍活躍的原來源借用期間偷拿新接收者() {
+        let src = "struct Holder{\nvar count:int = 1\nfn view()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:Holder = Holder()\nvar alias:Holder = owner.borrow()\nvar invalid:int = owner.view()\nreturn alias.view()\n}\n";
+        let err=inspect(src).expect_err("別名仍有效時不得直接方法存取原持有者");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("借用"));
+    }
+
+    #[test]
+    fn 函式接受已核准_copyable_借用值的獨立複製不造成參數逃逸() {
+        let src = "fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nvar owner:int = 3\nvar alias:int = owner.borrow()\nvar copy:int = identity(alias)\nvar direct:int = owner\nreturn copy + direct\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 尚未建立_await_執行期證明前不得放行有效別名跨越語法邊界() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nawait alias\nreturn alias\n}\n";
+        assert!(inspect(src).is_err(), "VB15-01-A 的跨 await 合法來源尚待完整語法與存活證明");
+    }
+
+    #[test]
+    fn 尚未建立_例外_歸還證明前不得將錯誤邊界當成合法來源() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\ntry{\nreturn alias\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_err(), "未證明例外歸還語意不得接受");
+    }
+}
