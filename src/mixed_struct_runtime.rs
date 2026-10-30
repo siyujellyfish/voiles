@@ -207,14 +207,14 @@ impl MixedStructRuntime {
         self.current_free(target)?;
         let (i,j)=self.valid_whole(source)?;
         let original=self.scopes[i][j].owned.as_ref().expect("已預檢");
-        if original.fields.iter().any(|field|matches!(field.value,StoredValue::Str(_))) {
+        if original.fields.iter().any(|field|matches!(&field.value,StoredValue::Str(_))) {
             return Err(MixedError::NonCopyableStruct);
         }
         let fields=original.fields.iter().map(|field|StoredField {
             name:field.name.clone(),
-            value:match field.value {
-                StoredValue::Int(n)=>StoredValue::Int(n),
-                StoredValue::Bool(b)=>StoredValue::Bool(b),
+            value:match &field.value {
+                StoredValue::Int(n)=>StoredValue::Int(*n),
+                StoredValue::Bool(b)=>StoredValue::Bool(*b),
                 StoredValue::Str(_)=>unreachable!("含 str 已整批預檢拒絕"),
             },
         }).collect();
