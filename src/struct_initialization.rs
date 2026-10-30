@@ -91,6 +91,7 @@ pub(crate) enum StructRuntimeError {
     MissingBinding,
     MovedBinding,
     UninitializedField,
+    IncompleteStruct,
     UnknownField,
     ImmutableField,
     ImmutableOwner,
@@ -293,8 +294,10 @@ impl OwnedStructRuntime {
         -> Result<(), StructRuntimeError> {
         self.current_name_free(to)?;
         let (i,j) = self.location(from)?;
-        if self.scopes[i][j].owned.is_none() {
-            return Err(StructRuntimeError::MovedBinding);
+        let original=self.scopes[i][j].owned.as_ref()
+            .ok_or(StructRuntimeError::MovedBinding)?;
+        if !original.missing.is_empty() {
+            return Err(StructRuntimeError::IncompleteStruct);
         }
         let moved = self.scopes[i][j].owned.take().expect("已預檢來源");
         for field in &moved.fields {
@@ -311,8 +314,12 @@ impl OwnedStructRuntime {
     pub(crate) fn return_whole(&mut self, name: &str)
         -> Result<ReturnedStringStruct, StructRuntimeError> {
         let (i,j) = self.location(name)?;
-        let value = self.scopes[i][j].owned.take()
+        let original=self.scopes[i][j].owned.as_ref()
             .ok_or(StructRuntimeError::MovedBinding)?;
+        if !original.missing.is_empty() {
+            return Err(StructRuntimeError::IncompleteStruct);
+        }
+        let value = self.scopes[i][j].owned.take().expect("已預檢來源");
         for field in &value.fields {
             self.ledger.mark_detached_return(&field.value);
         }
@@ -789,5 +796,48 @@ mod p16_持續結構欄位原子覆寫安全 {
         // 失敗暫存 id4，成功欄位 id5，舊欄位 id2 僅成功後釋放。
         assert_eq!(released(rt.events()),vec![4,2]);
         assert_eq!(released(&rt.finish().unwrap()),vec![4,2,5,3,1]);
+    }
+}
+
+#[cfg(test)]
+mod p16_未完成複合實例不得偷渡跨作用域所有權 {
+    use super::*;
+    #[test]
+    fn 未初始化_var_str_欄位不能整筆轉交或返回() {
+        let fields=[
+            StringField{name:"unset",default:None,immutable:false},
+            StringField{name:"id",default:Some("唯一🪼"),immutable:true},
+        ];
+        let mut rt=OwnedStructRuntime::new();
+        assert_eq!(rt.construct("owner",&fields,&[],None),
+            Ok(BuildStatus::PartiallyInitialized(vec!["unset".into()])));
+        assert_eq!(rt.move_whole("owner","target"),
+            Err(StructRuntimeError::IncompleteStruct));
+        assert_eq!(rt.return_whole("owner").unwrap_err(),
+            StructRuntimeError::IncompleteStruct);
+        assert_eq!(rt.read_field("owner","id"),Ok("唯一🪼"));
+        assert_eq!(rt.finish().unwrap(),vec![
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+    #[test]
+    fn 補齊所有_var_欄位後才可整筆移動及返回() {
+        let fields=[
+            StringField{name:"pending",default:None,immutable:false},
+            StringField{name:"id",default:Some("固定"),immutable:true},
+        ];
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields,&[],None).unwrap();
+        rt.assign_field_checked("owner","pending","補齊",false).unwrap();
+        rt.move_whole("owner","moved").unwrap();
+        let result=rt.return_whole("moved").unwrap();
+        rt.accept_return("received",result).unwrap();
+        assert_eq!(rt.read_field("received","pending"),Ok("補齊"));
+        assert_eq!(rt.finish().unwrap(),vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Moved(1),ResourceEvent::Moved(2),
+            ResourceEvent::Returned(1),ResourceEvent::Returned(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
     }
 }

@@ -2584,6 +2584,129 @@ fn trace_persistent_struct_field_write_source(
     Ok((observed,resources))
 }
 
+/// P16.6 混合 int／bool／str 受限來源橋接。
+/// 先完整通過現行靜態 Checker，才執行真實純值複製或
+/// 含非 Copyable 欄位的整筆資源移動／失敗回滾。
+#[cfg(test)]
+fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
+    -> Result<(Option<i64>,Vec<crate::owned_str_runtime::ResourceEvent>),Diagnostic> {
+    use crate::mixed_struct_runtime::{
+        MixedStructRuntime,MixedFieldSpec,NamedMixed,SeedValue,ScalarKind,Observed,MixedError,
+    };
+    let reject=|message:&str| Diagnostic {
+        kind:DiagnosticKind::Static,message:message.into(),span:None,
+    };
+    fn literal<'a>(text:&'a str,term:&Term,kind:ScalarKind)->Option<SeedValue<'a>> {
+        let raw=text.get(term.start..term.end)?;
+        match (kind,&term.kind) {
+            (ScalarKind::Str,TermKind::Literal("str"))=>{
+                let text=raw.strip_prefix('"')?.strip_suffix('"')?;
+                (!text.contains('\\')&&!text.contains('\n')
+                    &&!text.contains('\r')).then_some(SeedValue::Str(text))
+            },
+            (ScalarKind::Bool,TermKind::Literal("bool"))=>match raw {
+                "true"=>Some(SeedValue::Bool(true)),
+                "false"=>Some(SeedValue::Bool(false)),_=>None
+            },
+            (ScalarKind::Int,TermKind::Literal("int"))=>{
+                if !raw.chars().all(|ch|ch.is_ascii_digit()||ch=='_') {
+                    return None;
+                }
+                raw.replace('_',"").parse().ok().map(SeedValue::Int)
+            },
+            _=>None,
+        }
+    }
+    let source=Source::new(text.as_bytes().to_vec());
+    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens=lexer::scan(&source);
+    if let Some(error)=tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs,functions)=Parser {
+        source:&source,tokens:&tokens.tokens,cursor:0,
+    }.file()?;
+    Checker {
+        source:&source,structs:&structs,functions:&functions,
+        ability:crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&functions)?;
+    let main=functions.iter().find(|fun|fun.name=="main")
+        .ok_or_else(||reject("P16：缺少 main"))?;
+    let [declare,transfer,end]=main.body.as_slice() else {
+        return Err(reject("P16：混合結構執行路徑僅支援建構、整筆複製／移動、返回"));
+    };
+    if !matches!(&end.kind,StmtKind::Return(Term {
+        kind:TermKind::Literal("int"),start,end,
+    }) if text.get(*start..*end)==Some("0")) {
+        return Err(reject("P16：尚未證明非直接返回的清理順序"));
+    }
+    let (owner,ty,args)=match &declare.kind {
+        StmtKind::Declare {
+            name,ty,init:Some(Term {kind:TermKind::Construct(ctor,args),..}),..
+        } if ty==ctor=>(name.as_str(),ty.as_str(),args),
+        _=>return Err(reject("P16：必須先建構混合結構")),
+    };
+    let (target,moved)=match &transfer.kind {
+        StmtKind::Declare {
+            name,ty:target_ty,init:Some(term),..
+        } if target_ty==ty=>match &term.kind {
+            TermKind::Move(source) if source==owner=>(name.as_str(),true),
+            TermKind::Name(source) if source==owner=>(name.as_str(),false),
+            _=>return Err(reject("P16：只支援整體結構來源的已核准複製或 .move()")),
+        },
+        _=>return Err(reject("P16：第二語句必須建立同型別結構持有者")),
+    };
+    let definition=structs.get(ty)
+        .ok_or_else(||reject("P16：混合型別結構不存在"))?;
+    let mut fields=Vec::new();
+    for field in &definition.fields {
+        let kind=match field.ty.as_str() {
+            "int"=>ScalarKind::Int,"bool"=>ScalarKind::Bool,"str"=>ScalarKind::Str,
+            _=>return Err(reject("P16：本次混合執行期尚未支援其他欄位型別")),
+        };
+        let default=field.default.as_ref().map(|term|
+            literal(text,term,kind).ok_or_else(||
+                reject("P16：尚未證明此混合欄位預設運算式可直接執行")))
+            .transpose()?;
+        fields.push(MixedFieldSpec {
+            name:field.name.as_str(),kind,default,immutable:field.immutable,
+        });
+    }
+    let mut named=Vec::new();
+    for (name,term) in args {
+        let field=fields.iter().find(|field|field.name==name)
+            .ok_or_else(||reject("P16：混合欄位名稱未核准"))?;
+        let value=literal(text,term,field.kind)
+            .ok_or_else(||reject("P16：只接受可完整解碼的混合欄位獨立常值"))?;
+        named.push(NamedMixed {field:name.as_str(),value});
+    }
+    let mut rt=MixedStructRuntime::new();
+    match rt.construct(owner,&fields,&named,fail_after) {
+        Ok(())=>{},
+        Err(MixedError::EvaluationFailed(_))=>{
+            return Ok((None,rt.finish().map_err(|_|
+                reject("P16：混合欄位失敗未能逆序清理資源"))?));
+        },
+        Err(_)=>return Err(reject("P16：混合結構求值計畫無法安全完成")),
+    }
+    if moved {
+        rt.move_whole(owner,target).map_err(|_|
+            reject("P16：混合結構整筆移動未完成"))?;
+    } else {
+        rt.copy_whole(owner,target).map_err(|_|
+            reject("P16：不可從非 Copyable 混合結構隱含複製"))?;
+    }
+    let number=match rt.field(target,"num") {
+        Ok(Observed::Int(value))=>value,
+        _=>return Err(reject("P16：本次混合來源須有可觀察的 int num 欄位")),
+    };
+    let events=rt.finish().map_err(|_|
+        reject("P16：混合結構退出後資源身分未平衡"))?;
+    Ok((Some(number),events))
+}
+
 /// P16：真實 .voil 結構函式返回的私有所有權證據。
 /// 限無參數 provider 單次建構與具名整筆 .move() 返回，
 /// main 以唯一全新結構綁定接收，避免虛構任意函式執行期。
@@ -6974,5 +7097,75 @@ mod p16_真正_voil_結構欄位原子覆寫來源 {
             .expect_err("未有字串解碼器不接受此來源橋接");
         assert!(err.message.contains("轉義")
             || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_混合純值與_utf8_結構來源 {
+    use super::trace_mixed_struct_source;
+    use crate::owned_str_runtime::ResourceEvent as E;
+    use crate::DiagnosticKind;
+
+    const MIXED:&str="struct Mixed{\nvar num:int = 3\nvar text:str = \"舊值\"\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Mixed = Mixed(text=\"繁體中文🪼\",num=7)\nvar target:Mixed = original.move()\nreturn 0\n}\n";
+    const PLAIN:&str="struct Plain{\nvar num:int = 3\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Plain = Plain(num=9)\nvar target:Plain = original\nreturn 0\n}\n";
+
+    #[test]
+    fn 真正_voil_混合結構具名優先求值只有字串建立移動清理事件() {
+        let (value,events)=trace_mixed_struct_source(MIXED,None).unwrap();
+        assert_eq!(value,Some(7));
+        assert_eq!(events,vec![E::Created(1),E::Moved(1),E::Released(1)]);
+    }
+
+    #[test]
+    fn 真正_voil_全_copyable_結構整體複製不虛構資源事件() {
+        let (value,events)=trace_mixed_struct_source(PLAIN,None).unwrap();
+        assert_eq!(value,Some(9));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn 真正_voil_混合結構隱含複製必須在資源分配前靜態拒絕() {
+        let illegal=MIXED.replace("original.move()","original");
+        let err=trace_mixed_struct_source(&illegal,None)
+            .expect_err("str 欄位不得由隱含複製變成第二所有者");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_混合具名_str_成功後後續_int_失敗只逆序清理資源() {
+        let (value,events)=trace_mixed_struct_source(MIXED,Some("num")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![E::Created(1),E::Released(1)]);
+    }
+
+    #[test]
+    fn 真正_voil_混合預設_bool_失敗不假造純值資源() {
+        let (value,events)=trace_mixed_struct_source(MIXED,Some("flag")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![E::Created(1),E::Released(1)]);
+    }
+
+    #[test]
+    fn 真正_voil_沒有執行的覆蓋預設欄位不能充當失敗注入切點() {
+        let err=trace_mixed_struct_source(MIXED,Some("unknown"))
+            .expect_err("不存在的求值步驟不得偽裝發生資源故障");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_尚未初始化的_str_var_不能被整筆轉移() {
+        let invalid=MIXED.replace("var text:str = \"舊值\"","var text:str")
+            .replace("text=\"繁體中文🪼\",","").replace("Mixed(,","Mixed(");
+        let err=trace_mixed_struct_source(&invalid,None)
+            .expect_err("部分初始化不可當完整資源所有者移動");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_未經核准的混合複合求值不能假稱已執行() {
+        let extra=MIXED.replace("return 0","var extra:int = 1\nreturn 0");
+        let err=trace_mixed_struct_source(&extra,None)
+            .expect_err("沒有一般多語句執行模型前不得虛報清理");
+        assert_eq!(err.kind,DiagnosticKind::Static);
     }
 }

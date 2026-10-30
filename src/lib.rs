@@ -28,6 +28,7 @@ mod struct_move_probe;
 mod struct_stage;
 mod struct_eval_plan;
 mod struct_initialization;
+mod mixed_struct_runtime;
 #[cfg(test)]
 mod vb16_constructor_source_tests;
 
