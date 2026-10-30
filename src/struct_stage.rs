@@ -1606,8 +1606,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     });
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
-                    // 僅准對完整具名擁有者覆寫 Copyable var 欄位，或對可證明
-                    // 尚未初始化的 var 欄位首次寫入；後者不涉及 P16 舊值清理。
+                    // VA16-03-A：已核准的 str 獨立常值可以先取得唯一新資源，
+                    // 成功後原子覆寫具名 var 結構的 var str 欄位；
+                    // 其他非 Copyable 右值仍維持靜態保守拒絕。
                     self.check_direct(vars, receiver, value)?;
                     let owner = Self::lookup(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
@@ -1632,9 +1633,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let expected_type = member.ty.clone();
                     if !first_init {
                         let permission = self.permission(&expected_type);
-                        if permission != CopyPermission::Allowed {
+                        let proven_fresh_string = expected_type == "str"
+                            && matches!(&value.kind, TermKind::Literal("str"));
+                        if permission != CopyPermission::Allowed && !proven_fresh_string {
                             return Err(self.reject_noncopyable(permission,
-                                "P13 欄位覆寫涉及未核准的原值資源清理", value));
+                                "P16：非 Copyable 欄位只核准新建 str 常值原子覆寫，其他資源右值仍未證明", value));
                         }
                     }
                     let (actual, ready) = self.evaluate(value, vars)?;
@@ -2480,6 +2483,105 @@ fn trace_string_return_source(
     let events = runtime.finish()
         .expect("呼叫端退出後每個資源必須恰好釋放一次");
     Ok((retained, events))
+}
+
+/// VA16-03-A：真正 .voil 受限「建構→var str 欄位賦值」
+/// 由同一靜態檢查過的 AST 交由 UTF-8 持續資源模型執行。
+/// 其他操作及未核准右值不能被資源橋接假裝成已執行。
+#[cfg(test)]
+fn trace_persistent_struct_field_write_source(
+    text: &str, fail_after_rhs: bool,
+) -> Result<(String, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
+    use crate::struct_initialization::{BuildStatus, NamedString,
+        OwnedStructRuntime, StringField, StructRuntimeError};
+    let reject=|message:&str| Diagnostic {
+        kind:DiagnosticKind::Static,message:message.into(),span:None,
+    };
+    fn unescaped_literal<'a>(source:&'a str, term:&Term)->Option<&'a str> {
+        if !matches!(&term.kind,TermKind::Literal("str")) { return None; }
+        let raw=source.get(term.start..term.end)?
+            .strip_prefix('"')?.strip_suffix('"')?;
+        (!raw.contains('\\')&&!raw.contains('\n')
+            &&!raw.contains('\r')).then_some(raw)
+    }
+    let source=Source::new(text.as_bytes().to_vec());
+    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens=lexer::scan(&source);
+    if let Some(error)=tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs,functions)=Parser {
+        source:&source,tokens:&tokens.tokens,cursor:0,
+    }.file()?;
+    Checker {
+        source:&source,structs:&structs,functions:&functions,
+        ability:crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&functions)?;
+    let main=functions.iter().find(|function|function.name=="main")
+        .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
+    let [declaration,assignment,last]=main.body.as_slice() else {
+        return Err(reject("P16：僅支援一次結構建構、欄位賦值與直接返回"));
+    };
+    if !matches!(&last.kind,StmtKind::Return(Term {
+        kind:TermKind::Literal("int"),start,end,
+    }) if text.get(*start..*end)==Some("0")) {
+        return Err(reject("P16：欄位資源清理僅證明直接 return 0"));
+    }
+    let (owner,ty,mutable,args)=match &declaration.kind {
+        StmtKind::Declare {
+            name,ty,mutable,init:Some(Term {
+                kind:TermKind::Construct(ctor,args),..
+            }),
+        } if ty==ctor =>(name.as_str(),ty.as_str(),*mutable,args),
+        _=>return Err(reject("P16：來源須先宣告具名字串結構")),
+    };
+    let (field,new_value)=match &assignment.kind {
+        StmtKind::FieldAssign {receiver,field,value} if receiver==owner=>
+            (field.as_str(),unescaped_literal(text,value)
+                .ok_or_else(||reject("P16：欄位覆寫只支援未轉義的獨立 str 常值"))?),
+        _=>return Err(reject("P16：來源須有針對同一結構的欄位賦值")),
+    };
+    let definition=structs.get(ty)
+        .ok_or_else(||reject("P16：結構型別不存在"))?;
+    let fields=definition.fields.iter().map(|member| {
+        if member.ty!="str" {
+            return Err(reject("P16：此私有執行期僅接通 str 欄位"));
+        }
+        let default=member.default.as_ref().map(|term|
+            unescaped_literal(text,term).ok_or_else(||
+                reject("P16：尚無被核准的字串轉義求值器")))
+            .transpose()?;
+        Ok(StringField {
+            name:member.name.as_str(),default,immutable:member.immutable,
+        })
+    }).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let named=args.iter().map(|(field,value)|
+        unescaped_literal(text,value).map(|text_value|NamedString {
+            field:field.as_str(),value:text_value,
+        }).ok_or_else(||reject("P16：具名引數只支援未轉義 str 常值"))
+    ).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let mut rt=OwnedStructRuntime::new();
+    let ready=rt.construct_with_access(owner,mutable,&fields,&named,None)
+        .map_err(|_|reject("P16：真實來源結構無法安全完成建立"))?;
+    if !matches!(ready,BuildStatus::Complete|BuildStatus::PartiallyInitialized(_)) {
+        return Err(reject("P16：非可執行的結構狀態"));
+    }
+    let actual=rt.assign_field_checked(owner,field,new_value,fail_after_rhs);
+    if fail_after_rhs {
+        if !matches!(actual,Err(StructRuntimeError::EvaluationFailed(_))) {
+            return Err(reject("P16：右值失敗注入未由資源模型確實發生"));
+        }
+    } else {
+        actual.map_err(|_|reject("P16：合法右值未能安全原子提交"))?;
+    }
+    let observed=rt.read_field(owner,field)
+        .map_err(|_|reject("P16：原持有者欄位沒有可讀資源"))?
+        .to_owned();
+    let resources=rt.finish()
+        .map_err(|_|reject("P16：結構欄位覆寫未完整平衡資源身分"))?;
+    Ok((observed,resources))
 }
 
 /// P16：真實 .voil 結構函式返回的私有所有權證據。
@@ -3963,10 +4065,10 @@ mod p13_formal_partial_field_completion_tests {
     }
 
     #[test]
-    fn p13_s07_已有非_copyable_欄位不可二次覆寫_避免偷定_p16() {
+    fn p13_s07_已核准非_copyable_獨立字串可以連續安全覆寫() {
         let src = format!("{HEADER}a.x = 2\na.text = \"hi\"\na.text = \"bye\"\nreturn 0\n}}\n");
-        let err = inspect(&src).unwrap_err();
-        assert!(err.message.contains("Copyable 已明確禁止"));
+        assert!(inspect(&src).is_ok(),
+            "字串右值先取得資源再覆寫，原所有者由 VA16-03-A 清理");
     }
 }
 
@@ -3999,11 +4101,12 @@ mod p13_formal_field_write_tests {
     }
 
     #[test]
-    fn p13_資源欄位覆寫仍依_p16_前置安全保守拒絕() {
+    fn p13_資源欄位覆寫依已核准_va16_03_獨立字串原子提交() {
         let src = format!("{BODY}a.text = \"new\"\nreturn 0\n}}\n");
-        let err = inspect(&src).unwrap_err();
-        assert_eq!(err.kind, DiagnosticKind::Static);
-        assert!(err.message.contains("Copyable 已明確禁止"));
+        assert!(inspect(&src).is_ok(),
+            "已核准 VA16-03-A 的新建 str 常值不再是未定清理責任");
+        let unsafe_rhs = format!("{BODY}var source:str = \"new\"\na.text = source\nreturn 0\n}}\n");
+        assert_eq!(inspect(&unsafe_rhs).unwrap_err().kind,DiagnosticKind::Static);
     }
 
     #[test]
@@ -6776,6 +6879,99 @@ mod p16_真正_voil_複合結構返回資源責任 {
         let err=trace_persistent_struct_return_source(
             &invalid,"provide","received",None)
             .expect_err("資源橋接沒有任意字串解碼器");
+        assert!(err.message.contains("轉義")
+            || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_結構欄位原子覆寫來源 {
+    use super::{inspect,trace_persistent_struct_field_write_source};
+    use crate::owned_str_runtime::ResourceEvent as E;
+    use crate::DiagnosticKind;
+
+    const SOURCE:&str="struct Holder{\nvar title:str = \"舊值\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新值🪼\"\nreturn 0\n}\n";
+
+    #[test]
+    fn 真正_voil_右值建立後原子覆寫舊資源再逆序清理() {
+        let (value,events)=trace_persistent_struct_field_write_source(SOURCE,false).unwrap();
+        assert_eq!(value,"新值🪼");
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Created(3),
+            E::Released(1),E::Released(3),E::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn 真正_voil_右值故障只釋放暫存不更改舊持有者() {
+        let (value,events)=trace_persistent_struct_field_write_source(SOURCE,true).unwrap();
+        assert_eq!(value,"舊值");
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Created(3),
+            E::Released(3),E::Released(2),E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 真正_voil_沒有預設的_var_str_首次完成初始化不釋放假舊值() {
+        let source=SOURCE.replace("var title:str = \"舊值\"","var title:str");
+        let (value,events)=trace_persistent_struct_field_write_source(&source,false).unwrap();
+        assert_eq!(value,"新值🪼");
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Released(2),E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 真正_voil_const_結構實例即使欄位_var_也不可覆寫() {
+        let source=SOURCE.replace("var owner:Holder","const owner:Holder");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("const 結構實例禁止任何欄位覆寫");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("S18"));
+    }
+
+    #[test]
+    fn 真正_voil_const_欄位在任何右值配置之前靜態拒絕() {
+        let source=SOURCE.replace("owner.title = \"新值🪼\"","owner.id = \"新值🪼\"");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("const 欄位永遠不可覆寫");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("S18"));
+    }
+
+    #[test]
+    fn 真正_voil_非_copyable_具名右值不得充當隱含複製() {
+        let source=SOURCE.replace("owner.title = \"新值🪼\"",
+            "var borrowed:str = \"其他\"\nowner.title = borrowed");
+        let err=inspect(&source).expect_err("str 右值非 Copyable 且沒有明確移動");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_來源作用中借用阻止結構直接欄位覆寫() {
+        let source=SOURCE.replace("owner.title = \"新值🪼\"",
+            "const alias:Holder = owner.borrow()\nowner.title = \"新值🪼\"\nvar later:int = 1");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("借用有效期資料流或非三語句執行證明不得放行");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_非法欄位與不相關控制語句不得被省略執行() {
+        let bad=SOURCE.replace("owner.title = \"新值🪼\"","owner.unknown = \"新值🪼\"");
+        assert_eq!(inspect(&bad).unwrap_err().kind,DiagnosticKind::Static);
+        let extra=SOURCE.replace("return 0","var x:int = 1\nreturn 0");
+        let err=trace_persistent_struct_field_write_source(&extra,false)
+            .expect_err("未實作任意語句執行器前不能宣稱清理已完整");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_帶轉義字串不能被當成未轉義_utf8_內容() {
+        let source=SOURCE.replace("新值🪼","帶\\n轉義");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("未有字串解碼器不接受此來源橋接");
         assert!(err.message.contains("轉義")
             || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
     }
