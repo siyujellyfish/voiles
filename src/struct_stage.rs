@@ -6882,3 +6882,96 @@ mod p16_真正_voil_複合結構返回資源責任 {
             || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
     }
 }
+
+#[cfg(test)]
+mod p16_真正_voil_結構欄位原子覆寫來源 {
+    use super::{inspect,trace_persistent_struct_field_write_source};
+    use crate::owned_str_runtime::ResourceEvent as E;
+    use crate::DiagnosticKind;
+
+    const SOURCE:&str="struct Holder{\nvar title:str = \"舊值\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新值🪼\"\nreturn 0\n}\n";
+
+    #[test]
+    fn 真正_voil_右值建立後原子覆寫舊資源再逆序清理() {
+        let (value,events)=trace_persistent_struct_field_write_source(SOURCE,false).unwrap();
+        assert_eq!(value,"新值🪼");
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Created(3),
+            E::Released(1),E::Released(3),E::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn 真正_voil_右值故障只釋放暫存不更改舊持有者() {
+        let (value,events)=trace_persistent_struct_field_write_source(SOURCE,true).unwrap();
+        assert_eq!(value,"舊值");
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Created(3),
+            E::Released(3),E::Released(2),E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 真正_voil_沒有預設的_var_str_首次完成初始化不釋放假舊值() {
+        let source=SOURCE.replace("var title:str = \"舊值\"","var title:str");
+        let (value,events)=trace_persistent_struct_field_write_source(&source,false).unwrap();
+        assert_eq!(value,"新值🪼");
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Released(2),E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 真正_voil_const_結構實例即使欄位_var_也不可覆寫() {
+        let source=SOURCE.replace("var owner:Holder","const owner:Holder");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("const 結構實例禁止任何欄位覆寫");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("S18"));
+    }
+
+    #[test]
+    fn 真正_voil_const_欄位在任何右值配置之前靜態拒絕() {
+        let source=SOURCE.replace("owner.title = \"新值🪼\"","owner.id = \"新值🪼\"");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("const 欄位永遠不可覆寫");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("S18"));
+    }
+
+    #[test]
+    fn 真正_voil_非_copyable_具名右值不得充當隱含複製() {
+        let source=SOURCE.replace("owner.title = \"新值🪼\"",
+            "var borrowed:str = \"其他\"\nowner.title = borrowed");
+        let err=inspect(&source).expect_err("str 右值非 Copyable 且沒有明確移動");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_來源作用中借用阻止結構直接欄位覆寫() {
+        let source=SOURCE.replace("owner.title = \"新值🪼\"",
+            "const alias:Holder = owner.borrow()\nowner.title = \"新值🪼\"\nvar later:int = 1");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("借用有效期資料流或非三語句執行證明不得放行");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_非法欄位與不相關控制語句不得被省略執行() {
+        let bad=SOURCE.replace("owner.title = \"新值🪼\"","owner.unknown = \"新值🪼\"");
+        assert_eq!(inspect(&bad).unwrap_err().kind,DiagnosticKind::Static);
+        let extra=SOURCE.replace("return 0","var x:int = 1\nreturn 0");
+        let err=trace_persistent_struct_field_write_source(&extra,false)
+            .expect_err("未實作任意語句執行器前不能宣稱清理已完整");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_帶轉義字串不能被當成未轉義_utf8_內容() {
+        let source=SOURCE.replace("新值🪼","帶\\n轉義");
+        let err=trace_persistent_struct_field_write_source(&source,false)
+            .expect_err("未有字串解碼器不接受此來源橋接");
+        assert!(err.message.contains("轉義")
+            || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
+    }
+}
