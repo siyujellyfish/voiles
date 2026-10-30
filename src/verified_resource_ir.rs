@@ -123,6 +123,18 @@ impl WholeStructResourcePlan {
     /// 且每一筆建立／移動順序完全一致、清理與建立嚴格逆序。
     pub(crate) fn verify_moved_events(&self, events: &[ResourceEvent])
         -> Result<usize, ResourcePlanError> {
+        self.verify_transfer_events(events, TransitionKind::Moved)
+    }
+
+    /// 只對已通過靜態來源驗證的跨函式整筆結構回傳核對 Returned 事件，
+    /// 不因同樣的資源身分而將 Returned 和 Moved 當成可互換操作。
+    pub(crate) fn verify_returned_events(&self, events: &[ResourceEvent])
+        -> Result<usize, ResourcePlanError> {
+        self.verify_transfer_events(events, TransitionKind::Returned)
+    }
+
+    fn verify_transfer_events(&self, events: &[ResourceEvent], kind: TransitionKind)
+        -> Result<usize, ResourcePlanError> {
         if events.is_empty() || events.len() % 3 != 0 {
             return Err(ResourcePlanError::EventOrder);
         }
@@ -137,8 +149,10 @@ impl WholeStructResourcePlan {
             ids.push(*id);
         }
         for (expected, event) in ids.iter().zip(moved) {
-            let ResourceEvent::Moved(id) = event else {
-                return Err(ResourcePlanError::EventOrder);
+            let id = match (kind, event) {
+                (TransitionKind::Moved, ResourceEvent::Moved(id))
+                | (TransitionKind::Returned, ResourceEvent::Returned(id)) => id,
+                _ => return Err(ResourcePlanError::EventOrder),
             };
             if expected != id { return Err(ResourcePlanError::ResourceIdentity); }
         }
@@ -253,6 +267,39 @@ mod tests {
             ResourceEvent::Moved(11), ResourceEvent::Moved(12),
             ResourceEvent::Released(12), ResourceEvent::Released(11),
         ]), Ok(2));
+    }
+
+    #[test]
+    fn 多資源跨函式返回以相同宣告身分帳簿審核並逆序清理() {
+        let p = WholeStructResourcePlan::new(DeclarationId(7), DeclarationId(19)).unwrap();
+        let returned = [
+            ResourceEvent::Created(11), ResourceEvent::Created(12),
+            ResourceEvent::Returned(11), ResourceEvent::Returned(12),
+            ResourceEvent::Released(12), ResourceEvent::Released(11),
+        ];
+        assert_eq!(p.verify_returned_events(&returned), Ok(2));
+        assert_eq!(p.verify_moved_events(&returned), Err(ResourcePlanError::EventOrder));
+    }
+
+    #[test]
+    fn 結構返回不得混入移動_交錯事件_偽造身分或錯誤清理順序() {
+        let p = WholeStructResourcePlan::new(DeclarationId(7), DeclarationId(19)).unwrap();
+        for bad in [
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Returned(1), ResourceEvent::Moved(2),
+                 ResourceEvent::Released(2), ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Returned(2), ResourceEvent::Returned(1),
+                 ResourceEvent::Released(2), ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Returned(1), ResourceEvent::Returned(2),
+                 ResourceEvent::Released(1), ResourceEvent::Released(2)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(2),
+                 ResourceEvent::Returned(1), ResourceEvent::Returned(2),
+                 ResourceEvent::Released(2), ResourceEvent::Released(3)],
+        ] {
+            assert!(p.verify_returned_events(&bad).is_err());
+        }
     }
 
     #[test]
