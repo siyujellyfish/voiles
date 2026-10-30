@@ -108,7 +108,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
         let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
         let tree = compare(code);
         assert_eq!(tree.functions.len(), 1);
-        let common_ir::ScalarStmt::Declare { declaration_start, .. } =
+        let common_ir::ScalarStmt::Declare { declaration, .. } =
             &tree.functions[0].body[0] else { panic!("第一個結點必須是宣告"); };
         assert_eq!(code.as_bytes()[declaration.0], b'v');
     }
