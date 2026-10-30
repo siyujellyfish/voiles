@@ -1606,8 +1606,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     });
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
-                    // 僅准對完整具名擁有者覆寫 Copyable var 欄位，或對可證明
-                    // 尚未初始化的 var 欄位首次寫入；後者不涉及 P16 舊值清理。
+                    // VA16-03-A：已核准的 str 獨立常值可以先取得唯一新資源，
+                    // 成功後原子覆寫具名 var 結構的 var str 欄位；
+                    // 其他非 Copyable 右值仍維持靜態保守拒絕。
                     self.check_direct(vars, receiver, value)?;
                     let owner = Self::lookup(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
@@ -1632,9 +1633,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let expected_type = member.ty.clone();
                     if !first_init {
                         let permission = self.permission(&expected_type);
-                        if permission != CopyPermission::Allowed {
+                        let proven_fresh_string = expected_type == "str"
+                            && matches!(&value.kind, TermKind::Literal("str"));
+                        if permission != CopyPermission::Allowed && !proven_fresh_string {
                             return Err(self.reject_noncopyable(permission,
-                                "P13 欄位覆寫涉及未核准的原值資源清理", value));
+                                "P16：非 Copyable 欄位只核准新建 str 常值原子覆寫，其他資源右值仍未證明", value));
                         }
                     }
                     let (actual, ready) = self.evaluate(value, vars)?;
