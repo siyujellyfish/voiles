@@ -6,6 +6,7 @@
 
 use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
 use crate::parser::{self, Item, StmtKind as PublicStmtKind};
+use crate::ownership_ledger::DeclarationId;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ScalarExpr {
@@ -19,7 +20,7 @@ pub(crate) enum ScalarExpr {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ScalarStmt {
     Declare {
-        declaration_start: usize,
+        declaration: DeclarationId,
         name: String,
         ty: String,
         mutable: bool,
@@ -69,7 +70,7 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
     stmts.iter().map(|statement| {
         let value = match &statement.kind {
             PublicStmtKind::Binding(binding) => ScalarStmt::Declare {
-                declaration_start: binding.start,
+                declaration: DeclarationId(binding.start),
                 name: binding.name.clone(),
                 ty: match binding.ty {
                     parser::Type::Int => "int",
