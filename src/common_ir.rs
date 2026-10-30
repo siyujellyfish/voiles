@@ -82,15 +82,20 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
                 name: name.clone(), value: public_expression(value)?,
             },
             PublicStmtKind::IfChain { branches, otherwise } => {
-                // 未對齊 else-if 的 AST 嵌套前，一律不產生冒充已對齊的結果。
-                let [(condition, yes)] = branches.as_slice() else { return None };
-                ScalarStmt::If {
-                    condition: public_expression(condition)?,
-                    yes: public_statements(&yes.statements)?,
-                    no: otherwise.as_ref()
-                        .map(|block| public_statements(&block.statements))
-                        .transpose_option()?,
+                // P01 的平面 else-if 與私有 P13 的巢狀 If(no=[If])
+                // 必須產生同一棵保留原分支順序的共同 AST。
+                if branches.is_empty() { return None; }
+                let mut tail = otherwise.as_ref()
+                    .map(|block| public_statements(&block.statements))
+                    .transpose_option()?;
+                for (condition, yes) in branches.iter().rev() {
+                    tail = Some(vec![ScalarStmt::If {
+                        condition: public_expression(condition)?,
+                        yes: public_statements(&yes.statements)?,
+                        no: tail,
+                    }]);
                 }
+                tail?.into_iter().next()?
             }
             PublicStmtKind::Return(value) => ScalarStmt::Return(public_expression(value)?),
         };
