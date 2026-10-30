@@ -144,7 +144,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
 
     #[test]
     fn 未初始化_var_須投影為_init_none_而非讓整個_ast_失敗() {
-        let source = "fn main()->int{\\nvar value:int\\nvalue = 1\\nreturn value\\n}\\n";
+        let source = "fn main()->int{\nvar value:int\nvalue = 1\nreturn value\n}\n";
         let tree = compare(source);
         assert!(matches!(&tree.functions[0].body[0],
             crate::common_ir::ScalarStmt::Declare { init: None, .. }));
