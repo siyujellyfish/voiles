@@ -6481,3 +6481,93 @@ mod p15_3_函式預設借用跨分支迴圈交叉驗證 {
         assert!(inspect(&src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p16_真正_voil_持續結構整筆資源來源 {
+    use super::trace_persistent_struct_move_source;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const VALID: &str="struct Message{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar original:Message = Message(title=\"實際中文\")\nvar transferred:Message = original.move()\nreturn 0\n}\n";
+
+    #[test]
+    fn 真實_utf8_voil_具名覆蓋預設後只建兩個資源整筆移動逆序清理() {
+        let (retained,events)=trace_persistent_struct_move_source(VALID,None).unwrap();
+        assert_eq!(retained.as_deref(),Some("固定🪼"));
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Moved(1),ResourceEvent::Moved(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 具名欄位完成後注入失敗_只回滾已求值字串() {
+        let (retained,events)=trace_persistent_struct_move_source(VALID,Some("title")).unwrap();
+        assert_eq!(retained,None);
+        assert_eq!(events,vec![ResourceEvent::Created(1),ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn 未覆蓋預設欄位失敗_具名和預設皆應逆序回滾() {
+        let (retained,events)=trace_persistent_struct_move_source(VALID,Some("id")).unwrap();
+        assert_eq!(retained,None);
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 不存在的失敗切點不能當作有效資源清理證據() {
+        let error=trace_persistent_struct_move_source(VALID,Some("missing"))
+            .expect_err("不存在求值計畫的欄位不得宣稱注入失敗");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("切點"));
+    }
+
+    #[test]
+    fn 真正_voil_整體轉移禁止從來源不加_move_隱含複製() {
+        let source=VALID.replace("original.move()","original");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("含 str 欄位的結構不是 Copyable");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable")||error.message.contains("複製"));
+    }
+
+    #[test]
+    fn 真正_voil_整體轉移後不可第二次取用已移動來源() {
+        let source=VALID.replace("return 0",
+            "var again:Message = original.move()\nreturn 0");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("再次取用整體失效來源必須靜態拒絕");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_不允許個別移動_str_欄位取代整筆結構責任() {
+        let source=VALID.replace("var transferred:Message = original.move()",
+            "var transferred:str = original.title.move()");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("S21 禁止僅轉移資源欄位");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 靜態合法但多餘語句的來源不能假裝已由三步驟執行器完成() {
+        let source=VALID.replace("return 0","var marker:int = 3\nreturn 0");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("一般多語句執行器仍未具備，不可虛報事件");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("三語句"));
+    }
+
+    #[test]
+    fn 尚未解碼的字串轉義不能直接寫成資源內容() {
+        let source=VALID.replace("實際中文","實際\\n中文");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("沒有字串轉義求值器前不能偷採原始詞彙");
+        assert!(error.message.contains("轉義")
+            || matches!(error.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
+    }
+}
