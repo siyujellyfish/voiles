@@ -589,6 +589,7 @@ fn trace_persistent_struct_return_source(
     use crate::struct_initialization::{
         BuildStatus, NamedString, OwnedStructRuntime, StringField, StructRuntimeError,
     };
+    use crate::verified_resource_ir::WholeStructResourcePlan;
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
@@ -637,6 +638,9 @@ fn trace_persistent_struct_return_source(
     }) if text.get(*start..*end)==Some("0")) {
         return Err(unsupported("P16：main 的其他返回路徑尚未接通"));
     }
+    let plan=WholeStructResourcePlan::new(
+        DeclarationId(declaration.start), DeclarationId(receive.start))
+        .map_err(|_|unsupported("P16：跨函式整筆結構返回的來源及目的宣告身分不可重疊"))?;
     let definition=structs.get(ty)
         .ok_or_else(||unsupported("P16：結構類別不存在"))?;
     let fields=definition.fields.iter().map(|field| {
@@ -664,8 +668,11 @@ fn trace_persistent_struct_return_source(
     if matches!(&status,Err(StructRuntimeError::EvaluationFailed(_))) {
         runtime.leave_scope().map_err(|_|
             unsupported("P16：被呼叫端失敗清理作用域未關閉"))?;
-        return Ok((None,runtime.finish().map_err(|_|
-            unsupported("P16：失敗構造後所有資源未完整釋放"))?));
+        let events=runtime.finish().map_err(|_|
+            unsupported("P16：失敗構造後所有資源未完整釋放"))?;
+        plan.verify_failed_build_events(&events).map_err(|_|
+            unsupported("P16：結構返回失敗時已建立欄位未完整逆序回滾"))?;
+        return Ok((None,events));
     }
     if !matches!(&status,Ok(BuildStatus::Complete)) {
         return Err(unsupported("P16：返回結構未完成初始化或失敗注入切點不合法"));
@@ -680,6 +687,8 @@ fn trace_persistent_struct_return_source(
         .map_err(|_|unsupported("P16：函式返回後原資源無效"))?.to_owned();
     let events=runtime.finish()
         .map_err(|_|unsupported("P16：呼叫端退出後資源清理身分不完整"))?;
+    plan.verify_returned_events(&events).map_err(|_|
+        unsupported("P16：跨函式整筆結構返回與資源責任帳簿不一致"))?;
     Ok((Some(value),events))
 }
 
