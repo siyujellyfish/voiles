@@ -34,7 +34,7 @@ fn private_scalar_statements(stmts: &[Stmt], text: &str)
     use crate::common_ir::ScalarStmt;
     stmts.iter().map(|statement| Some(match &statement.kind {
         StmtKind::Declare { name, ty, mutable, init } => ScalarStmt::Declare {
-            declaration_start: statement.start,
+            declaration: DeclarationId(statement.start),
             name: name.clone(),
             ty: ty.clone(),
             mutable: *mutable,
@@ -108,9 +108,9 @@ mod p16_6_r02_2_共同語意樹驗證 {
         let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
         let tree = compare(code);
         assert_eq!(tree.functions.len(), 1);
-        let common_ir::ScalarStmt::Declare { declaration_start, .. } =
+        let common_ir::ScalarStmt::Declare { declaration, .. } =
             &tree.functions[0].body[0] else { panic!("第一個結點必須是宣告"); };
-        assert_eq!(code.as_bytes()[*declaration_start], b'v');
+        assert_eq!(code.as_bytes()[declaration.0], b'v');
     }
 
     #[test]
@@ -148,6 +148,21 @@ mod p16_6_r02_2_共同語意樹驗證 {
         let tree = compare(source);
         assert!(matches!(&tree.functions[0].body[0],
             crate::common_ir::ScalarStmt::Declare { init: None, .. }));
+    }
+
+    #[test]
+    fn 巢狀遮蔽宣告即使同名也必須保留不同_declaration_id() {
+        let source = "fn main()->int{\nvar value:int = 1\nif(true){\nvar value:int = 2\n}\nreturn value\n}\n";
+        let tree = compare(source);
+        let crate::common_ir::ScalarStmt::Declare { declaration: outer, .. } =
+            &tree.functions[0].body[0] else { panic!("外層來源不應消失"); };
+        let crate::common_ir::ScalarStmt::If { yes, .. } =
+            &tree.functions[0].body[1] else { panic!("應保留分支"); };
+        let [crate::common_ir::ScalarStmt::Declare { declaration: inner, .. }] =
+            yes.as_slice() else { panic!("內層宣告應完整保留"); };
+        assert_ne!(outer, inner, "詞彙名稱相同也不可視為同一所有權宣告");
+        assert_eq!(&source[outer.0..outer.0 + 3], "var");
+        assert_eq!(&source[inner.0..inner.0 + 3], "var");
     }
 
     #[test]
