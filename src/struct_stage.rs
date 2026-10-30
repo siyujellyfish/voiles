@@ -1060,7 +1060,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 整筆 .move() 在這裡不能視為可重複使用的安全來源。
     /// D04-A 對來源整數常值的半開遞增區間：僅在端點相差一且
     /// 可確定只迭代一次時消除不必要的反向邊。其他範圍仍保守驗證。
-    fn one_iteration_range(lower: &str, upper: &str) -> bool {
+    fn known_range_iterations(lower: &str, upper: &str) -> Option<u8> {
         fn read_positive_int(text: &str) -> Option<u128> {
             let (radix, digits) = if let Some(rest) = text.strip_prefix("0x") {
                 (16, rest)
@@ -1075,8 +1075,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             u128::from_str_radix(&normalized, radix).ok()
         }
         match (read_positive_int(lower), read_positive_int(upper)) {
-            (Some(start), Some(end)) => start.checked_add(1) == Some(end),
-            _ => false,
+            (Some(start), Some(end)) if start == end => Some(0),
+            (Some(start), Some(end)) if start.checked_add(1) == Some(end) => Some(1),
+            _ => None,
         }
     }
 
@@ -1510,7 +1511,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // D04-A 半開區間為已核准來源，但正式執行期的
                     // 整數計數器／步幅不屬 P15，本階段只驗證借用
                     // 與反向邊：一次以上迭代皆不能破壞外層狀態。
-                    let one_iteration = Self::one_iteration_range(lower, upper);
+                    let known_iterations = Self::known_range_iterations(lower, upper);
+                    let one_iteration = known_iterations == Some(1);
+                    // 端點相同的半開區間沒有任何迭代：不得把未執行
+                    // 的迴圈本體當成已消耗或仍持有外層借用的路徑。
+                    if known_iterations != Some(0) {
                     let snapshot = vars.clone();
                     let mut simulated = snapshot.clone();
                     // for 迭代名稱每次重新建立，不能在出口沿用前
@@ -1561,6 +1566,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             }
                         }
                     }
+                    } // 有至少一種迭代可能時才檢查迴圈本體
                 }
                 StmtKind::While { condition, body: loop_body } => {
                     // 條件於每次迭代重新求值；不得讓條件本身移動
@@ -5244,5 +5250,31 @@ mod p15_3_單次區間與函式借用閉包 {
         let error = inspect(src).expect_err("函式呼叫仍將使用別名，借用不得提前歸還");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("借用"));
+    }
+}
+
+#[cfg(test)]
+mod p15_3_空半開區間借用來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 空區間不得把未執行的移動當成已移動來源() {
+        let src = "fn main()->int{\nvar owner:str = \"保持\"\nfor i in 2..2{\nvar moved:str = owner.move()\n}\nvar result:str = owner.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok(), "空半開區間不能消耗外層資源");
+    }
+
+    #[test]
+    fn 相同數值但不同合法進位也應視為空區間() {
+        let src = "fn main()->int{\nvar owner:int = 1\nfor i in 0x2..2{\nvar moved:int = owner.move()\n}\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 非空多次區間的移動仍須拒絕不穩定反向邊() {
+        let src = "fn main()->int{\nvar owner:str = \"不可重複移動\"\nfor i in 2..4{\nvar moved:str = owner.move()\n}\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("多次區間移動不得被空區間優化放行");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("反向邊"));
     }
 }
