@@ -15,7 +15,10 @@ pub(crate) enum Type {
 #[derive(Debug, Clone)]
 pub(crate) struct File {
     pub(crate) items: Vec<Item>,
+    // P08 AST 位置檢視仍需保留起迄跨度；非公開檢查流程不直接讀取。
+    #[allow(dead_code)]
     pub(crate) start: usize,
+    #[allow(dead_code)]
     pub(crate) end: usize,
 }
 
@@ -37,6 +40,7 @@ pub(crate) struct Function {
 #[derive(Debug, Clone)]
 pub(crate) struct Block {
     pub(crate) statements: Vec<Stmt>,
+    #[allow(dead_code)] // P08 AST 除錯保留來源起點。
     pub(crate) start: usize,
     pub(crate) end: usize,
 }

@@ -288,7 +288,6 @@ mod p13_非_copyable_方法參數與回傳移交 {
 #[cfg(test)]
 mod p13_新建資源函式位置引數 {
     use super::inspect;
-    use crate::DiagnosticKind;
 
     #[test]
     fn 獨立字串常值可直接移交非_copyable_函式參數() {
