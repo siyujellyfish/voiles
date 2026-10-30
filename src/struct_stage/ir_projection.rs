@@ -119,6 +119,30 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn else_if_多分支與單一_if_巢狀表示應完全一致() {
+        let source = "fn main()->int{\nvar n:int = 0\nif(false){\nn = 1\n}else if(true){\nn = 2\n}else if(false){\nn = 3\n}else{\nn = 4\n}\nreturn n\n}\n";
+        let ast = compare(source);
+        let crate::common_ir::ScalarStmt::If { no: Some(else_chain), .. } =
+            &ast.functions[0].body[1] else { panic!("第一分支必須存在下一個 else-if"); };
+        let [crate::common_ir::ScalarStmt::If { no: Some(third), .. }] =
+            else_chain.as_slice() else { panic!("else-if 第二分支需延續"); };
+        let [crate::common_ir::ScalarStmt::If { no: Some(last), .. }] =
+            third.as_slice() else { panic!("else-if 第三分支需延續"); };
+        assert!(matches!(last.as_slice(), [crate::common_ir::ScalarStmt::Assign { .. }]));
+    }
+
+    #[test]
+    fn 沒有_else_之_else_if_需保留所有可達後繼分支() {
+        let source = "fn main()->int{\nvar n:int = 0\nif(false){\nn = 1\n}else if(true){\nn = 2\n}\nreturn n\n}\n";
+        let tree = compare(source);
+        let crate::common_ir::ScalarStmt::If { no: Some(else_branch), .. } =
+            &tree.functions[0].body[1] else { panic!("第二 if 應在 else 內"); };
+        assert!(matches!(else_branch.as_slice(), [
+            crate::common_ir::ScalarStmt::If { no: None, .. }
+        ]));
+    }
+
+    #[test]
     fn 非共有的資源語法不得冒充共同標量_ir() {
         let text = "fn main()->int{\nvar text:str = \"中文\"\nreturn 0\n}\n";
         let source = Source::new(text.as_bytes().to_vec());
