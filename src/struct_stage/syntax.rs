@@ -12,14 +12,14 @@ impl Parser<'_> {
         }
     }
     fn keyword(&self, word: &str) -> bool {
-        matches!(&self.tok().kind, TokenKind::Keyword(s) if s == word)
+        crate::syntax_shared::keyword(self.tokens, self.cursor, word)
     }
     fn symbol(&self, c: char) -> bool {
-        matches!(self.tok().kind, TokenKind::Symbol(x) if x == c)
+        crate::syntax_shared::symbol(self.tokens, self.cursor, c)
     }
-    fn eof(&self) -> bool { matches!(self.tok().kind, TokenKind::End) }
+    fn eof(&self) -> bool { crate::syntax_shared::end(self.tokens, self.cursor) }
     fn lines(&mut self) {
-        while matches!(self.tok().kind, TokenKind::Newline) { self.cursor += 1; }
+        while crate::syntax_shared::newline(self.tokens, self.cursor) { self.cursor += 1; }
     }
     fn take(&mut self, ch: char, msg: &str) -> Result<(), Diagnostic> {
         if !self.symbol(ch) { return Err(self.syntax(msg)); }
@@ -47,21 +47,7 @@ impl Parser<'_> {
     /// 和 MVP-A i64 有效整數字面值規則一致；底線只作分隔，
     /// 範圍溢位在靜態前端拒絕，不移交未知執行時處理。
     fn valid_integer(literal: &str) -> bool {
-        let (radix, digits) = if let Some(rest) = literal.strip_prefix("0x") {
-            (16, rest)
-        } else if let Some(rest) = literal.strip_prefix("0b") {
-            (2, rest)
-        } else if let Some(rest) = literal.strip_prefix("0o") {
-            (8, rest)
-        } else {
-            (10, literal)
-        };
-        let normalized: String = digits.chars().filter(|c| *c != '_').collect();
-        !normalized.is_empty()
-            && normalized.chars().all(|c| c.to_digit(radix).is_some())
-            && u128::from_str_radix(&normalized, radix)
-                .map(|value| value <= i64::MAX as u128)
-                .unwrap_or(false)
+        crate::syntax_shared::integer_i64(literal).is_ok()
     }
     /// P13 已核准的 decimal64 有限常值子集：採十進位字元和最近偶數捨入，
     /// 不將宿主二進位 f64 當成 decimal64。僅驗證調整指數 -15..=15 的數值。
