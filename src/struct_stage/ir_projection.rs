@@ -151,6 +151,21 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 巢狀遮蔽宣告即使同名也必須保留不同_declaration_id() {
+        let source = "fn main()->int{\nvar value:int = 1\nif(true){\nvar value:int = 2\n}\nreturn value\n}\n";
+        let tree = compare(source);
+        let crate::common_ir::ScalarStmt::Declare { declaration: outer, .. } =
+            &tree.functions[0].body[0] else { panic!("外層來源不應消失"); };
+        let crate::common_ir::ScalarStmt::If { yes, .. } =
+            &tree.functions[0].body[1] else { panic!("應保留分支"); };
+        let [crate::common_ir::ScalarStmt::Declare { declaration: inner, .. }] =
+            yes.as_slice() else { panic!("內層宣告應完整保留"); };
+        assert_ne!(outer, inner, "詞彙名稱相同也不可視為同一所有權宣告");
+        assert_eq!(&source[outer.0..outer.0 + 3], "var");
+        assert_eq!(&source[inner.0..inner.0 + 3], "var");
+    }
+
+    #[test]
     fn 非共有的資源語法不得冒充共同標量_ir() {
         let text = "fn main()->int{\nvar text:str = \"中文\"\nreturn 0\n}\n";
         let source = Source::new(text.as_bytes().to_vec());
