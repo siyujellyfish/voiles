@@ -4065,10 +4065,10 @@ mod p13_formal_partial_field_completion_tests {
     }
 
     #[test]
-    fn p13_s07_已有非_copyable_欄位不可二次覆寫_避免偷定_p16() {
+    fn p13_s07_已核准非_copyable_獨立字串可以連續安全覆寫() {
         let src = format!("{HEADER}a.x = 2\na.text = \"hi\"\na.text = \"bye\"\nreturn 0\n}}\n");
-        let err = inspect(&src).unwrap_err();
-        assert!(err.message.contains("Copyable 已明確禁止"));
+        assert!(inspect(&src).is_ok(),
+            "字串右值先取得資源再覆寫，原所有者由 VA16-03-A 清理");
     }
 }
 
@@ -4101,11 +4101,12 @@ mod p13_formal_field_write_tests {
     }
 
     #[test]
-    fn p13_資源欄位覆寫仍依_p16_前置安全保守拒絕() {
+    fn p13_資源欄位覆寫依已核准_va16_03_獨立字串原子提交() {
         let src = format!("{BODY}a.text = \"new\"\nreturn 0\n}}\n");
-        let err = inspect(&src).unwrap_err();
-        assert_eq!(err.kind, DiagnosticKind::Static);
-        assert!(err.message.contains("Copyable 已明確禁止"));
+        assert!(inspect(&src).is_ok(),
+            "已核准 VA16-03-A 的新建 str 常值不再是未定清理責任");
+        let unsafe_rhs = format!("{BODY}var source:str = \"new\"\na.text = source\nreturn 0\n}}\n");
+        assert_eq!(inspect(&unsafe_rhs).unwrap_err().kind,DiagnosticKind::Static);
     }
 
     #[test]
