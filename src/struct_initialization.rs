@@ -81,6 +81,201 @@ pub(crate) fn build_string_struct(
     let resources=rt.finish().expect("所有已成功取得資源須已反序清理");
     BuildTrace {status,evaluated,lifetime_values,resources}
 }
+/// P16 私有持續存活的結構值模型。與單次 BuildTrace 不同，
+/// 建構成功後欄位真正持有 OwnedUtf8，直到持有者移動或退出作用域。
+/// str 為非 Copyable，因此不提供建立第二所有者的隱含複製 API。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum StructRuntimeError {
+    InvalidPlan(PlanError),
+    DuplicateBinding,
+    MissingBinding,
+    MovedBinding,
+    UninitializedField,
+    NoInnerScope,
+    EvaluationFailed(String),
+    UnknownFailurePoint,
+    NonCopyableStruct,
+    Resource(StrRuntimeError),
+}
+
+#[derive(Debug)]
+struct StructResource {
+    name: String,
+    value: crate::owned_str_runtime::OwnedUtf8,
+}
+
+#[derive(Debug)]
+struct StructOwnedValue {
+    // 順序是 VB16-01-A 真正完成初始化的順序，非宣告順序。
+    fields: Vec<StructResource>,
+    missing: Vec<String>,
+}
+
+#[derive(Debug)]
+struct StructOwnerSlot {
+    name: String,
+    owned: Option<StructOwnedValue>,
+}
+
+#[derive(Debug)]
+pub(crate) struct OwnedStructRuntime {
+    ledger: OwnedStrRuntime,
+    scopes: Vec<Vec<StructOwnerSlot>>,
+}
+
+impl OwnedStructRuntime {
+    pub(crate) fn new() -> Self {
+        Self { ledger: OwnedStrRuntime::new(), scopes: vec![Vec::new()] }
+    }
+
+    pub(crate) fn enter_scope(&mut self) { self.scopes.push(Vec::new()); }
+
+    fn current_name_free(&self, name: &str) -> Result<(), StructRuntimeError> {
+        if self.scopes.last().expect("根作用域存在").iter()
+            .any(|slot| slot.name == name) {
+            Err(StructRuntimeError::DuplicateBinding)
+        } else { Ok(()) }
+    }
+
+    fn location(&self, name: &str) -> Result<(usize, usize), StructRuntimeError> {
+        self.scopes.iter().enumerate().rev().find_map(|(scope_index, frame)| {
+            frame.iter().position(|slot| slot.name == name)
+                .map(|slot_index| (scope_index,slot_index))
+        }).ok_or(StructRuntimeError::MissingBinding)
+    }
+
+    fn release_value(ledger: &mut OwnedStrRuntime, value: StructOwnedValue) {
+        // 失敗、作用域退出與完整實例移動後的清理，
+        // 皆遵守「此次成功取得欄位資源」的逆序。
+        for field in value.fields.into_iter().rev() {
+            ledger.release_detached(field.value);
+        }
+    }
+
+    fn cleanup_frame(ledger: &mut OwnedStrRuntime, frame: Vec<StructOwnerSlot>) {
+        // 每個持有者自末次成功綁定向前清理；已移動者不再清理。
+        for slot in frame.into_iter().rev() {
+            if let Some(value) = slot.owned {
+                Self::release_value(ledger, value);
+            }
+        }
+    }
+
+    pub(crate) fn construct(&mut self, name: &str,
+        fields: &[StringField<'_>], named: &[NamedString<'_>],
+        fail_after_field: Option<&str>,
+    ) -> Result<BuildStatus, StructRuntimeError> {
+        self.current_name_free(name)?;
+        let schema: Vec<_> = fields.iter().map(|field| FieldInfo {
+            name: field.name, has_default: field.default.is_some(),
+            immutable: field.immutable,
+        }).collect();
+        let names: Vec<_> = named.iter().map(|arg| arg.field).collect();
+        let plan = struct_eval_plan::plan(&schema, &names)
+            .map_err(StructRuntimeError::InvalidPlan)?;
+        if fail_after_field.is_some_and(|field|
+            !plan.steps.iter().any(|step| step.field == field)) {
+            return Err(StructRuntimeError::UnknownFailurePoint);
+        }
+        let mut pending = StructOwnedValue {
+            fields: Vec::new(), missing: plan.missing_mutable_fields.clone(),
+        };
+        for step in &plan.steps {
+            let content = match step.origin {
+                Origin::Named => named.iter().find(|arg| arg.field == step.field)
+                    .map(|arg| arg.value).expect("具名來源已預檢"),
+                Origin::Default => fields.iter().find(|field| field.name == step.field)
+                    .and_then(|field| field.default).expect("預設來源已預檢"),
+            };
+            // 配置本身出錯亦要清理先前成功取得的其他欄位。
+            let value = match self.ledger.create_detached(content) {
+                Ok(value) => value,
+                Err(error) => {
+                    Self::release_value(&mut self.ledger, pending);
+                    return Err(StructRuntimeError::Resource(error));
+                }
+            };
+            pending.fields.push(StructResource {name:step.field.clone(),value});
+            if fail_after_field == Some(step.field.as_str()) {
+                Self::release_value(&mut self.ledger, pending);
+                return Err(StructRuntimeError::EvaluationFailed(step.field.clone()));
+            }
+        }
+        let status = if pending.missing.is_empty() {
+            BuildStatus::Complete
+        } else {
+            BuildStatus::PartiallyInitialized(pending.missing.clone())
+        };
+        self.scopes.last_mut().expect("根作用域存在").push(StructOwnerSlot {
+            name: name.to_owned(), owned: Some(pending),
+        });
+        Ok(status)
+    }
+
+    pub(crate) fn read_field(&self, owner: &str, field: &str)
+        -> Result<&str, StructRuntimeError> {
+        let (i,j) = self.location(owner)?;
+        let value = self.scopes[i][j].owned.as_ref()
+            .ok_or(StructRuntimeError::MovedBinding)?;
+        if value.missing.iter().any(|name| name == field) {
+            return Err(StructRuntimeError::UninitializedField);
+        }
+        value.fields.iter().find(|resource| resource.name == field)
+            .map(|resource| resource.value.text())
+            .ok_or(StructRuntimeError::UninitializedField)
+    }
+
+    /// 一個已建構實例的所有欄位資源必須一起轉交；
+    /// 所有會失敗的名稱及來源檢查都在取走任何資源之前執行。
+    pub(crate) fn move_whole(&mut self, from: &str, to: &str)
+        -> Result<(), StructRuntimeError> {
+        self.current_name_free(to)?;
+        let (i,j) = self.location(from)?;
+        if self.scopes[i][j].owned.is_none() {
+            return Err(StructRuntimeError::MovedBinding);
+        }
+        let moved = self.scopes[i][j].owned.take().expect("已預檢來源");
+        for field in &moved.fields {
+            self.ledger.mark_detached_move(&field.value);
+        }
+        self.scopes.last_mut().expect("根作用域存在").push(StructOwnerSlot {
+            name: to.to_owned(), owned: Some(moved),
+        });
+        Ok(())
+    }
+
+    /// str 欄位不得因 S19 而變成 Copyable；純值的整體複製
+    /// 另由已核准的複製資格模型處理，不偷渡 UTF-8 隱含複製。
+    pub(crate) fn copy_whole(&self, name: &str)
+        -> Result<(), StructRuntimeError> {
+        let (i,j) = self.location(name)?;
+        if self.scopes[i][j].owned.is_none() {
+            return Err(StructRuntimeError::MovedBinding);
+        }
+        Err(StructRuntimeError::NonCopyableStruct)
+    }
+
+    pub(crate) fn leave_scope(&mut self) -> Result<(), StructRuntimeError> {
+        if self.scopes.len() == 1 {
+            return Err(StructRuntimeError::NoInnerScope);
+        }
+        let frame = self.scopes.pop().expect("已檢查內層存在");
+        Self::cleanup_frame(&mut self.ledger, frame);
+        Ok(())
+    }
+
+    pub(crate) fn events(&self) -> &[ResourceEvent] { self.ledger.events() }
+
+    pub(crate) fn finish(mut self) -> Result<Vec<ResourceEvent>, StructRuntimeError> {
+        if self.scopes.len() != 1 {
+            return Err(StructRuntimeError::NoInnerScope);
+        }
+        let root = self.scopes.pop().expect("根作用域存在");
+        Self::cleanup_frame(&mut self.ledger, root);
+        self.ledger.finish().map_err(StructRuntimeError::Resource)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
