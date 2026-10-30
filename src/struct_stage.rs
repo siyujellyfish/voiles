@@ -4,6 +4,7 @@
 #![allow(dead_code)]
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
 use crate::ownership_model::{CopyPermission, ModelError, ValueSlot, ValueState};
@@ -139,7 +140,8 @@ struct Binding {
 }
 
 /// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
-type Scopes = Vec<HashMap<String, Binding>>;
+// 分支與迴圈快照共用不可變狀態；只有實際寫入的詞彙作用域才複製。
+type Scopes = Vec<Rc<HashMap<String, Binding>>>;
 
 /// 資料流需區分正常後繼、函式返回與迴圈轉移；後兩者不能混用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

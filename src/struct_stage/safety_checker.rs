@@ -44,7 +44,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         vars.iter().rev().find_map(|scope| scope.get(name))
     }
     fn lookup_mut<'b>(vars: &'b mut Scopes, name: &str) -> Option<&'b mut Binding> {
-        vars.iter_mut().rev().find_map(|scope| scope.get_mut(name))
+        for scope in vars.iter_mut().rev() {
+            if scope.contains_key(name) {
+                return Rc::make_mut(scope).get_mut(name);
+            }
+        }
+        None
     }
 
     /// 在受限來源中，只有真正包含具名整筆 .move() 的形狀
@@ -221,7 +226,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             .map(|scope| scope.keys().cloned().collect()).collect();
         let mut younger_names = HashSet::new();
         for (depth, scope) in vars.iter_mut().enumerate().rev() {
-            for (name, binding) in scope.iter_mut() {
+            for (name, binding) in Rc::make_mut(scope).iter_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
                     let needed_here = Self::scope_mentions_binding(
                         rest, name, younger_names.contains(name));
@@ -838,7 +843,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             // 欄位預設值在其宣告本身的獨立上下文求值，
                             // 不暗中捕獲呼叫端的區域名稱。
                             let (actual, ready) = self.evaluate(
-                                expr, &mut vec![HashMap::new()])?;
+                                expr, &mut vec![Rc::new(HashMap::new())])?;
                             (expr, actual, ready)
                         }
                     };
@@ -881,7 +886,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn check_loop_exit_stability(&self, vars: &Scopes, entry: &Scopes,
         statement: &Stmt) -> Result<(), Diagnostic> {
         for (depth, scope) in entry.iter().enumerate() {
-            for (name, original) in scope {
+            for (name, original) in scope.iter() {
                 let candidate = vars.get(depth).and_then(|scope| scope.get(name))
                     .ok_or_else(|| Diagnostic {
                         kind: DiagnosticKind::Static,
@@ -920,7 +925,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         expected_return: &str, new_scope: bool,
         continuation: &[(usize, Vec<Stmt>)],
         loop_entry: Option<&Scopes>) -> Result<FlowState, Diagnostic> {
-        if new_scope { vars.push(HashMap::new()); }
+        if new_scope { vars.push(Rc::new(HashMap::new())); }
         let result = self.statement_body(body, vars, expected_return, continuation, loop_entry);
         if new_scope { vars.pop(); }
         result
@@ -982,7 +987,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     } else {
                         ValueSlot::uninitialized(permission)
                     };
-                    vars.last_mut().expect("應有詞彙作用域").insert(name.clone(), Binding {
+                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding {
                         declaration_start: statement.start, ty: ty.clone(),
                         mutable: *mutable, value: slot, pending_fields, loan
                     });
@@ -1127,8 +1132,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let mut simulated = snapshot.clone();
                     // for 迭代名稱每次重新建立，不能在出口沿用前
                     // 一次迭代的借用或將其誤認成外層同名宣告。
-                    simulated.push(HashMap::new());
-                    simulated.last_mut().expect("迭代作用域存在").insert(
+                    simulated.push(Rc::new(HashMap::new()));
+                    Rc::make_mut(simulated.last_mut().expect("迭代作用域存在")).insert(
                         iterator.clone(),
                         Binding {
                             declaration_start: *iterator_start, ty: "int".into(),
@@ -1168,7 +1173,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                     } else if can_repeat == FlowState::Fallthrough {
                         for (depth, scope) in snapshot.iter().enumerate() {
-                            for (name, original) in scope {
+                            for (name, original) in scope.iter() {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
                                 let old_loan = original.loan.as_ref().map(|loan|
@@ -1223,7 +1228,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         // 必須保持所有權、部分初始化及借用活性不變。
                         // 迴圈局部宣告會於每次區塊退出後消失。
                         for (depth, scope) in snapshot.iter().enumerate() {
-                            for (name, original) in scope {
+                            for (name, original) in scope.iter() {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
                                 let old_loan = original.loan.as_ref().map(|loan|
@@ -1279,7 +1284,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
                     for (depth, scope) in vars.iter_mut().enumerate() {
-                        for (name, original) in scope.iter_mut() {
+                        for (name, original) in Rc::make_mut(scope).iter_mut() {
                             // 真正來源以原始宣告位元組起點及詞彙深度識別。
                             let left = if live_true {
                                 let same = on_true[depth].get(name)
@@ -1354,7 +1359,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     fun.body.last().map_or(0, |s| s.start),
                     fun.body.last().map_or(0, |s| s.end))) });
         }
-        let mut vars = vec![HashMap::new()];
+        let mut vars = vec![Rc::new(HashMap::new())];
         for parameter in &fun.params {
             let name = &parameter.name;
             let ty = &parameter.ty;
@@ -1363,7 +1368,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
             }
-            vars[0].insert(name.clone(), Binding {
+            Rc::make_mut(&mut vars[0]).insert(name.clone(), Binding {
                 declaration_start: parameter.declaration_start,
                 ty: ty.clone(), mutable: false,
                 value: ValueSlot::initialized(self.permission(ty)),
@@ -1555,7 +1560,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 if let Some(default) = &field.default {
                     let (ty, initialized) =
-                        self.evaluate(default, &mut vec![HashMap::new()])?;
+                        self.evaluate(default, &mut vec![Rc::new(HashMap::new())])?;
                     if ty != field.ty {
                         return Err(self.error("結構預設欄位型別不一致", default));
                     }
