@@ -2008,3 +2008,30 @@ mod p16_真實_voil_分支提前返回資源清理 {
         assert_eq!(err.kind,DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_來源安全事實一致性 {
+    use super::*;
+
+    #[test]
+    fn 私有公開入口和資源橋接使用同一份已驗證_ast() {
+        let valid = "fn main()->int{\nvar a:int = 1\nreturn a\n}\n";
+        assert!(inspect(valid).is_ok());
+        let verified = verified_private_source(valid).expect("私有來源須完整通過驗證");
+        assert_eq!(verified.functions.len(), 1);
+        assert_eq!(verified.functions[0].name, "main");
+        assert!(verified.structs.is_empty());
+        assert_eq!(verified.source.bytes, valid.as_bytes());
+    }
+
+    #[test]
+    fn 非_copyable_隱含複製不得在資源橋接跳過安全預檢() {
+        let invalid = "fn main()->int{\nvar a:str = \"中文\"\nvar b:str = a\nreturn 0\n}\n";
+        let baseline = inspect(invalid).err().expect("私有入口必須拒絕");
+        let bridge = verified_private_source(invalid).err()
+            .expect("資源執行期的前置驗證必須同樣拒絕");
+        assert_eq!(baseline, bridge);
+        assert_eq!(bridge.kind, DiagnosticKind::Static);
+        assert!(bridge.span.is_some());
+    }
+}
