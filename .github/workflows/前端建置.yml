@@ -17,7 +17,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 取得原始碼
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: 檢查 Rust stable 版本與 Linux x86-64
@@ -41,7 +41,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - name: 取得原始碼
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           persist-credentials: false
       - name: 檢查 Rust stable 版本與 Linux x86-64
