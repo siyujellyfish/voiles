@@ -670,6 +670,7 @@ fn trace_named_string_move_source(
     text: &str,
 ) -> Result<Vec<crate::owned_str_runtime::ResourceEvent>, Diagnostic> {
     use crate::owned_str_runtime::OwnedStrRuntime;
+    use crate::verified_resource_ir::NamedResourceTransfer;
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
@@ -702,6 +703,11 @@ fn trace_named_string_move_source(
     if from != owner {
         return Err(unsupported("P16：資源轉移來源必須是剛建立的具名持有者"));
     }
+    // 只在真正來源 Lexer／Parser／Checker 完整驗證之後建立持有者證據，
+    // 以宣告起點而非可遮蔽的字串名稱標定唯一所有者。
+    let transfer = NamedResourceTransfer::new(
+        DeclarationId(first.start), DeclarationId(second.start))
+        .map_err(|_| unsupported("P16：具名移動的來源宣告身分不唯一"))?;
     let raw = text.get(literal.start..literal.end)
         .ok_or_else(|| unsupported("P16：字串常值位置不是合法 UTF-8 邊界"))?;
     let value = raw.strip_prefix('"').and_then(|text| text.strip_suffix('"'))
@@ -713,7 +719,12 @@ fn trace_named_string_move_source(
         .map_err(|_| unsupported("P16：獨立 UTF-8 資源建立失敗"))?;
     runtime.move_named(owner, target)
         .map_err(|_| unsupported("P16：具名來源未能安全轉交資源"))?;
-    runtime.finish()
-        .map_err(|_| unsupported("P16：具名移動後資源最終清理責任不完整"))
+    let events = runtime.finish()
+        .map_err(|_| unsupported("P16：具名移動後資源最終清理責任不完整"))?;
+    // P16.6-R03.2：實際建立／移交／逆序清理事件與借用、資源帳簿
+    // 都要由同一已驗證來源的 DeclarationId 審核成功後才能回傳。
+    transfer.verify_actual_events(&events)
+        .map_err(|_| unsupported("P16：字串事件與靜態所有權／資源責任無法一致證明"))?;
+    Ok(events)
 }
 

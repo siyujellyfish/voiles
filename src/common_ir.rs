@@ -1,6 +1,8 @@
 //! P16.6-R02.2：公開 MVP-A 與私有安全前端共用的「已核准交集」語意 AST。
 //! 兩套舊解析器目前仍存在，且各自的完整語法、診斷和入口權限不變。
 //! 只有可以保留原宣告位置、順序與語意的結點才可以投影到此結構。
+// R02.2 此刻只由私有／公開差異回歸消耗；正式 Checker 遷移前，避免非測試編譯死碼警告。
+#![allow(dead_code)]
 
 use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
 use crate::parser::{self, Item, StmtKind as PublicStmtKind};
