@@ -417,7 +417,7 @@ mod automatic_self_borrow_tests {
         let (structs, _) = Parser {source: &source, tokens: &scan.tokens, cursor: 0}.file().unwrap();
         let methods = &structs["Counter"].methods;
         let checker = Checker {source: &source, structs: &structs, functions: &[],
-            function_index: HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission};
+            function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission};
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
             BorrowKind::SharedRead);
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "set").unwrap()).unwrap(),
@@ -480,7 +480,7 @@ mod conditional_self_inference_tests {
         let scanned = crate::lexer::scan(&source);
         let (types, _) = Parser {source: &source, tokens: &scanned.tokens, cursor: 0}.file().unwrap();
         let checker = Checker {source: &source, structs: &types, functions: &[],
-            function_index: HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission};
+            function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission};
         let method = &types["Counter"].methods[0];
         assert_eq!(checker.check_method("Counter", method).unwrap(), BorrowKind::ExclusiveWrite);
     }
@@ -853,7 +853,7 @@ mod float_copyable_approved_tests {
         }.file().unwrap();
         let checker = Checker {
             source: &source, structs: &structs, functions: &[],
-            function_index: HashMap::new(), ability: approved_leaf_copy_permission,
+            function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
         };
         assert_eq!(checker.permission("FloatBox"), CopyPermission::Allowed);
         assert_eq!(checker.permission("NestedFloat"), CopyPermission::Allowed);
@@ -895,7 +895,7 @@ mod float_copyable_method_tests {
         }.file().unwrap();
         let checker = Checker {
             source: &source, structs: &types, functions: &[],
-            function_index: HashMap::new(), ability: approved_leaf_copy_permission,
+            function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
         };
         assert_eq!(
             checker.check_method("FloatHolder", &types["FloatHolder"].methods[0]).unwrap(),
@@ -913,7 +913,7 @@ mod float_copyable_method_tests {
         }.file().unwrap();
         let checker = Checker {
             source: &source, structs: &types, functions: &[],
-            function_index: HashMap::new(), ability: approved_leaf_copy_permission,
+            function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
         };
         assert_eq!(
             checker.check_method("FloatPair", &types["FloatPair"].methods[0]).unwrap(),
