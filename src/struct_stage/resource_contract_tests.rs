@@ -153,3 +153,61 @@ mod p16_6_r03_4_結構整筆移交與失敗回滾資源責任 {
         assert_eq!(static_error, trace_error);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_5_跨函式結構返回多資源責任 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::verified_resource_ir::WholeStructResourcePlan;
+
+    const SOURCE: &str =
+        "struct Bundle{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn provide()->Bundle{\nvar local:Bundle = Bundle(title=\"繁體中文\")\nreturn local.move()\n}\nfn main()->int{\nvar received:Bundle = provide()\nreturn 0\n}\n";
+
+    fn plan() -> WholeStructResourcePlan {
+        let verified = verified_private_source(SOURCE).expect("先驗證真正 voil 靜態安全");
+        let provider = verified.functions.iter().find(|f| f.name == "provide").unwrap();
+        let caller = verified.functions.iter().find(|f| f.name == "main").unwrap();
+        assert_ne!(provider.body[0].start, caller.body[0].start);
+        WholeStructResourcePlan::new(
+            DeclarationId(provider.body[0].start),
+            DeclarationId(caller.body[0].start)).unwrap()
+    }
+
+    #[test]
+    fn 真正多資源函式返回只由呼叫端逆序清理() {
+        let proof = plan();
+        let (value, events) = trace_persistent_struct_return_source(
+            SOURCE, "provide", "received", None).unwrap();
+        assert_eq!(value.as_deref(), Some("固定🪼"));
+        assert_eq!(events, vec![
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Returned(1), ResourceEvent::Returned(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+        assert_eq!(proof.verify_returned_events(&events), Ok(2));
+        assert!(proof.verify_moved_events(&events).is_err());
+    }
+
+    #[test]
+    fn 真正返回前欄位求值失敗不得產生任何返回事件() {
+        let proof = plan();
+        for (field, count) in [("title", 1), ("id", 2)] {
+            let (value, events) = trace_persistent_struct_return_source(
+                SOURCE, "provide", "received", Some(field)).unwrap();
+            assert!(value.is_none());
+            assert_eq!(proof.verify_failed_build_events(&events), Ok(count));
+            assert!(events.iter().all(|event| !matches!(
+                event, ResourceEvent::Moved(_) | ResourceEvent::Returned(_)
+            )));
+        }
+    }
+
+    #[test]
+    fn 禁止在跨函式返回資源橋接前隱含複製結構() {
+        let illegal = SOURCE.replace("return local.move()", "return local");
+        let static_error = inspect(&illegal).unwrap_err();
+        let trace_error = trace_persistent_struct_return_source(
+            &illegal, "provide", "received", None).unwrap_err();
+        assert_eq!(static_error, trace_error);
+    }
+}
