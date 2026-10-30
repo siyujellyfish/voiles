@@ -481,7 +481,7 @@ mod p16_真實持續存活結構值資源責任 {
 
     #[test]
     fn 具名和預設順序中的失敗必須只回滾本次成功取得的欄位() {
-        for (failure,all_ids) in [("b",vec![2,3]),("a",vec![2,3,4]),("fixed",vec![2,3,4,5])] {
+        for (failure,all_ids) in [("b",vec![4]),("a",vec![4,5]),("fixed",vec![4,5,6])] {
             let mut rt=OwnedStructRuntime::new();
             rt.construct("stable",&fields(),&[],None).unwrap();
             let args=[NamedString{field:"b",value:"乙"},NamedString{field:"a",value:"甲"}];
