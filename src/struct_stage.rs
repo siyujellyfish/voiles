@@ -2227,6 +2227,74 @@ fn trace_string_return_source(
     Ok((retained, events))
 }
 
+/// P16.2 內部來源／資源橋接：只模擬明確的「建立單一 str、
+/// 隨即整筆 .move() 至新 var、函式正常返回」這個可證安全路徑。
+/// 非一般執行器；先由真實 Lexer／Parser／Checker 保證合法性。
+#[cfg(test)]
+fn trace_named_string_move_source(
+    text: &str,
+) -> Result<Vec<crate::owned_str_runtime::ResourceEvent>, Diagnostic> {
+    use crate::owned_str_runtime::OwnedStrRuntime;
+    let unsupported = |message: &str| Diagnostic {
+        kind: DiagnosticKind::Static, message: message.into(), span: None,
+    };
+    let source = Source::new(text.as_bytes().to_vec());
+    if let Some(error) = source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens = lexer::scan(&source);
+    if let Some(error) = tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs, funcs) = Parser {
+        source: &source, tokens: &tokens.tokens, cursor: 0,
+    }.file()?;
+    Checker {
+        source: &source, structs: &structs, functions: &funcs,
+        ability: crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&funcs)?;
+    let main = funcs.iter().find(|fun| fun.name == "main")
+        .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;
+    let [first, second, trailing_return] = main.body.as_slice() else {
+        return Err(unsupported("P16：具名字串移動只接受連續建立、移動、返回"));
+    };
+    if !matches!(&trailing_return.kind, StmtKind::Return(Term {
+        kind: TermKind::Literal("int"), start, end,
+    }) if text.get(*start..*end) == Some("0")) {
+        return Err(unsupported("P16：尚未證明此返回或其他控制流程的資源事件"));
+    }
+    let (owner, mutable, literal) = match &first.kind {
+        StmtKind::Declare {
+            name, ty, mutable, init: Some(literal),
+        } if ty == "str" && matches!(&literal.kind, TermKind::Literal("str")) =>
+            (name.as_str(), *mutable, literal),
+        _ => return Err(unsupported("P16：第一個來源必須是獨立 str 常值持有者")),
+    };
+    let (target, from) = match &second.kind {
+        StmtKind::Declare {
+            name, ty, mutable: true,
+            init: Some(Term {kind: TermKind::Move(from), ..}),
+        } if ty == "str" => (name.as_str(), from.as_str()),
+        _ => return Err(unsupported("P16：第二個來源僅接受 var str 整筆移動")),
+    };
+    if from != owner {
+        return Err(unsupported("P16：資源轉移來源必須是剛建立的具名持有者"));
+    }
+    let raw = text.get(literal.start..literal.end)
+        .ok_or_else(|| unsupported("P16：字串常值位置不是合法 UTF-8 邊界"))?;
+    let value = raw.strip_prefix('"').and_then(|text| text.strip_suffix('"'))
+        .filter(|text| !text.contains('\\') && !text.contains('\n')
+            && !text.contains('\r'))
+        .ok_or_else(|| unsupported("P16：未實作字串轉義求值，僅可追蹤直接常值"))?;
+    let mut runtime = OwnedStrRuntime::new();
+    runtime.declare(owner, mutable, value)
+        .map_err(|_| unsupported("P16：獨立 UTF-8 資源建立失敗"))?;
+    runtime.move_named(owner, target)
+        .map_err(|_| unsupported("P16：具名來源未能安全轉交資源"))?;
+    runtime.finish()
+        .map_err(|_| unsupported("P16：具名移動後資源最終清理責任不完整"))
+}
+
 fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<(), Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
@@ -5925,5 +5993,57 @@ mod p16_真正_voil_函式返回資源交接 {
         let error = trace_string_return_source(&source, "provide", "received").unwrap_err();
         assert!(error.message.contains("被呼叫端")
             || error.kind == DiagnosticKind::Lexical || error.kind == DiagnosticKind::Syntax);
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_具名_str_移動資源事件 {
+    use super::trace_named_string_move_source;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const VALID: &str = "fn main()->int{\nvar owner:str = \"繁體中文🪼\"\nvar destination:str = owner.move()\nreturn 0\n}\n";
+
+    #[test]
+    fn 真的_voil_字串整筆移動只建立和清理一次() {
+        assert_eq!(trace_named_string_move_source(VALID).unwrap(), vec![
+            ResourceEvent::Created(1),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 同一來源第二次移動在建立執行期資源前已被靜態拒絕() {
+        let source = VALID.replace("return 0",
+            "var second:str = owner.move()\nreturn 0");
+        let error = trace_named_string_move_source(&source).expect_err("不得二次移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("移動") || error.message.contains("已"));
+    }
+
+    #[test]
+    fn str_不可省略_move_形成第二所有者() {
+        let source = VALID.replace("owner.move()", "owner");
+        let error = trace_named_string_move_source(&source)
+            .expect_err("非 Copyable 原來源不能隱含複製");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 轉義常值尚無精確字串求值器故保守拒絕() {
+        let source = VALID.replace("繁體中文🪼", "繁體\\n中文");
+        let error = trace_named_string_move_source(&source).expect_err("轉義須拒絕");
+        assert!(error.message.contains("轉義")
+            || matches!(error.kind, DiagnosticKind::Lexical | DiagnosticKind::Syntax));
+    }
+
+    #[test]
+    fn 未接通的額外來源語句不能冒充已有一般執行器() {
+        let source = VALID.replace("return 0", "var count:int = 1\nreturn 0");
+        let error = trace_named_string_move_source(&source)
+            .expect_err("多語句執行期尚未證明");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("連續建立"));
     }
 }
