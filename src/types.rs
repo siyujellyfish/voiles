@@ -7,6 +7,7 @@ use crate::{Diagnostic, DiagnosticKind};
 use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind, Type};
 use crate::source::Source;
+use crate::ownership_ledger::DeclarationId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TypedValue {
@@ -22,7 +23,7 @@ impl TypedValue {
 struct TypeChecker<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
-    globals: HashMap<String, (usize, Type)>,
+    globals: HashMap<String, (DeclarationId, Type)>,
     probe_move: bool,
 }
 
@@ -48,7 +49,7 @@ impl<'a> TypeChecker<'a> {
             if let Some(ty) = scope.get(name) { return Some(*ty); }
         }
         self.globals.get(name)
-            .and_then(|(declaration, ty)| (*declaration < pos).then_some(*ty))
+            .and_then(|(declaration, ty)| (declaration.0 < pos).then_some(*ty))
     }
 
     fn integer(&self, literal: &str, expr: &Expr) -> Result<i64, Diagnostic> {
@@ -177,7 +178,7 @@ fn check_with_move_probe(file: &File, source: &Source, probe_move: bool) -> Resu
     for item in &file.items {
         match item {
             Item::Function(f) => { functions.insert(f.name.clone(), f.returns); }
-            Item::Binding(b) => { globals.insert(b.name.clone(), (b.start, b.ty)); }
+            Item::Binding(b) => { globals.insert(b.name.clone(), (DeclarationId(b.start), b.ty)); }
         }
     }
     let checker = TypeChecker { source, functions, globals, probe_move };
