@@ -609,6 +609,10 @@ struct Binding {
 /// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
 type Scopes = Vec<HashMap<String, Binding>>;
 
+/// 資料流需區分正常後繼、函式返回與迴圈轉移；後兩者不能混用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlowState { Fallthrough, Returned, LoopTransfer }
+
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
@@ -1366,14 +1370,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 
     fn statements(&self, body: &[Stmt], vars: &mut Scopes,
-        expected_return: &str, new_scope: bool) -> Result<bool, Diagnostic> {
+        expected_return: &str, new_scope: bool) -> Result<FlowState, Diagnostic> {
         self.statements_with_follow(body, vars, expected_return, new_scope, &[], None)
     }
 
     fn statements_with_follow(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str, new_scope: bool,
         continuation: &[(usize, Vec<Stmt>)],
-        loop_entry: Option<&Scopes>) -> Result<bool, Diagnostic> {
+        loop_entry: Option<&Scopes>) -> Result<FlowState, Diagnostic> {
         if new_scope { vars.push(HashMap::new()); }
         let result = self.statement_body(body, vars, expected_return, continuation, loop_entry);
         if new_scope { vars.pop(); }
@@ -1382,7 +1386,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str, continuation: &[(usize, Vec<Stmt>)],
-        loop_entry: Option<&Scopes>) -> Result<bool, Diagnostic> {
+        loop_entry: Option<&Scopes>) -> Result<FlowState, Diagnostic> {
         // 區塊入口若某外層借用在本條路徑及其外層後繼均不再使用，
         // 便已過最後使用點，不需要等到下一筆語句才歸還。
         Self::release_last_uses(vars, body, continuation);
@@ -1548,7 +1552,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != expected_return || !ready {
                         return Err(self.error("函式回傳型別不一致或來源未初始化", term));
                     }
-                    return Ok(false);
+                    return Ok(FlowState::Returned);
                 }
                 StmtKind::Break | StmtKind::Continue => {
                     let Some(snapshot) = loop_entry else {
@@ -1562,7 +1566,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 另一個未證明的持有者／別名狀態。嵌套 if 各路
                     // 徑在轉移點個別查核，因此不會把 continue 偷當 return。
                     self.check_loop_exit_stability(vars, snapshot, statement)?;
-                    return Ok(false);
+                    return Ok(FlowState::LoopTransfer);
                 }
                 StmtKind::ForRange { iterator, iterator_start,
                     lower, upper, body: loop_body } => {
@@ -1600,10 +1604,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         Some(&snapshot))?;
                     simulated.pop();
                     if one_iteration {
-                        // 單次迭代執行的所有權／借用結果必須傳到後繼。
-                        if !can_repeat { return Ok(false); }
-                        *vars = simulated;
-                    } else if can_repeat {
+                        // break／continue 只退出本迴圈，不是函式 return。
+                        // 若入口狀態經轉移驗證保持穩定，後繼仍須檢查。
+                        match can_repeat {
+                            FlowState::Returned => return Ok(FlowState::Returned),
+                            FlowState::LoopTransfer => *vars = snapshot,
+                            FlowState::Fallthrough => *vars = simulated,
+                        }
+                    } else if can_repeat == FlowState::Fallthrough {
                         for (depth, scope) in snapshot.iter().enumerate() {
                             for (name, original) in scope {
                                 let candidate = simulated[depth].get(name)
@@ -1655,7 +1663,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let can_repeat = self.statements_with_follow(
                         loop_body, &mut simulated, expected_return, true, &after_loop,
                         Some(&snapshot))?;
-                    if can_repeat {
+                    if can_repeat == FlowState::Fallthrough {
                         // 未建立不動點證明前，所有會回到條件的外部來源
                         // 必須保持所有權、部分初始化及借用活性不變。
                         // 迴圈局部宣告會於每次區塊退出後消失。
@@ -1694,19 +1702,26 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_branch.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
-                    let live_true = self.statements_with_follow(
+                    let true_flow = self.statements_with_follow(
                         yes, &mut on_true, expected_return, true, &after_branch,
                         loop_entry)?;
                     let mut on_false = snapshot.clone();
-                    let live_false = if let Some(otherwise) = no {
+                    let false_flow = if let Some(otherwise) = no {
                         self.statements_with_follow(
                             otherwise, &mut on_false, expected_return, true, &after_branch,
                             loop_entry)?
                     } else {
                         Self::release_last_uses(&mut on_false, &[], &after_branch);
-                        true
+                        FlowState::Fallthrough
                     };
-                    if !live_true && !live_false { return Ok(false); }
+                    let live_true = true_flow == FlowState::Fallthrough;
+                    let live_false = false_flow == FlowState::Fallthrough;
+                    if !live_true && !live_false {
+                        return Ok(if true_flow == FlowState::Returned
+                            && false_flow == FlowState::Returned {
+                            FlowState::Returned
+                        } else { FlowState::LoopTransfer });
+                    }
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
                     for (depth, scope) in vars.iter_mut().enumerate() {
                         for (name, original) in scope.iter_mut() {
@@ -1773,7 +1788,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             // 不得因來源尚存在就把借用自動延長到作用域結束。
             Self::release_last_uses(vars, &body[position + 1..], continuation);
         }
-        Ok(true)
+        Ok(FlowState::Fallthrough)
     }
 
     fn function(&self, fun: &Function) -> Result<(), Diagnostic> {
@@ -5400,3 +5415,31 @@ mod p15_3_break_continue_轉移路徑來源 {
     }
 }
 
+
+#[cfg(test)]
+mod p15_3_迴圈轉移不等於函式返回 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 單次迴圈_break_後仍須檢查移動來源的後續使用() {
+        let src = "fn main()->int{\nvar owner:str = \"資源\"\nfor i in 0..1{\nbreak\n}\nvar moved:str = owner.move()\nvar duplicate:str = owner.move()\nreturn 0\n}\n";
+        let error=inspect(src).expect_err("break 不是函式 return，必須分析後續違規移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 單次迴圈_if_的_break_與_continue_均不能跳過後繼() {
+        let src = "fn main()->int{\nvar owner:int = 1\nfor i in 0..1{\nif (true){\nbreak\n}else{\ncontinue\n}\n}\nvar moved:int = owner.move()\nreturn owner\n}\n";
+        let error=inspect(src).expect_err("跳出迴圈後仍須檢查已移動來源");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("移動"));
+    }
+
+    #[test]
+    fn 真正的_函式_return_仍可在單次迴圈內成立() {
+        let src = "fn main()->int{\nfor i in 0..1{\nreturn 1\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
