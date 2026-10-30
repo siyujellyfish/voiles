@@ -220,3 +220,7 @@ fn inspect_with_test_ability(text: &str, ability: impl Fn(&str) -> CopyPermissio
 include!("struct_stage/tests_ownership.rs");
 #[cfg(test)]
 include!("struct_stage/tests_lifetime_resources.rs");
+
+// P16.6-R04：靜態檢查效能基準與來源正反驗證；不屬公開入口。
+#[cfg(test)]
+include!("struct_stage/perf_bench.rs");
