@@ -241,6 +241,18 @@ mod tests {
         scopes[1].insert(inner.name.clone(), DeclarationId(inner.start));
         let inner_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
         assert_ne!(outer_id, inner_id, "H06／AH04 遮蔽不能覆蓋來源身分");
+        // 與 R02 共通 AST、P13/P16 的安全資源帳簿共用 DeclarationId，
+        // 而非只比較 P09 私有位置整數或相同詞彙名稱。
+        let shared = crate::common_ir::from_public(&file).unwrap();
+        let crate::common_ir::ScalarStmt::Declare { declaration: shared_outer, .. } =
+            &shared.functions[0].body[0] else { panic!("共用 AST 缺少外層宣告"); };
+        let crate::common_ir::ScalarStmt::If { yes, .. } =
+            &shared.functions[0].body[1] else { panic!("共用 AST 缺少 if"); };
+        let [crate::common_ir::ScalarStmt::Declare { declaration: shared_inner, .. }] =
+            yes.as_slice() else { panic!("共用 AST 缺少內層同名宣告"); };
+        assert_eq!(&outer_id, shared_outer);
+        assert_eq!(&inner_id, shared_inner);
+
         assert_eq!(inner_id.0, inner.start);
         scopes.pop();
         assert_eq!(
