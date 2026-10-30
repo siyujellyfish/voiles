@@ -729,8 +729,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 借用，仍須保留至外層自己的最後使用點。
                     let needed_later = continuation.iter().any(|(at_depth, following)| {
                         *at_depth >= depth
-                            && !scope_names[depth + 1..=*at_depth].iter()
-                                .any(|known| known.contains(name))
+                            && (*at_depth == depth
+                                || !scope_names[depth + 1..=*at_depth].iter()
+                                    .any(|known| known.contains(name)))
                             && Self::scope_mentions_binding(following, name, false)
                     });
                     if loan.active && !needed_here && !needed_later {
