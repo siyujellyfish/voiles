@@ -20,7 +20,7 @@ jobs:
     timeout-minutes: 5
     steps:
       - name: 取得檔案
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7.0.1
         with:
           fetch-depth: 2
           persist-credentials: false
