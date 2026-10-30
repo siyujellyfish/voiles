@@ -54,6 +54,8 @@ enum StmtKind {
     Assign { name: String, value: Term },
     FieldAssign { receiver: String, field: String, value: Term },
     If { condition: Term, yes: Vec<Stmt>, no: Option<Vec<Stmt>> },
+    /// P15：只在能證明反向邊的所有權狀態不變時接受的 while 子集。
+    While { condition: Term, body: Vec<Stmt> },
     Return(Term),
 }
 
@@ -384,6 +386,13 @@ impl Parser<'_> {
             StmtKind::Declare { name, ty, mutable, init }
         } else if self.keyword("if") {
             self.if_statement_kind()?
+        } else if self.keyword("while") {
+            self.cursor += 1;
+            self.take('(', "while 條件需要左括號")?;
+            let condition = self.term()?;
+            self.take(')', "while 條件需要右括號")?;
+            let body = self.body()?;
+            StmtKind::While { condition, body }
         } else if self.keyword("return") {
             self.cursor += 1;
             StmtKind::Return(self.term()?)
@@ -675,6 +684,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 || yes.iter().any(|stmt| Self::statement_mentions(stmt, name))
                 || no.as_ref().is_some_and(|body|
                     body.iter().any(|stmt| Self::statement_mentions(stmt, name))),
+            StmtKind::While { condition, body } =>
+                Self::term_mentions(condition, name)
+                || body.iter().any(|stmt| Self::statement_mentions(stmt, name)),
             StmtKind::Return(term) => Self::term_mentions(term, name),
         }
     }
@@ -698,6 +710,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         || Self::scope_mentions_binding(yes, name, false)
                         || no.as_ref().is_some_and(|other|
                             Self::scope_mentions_binding(other, name, false))) {
+                        return true;
+                    }
+                }
+                StmtKind::While { condition, body } => {
+                    if !hidden && (Self::term_mentions(condition, name)
+                        || Self::scope_mentions_binding(body, name, false)) {
                         return true;
                     }
                 }
@@ -1404,6 +1422,59 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     return Ok(false);
                 }
+                StmtKind::While { condition, body: loop_body } => {
+                    // 條件於每次迭代重新求值；不得讓條件本身移動
+                    // 所有者、建立借用或觸發未受控函式副作用。
+                    if !Self::method_argument_safe_before_borrow(condition) {
+                        return Err(self.error(
+                            "P15：while 條件只能使用無資源副作用的合法純值", condition));
+                    }
+                    let (actual, ready) = self.evaluate(condition, vars)?;
+                    if actual != "bool" || !ready {
+                        return Err(self.error("while 條件必須是已初始化 bool", condition));
+                    }
+                    let snapshot = vars.clone();
+                    let mut simulated = snapshot.clone();
+                    // 下一次條件檢查及迭代本體都屬未來可達路徑，
+                    // 不能在本次迭代提早歸還還會被引用的外層別名。
+                    let condition_read = Stmt {
+                        kind: StmtKind::Return(condition.clone()),
+                        start: condition.start,
+                        end: condition.end,
+                    };
+                    let mut after_loop = Vec::with_capacity(continuation.len() + 3);
+                    after_loop.push((vars.len() - 1, vec![condition_read]));
+                    after_loop.push((vars.len() - 1, loop_body.clone()));
+                    after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
+                    after_loop.extend_from_slice(continuation);
+                    let can_repeat = self.statements_with_follow(
+                        loop_body, &mut simulated, expected_return, true, &after_loop)?;
+                    if can_repeat {
+                        // 未建立不動點證明前，所有會回到條件的外部來源
+                        // 必須保持所有權、部分初始化及借用活性不變。
+                        // 迴圈局部宣告會於每次區塊退出後消失。
+                        for (depth, scope) in snapshot.iter().enumerate() {
+                            for (name, original) in scope {
+                                let candidate = simulated[depth].get(name)
+                                    .expect("迴圈不得移除外層宣告");
+                                let old_loan = original.loan.as_ref().map(|loan|
+                                    (loan.source, loan.kind, loan.active));
+                                let new_loan = candidate.loan.as_ref().map(|loan|
+                                    (loan.source, loan.kind, loan.active));
+                                if candidate.declaration_start != original.declaration_start
+                                    || candidate.value != original.value
+                                    || candidate.pending_fields != original.pending_fields
+                                    || old_loan != new_loan {
+                                    return Err(self.error(
+                                        "P15：while 反向邊的來源所有權／借用狀態不穩定，需完整不動點證明",
+                                        condition));
+                                }
+                            }
+                        }
+                    }
+                    // while 可執行零次，因此後續只使用入口快照；
+                    // 任何可回返狀態已確認與此快照一致。
+                }
                 StmtKind::If { condition, yes, no } => {
                     let (actual, ready) = self.evaluate(condition, vars)?;
                     if actual != "bool" || !ready {
@@ -1570,6 +1641,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if let Some(otherwise) = no {
                         self.reject_method_statements(otherwise)?;
                     }
+                }
+                StmtKind::While { condition, .. } => {
+                    return Err(self.error("P15：方法中的 while 借用重入尚未完成安全證明", condition));
                 }
             }
         }
