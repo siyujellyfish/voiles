@@ -269,3 +269,65 @@ mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
         assert_eq!(original,runtime);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_9_混合純值與資源責任帳簿實際來源 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::verified_resource_ir::MixedResourcePlan;
+
+    const MIXED: &str =
+        "struct Mixed{\nvar num:int = 3\nvar text:str = \"舊值\"\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Mixed = Mixed(text=\"繁體中文🪼\",num=7)\nvar target:Mixed = original.move()\nreturn 0\n}\n";
+    const PURE: &str =
+        "struct Plain{\nvar num:int = 3\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Plain = Plain(num=9)\nvar target:Plain = original\nreturn 0\n}\n";
+
+    fn proven(src: &str, str_count: usize) -> MixedResourcePlan {
+        let checked=verified_private_source(src).expect("真實來源須先經私有安全檢查");
+        let main=checked.functions.iter().find(|f|f.name=="main").unwrap();
+        let [declare,assign,_]=main.body.as_slice() else { panic!("限制三語句"); };
+        MixedResourcePlan::new(
+            DeclarationId(declare.start),DeclarationId(assign.start),str_count).unwrap()
+    }
+
+    #[test]
+    fn 真正混合資源整筆移動只登記_str_並精確清理() {
+        let proof=proven(MIXED,1);
+        let (value,events)=trace_mixed_struct_source(MIXED,None).unwrap();
+        assert_eq!(value,Some(7));
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Moved(1),ResourceEvent::Released(1),
+        ]);
+        assert_eq!(proof.verify_completed(&events,true),Ok(1));
+        assert!(proof.verify_completed(&events,false).is_err());
+    }
+
+    #[test]
+    fn 真正全_copyable_結構複製沒有_任何_資源事件() {
+        let proof=proven(PURE,0);
+        let (value,events)=trace_mixed_struct_source(PURE,None).unwrap();
+        assert_eq!(value,Some(9));
+        assert!(events.is_empty());
+        assert_eq!(proof.verify_completed(&events,false),Ok(0));
+    }
+
+    #[test]
+    fn 求值至_int_或_bool_才失敗只回滾先前真的建立之_str() {
+        let proof=proven(MIXED,1);
+        for failure in ["num","flag"] {
+            let (value,events)=trace_mixed_struct_source(MIXED,Some(failure)).unwrap();
+            assert!(value.is_none());
+            assert_eq!(events,vec![
+                ResourceEvent::Created(1),ResourceEvent::Released(1),
+            ]);
+            assert_eq!(proof.verify_failed_build(&events,1),Ok(1));
+        }
+    }
+
+    #[test]
+    fn 混合結構不能在進入真實事件模擬前隱含複製_str() {
+        let illegal=MIXED.replace("original.move()","original");
+        let static_error=inspect(&illegal).unwrap_err();
+        let runtime_error=trace_mixed_struct_source(&illegal,None).unwrap_err();
+        assert_eq!(static_error,runtime_error);
+    }
+}
