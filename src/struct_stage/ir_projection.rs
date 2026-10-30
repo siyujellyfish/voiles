@@ -14,7 +14,8 @@ fn private_scalar_expression(term: &Term, text: &str)
             }
         ),
         TermKind::Name(name) => ScalarExpr::Name(name.clone()),
-        TermKind::BinaryInt { left, operator, right } => ScalarExpr::Binary {
+        TermKind::BinaryInt { left, operator, right }
+            if matches!(operator, '+' | '-') => ScalarExpr::Binary {
             left: Box::new(private_scalar_expression(left, text)?),
             op: *operator,
             right: Box::new(private_scalar_expression(right, text)?),
@@ -31,12 +32,12 @@ fn private_scalar_expression(term: &Term, text: &str)
 
 fn private_scalar_statements(stmts: &[Stmt], text: &str)
     -> Option<Vec<crate::common_ir::ScalarStmt>> {
-    use crate::common_ir::ScalarStmt;
+    use crate::common_ir::{ScalarStmt, ScalarType};
     stmts.iter().map(|statement| Some(match &statement.kind {
         StmtKind::Declare { name, ty, mutable, init } => ScalarStmt::Declare {
             declaration: DeclarationId(statement.start),
             name: name.clone(),
-            ty: ty.clone(),
+            ty: ScalarType::from_name(ty)?,
             mutable: *mutable,
             init: match init {
                 Some(value) => Some(private_scalar_expression(value, text)?),
@@ -64,16 +65,14 @@ fn private_scalar_statements(stmts: &[Stmt], text: &str)
 fn private_to_common_ast(
     structs: &HashMap<String, StructDecl>, functions: &[Function], text: &str,
 ) -> Option<crate::common_ir::SharedAst> {
-    use crate::common_ir::{ScalarFunction, SharedAst};
+    use crate::common_ir::{ScalarFunction, ScalarType, SharedAst};
     if !structs.is_empty() { return None; }
     let functions = functions.iter().map(|function| {
-        if !function.params.is_empty()
-            || !matches!(function.result_ty.as_str(), "int" | "bool") {
-            return None;
-        }
+        if !function.params.is_empty() { return None; }
+        let result_ty = ScalarType::from_name(&function.result_ty)?;
         Some(ScalarFunction {
             name: function.name.clone(),
-            result_ty: function.result_ty.clone(),
+            result_ty,
             body: private_scalar_statements(&function.body, text)?,
         })
     }).collect::<Option<Vec<_>>>()?;
@@ -163,6 +162,33 @@ mod p16_6_r02_2_共同語意樹驗證 {
         assert_ne!(outer, inner, "詞彙名稱相同也不可視為同一所有權宣告");
         assert_eq!(&source[outer.0..outer.0 + 3], "var");
         assert_eq!(&source[inner.0..inner.0 + 3], "var");
+    }
+
+    #[test]
+    fn 非純值宣告即使沒有右值也不得投影成共同標量_ast() {
+        for src in [
+            "fn main()->int{\nvar text:str\nreturn 0\n}\n",
+            "fn main()->int{\nvar data:list\nreturn 0\n}\n",
+        ] {
+            let source = Source::new(src.as_bytes().to_vec());
+            let tokens = lexer::scan(&source);
+            let (structs, funcs) = Parser {
+                source: &source, tokens: &tokens.tokens, cursor: 0
+            }.file().expect("此處只測解析後 AST 投影是否拒絕非純值型別");
+            assert!(private_to_common_ast(&structs, &funcs, src).is_none(),
+                "不得把 str 或容器錯認為可安全共用的 int/bool AST");
+        }
+    }
+
+    #[test]
+    fn 非純值函式回傳型別不能由通用字串假冒共同_ast() {
+        let src = "fn create()->str{\nreturn \"字串\"\n}\n";
+        let source = Source::new(src.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let (structs, funcs) = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0
+        }.file().expect("私有受限語法可解析 str 返回");
+        assert!(private_to_common_ast(&structs, &funcs, src).is_none());
     }
 
     #[test]
