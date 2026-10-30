@@ -1311,9 +1311,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let mut borrowed_names: Vec<String> = Vec::new();
                 for (arg, parameter) in args.iter().zip(&function.params) {
                     let expected = &parameter.ty;
-                    if borrowed_names.iter().any(|name| Self::term_mentions(arg, name)) {
+                    let new_borrow = self.permission(expected) != CopyPermission::Allowed
+                        && matches!(&arg.kind, TermKind::Name(_))
+                        && !Self::parameter_is_consumed(function, &parameter.name);
+                    if !new_borrow && borrowed_names.iter()
+                        .any(|name| Self::term_mentions(arg, name)) {
                         return Err(self.error(
-                            "P15.6：同一呼叫的後續引數不可使用尚未歸還的獨占借用來源", arg));
+                            "P15.6：同一呼叫的後續引數不可使用尚未歸還的借用來源", arg));
                     }
                     if self.permission(expected) != CopyPermission::Allowed {
                         if let TermKind::Name(name) = &arg.kind {
@@ -4234,9 +4238,9 @@ mod p13_函式呼叫所有權預檢 {
     use crate::DiagnosticKind;
 
     #[test]
-    fn p13_非可複製參數拒絕具名隱含複製() {
+    fn p13_非可複製參數唯讀預設借用不隱含複製() {
         let src="fn consume(value:str)->int{\nreturn 0\n}\nfn main()->int{\nvar source:str = \"hello\"\nreturn consume(source)\n}\n";
-        assert_eq!(inspect(src).unwrap_err().kind,DiagnosticKind::Static);
+        assert!(inspect(src).is_ok(), "已核准函式參數預設借用，來源不需複製");
     }
 
     #[test]
@@ -4493,11 +4497,9 @@ mod p13_函式呼叫簽章與資源移交交叉驗證 {
     }
 
     #[test]
-    fn 資源引數不可透過普通名稱隱含複製() {
+    fn 資源引數普通名稱可預設借用但不隱含複製() {
         let src="fn use_it(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"x\"\nreturn use_it(item)\n}\n";
-        let error=inspect(src).unwrap_err();
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("非 Copyable 函式引數"));
+        assert!(inspect(src).is_ok(), "函式唯讀借用不是建立第二所有者");
     }
 
     #[test]
@@ -5048,11 +5050,9 @@ mod p13_新建資源函式位置引數 {
     }
 
     #[test]
-    fn 既有字串名稱作為參數仍禁止隱含複製() {
+    fn 既有字串名稱作為唯讀函式參數採預設借用() {
         let src = "fn consume(item:str)->int{\nreturn 1\n}\nfn main()->int{\nvar item:str = \"原有資源\"\nreturn consume(item)\n}\n";
-        let error=inspect(src).expect_err("不得將新值例外擴張到名稱隱含複製");
-        assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("非 Copyable"));
+        assert!(inspect(src).is_ok(), "已核准預設借用，不是 str 隱含複製");
     }
 
     #[test]
@@ -6140,5 +6140,71 @@ mod p16_真正_voil_具名_str_移動資源事件 {
             .expect_err("多語句執行期尚未證明");
         assert_eq!(error.kind, DiagnosticKind::Static);
         assert!(error.message.contains("連續建立"));
+    }
+}
+
+#[cfg(test)]
+mod p15_6_非_copyable_函式預設借用來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 具名字串唯讀借用_函式退出後可整筆移動() {
+        let src = "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"水母🪼\"\nvar seen:int = see(owner)\nvar target:str = owner.move()\nreturn seen\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 會消耗參數的函式仍要求呼叫端明確移動() {
+        let src = "fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar owner:str = \"資源\"\nvar invalid:str = take(owner)\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("被呼叫端消耗參數時不能將借用誤當所有者");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.6"));
+    }
+
+    #[test]
+    fn 函式預設借用參數內不得再次移交或建立不安全別名() {
+        let src = "fn see(value:str)->int{\nvar alias:str = value.borrow()\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn see(owner)\n}\n";
+        let err=inspect(src).expect_err("借用函式參數不持有原資源，無法保證別名再借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("再") || err.message.contains("借用"));
+    }
+
+    #[test]
+    fn 同一函式呼叫中可寫字串的雙重獨占借用拒絕() {
+        let src = "fn both(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn both(owner,owner)\n}\n";
+        let err=inspect(src).expect_err("可變來源不得在同一次呼叫中有兩份獨占借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 同一函式呼叫中唯讀常數可以共享兩個借用() {
+        let src = "fn both(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nconst owner:str = \"資源\"\nreturn both(owner,owner)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 同一呼叫先借用後明確移動同一來源須拒絕() {
+        let src = "fn mixed(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn mixed(owner,owner.move())\n}\n";
+        let err=inspect(src).expect_err("呼叫中的借用尚未歸還，不能移動原來源");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.6"));
+    }
+
+    #[test]
+    fn 已存在獨占別名時不得再次以函式預設借用原來源() {
+        let src = "struct Boxed{\nvar text:str = \"資源\"\nvar count:int = 1\n}\nfn see(value:Boxed)->int{\nreturn value.count\n}\nfn main()->int{\nvar owner:Boxed = Boxed()\nvar alias:Boxed = owner.borrow()\nvar result:int = see(owner)\nreturn alias.count\n}\n";
+        let err=inspect(src).expect_err("別名仍會被使用，函式不得取得新的獨占借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 借用參數不能以一般名稱回傳為第二個_str_所有者() {
+        let src = "fn leak(value:str)->str{\nreturn value\n}\nfn main()->int{\nvar owner:str = \"資源\"\nvar result:str = leak(owner)\nreturn 0\n}\n";
+        let err=inspect(src).expect_err("borrowed str 不可由回傳變成擁有值");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable"));
     }
 }
