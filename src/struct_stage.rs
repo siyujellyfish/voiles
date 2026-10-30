@@ -2482,6 +2482,123 @@ fn trace_string_return_source(
     Ok((retained, events))
 }
 
+/// P16：真實 .voil 結構函式返回的私有所有權證據。
+/// 限無參數 provider 單次建構與具名整筆 .move() 返回，
+/// main 以唯一全新結構綁定接收，避免虛構任意函式執行期。
+#[cfg(test)]
+fn trace_persistent_struct_return_source(
+    text: &str, provider: &str, receiver: &str, fail_after: Option<&str>,
+) -> Result<(Option<String>, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
+    use crate::struct_initialization::{
+        BuildStatus, NamedString, OwnedStructRuntime, StringField, StructRuntimeError,
+    };
+    let unsupported = |message: &str| Diagnostic {
+        kind: DiagnosticKind::Static, message: message.into(), span: None,
+    };
+    fn plain_literal<'a>(text: &'a str, term: &Term) -> Option<&'a str> {
+        if !matches!(&term.kind, TermKind::Literal("str")) { return None; }
+        let raw=text.get(term.start..term.end)?
+            .strip_prefix('"')?.strip_suffix('"')?;
+        (!raw.contains('\\') && !raw.contains('\n')
+            && !raw.contains('\r')).then_some(raw)
+    }
+    let source=Source::new(text.as_bytes().to_vec());
+    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens=lexer::scan(&source);
+    if let Some(error)=tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs,functions)=Parser {
+        source:&source,tokens:&tokens.tokens,cursor:0,
+    }.file()?;
+    Checker {
+        source:&source, structs:&structs, functions:&functions,
+        ability:crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&functions)?;
+    let main=functions.iter().find(|function| function.name=="main")
+        .ok_or_else(||unsupported("P16：缺少有效 main"))?;
+    let callee=functions.iter().find(|function| function.name==provider
+        && function.params.is_empty())
+        .ok_or_else(||unsupported("P16：須有無參數資源建構函式"))?;
+    let [declaration,return_final]=callee.body.as_slice() else {
+        return Err(unsupported("P16：被呼叫函式僅接受一次建立與一次整筆返回"));
+    };
+    let (local,ty,named_args)=match &declaration.kind {
+        StmtKind::Declare {
+            name,ty,init:Some(Term {kind:TermKind::Construct(actual,args),..}), ..
+        } if ty==actual && ty==&callee.result_ty =>
+            (name.as_str(),ty.as_str(),args),
+        _=>return Err(unsupported("P16：被呼叫端須先建立具名結構持有者")),
+    };
+    if !matches!(&return_final.kind,StmtKind::Return(Term {
+        kind:TermKind::Move(name),..
+    }) if name==local) {
+        return Err(unsupported("P16：被呼叫端必須以具名整筆 .move() 返回結構"));
+    }
+    let [receive,main_return]=main.body.as_slice() else {
+        return Err(unsupported("P16：main 須單次接收結構後直接返回"));
+    };
+    if !matches!(&receive.kind,StmtKind::Declare {
+        name,ty:destination_type,init:Some(Term {
+            kind:TermKind::Construct(called,args),..
+        }),..
+    } if name==receiver && destination_type==ty
+        && called==provider && args.is_empty()) {
+        return Err(unsupported("P16：main 須以新結構宣告接收無參數函式結果"));
+    }
+    if !matches!(&main_return.kind,StmtKind::Return(Term {
+        kind:TermKind::Literal("int"),start,end,
+    }) if text.get(*start..*end)==Some("0")) {
+        return Err(unsupported("P16：main 的其他返回路徑尚未接通"));
+    }
+    let definition=structs.get(ty)
+        .ok_or_else(||unsupported("P16：結構類別不存在"))?;
+    let fields=definition.fields.iter().map(|field| {
+        if field.ty!="str" {
+            return Err(unsupported("P16：此返回資源橋接只支援 str 欄位"));
+        }
+        let default=field.default.as_ref().map(|term|
+            plain_literal(text,term).ok_or_else(||unsupported(
+                "P16：此返回資源橋接尚未實作轉義字串預設求值")))
+            .transpose()?;
+        Ok(StringField {
+            name:field.name.as_str(),default,immutable:field.immutable,
+        })
+    }).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let args=named_args.iter().map(|(name,term)| {
+        let value=plain_literal(text,term)
+            .ok_or_else(||unsupported("P16：具名引數限未經轉義 str 常值"))?;
+        Ok(NamedString{field:name.as_str(),value})
+    }).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let observe=fields.last().map(|f|f.name)
+        .ok_or_else(||unsupported("P16：來源須至少有一個可觀察的 str 欄位"))?;
+    let mut runtime=OwnedStructRuntime::new();
+    runtime.enter_scope();
+    let status=runtime.construct(local,&fields,&args,fail_after);
+    if matches!(&status,Err(StructRuntimeError::EvaluationFailed(_))) {
+        runtime.leave_scope().map_err(|_|
+            unsupported("P16：被呼叫端失敗清理作用域未關閉"))?;
+        return Ok((None,runtime.finish().map_err(|_|
+            unsupported("P16：失敗構造後所有資源未完整釋放"))?));
+    }
+    if !matches!(&status,Ok(BuildStatus::Complete)) {
+        return Err(unsupported("P16：返回結構未完成初始化或失敗注入切點不合法"));
+    }
+    let transferred=runtime.return_whole(local)
+        .map_err(|_|unsupported("P16：被呼叫端返回不能轉交整筆結構所有權"))?;
+    runtime.leave_scope()
+        .map_err(|_|unsupported("P16：被呼叫端作用域清理失敗"))?;
+    runtime.accept_return(receiver,transferred)
+        .map_err(|_|unsupported("P16：呼叫端無法取得返回結構的唯一所有權"))?;
+    let value=runtime.read_field(receiver,observe)
+        .map_err(|_|unsupported("P16：函式返回後原資源無效"))?.to_owned();
+    let events=runtime.finish()
+        .map_err(|_|unsupported("P16：呼叫端退出後資源清理身分不完整"))?;
+    Ok((Some(value),events))
+}
+
 /// P16.2 內部來源／資源橋接：只模擬明確的「建立單一 str、
 /// 隨即整筆 .move() 至新 var、函式正常返回」這個可證安全路徑。
 /// 非一般執行器；先由真實 Lexer／Parser／Checker 保證合法性。
@@ -6569,5 +6686,97 @@ mod p16_真正_voil_持續結構整筆資源來源 {
             .expect_err("沒有字串轉義求值器前不能偷採原始詞彙");
         assert!(error.message.contains("轉義")
             || matches!(error.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_複合結構返回資源責任 {
+    use super::trace_persistent_struct_return_source;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const SOURCE: &str="struct Bundle{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn provide()->Bundle{\nvar local:Bundle = Bundle(title=\"繁體中文\")\nreturn local.move()\n}\nfn main()->int{\nvar received:Bundle = provide()\nreturn 0\n}\n";
+
+    #[test]
+    fn 實際_voil_跨函式整筆返回原作用域不釋放_最終呼叫端逆序清理() {
+        let (value,events)=trace_persistent_struct_return_source(
+            SOURCE,"provide","received",None).unwrap();
+        assert_eq!(value.as_deref(),Some("固定🪼"));
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Returned(1),ResourceEvent::Returned(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 函式具名欄位求值失敗不發生任何返回事件() {
+        let (value,events)=trace_persistent_struct_return_source(
+            SOURCE,"provide","received",Some("title")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 函式預設欄位求值失敗僅由被呼叫端回滾已配置字串() {
+        let (value,events)=trace_persistent_struct_return_source(
+            SOURCE,"provide","received",Some("id")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 不能把非_copyable_結構一般名稱返回為第二個所有者() {
+        let invalid=SOURCE.replace("return local.move()","return local");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("整體返回必須有資源責任轉移證明");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable")||err.message.contains("複製"));
+    }
+
+    #[test]
+    fn 非擁有借用不得由函式返回逃逸為複合結構所有者() {
+        let invalid=SOURCE.replace("return local.move()","return local.borrow()");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("不能把整筆借用誤認成返回所有者");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 被呼叫端尚未接通的一般多語句控制流程不能假裝已執行() {
+        let invalid=SOURCE.replace("return local.move()",
+            "var counter:int = 1\nreturn local.move()");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("函式多語句執行期尚未完成");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("被呼叫"));
+    }
+
+    #[test]
+    fn main_額外操作不應被資源模型悄悄略過() {
+        let invalid=SOURCE.replace("return 0","var other:int = 1\nreturn 0");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("不可只模擬部分 main 再宣稱完整來源清理");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("main"));
+    }
+
+    #[test]
+    fn 返回函式字串原始轉義未經求值前保守拒絕() {
+        let invalid=SOURCE.replace("繁體中文","繁體\\n中文");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("資源橋接沒有任意字串解碼器");
+        assert!(err.message.contains("轉義")
+            || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
     }
 }
