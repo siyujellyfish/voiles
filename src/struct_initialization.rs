@@ -118,6 +118,11 @@ struct StructOwnerSlot {
 }
 
 #[derive(Debug)]
+pub(crate) struct ReturnedStringStruct {
+    value: StructOwnedValue,
+}
+
+#[derive(Debug)]
 pub(crate) struct OwnedStructRuntime {
     ledger: OwnedStrRuntime,
     scopes: Vec<Vec<StructOwnerSlot>>,
@@ -242,6 +247,36 @@ impl OwnedStructRuntime {
             name: to.to_owned(), owned: Some(moved),
         });
         Ok(())
+    }
+
+    /// 函式返回先從原持有者取走整筆實例；每個實際存在的
+    /// 欄位以相同資源身分紀錄 Returned，未初始化 var 不虛構事件。
+    pub(crate) fn return_whole(&mut self, name: &str)
+        -> Result<ReturnedStringStruct, StructRuntimeError> {
+        let (i,j) = self.location(name)?;
+        let value = self.scopes[i][j].owned.take()
+            .ok_or(StructRuntimeError::MovedBinding)?;
+        for field in &value.fields {
+            self.ledger.mark_detached_return(&field.value);
+        }
+        Ok(ReturnedStringStruct { value })
+    }
+
+    /// 呼叫端接收失敗時把資源所有權退回結果，讓上層
+    /// 明確選擇安全的返回處理或失敗清理，不能靠 Rust Drop。
+    pub(crate) fn accept_return(&mut self, name: &str, result: ReturnedStringStruct)
+        -> Result<(), (StructRuntimeError, ReturnedStringStruct)> {
+        if let Err(err) = self.current_name_free(name) {
+            return Err((err, result));
+        }
+        self.scopes.last_mut().expect("根作用域存在").push(StructOwnerSlot {
+            name: name.to_owned(), owned: Some(result.value),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn discard_return(&mut self, result: ReturnedStringStruct) {
+        Self::release_value(&mut self.ledger, result.value);
     }
 
     /// str 欄位不得因 S19 而變成 Copyable；純值的整體複製
