@@ -90,6 +90,7 @@ fn trace_persistent_struct_move_source(
     use crate::struct_initialization::{
         BuildStatus, NamedString, OwnedStructRuntime, StringField, StructRuntimeError,
     };
+    use crate::verified_resource_ir::WholeStructResourcePlan;
     let reject = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
@@ -125,6 +126,9 @@ fn trace_persistent_struct_move_source(
         } if ty==struct_name && source==owner => name.as_str(),
         _=>return Err(reject("P16：第二語句須將剛建立的整個結構 .move() 至新持有者")),
     };
+    let plan = WholeStructResourcePlan::new(
+        DeclarationId(declare.start), DeclarationId(transfer.start))
+        .map_err(|_|reject("P16：整筆結構來源與新持有者不可共用宣告身分"))?;
     let definition=structs.get(struct_name)
         .ok_or_else(||reject("P16：結構宣告型別不存在"))?;
     let fields=definition.fields.iter().map(|field| {
@@ -149,8 +153,11 @@ fn trace_persistent_struct_move_source(
     if matches!(&status, Err(StructRuntimeError::EvaluationFailed(_))) {
         // 真實失敗注入下不得建立第二持有者，已建立的部分
         // 資源必須在回滾時依序釋放並完成事件帳簿平衡。
-        return Ok((None,runtime.finish()
-            .map_err(|_|reject("P16：失敗回滾後資源身分未完整清理"))?));
+        let events=runtime.finish()
+            .map_err(|_|reject("P16：失敗回滾後資源身分未完整清理"))?;
+        plan.verify_failed_build_events(&events).map_err(|_|
+            reject("P16：多欄位建構失敗的來源身分與逆序清理責任不一致"))?;
+        return Ok((None,events));
     }
     match status {
         Ok(BuildStatus::Complete)=>{},
@@ -167,6 +174,8 @@ fn trace_persistent_struct_move_source(
         .map_err(|_|reject("P16：移動後新持有者欄位不再有效"))?.to_owned();
     let events=runtime.finish()
         .map_err(|_|reject("P16：整筆移動後未完整清理全部資源身分"))?;
+    plan.verify_moved_events(&events).map_err(|_|
+        reject("P16：多欄位移交及逆序清理與共同資源責任 IR 不一致"))?;
     Ok((Some(retained),events))
 }
 
