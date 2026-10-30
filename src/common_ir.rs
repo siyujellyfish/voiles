@@ -8,6 +8,24 @@ use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
 use crate::parser::{self, Item, StmtKind as PublicStmtKind};
 use crate::ownership_ledger::DeclarationId;
 
+/// R02.5：只允許公開 MVP-A 與已核准 P13 交集的具體純值型別。
+/// 其他型別（含非 Copyable str、struct、容器）不可用任意字串冒充。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScalarType { Int, Bool }
+
+impl ScalarType {
+    pub(crate) fn from_name(ty: &str) -> Option<Self> {
+        match ty { "int" => Some(Self::Int), "bool" => Some(Self::Bool), _ => None }
+    }
+}
+
+impl From<parser::Type> for ScalarType {
+    fn from(ty: parser::Type) -> Self {
+        match ty { parser::Type::Int => Self::Int, parser::Type::Bool => Self::Bool }
+    }
+}
+
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ScalarExpr {
     Int(i64),
@@ -22,7 +40,7 @@ pub(crate) enum ScalarStmt {
     Declare {
         declaration: DeclarationId,
         name: String,
-        ty: String,
+        ty: ScalarType,
         mutable: bool,
         init: Option<ScalarExpr>,
     },
@@ -34,7 +52,7 @@ pub(crate) enum ScalarStmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ScalarFunction {
     pub(crate) name: String,
-    pub(crate) result_ty: String,
+    pub(crate) result_ty: ScalarType,
     pub(crate) body: Vec<ScalarStmt>,
 }
 
@@ -72,10 +90,7 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
             PublicStmtKind::Binding(binding) => ScalarStmt::Declare {
                 declaration: DeclarationId(binding.start),
                 name: binding.name.clone(),
-                ty: match binding.ty {
-                    parser::Type::Int => "int",
-                    parser::Type::Bool => "bool",
-                }.into(),
+                ty: binding.ty.into(),
                 mutable: binding.mutable,
                 init: map_optional(binding.initializer.as_ref(), public_expression)?,
             },
@@ -109,9 +124,7 @@ pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
         let Item::Function(fun) = item else { return None };
         Some(ScalarFunction {
             name: fun.name.clone(),
-            result_ty: match fun.returns {
-                parser::Type::Int => "int", parser::Type::Bool => "bool"
-            }.into(),
+            result_ty: fun.returns.into(),
             body: public_statements(&fun.body.statements)?,
         })
     }).collect::<Option<Vec<_>>>()?;
