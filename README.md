@@ -2,7 +2,7 @@
 
 **voiles** 是開發中的自製程式語言，目標為 Python 式易讀簡潔的編寫風格、Rust 式記憶體安全、直譯優先，後續再提供原生可執行產物及單檔封裝，長期以自舉為目標。
 
-> **目前能力（2026-10-26）**：**P00～P12 的 MVP-A 單檔 Rust 靜態檢查前端已正式驗收**。可以實際檢查已支援的 `.voil` 程式是否符合首版語法與靜態規則，並回報中文診斷。**尚不能執行 voiles 程式，也不能產生可執行檔**；完整語言記憶體／所有權／借用安全、Optional、struct 等仍未完成。
+> **目前能力（2026-10-30）**：P00～P12 的公開 MVP-A 單檔 Rust 靜態檢查前端已驗收；P13～P16 **原始 24 項工程驗收已在已核准的私有受限安全子集內完成**（[正式矩陣](AI-build/P13-P16-原始24項正式驗收矩陣.md)、[P16 簽核](AI-build/P16-正式驗收報告.md)）。公開命令仍只接受 MVP-A 語法，**不會執行 voiles 程式或產生可執行檔**。P17 直譯器、完整語言擴充與尚未核准的語意不在上述驗收範圍。
 
 ## 編寫風格與已支援的首版語法
 
@@ -36,7 +36,7 @@ rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=
 
 ## 真正執行的自動測試
 
-PR [#88](https://github.com/siyujellyfish/voiles/pull/88) 的 [GitHub Actions Rust CI](https://github.com/siyujellyfish/voiles/actions/runs/40258729876) 已驗證：**62 項 Rust 核心測試、5 項工程測試、49 項 P01 正反語意測試與 1 項素材測試全部通過，0 失敗／0 忽略**。必要文件 CI 亦已成功。這些數字代表真實執行結果，不只是文件與生成測試數量。
+[PR #263](https://github.com/siyujellyfish/voiles/pull/263) 的最新提交在必要 GitHub Actions 中記錄：Rust 核心 **709／709**、P01 正反語意 **50／50** 均通過；P13～P16 的個別原始驗收證據另見 [24 項正式矩陣](AI-build/P13-P16-原始24項正式驗收矩陣.md)。[PR #264](https://github.com/siyujellyfish/voiles/pull/264) 已將最後 P16 驗收文件 Squash merge 至 main。上述數字是特定提交的真實測試證據，**不是本次主線重新完整執行、不是 709 種語言能力，更不是效能測量**。
 
 ## 語言設計與後續階段
 
@@ -45,12 +45,12 @@ PR [#88](https://github.com/siyujellyfish/voiles/pull/88) 的 [GitHub Actions Ru
 | Phase | 內容 | 狀態 |
 |---|---|---|
 | P00～P12 | 儲存庫、語言契約、Rust 前端工程、來源／語法／名稱／型別／資料流及首版靜態檢查 | **MVP-A 已驗收** |
-| P13～P16 | 資源複製、明確移動、借用及生命週期安全 | P13 已有真正 `.voil` 的內部 move 試驗，完整 Phase 均未驗收 |
+| P13～P16 | 資源複製、明確移動、借用、有效期與 UTF-8 資源責任 | **內部受限子集 24／24 正式工程驗收完成；尚未公開** |
 | P17～P22 | 基於已選安全模型的 voiles 直譯執行 | 尚未驗收 |
 | P23～P26 | 按 AR04 相依形成可執行編譯產物 | 尚未驗收 |
 | P27～P30 | 發行、自舉及後續完整工作 | 尚未驗收 |
 
-完整語言延伸驗收包括 P09～P12 各 F 系列的 Optional、struct／模組、字素、方法與安全義務，目前仍標為未實作；21 個 `struct` S 規格項也沒有被虛報為編譯器驗收通過。完整語言所有權安全尚待後續 Phase，不能從首版靜態檢查的 `Passed` 推論。
+完整語言延伸驗收包括 P09～P12 各 F 系列的 Optional、struct／模組、字素、方法與安全義務，目前仍標為未實作；21 個 `struct` S 規格項也沒有被虛報為編譯器驗收通過。不能從首版靜態檢查的 `Passed` 推論 P13～P16 私有安全分析已套用於該來源；P17 之前，公開命令與私有驗收仍是不同入口。
 
 ## 規格與工作依據
 
@@ -59,5 +59,6 @@ PR [#88](https://github.com/siyujellyfish/voiles/pull/88) 的 [GitHub Actions Ru
 - [P01 首版驗收契約](AI-build/P01-驗收契約.md)：已驗收的 MVP-A 支援與拒絕矩陣。
 - [建構階段](AI-build/建構階段.md)：P00～P30 相依、P10～P12 真實驗收證據（第五十一節）。
 - [待確認事項](AI-build/待確認事項.md)：仍未核准與未實作的完整語言語意。
+- [P16 工程總整理與效能稽核](AI-build/P16-總整理與程式碼稽核-20261030.md)：模組審查、性能測量方式、風險與後續重構優先序。
 
 儲存庫：[siyujellyfish/voiles](https://github.com/siyujellyfish/voiles)。

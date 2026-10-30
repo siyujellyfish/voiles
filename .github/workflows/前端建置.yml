@@ -84,3 +84,5 @@ jobs:
         run: |
           rustup run stable rustc --edition=2021 --test --crate-name p03_spec --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 target/p02/p03_spec_generated.rs -o target/p02/p03_spec
           ./target/p02/p03_spec
+      - name: 公開 CLI 效能觀測（不設定不穩定的硬性時間門檻）
+        run: python3 tools/效能基準.py ./target/p02/voiles --repeat 7 --sizes 128 512 2048
