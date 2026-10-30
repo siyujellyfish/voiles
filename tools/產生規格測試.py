@@ -19,6 +19,7 @@ def main() -> None:
     names = set()
     lines = [
         "//! 從 P01 JSON 正反契約產生 Rust 內建語意測試；現在均真正執行。",
+        "#![allow(non_snake_case)]",  # 由固定驗收 ID 產生的函式名需維持原追溯名稱
         "use std::path::Path;",
         "use voiles_core::{check_file, CheckStatus};",
         "",

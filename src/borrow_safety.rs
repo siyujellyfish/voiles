@@ -48,7 +48,7 @@ impl Default for BorrowSafety {
 impl BorrowSafety {
     pub(crate) fn new() -> Self {
         // 超過身份空間時選擇明確停止，不允許回繞後重用既有追蹤器身分。
-        let tracker_id = NEXT_TRACKER_ID.fetch_update(
+        let tracker_id = NEXT_TRACKER_ID.try_update(
             Ordering::Relaxed, Ordering::Relaxed,
             |next| next.checked_add(1),
         ).expect("借用追蹤器身分已用盡");

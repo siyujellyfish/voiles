@@ -2,6 +2,7 @@
 //! 不替未決的不可達碼一般合法性或完整語言字串／所有權創建語意。
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use crate::{Diagnostic, DiagnosticKind};
 use crate::expr::{Expr, ExprKind};
@@ -17,7 +18,8 @@ struct Variable {
 
 #[derive(Debug, Clone)]
 struct Flow {
-    scopes: Vec<HashMap<String, Variable>>,
+    // 分支快照共用唯讀作用域；寫入時才複製實際受影響的那一層。
+    scopes: Vec<Rc<HashMap<String, Variable>>>,
     reachable: bool,
 }
 
@@ -27,7 +29,12 @@ impl Flow {
     }
 
     fn write(&mut self, name: &str) -> Option<&mut Variable> {
-        self.scopes.iter_mut().rev().find_map(|scope| scope.get_mut(name))
+        for scope in self.scopes.iter_mut().rev() {
+            if scope.contains_key(name) {
+                return Rc::make_mut(scope).get_mut(name);
+            }
+        }
+        None
     }
 }
 
@@ -74,7 +81,7 @@ impl Analyzer<'_> {
         }
         // 首版局部 var 允許延後初始化，但不能因宣告本身當成已初始化。
         let scope = state.scopes.last_mut().expect("全檔至少有頂層作用域");
-        scope.insert(b.name.clone(), Variable {
+        Rc::make_mut(scope).insert(b.name.clone(), Variable {
             declaration_start: b.start,
             initialized: b.initializer.is_some(),
             mutable: b.mutable,
@@ -83,7 +90,7 @@ impl Analyzer<'_> {
     }
 
     fn block(&self, block: &Block, state: &mut Flow) -> Result<(), Diagnostic> {
-        state.scopes.push(HashMap::new());
+        state.scopes.push(Rc::new(HashMap::new()));
         for statement in &block.statements {
             if !state.reachable {
                 // 不可達語句的全面合法性仍未決，P11 不推定如何處置；
@@ -131,7 +138,7 @@ impl Analyzer<'_> {
                         // 對分支以外原有的每筆宣告，以其來源身分驗證
                         // 所有可達後繼路徑均已初始化；內層新宣告不外洩。
                         for (scope_idx, outer_scope) in state.scopes.iter_mut().enumerate() {
-                            for (name, var) in outer_scope.iter_mut() {
+                            for (name, var) in Rc::make_mut(outer_scope).iter_mut() {
                                 var.initialized = exits.iter().all(|exit| {
                                     exit.scopes[scope_idx].get(name).is_some_and(|v| {
                                         v.declaration_start == var.declaration_start && v.initialized
@@ -153,7 +160,7 @@ impl Analyzer<'_> {
 pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
     let analyzer = Analyzer { source };
     let mut globals = Flow {
-        scopes: vec![HashMap::new()],
+        scopes: vec![Rc::new(HashMap::new())],
         reachable: true,
     };
     // 頂層依文字次序檢查每個初始化來源；
@@ -242,6 +249,37 @@ mod tests {
         assert!(inspect(
             "fn main()->int{\nvar n:int\nn = 1\nn = 2\nreturn n\n}\n"
         ).is_ok());
+    }
+
+    #[test]
+    fn p16_6_r04_分支快照共用作用域並在寫入時隔離() {
+        let mut scope = HashMap::new();
+        scope.insert("value".to_owned(), Variable {
+            declaration_start: 10, initialized: false, mutable: true,
+        });
+        let original = Flow { scopes: vec![Rc::new(scope)], reachable: true };
+        let mut changed = original.clone();
+        assert!(Rc::ptr_eq(&original.scopes[0], &changed.scopes[0]));
+        changed.write("value").expect("原宣告必須存在").initialized = true;
+        assert!(!Rc::ptr_eq(&original.scopes[0], &changed.scopes[0]));
+        assert!(!original.lookup("value").unwrap().initialized);
+        assert!(changed.lookup("value").unwrap().initialized);
+        assert_eq!(changed.lookup("value").unwrap().declaration_start, 10);
+    }
+
+    #[test]
+    fn p16_6_r04_多分支與遮蔽正反語意不因快照共享而改變() {
+        let mut code = String::from("fn main()->int{\nvar n:int\n");
+        for i in 0..24 {
+            code.push_str(&format!(
+                "if (true){{\nvar shadow_{i}:int = 1\nn = 1\n}}else{{\nn = 2\n}}\n"
+            ));
+        }
+        code.push_str("return n\n}\n");
+        assert!(inspect(&code).is_ok());
+        assert_eq!(inspect(
+            "fn main()->int{\nvar n:int\nif (true){\nn = 1\n}else{\nvar n:int = 2\n}\nreturn n\n}\n"
+        ).unwrap_err().kind, DiagnosticKind::Static);
     }
 
     #[test]
