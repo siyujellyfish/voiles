@@ -291,3 +291,37 @@ mod p14_單一借用衝突規則 {
         }
     }
 }
+
+#[cfg(test)]
+mod p15_6_一般最後使用點與方法作用域歸還區分 {
+    use super::*;
+    #[test]
+    fn 一般別名最後使用點可單獨歸還而方法_self_須等作用域結束() {
+        let mut safety = BorrowSafety::new();
+        let ordinary = DeclarationId(201);
+        let method_self = DeclarationId(202);
+        let ordinary_ticket = safety.acquire(ordinary, BorrowKind::SharedRead).unwrap();
+        let self_ticket = safety.acquire(method_self, BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(safety.check_direct_access(ordinary), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(safety.check_direct_access(method_self), Err(BorrowSafetyError::SourceIsBorrowed));
+        // 一般借用已達最後合法使用點，只解除自己的票據。
+        safety.release(ordinary_ticket).unwrap();
+        assert!(safety.check_direct_access(ordinary).is_ok());
+        assert_eq!(safety.check_direct_access(method_self), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(safety.acquire(method_self, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::BorrowConflict));
+        // 函式／方法接收者借用須在其作用域出口整批歸還。
+        safety.finish_scope(&[self_ticket]).unwrap();
+        assert!(safety.check_direct_access(method_self).is_ok());
+    }
+    #[test]
+    fn 方法作用域退出失敗不可提前解鎖接收者() {
+        let mut safety = BorrowSafety::new();
+        let receiver = DeclarationId(203);
+        let ticket = safety.acquire(receiver, BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(safety.finish_scope(&[ticket, ticket]), Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(safety.check_direct_access(receiver), Err(BorrowSafetyError::SourceIsBorrowed));
+        safety.finish_scope(&[ticket]).unwrap();
+        assert!(safety.check_direct_access(receiver).is_ok());
+    }
+}
