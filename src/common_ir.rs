@@ -76,7 +76,7 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
                     parser::Type::Bool => "bool",
                 }.into(),
                 mutable: binding.mutable,
-                init: binding.initializer.as_ref().map(public_expression).transpose_option()?,
+                init: map_optional(binding.initializer.as_ref(), public_expression)?,
             },
             PublicStmtKind::Assignment { name, value } => ScalarStmt::Assign {
                 name: name.clone(), value: public_expression(value)?,
@@ -85,9 +85,8 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
                 // P01 的平面 else-if 與私有 P13 的巢狀 If(no=[If])
                 // 必須產生同一棵保留原分支順序的共同 AST。
                 if branches.is_empty() { return None; }
-                let mut tail = otherwise.as_ref()
-                    .map(|block| public_statements(&block.statements))
-                    .transpose_option()?;
+                let mut tail = map_optional(otherwise.as_ref(),
+                    |block| public_statements(&block.statements))?;
                 for (condition, yes) in branches.iter().rev() {
                     tail = Some(vec![ScalarStmt::If {
                         condition: public_expression(condition)?,
@@ -118,9 +117,13 @@ pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
     Some(SharedAst { functions })
 }
 
-trait OptionTranspose<T> {
-    fn transpose_option(self) -> Option<Option<T>>;
-}
-impl<T> OptionTranspose<T> for Option<Option<T>> {
-    fn transpose_option(self) -> Option<Option<T>> { self }
+// 外層 Option 表示投影成功／失敗；內層 Option 才表示語法原本不存在。
+// 不可把缺少 initializer 或缺少 else 誤當成「無法投影」。
+fn map_optional<T, U>(
+    source: Option<&T>, project: impl FnOnce(&T) -> Option<U>,
+) -> Option<Option<U>> {
+    match source {
+        Some(value) => Some(Some(project(value)?)),
+        None => Some(None),
+    }
 }
