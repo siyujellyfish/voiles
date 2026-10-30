@@ -97,6 +97,10 @@ impl OwnedStrRuntime {
         self.events.push(ResourceEvent::Moved(resource.id));
     }
 
+    pub(crate) fn mark_detached_return(&mut self, resource: &OwnedUtf8) {
+        self.events.push(ResourceEvent::Returned(resource.id));
+    }
+
     pub(crate) fn release_detached(&mut self, resource: OwnedUtf8) {
         self.release(resource);
     }
