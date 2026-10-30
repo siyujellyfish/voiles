@@ -6688,3 +6688,95 @@ mod p16_真正_voil_持續結構整筆資源來源 {
             || matches!(error.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
     }
 }
+
+#[cfg(test)]
+mod p16_真正_voil_複合結構返回資源責任 {
+    use super::trace_persistent_struct_return_source;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const SOURCE: &str="struct Bundle{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn provide()->Bundle{\nvar local:Bundle = Bundle(title=\"繁體中文\")\nreturn local.move()\n}\nfn main()->int{\nvar received:Bundle = provide()\nreturn 0\n}\n";
+
+    #[test]
+    fn 實際_voil_跨函式整筆返回原作用域不釋放_最終呼叫端逆序清理() {
+        let (value,events)=trace_persistent_struct_return_source(
+            SOURCE,"provide","received",None).unwrap();
+        assert_eq!(value.as_deref(),Some("固定🪼"));
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Returned(1),ResourceEvent::Returned(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 函式具名欄位求值失敗不發生任何返回事件() {
+        let (value,events)=trace_persistent_struct_return_source(
+            SOURCE,"provide","received",Some("title")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 函式預設欄位求值失敗僅由被呼叫端回滾已配置字串() {
+        let (value,events)=trace_persistent_struct_return_source(
+            SOURCE,"provide","received",Some("id")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 不能把非_copyable_結構一般名稱返回為第二個所有者() {
+        let invalid=SOURCE.replace("return local.move()","return local");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("整體返回必須有資源責任轉移證明");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("Copyable")||err.message.contains("複製"));
+    }
+
+    #[test]
+    fn 非擁有借用不得由函式返回逃逸為複合結構所有者() {
+        let invalid=SOURCE.replace("return local.move()","return local.borrow()");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("不能把整筆借用誤認成返回所有者");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 被呼叫端尚未接通的一般多語句控制流程不能假裝已執行() {
+        let invalid=SOURCE.replace("return local.move()",
+            "var counter:int = 1\nreturn local.move()");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("函式多語句執行期尚未完成");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("被呼叫"));
+    }
+
+    #[test]
+    fn main_額外操作不應被資源模型悄悄略過() {
+        let invalid=SOURCE.replace("return 0","var other:int = 1\nreturn 0");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("不可只模擬部分 main 再宣稱完整來源清理");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+        assert!(err.message.contains("main"));
+    }
+
+    #[test]
+    fn 返回函式字串原始轉義未經求值前保守拒絕() {
+        let invalid=SOURCE.replace("繁體中文","繁體\\n中文");
+        let err=trace_persistent_struct_return_source(
+            &invalid,"provide","received",None)
+            .expect_err("資源橋接沒有任意字串解碼器");
+        assert!(err.message.contains("轉義")
+            || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
+    }
+}
