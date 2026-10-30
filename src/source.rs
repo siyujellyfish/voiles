@@ -21,6 +21,7 @@ pub(crate) struct Unit {
 pub(crate) struct Source {
     pub(crate) bytes: Vec<u8>,
     pub(crate) units: Vec<Unit>,
+    line_starts: Vec<usize>,
 }
 
 impl Source {
@@ -59,7 +60,15 @@ impl Source {
                 }
             }
         }
-        Self { bytes, units }
+        // 預先建立每一行的起點，避免對每筆診斷重掃整份來源。
+        // CRLF 只在 LF 後換行；單獨 CR 與 LF 均各自換行。
+        let mut line_starts = vec![0];
+        for (index, byte) in bytes.iter().enumerate() {
+            if *byte == b'\n' || (*byte == b'\r' && bytes.get(index + 1) != Some(&b'\n')) {
+                line_starts.push(index + 1);
+            }
+        }
+        Self { bytes, units, line_starts }
     }
 
     fn push_valid(units: &mut Vec<Unit>, text: &str, base: usize) {
@@ -77,21 +86,9 @@ impl Source {
     /// CRLF 的中間偏移仍停留於 CR 所在行、CR 後一欄。
     pub(crate) fn position(&self, offset: usize) -> SourcePosition {
         assert!(offset <= self.bytes.len(), "位置不可超出原始來源");
-        let mut line = 1;
-        let mut column = 1;
-        for index in 0..offset {
-            match self.bytes[index] {
-                b'\r' if self.bytes.get(index + 1) == Some(&b'\n') => {
-                    // 完整 CRLF 尚未讀完，暫不增加行號。
-                    column += 1;
-                }
-                b'\r' | b'\n' => {
-                    line += 1;
-                    column = 1;
-                }
-                _ => column += 1,
-            }
-        }
+        // 每個行起點都已排序；行號仍為一基，欄位仍按原始位元組計數。
+        let line = self.line_starts.partition_point(|start| *start <= offset);
+        let column = offset - self.line_starts[line - 1] + 1;
         SourcePosition { line, column }
     }
 
@@ -220,4 +217,37 @@ mod tests {
         let chinese = Source::new("中".as_bytes().to_vec());
         assert_eq!(chinese.eof_range(), (0, 3));
     }
+    #[test]
+    fn 行起點索引與原始逐位元組掃描對所有偏移等價() {
+        let bytes = [b"A\r\nB\rC\n\r\n\t".as_slice(), "中🪼".as_bytes(), &[0xff, b'X', 0x80]]
+            .concat();
+        let source = Source::new(bytes.clone());
+        for offset in 0..=bytes.len() {
+            let mut line = 1;
+            let mut column = 1;
+            for index in 0..offset {
+                match bytes[index] {
+                    b'\r' if bytes.get(index + 1) == Some(&b'\n') => column += 1,
+                    b'\r' | b'\n' => { line += 1; column = 1; }
+                    _ => column += 1,
+                }
+            }
+            assert_eq!(source.position(offset), SourcePosition { line, column }, "偏移 {offset}");
+        }
+    }
+
+    #[test]
+    fn 大量獨立非法位元組的行欄診斷保持正確() {
+        let mut bytes = Vec::new();
+        for _ in 0..512 {
+            bytes.extend_from_slice(&[0xff, b'\r', b'\n', 0x80]);
+        }
+        let diagnostics = Source::new(bytes).lexical_diagnostics();
+        assert_eq!(diagnostics.len(), 1024);
+        assert_eq!(diagnostics[0].span.unwrap().start, SourcePosition { line: 1, column: 1 });
+        assert_eq!(diagnostics[1].span.unwrap().start, SourcePosition { line: 2, column: 1 });
+        assert_eq!(diagnostics.last().unwrap().span.unwrap().start,
+            SourcePosition { line: 512, column: 1 });
+    }
+
 }
