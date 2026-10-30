@@ -6,11 +6,9 @@ use crate::expr::{Expr, ExprKind, ExprParser};
 use crate::lexer::{Token, TokenKind};
 use crate::source::Source;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Type {
-    Int,
-    Bool,
-}
+// R02.6：公開 MVP-A Parser、P09～P11 與共同 AST 直接使用同一個已封閉
+// 的 int／bool 專用型別，不再維護一份同形但分離的列舉型別。
+pub(crate) use crate::common_ir::ScalarType as Type;
 
 #[derive(Debug, Clone)]
 pub(crate) struct File {
