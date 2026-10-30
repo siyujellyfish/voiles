@@ -2707,6 +2707,136 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     Ok((Some(number),events))
 }
 
+/// P16.3：真實 .voil 的已知 bool 分支與內外詞彙作用域。
+/// 只追蹤完整靜態核准的單層「外層結構；if 的內層結構；
+/// 直接或提前 return 0」。失敗點只會出現在實際走到的分支。
+#[cfg(test)]
+fn trace_scope_struct_source(
+    text:&str,fail_inner:Option<&str>,
+)->Result<Vec<crate::owned_str_runtime::ResourceEvent>,Diagnostic> {
+    use crate::struct_initialization::{BuildStatus,NamedString,
+        OwnedStructRuntime,StringField,StructRuntimeError};
+    let reject=|message:&str|Diagnostic{
+        kind:DiagnosticKind::Static,message:message.into(),span:None,
+    };
+    fn plain<'a>(source:&'a str,term:&Term)->Option<&'a str> {
+        if !matches!(&term.kind,TermKind::Literal("str")) {return None;}
+        let raw=source.get(term.start..term.end)?
+            .strip_prefix('"')?.strip_suffix('"')?;
+        (!raw.contains('\\')&&!raw.contains('\n')
+            &&!raw.contains('\r')).then_some(raw)
+    }
+    let source=Source::new(text.as_bytes().to_vec());
+    if let Some(err)=source.lexical_diagnostics().into_iter().next() {
+        return Err(err);
+    }
+    let tokens=lexer::scan(&source);
+    if let Some(err)=tokens.diagnostics.into_iter().next() {return Err(err);}
+    let (structs,functions)=Parser{
+        source:&source,tokens:&tokens.tokens,cursor:0,
+    }.file()?;
+    Checker {
+        source:&source,structs:&structs,functions:&functions,
+        ability:crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&functions)?;
+    let main=functions.iter().find(|fun|fun.name=="main")
+        .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
+    let [outside,branch,final_return]=main.body.as_slice() else {
+        return Err(reject("P16：區塊橋接僅接受外層宣告、if、返回"));
+    };
+    let returns_zero=|term:&Term|matches!(&term.kind,
+        TermKind::Literal("int") if text.get(term.start..term.end)==Some("0"));
+    if !matches!(&final_return.kind,StmtKind::Return(term) if returns_zero(term)) {
+        return Err(reject("P16：外層必須以直接 return 0 結束"));
+    }
+    let (cond,yes,no)=match &branch.kind {
+        StmtKind::If{condition,yes,no}=>(condition,yes,no),
+        _=>return Err(reject("P16：須有一個可靜態確定的 if 分支")),
+    };
+    let condition=if matches!(&cond.kind,TermKind::Literal("bool")) {
+        match text.get(cond.start..cond.end) {
+            Some("true")=>true,Some("false")=>false,
+            _=>return Err(reject("P16：if bool 來源常值不明")),
+        }
+    } else {
+        return Err(reject("P16：未知條件不可以模擬單一資源路徑"));
+    };
+    let executed=if condition {Some(yes.as_slice())}
+        else {no.as_ref().map(Vec::as_slice)};
+    let construct=|runtime:&mut OwnedStructRuntime,
+        stmt:&Stmt,fail_after:Option<&str>|
+        ->Result<Result<(),StructRuntimeError>,Diagnostic> {
+        let (name,ty,mutable,args)=match &stmt.kind {
+            StmtKind::Declare{name,ty,mutable,
+                init:Some(Term{kind:TermKind::Construct(ctor,args),..}),
+            } if ty==ctor=>(name.as_str(),ty.as_str(),*mutable,args),
+            _=>return Err(reject("P16：區塊橋接僅執行明確結構建立")),
+        };
+        let def=structs.get(ty)
+            .ok_or_else(||reject("P16：區塊結構型別未宣告"))?;
+        let mut fields=Vec::new();
+        for member in &def.fields {
+            if member.ty!="str" {
+                return Err(reject("P16：此路徑僅支援真實 str 資源欄位"));
+            }
+            let default=member.default.as_ref().map(|term|
+                plain(text,term).ok_or_else(||
+                    reject("P16：區塊橋接沒有字串轉義求值器")))
+                .transpose()?;
+            fields.push(StringField{
+                name:member.name.as_str(),default,immutable:member.immutable,
+            });
+        }
+        let named=args.iter().map(|(field,term)|
+            plain(text,term).map(|value|NamedString{
+                field:field.as_str(),value,
+            }).ok_or_else(||reject("P16：區塊具名來源限未轉義 str 常值"))
+        ).collect::<Result<Vec<_>,Diagnostic>>()?;
+        Ok(runtime.construct_with_access(name,mutable,&fields,&named,fail_after)
+            .and_then(|status|match status {
+                BuildStatus::Complete=>Ok(()),
+                _=>Err(StructRuntimeError::IncompleteStruct),
+            }))
+    };
+    let mut rt=OwnedStructRuntime::new();
+    construct(&mut rt,outside,None)?
+        .map_err(|_|reject("P16：外層結構初始化失敗"))?;
+    if let Some(body)=executed {
+        let [inner]=body else {
+            // 可選末尾提前 return 0；此情況在分支清理後
+            // 須直接退出 main，而不得再次執行已不可達語句。
+            if let [inner,Stmt{kind:StmtKind::Return(term),..}]=body {
+                if !returns_zero(term) {
+                    return Err(reject("P16：不支援其他分支返回運算式"));
+                }
+                rt.enter_scope();
+                match construct(&mut rt,inner,fail_inner)? {
+                    Ok(())=>rt.leave_scope().map_err(|_|
+                        reject("P16：提前 return 前區塊清理失敗"))?,
+                    Err(StructRuntimeError::EvaluationFailed(_))=>
+                        rt.leave_scope().map_err(|_|
+                            reject("P16：分支失敗回滾區塊清理失敗"))?,
+                    Err(_)=>return Err(reject("P16：區塊建構失敗")),
+                }
+                return rt.finish().map_err(|_|
+                    reject("P16：提前 return 外層資源未反序清理"));
+            }
+            return Err(reject("P16：分支不能省略未驗證的控制流程"));
+        };
+        rt.enter_scope();
+        match construct(&mut rt,inner,fail_inner)? {
+            Ok(())=>{},
+            Err(StructRuntimeError::EvaluationFailed(_))=>{},
+            Err(_)=>return Err(reject("P16：分支建立錯誤")),
+        }
+        rt.leave_scope().map_err(|_|
+            reject("P16：區塊作用域離開清理失敗"))?;
+    } else if fail_inner.is_some() {
+        return Err(reject("P16：未執行的 else 分支不能被當成失敗注入"));
+    }
+    rt.finish().map_err(|_|reject("P16：外層退出後資源帳簿未平衡"))
+}
+
 /// P16：真實 .voil 結構函式返回的私有所有權證據。
 /// 限無參數 provider 單次建構與具名整筆 .move() 返回，
 /// main 以唯一全新結構綁定接收，避免虛構任意函式執行期。
