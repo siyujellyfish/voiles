@@ -4711,3 +4711,60 @@ mod p15_父區塊續行借用來源身分 {
     }
 
 }
+
+#[cfg(test)]
+mod p15_2_借用回傳與逃逸正式來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn copyable_借用值轉成獨立回傳值仍安全合法() {
+        let src = "fn copied()->int{\nconst owner:int = 1\nconst alias:int = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn copied()\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 非_copyable_來源的借用別名不得跨函式回傳() {
+        let src = "fn escape()->str{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("借用 alias 不得建立新的資源所有者或逃逸");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable") || error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 借用運算式不可直接當函式回傳值() {
+        let src = "fn escape()->str{\nvar owner:str = \"資源\"\nreturn owner.borrow()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("直接回傳非擁有引用尚未證明安全");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("borrow") || error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 借用別名不可透過_move_偷換成跨作用域所有者() {
+        let src = "fn escape()->str{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nreturn alias.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("借用不具備所有者轉移資格");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 巢狀區塊局部資源借用不得存入外層擁有者() {
+        let src = "fn main()->int{\nvar outer:str\nif(true){\nvar owner:str = \"局部\"\nvar alias:str = owner.borrow()\nouter = alias\n}else{\nvar dummy:int = 0\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("非 Copyable 局部借用不得作為外層擁有者");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 活躍借用跨移動原來源必須拒絕() {
+        let src = "fn main()->int{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nvar transferred:str = owner.move()\nvar illegal:str = alias.move()\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("借用仍有效時不可將來源移出");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 巢狀區塊純值回傳不應誤判為借用逃逸() {
+        let src = "fn main()->int{\nvar owner:int = 1\nif(true){\nvar alias:int = owner.borrow()\nreturn alias\n}\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
