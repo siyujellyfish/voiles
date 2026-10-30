@@ -92,7 +92,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
     /// 不能只以目前作用域或表面名稱判斷，否則遮蔽可繞過來源封鎖。
-    fn active_loans(vars: &Scopes, source: usize) -> Vec<BorrowKind> {
+    fn active_loans(vars: &Scopes, source: DeclarationId) -> Vec<BorrowKind> {
         vars.iter().flat_map(|scope| scope.values()).filter_map(|binding| {
             binding.loan.as_ref().and_then(|loan| {
                 (loan.active && loan.source == source).then_some(loan.kind)
@@ -681,7 +681,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             .map_err(|_| self.error(
                                 "HC14：方法參數與既有借用衝突", arg))?;
                         let ticket = argument_loans.acquire(
-                            DeclarationId(original.declaration_start), kind)
+                            original.declaration_start, kind)
                             .map_err(|_| self.error(
                                 "HC14：同一方法呼叫的參數借用衝突", arg))?;
                         argument_tickets.push(ticket);
@@ -714,14 +714,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 } else {
                     let mut loans = BorrowSafety::new();
-                    let loan = loans.acquire(DeclarationId(bound.declaration_start), mode)
+                    let loan = loans.acquire(bound.declaration_start, mode)
                         .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
-                    if loans.check_direct_access(DeclarationId(bound.declaration_start)).is_ok() {
+                    if loans.check_direct_access(bound.declaration_start).is_ok() {
                         return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
                     }
                     loans.finish_scope(&[loan])
                         .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
-                    loans.check_direct_access(DeclarationId(bound.declaration_start))
+                    loans.check_direct_access(bound.declaration_start)
                         .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
                 // 方法實際完成後才歸還參數，不使用一般借用最後
@@ -795,7 +795,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                     .map_err(|_| self.error(
                                         "HC14：函式參數借用與仍有效別名衝突", arg))?;
                                 let ticket = call_loans.acquire(
-                                    DeclarationId(original.declaration_start), kind)
+                                    original.declaration_start, kind)
                                     .map_err(|_| self.error(
                                         "HC14：同一呼叫內函式借用來源衝突", arg))?;
                                 tickets.push(ticket);
@@ -1003,7 +1003,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         ValueSlot::uninitialized(permission)
                     };
                     Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding {
-                        declaration_start: statement.start, ty: ty.clone(),
+                        declaration_start: DeclarationId(statement.start), ty: ty.clone(),
                         mutable: *mutable, value: slot, pending_fields, loan
                     });
                 }
@@ -1151,7 +1151,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     Rc::make_mut(simulated.last_mut().expect("迭代作用域存在")).insert(
                         iterator.clone(),
                         Binding {
-                            declaration_start: *iterator_start, ty: "int".into(),
+                            declaration_start: DeclarationId(*iterator_start), ty: "int".into(),
                             mutable: false,
                             value: ValueSlot::initialized(CopyPermission::Allowed),
                             pending_fields: None, loan: None,
@@ -1384,7 +1384,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
             }
             Rc::make_mut(&mut vars[0]).insert(name.clone(), Binding {
-                declaration_start: parameter.declaration_start,
+                declaration_start: DeclarationId(parameter.declaration_start),
                 ty: ty.clone(), mutable: false,
                 value: ValueSlot::initialized(self.permission(ty)),
                 pending_fields: None,
@@ -1392,7 +1392,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     && !Self::parameter_is_consumed(fun, name)).then_some(LoanBinding {
                         // 只在被呼叫端本地使用代理宣告身份，真正來源
                         // 的借用票據由呼叫端持有至呼叫結束。
-                        source: parameter.declaration_start,
+                        source: DeclarationId(parameter.declaration_start),
                         kind: BorrowKind::SharedRead, active: true,
                     }),
             });

@@ -2043,7 +2043,7 @@ mod p16_6_r04_私有作用域快照回歸 {
     fn 借用和移動的分支快照寫入不能污染來源() {
         let mut original_map = HashMap::new();
         original_map.insert("text".to_owned(), Binding {
-            declaration_start: 11,
+            declaration_start: DeclarationId(11),
             ty: "str".to_owned(),
             mutable: true,
             value: ValueSlot::initialized(CopyPermission::Forbidden),
@@ -2076,7 +2076,7 @@ mod p16_6_r04_不必要作用域複製防回歸 {
 
     fn binding(start: usize, loan: Option<LoanBinding>) -> Binding {
         Binding {
-            declaration_start: start,
+            declaration_start: DeclarationId(start),
             ty: "int".to_owned(),
             mutable: true,
             value: ValueSlot::initialized(CopyPermission::Allowed),
@@ -2092,7 +2092,7 @@ mod p16_6_r04_不必要作用域複製防回歸 {
             source.insert(format!("value_{index}"), binding(index + 100, None));
         }
         source.insert("parameter".to_owned(), binding(20, Some(LoanBinding {
-            source: 20, kind: BorrowKind::SharedRead, active: true,
+            source: DeclarationId(20), kind: BorrowKind::SharedRead, active: true,
         })));
         let original = Rc::new(source);
         let mut vars: Scopes = vec![original.clone()];
@@ -2106,7 +2106,7 @@ mod p16_6_r04_不必要作用域複製防回歸 {
     fn 真正來源借用仍在最後使用點歸還且不污染快照() {
         let mut source = HashMap::new();
         source.insert("alias".to_owned(), binding(40, Some(LoanBinding {
-            source: 10, kind: BorrowKind::ExclusiveWrite, active: true,
+            source: DeclarationId(10), kind: BorrowKind::ExclusiveWrite, active: true,
         })));
         let original = Rc::new(source);
         let mut vars: Scopes = vec![original.clone()];
@@ -2115,5 +2115,45 @@ mod p16_6_r04_不必要作用域複製防回歸 {
         assert!(!Rc::ptr_eq(&original, &vars[0]));
         assert!(original["alias"].loan.as_ref().unwrap().active);
         assert!(!vars[0]["alias"].loan.as_ref().unwrap().active);
+    }
+}
+
+#[cfg(test)]
+mod p16_6_r03_7_私有借用來源強型別身分 {
+    use super::*;
+
+    #[test]
+    fn 同名遮蔽及借用別名按真正_declaration_id_封鎖正確來源() {
+        let original = DeclarationId(10);
+        let shadow = DeclarationId(30);
+        let alias = DeclarationId(50);
+        let owner = Binding {
+            declaration_start: original, ty: "str".into(), mutable: false,
+            value: ValueSlot::initialized(CopyPermission::Forbidden),
+            pending_fields: None, loan: None,
+        };
+        let borrowed = Binding {
+            declaration_start: alias, ty: "str".into(), mutable: false,
+            value: ValueSlot::initialized(CopyPermission::Forbidden),
+            pending_fields: None,
+            loan: Some(LoanBinding {
+                source: original, kind: BorrowKind::SharedRead, active: true
+            }),
+        };
+        let overshadow = Binding {
+            declaration_start: shadow, ty: "str".into(), mutable: false,
+            value: ValueSlot::initialized(CopyPermission::Forbidden),
+            pending_fields: None, loan: None,
+        };
+        let vars = vec![
+            Rc::new(HashMap::from([("text".to_owned(), owner),
+                                   ("alias".to_owned(), borrowed)])),
+            Rc::new(HashMap::from([("text".to_owned(), overshadow)])),
+        ];
+        let source_loans =
+            Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, original);
+        assert_eq!(source_loans, vec![BorrowKind::SharedRead]);
+        assert!(Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, shadow).is_empty());
+        assert!(Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, alias).is_empty());
     }
 }
