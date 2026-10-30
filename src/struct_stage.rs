@@ -4190,9 +4190,9 @@ mod p13_跨函式資源移交 {
     #[test]
     fn p13_非_copyable_具名引數不能隱含複製() {
         let src="fn take(value:str)->str{\nreturn value.move()\n}\nfn main()->int{\nvar item:str = \"hello\"\nvar invalid:str = take(item)\nreturn 0\n}\n";
-        let error=inspect(src).expect_err("資源不能隱含複製");
+        let error=inspect(src).expect_err("被呼叫端須移動資源，不能只把來源借出");
         assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("明確移動"));
+        assert!(error.message.contains("P15.6"));
     }
 
     #[test]
