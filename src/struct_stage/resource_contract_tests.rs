@@ -63,3 +63,41 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         assert_eq!(runtime.kind, DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::verified_resource_ir::NamedResourceReturn;
+
+    #[test]
+    fn 真實具名函式返回依來源及接收宣告身分核對同一資源() {
+        let src = "fn create()->str{\nvar payload:str = \"繁體中文🪼\"\nreturn payload.move()\n}\nfn main()->int{\nvar received:str = create()\nreturn 0\n}\n";
+        let verified = verified_private_source(src).unwrap();
+        let provider = verified.functions.iter().find(|f| f.name == "create").unwrap();
+        let main = verified.functions.iter().find(|f| f.name == "main").unwrap();
+        let source_id = DeclarationId(provider.body[0].start);
+        let target_id = DeclarationId(main.body[0].start);
+        assert_ne!(source_id, target_id);
+        assert_eq!(&src[source_id.0..source_id.0 + 3], "var");
+        assert_eq!(&src[target_id.0..target_id.0 + 3], "var");
+
+        let (value, events) = trace_string_return_source(src, "create", "received").unwrap();
+        assert_eq!(value, "繁體中文🪼");
+        assert_eq!(events, vec![
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+        let proof = NamedResourceReturn::new(source_id, target_id).unwrap();
+        assert_eq!(proof.verify_actual_events(&events), Ok(1));
+    }
+
+    #[test]
+    fn 不合法隱含複製在函式返回資源橋接之前就被靜態拒絕() {
+        let illegal = "fn create()->str{\nvar payload:str = \"來源\"\nreturn payload\n}\nfn main()->int{\nvar received:str = create()\nreturn 0\n}\n";
+        let static_error = inspect(illegal).unwrap_err();
+        let trace_error = trace_string_return_source(illegal, "create", "received").unwrap_err();
+        assert_eq!(static_error, trace_error, "IR 不可取代或跳過真正靜態安全預檢");
+    }
+}
