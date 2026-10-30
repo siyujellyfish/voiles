@@ -2293,6 +2293,109 @@ fn trace_string_struct_source(
     Ok(build_string_struct(&fields, &named, fail_after))
 }
 
+/// P16：真正 .voil 來源經完整靜態檢查後，才交給
+/// 持續存活的 UTF-8 結構執行期模型。僅驗證「單次建構、
+/// 整筆 .move()、直接 return 0」可證明的受限直線來源。
+#[cfg(test)]
+fn trace_persistent_struct_move_source(
+    text: &str, fail_after: Option<&str>,
+) -> Result<(Option<String>, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
+    use crate::struct_initialization::{
+        BuildStatus, NamedString, OwnedStructRuntime, StringField, StructRuntimeError,
+    };
+    let reject = |message: &str| Diagnostic {
+        kind: DiagnosticKind::Static, message: message.into(), span: None,
+    };
+    fn plain_literal<'a>(source: &'a str, value: &Term) -> Option<&'a str> {
+        if !matches!(value.kind, TermKind::Literal("str")) { return None; }
+        let value=source.get(value.start..value.end)?
+            .strip_prefix('"')?.strip_suffix('"')?;
+        (!value.contains('\\') && !value.contains('\n')
+            && !value.contains('\r')).then_some(value)
+    }
+    let source=Source::new(text.as_bytes().to_vec());
+    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
+        return Err(error);
+    }
+    let tokens=lexer::scan(&source);
+    if let Some(error)=tokens.diagnostics.into_iter().next() {
+        return Err(error);
+    }
+    let (structs,functions)=Parser {
+        source:&source, tokens:&tokens.tokens, cursor:0,
+    }.file()?;
+    Checker {
+        source:&source, structs:&structs, functions:&functions,
+        ability:crate::ownership_policy::approved_leaf_copy_permission,
+    }.all(&functions)?;
+    let main=functions.iter().find(|function|function.name=="main")
+        .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
+    let [declare, transfer, last]=main.body.as_slice() else {
+        return Err(reject("P16：整筆結構來源只接受建構、移動、返回三語句"));
+    };
+    if !matches!(&last.kind, StmtKind::Return(Term {
+        kind: TermKind::Literal("int"), start, end,
+    }) if text.get(*start..*end)==Some("0")) {
+        return Err(reject("P16：非直接 return 0 的控制流程尚無資源執行證明"));
+    }
+    let (owner, struct_name, named_args)=match &declare.kind {
+        StmtKind::Declare {
+            name, ty, init:Some(Term {kind:TermKind::Construct(actual,args), ..}),
+            ..
+        } if ty==actual => (name.as_str(),ty.as_str(),args),
+        _=>return Err(reject("P16：第一語句須建立具名 str 欄位結構")),
+    };
+    let target=match &transfer.kind {
+        StmtKind::Declare {
+            name, ty, init:Some(Term {kind:TermKind::Move(source),..}), ..
+        } if ty==struct_name && source==owner => name.as_str(),
+        _=>return Err(reject("P16：第二語句須將剛建立的整個結構 .move() 至新持有者")),
+    };
+    let definition=structs.get(struct_name)
+        .ok_or_else(||reject("P16：結構宣告型別不存在"))?;
+    let fields=definition.fields.iter().map(|field| {
+        if field.ty!="str" {
+            return Err(reject("P16：此資源橋接只支援 str 欄位"));
+        }
+        let default=field.default.as_ref().map(|value|
+            plain_literal(text,value).ok_or_else(||
+                reject("P16：此資源橋接不支援帶轉義的字串預設值")))
+            .transpose()?;
+        Ok(StringField {
+            name:field.name.as_str(),default,immutable:field.immutable,
+        })
+    }).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let named=named_args.iter().map(|(name,value)|
+        plain_literal(text,value).map(|literal|NamedString {
+            field:name.as_str(),value:literal,
+        }).ok_or_else(||reject("P16：此資源橋接只支援無轉義具名字串常值"))
+    ).collect::<Result<Vec<_>,Diagnostic>>()?;
+    let mut runtime=OwnedStructRuntime::new();
+    let status=runtime.construct(owner,&fields,&named,fail_after);
+    if matches!(&status, Err(StructRuntimeError::EvaluationFailed(_))) {
+        // 真實失敗注入下不得建立第二持有者，已建立的部分
+        // 資源必須在回滾時依序釋放並完成事件帳簿平衡。
+        return Ok((None,runtime.finish()
+            .map_err(|_|reject("P16：失敗回滾後資源身分未完整清理"))?));
+    }
+    match status {
+        Ok(BuildStatus::Complete)=>{},
+        Ok(BuildStatus::PartiallyInitialized(_)) =>
+            return Err(reject("P16：尚未全欄位初始化的結構不能整筆移動")),
+        Ok(_) | Err(_) =>
+            return Err(reject("P16：整體資源建立失敗或注入切點不在求值計畫中")),
+    }
+    runtime.move_whole(owner,target)
+        .map_err(|_|reject("P16：整個結構未能安全轉交單一持有者"))?;
+    let observed=fields.last().map(|field|field.name).ok_or_else(||
+        reject("P16：此來源橋接須有可觀察的 str 欄位"))?;
+    let retained=runtime.read_field(target,observed)
+        .map_err(|_|reject("P16：移動後新持有者欄位不再有效"))?.to_owned();
+    let events=runtime.finish()
+        .map_err(|_|reject("P16：整筆移動後未完整清理全部資源身分"))?;
+    Ok((Some(retained),events))
+}
+
 /// P16 私有字串函式返回證據：只模擬已通過來源檢查且
 /// 呼叫端／被呼叫端都屬唯一可證明直線路徑的資源交接。
 /// 這不是一般函式直譯器，不能拿此入口運行任意控制流程。
@@ -6376,5 +6479,95 @@ mod p15_3_函式預設借用跨分支迴圈交叉驗證 {
     fn 迭代區域內同名資源遮蔽不應轉移外層持有者() {
         let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"外層\"\nfor i in 0..1{{\nvar owner:str = \"內層\"\nvar observed:int = see(owner)\n}}\nvar moved:str = owner.move()\nreturn 0\n}}\n");
         assert!(inspect(&src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p16_真正_voil_持續結構整筆資源來源 {
+    use super::trace_persistent_struct_move_source;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::DiagnosticKind;
+
+    const VALID: &str="struct Message{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar original:Message = Message(title=\"實際中文\")\nvar transferred:Message = original.move()\nreturn 0\n}\n";
+
+    #[test]
+    fn 真實_utf8_voil_具名覆蓋預設後只建兩個資源整筆移動逆序清理() {
+        let (retained,events)=trace_persistent_struct_move_source(VALID,None).unwrap();
+        assert_eq!(retained.as_deref(),Some("固定🪼"));
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Moved(1),ResourceEvent::Moved(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 具名欄位完成後注入失敗_只回滾已求值字串() {
+        let (retained,events)=trace_persistent_struct_move_source(VALID,Some("title")).unwrap();
+        assert_eq!(retained,None);
+        assert_eq!(events,vec![ResourceEvent::Created(1),ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn 未覆蓋預設欄位失敗_具名和預設皆應逆序回滾() {
+        let (retained,events)=trace_persistent_struct_move_source(VALID,Some("id")).unwrap();
+        assert_eq!(retained,None);
+        assert_eq!(events,vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Released(2),ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn 不存在的失敗切點不能當作有效資源清理證據() {
+        let error=trace_persistent_struct_move_source(VALID,Some("missing"))
+            .expect_err("不存在求值計畫的欄位不得宣稱注入失敗");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("切點"));
+    }
+
+    #[test]
+    fn 真正_voil_整體轉移禁止從來源不加_move_隱含複製() {
+        let source=VALID.replace("original.move()","original");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("含 str 欄位的結構不是 Copyable");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable")||error.message.contains("複製"));
+    }
+
+    #[test]
+    fn 真正_voil_整體轉移後不可第二次取用已移動來源() {
+        let source=VALID.replace("return 0",
+            "var again:Message = original.move()\nreturn 0");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("再次取用整體失效來源必須靜態拒絕");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_不允許個別移動_str_欄位取代整筆結構責任() {
+        let source=VALID.replace("var transferred:Message = original.move()",
+            "var transferred:str = original.title.move()");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("S21 禁止僅轉移資源欄位");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 靜態合法但多餘語句的來源不能假裝已由三步驟執行器完成() {
+        let source=VALID.replace("return 0","var marker:int = 3\nreturn 0");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("一般多語句執行器仍未具備，不可虛報事件");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert!(error.message.contains("三語句"));
+    }
+
+    #[test]
+    fn 尚未解碼的字串轉義不能直接寫成資源內容() {
+        let source=VALID.replace("實際中文","實際\\n中文");
+        let error=trace_persistent_struct_move_source(&source,None)
+            .expect_err("沒有字串轉義求值器前不能偷採原始詞彙");
+        assert!(error.message.contains("轉義")
+            || matches!(error.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
     }
 }
