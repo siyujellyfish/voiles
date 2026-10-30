@@ -331,3 +331,59 @@ mod p16_6_r03_9_混合純值與資源責任帳簿實際來源 {
         assert_eq!(static_error,runtime_error);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_10_單層布林分支與作用域資源清理 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent as E;
+    use crate::verified_resource_ir::ScopedResourcePlan;
+
+    const SRC: &str =
+        "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(true){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n";
+
+    fn proof(src:&str, with_inner:bool)->ScopedResourcePlan {
+        let verified=verified_private_source(src).unwrap();
+        let main=verified.functions.iter().find(|f|f.name=="main").unwrap();
+        let [outside,branch,_]=main.body.as_slice() else {panic!("須為三語句");};
+        let selected=if with_inner {
+            let StmtKind::If {yes,..}=&branch.kind else {panic!("須為 if");};
+            Some((DeclarationId(yes[0].start),1))
+        } else {None};
+        ScopedResourcePlan::new(DeclarationId(outside.start),1,selected).unwrap()
+    }
+
+    #[test]
+    fn 真正_if_true_內層釋放先於外層_資源事件和宣告身分一致() {
+        let events=trace_scope_struct_source(SRC,None).unwrap();
+        assert_eq!(events,vec![
+            E::Created(1),E::Created(2),E::Released(2),E::Released(1),
+        ]);
+        assert_eq!(proof(SRC,true).verify_actual_events(&events),Ok(2));
+    }
+
+    #[test]
+    fn 真正_if_false_沒有_else_只由外層負責清理() {
+        let src=SRC.replace("if(true)","if(false)");
+        let events=trace_scope_struct_source(&src,None).unwrap();
+        assert_eq!(events,vec![E::Created(1),E::Released(1)]);
+        assert_eq!(proof(&src,false).verify_actual_events(&events),Ok(1));
+        assert!(proof(&src,true).verify_actual_events(&events).is_err());
+    }
+
+    #[test]
+    fn 真正分支內提前_return_及欄位建立失敗依然先清理內層() {
+        let early=SRC.replace(
+            "var inner:Holder = Holder(text=\"內層\")\n}",
+            "var inner:Holder = Holder(text=\"內層\")\nreturn 0\n}");
+        for (source,failure) in [(SRC,None),(SRC,Some("text")),(early.as_str(),None)] {
+            let events=trace_scope_struct_source(source,failure).unwrap();
+            assert_eq!(proof(source,true).verify_actual_events(&events),Ok(2));
+        }
+    }
+
+    #[test]
+    fn 未知條件不能假裝已執行內層資源路徑() {
+        let illegal=SRC.replace("if(true)","if(1==1)");
+        assert!(trace_scope_struct_source(&illegal,None).is_err());
+    }
+}
