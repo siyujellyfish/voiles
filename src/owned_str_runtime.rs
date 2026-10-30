@@ -32,6 +32,10 @@ pub(crate) struct OwnedUtf8 {
     text: String,
 }
 
+impl OwnedUtf8 {
+    pub(crate) fn text(&self) -> &str { &self.text }
+}
+
 #[derive(Debug)]
 struct StrBinding {
     name: String,
@@ -79,6 +83,22 @@ impl OwnedStrRuntime {
         self.created += 1;
         self.events.push(ResourceEvent::Created(id));
         Ok(OwnedUtf8 {id, text: value})
+    }
+
+    /// P16：讓結構欄位共用既有唯一 UTF-8 緩衝區與事件帳簿。
+    /// 所有權仍由持有 OwnedUtf8 的結構欄位負責；不得透過此
+    /// 私有 API 建立第二份相同資源身分。
+    pub(crate) fn create_detached(&mut self, text: &str)
+        -> Result<OwnedUtf8, StrRuntimeError> {
+        self.allocate(text.to_owned())
+    }
+
+    pub(crate) fn mark_detached_move(&mut self, resource: &OwnedUtf8) {
+        self.events.push(ResourceEvent::Moved(resource.id));
+    }
+
+    pub(crate) fn release_detached(&mut self, resource: OwnedUtf8) {
+        self.release(resource);
     }
 
     fn release(&mut self, resource: OwnedUtf8) {
