@@ -402,8 +402,10 @@ impl Parser<'_> {
                 _ => return Err(self.syntax("此子集 for 左端點必須是合法整數常值")),
             };
             self.cursor += 1;
-            self.take('.', "for 區間缺少第一個點")?;
-            self.take('.', "for 區間缺少第二個點")?;
+            if !matches!(self.tok().kind, TokenKind::Range) {
+                return Err(self.syntax("for 半開區間缺少 .. 範圍記號"));
+            }
+            self.cursor += 1;
             let upper = match self.tok().kind.clone() {
                 TokenKind::Integer(number) if Self::valid_integer(&number) => number,
                 _ => return Err(self.syntax("此子集 for 右端點必須是合法整數常值")),
