@@ -160,14 +160,40 @@ include!("struct_stage/safety_checker.rs");
 #[cfg(test)]
 include!("struct_stage/resource_trace.rs");
 
-fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
-    -> Result<(), Diagnostic> {
+/// 已通過同一組原始來源、解析、型別、所有權、借用及有效期檢查的私有安全事實。
+/// P16 資源橋接只可消耗此成果，不可單獨從未驗證的 AST 假造安全來源。
+struct VerifiedPrivateSource {
+    source: Source,
+    structs: HashMap<String, StructDecl>,
+    functions: Vec<Function>,
+}
+
+fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
+    -> Result<VerifiedPrivateSource, Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
     if let Some(error) = source.lexical_diagnostics().into_iter().next() { return Err(error); }
     let tokens = lexer::scan(&source);
     if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
-    let (structs, funcs) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
-    Checker { source: &source, structs: &structs, functions: &funcs, function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability}.all(&funcs)
+    let (structs, functions) =
+        Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
+    let function_index = functions.iter().enumerate()
+        .map(|(i, f)| (f.name.clone(), i)).collect();
+    Checker {
+        source: &source, structs: &structs, functions: &functions,
+        function_index, ability,
+    }.all(&functions)?;
+    Ok(VerifiedPrivateSource { source, structs, functions })
+}
+
+#[cfg(test)]
+fn verified_private_source(text: &str) -> Result<VerifiedPrivateSource, Diagnostic> {
+    verify_source_with_ability(
+        text, crate::ownership_policy::approved_leaf_copy_permission)
+}
+
+fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
+    -> Result<(), Diagnostic> {
+    verify_source_with_ability(text, ability).map(|_| ())
 }
 
 /** P13 已核准 HA13-A/HB13-A 的真實來源受限靜態入口。
