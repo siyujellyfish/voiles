@@ -101,3 +101,55 @@ mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
         assert_eq!(static_error, trace_error, "IR 不可取代或跳過真正靜態安全預檢");
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_4_結構整筆移交與失敗回滾資源責任 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::verified_resource_ir::WholeStructResourcePlan;
+
+    const SOURCE: &str =
+        "struct Message{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar original:Message = Message(title=\"繁體中文\")\nvar transferred:Message = original.move()\nreturn 0\n}\n";
+
+    #[test]
+    fn 真實來源多個欄位轉交的宣告身分與雙資源帳簿相符() {
+        let verified = verified_private_source(SOURCE).expect("來源先完成安全檢查");
+        let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let [source, target, _] = main.body.as_slice() else { panic!("只接受三語句"); };
+        let plan = WholeStructResourcePlan::new(
+            DeclarationId(source.start), DeclarationId(target.start)).unwrap();
+        let (retained, events) = trace_persistent_struct_move_source(SOURCE, None).unwrap();
+        assert_eq!(retained.as_deref(), Some("固定🪼"));
+        assert_eq!(events, vec![
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(1), ResourceEvent::Moved(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+        assert_eq!(plan.verify_moved_events(&events), Ok(2));
+    }
+
+    #[test]
+    fn 兩種已核准失敗切點只能逆序釋放已建立資源() {
+        let verified = verified_private_source(SOURCE).unwrap();
+        let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let [source, target, _] = main.body.as_slice() else { panic!("只接受三語句"); };
+        let plan = WholeStructResourcePlan::new(
+            DeclarationId(source.start), DeclarationId(target.start)).unwrap();
+        for (field, count) in [("title", 1), ("id", 2)] {
+            let (value, events) = trace_persistent_struct_move_source(SOURCE, Some(field)).unwrap();
+            assert_eq!(value, None);
+            assert_eq!(plan.verify_failed_build_events(&events), Ok(count));
+            assert!(events.iter().all(|e| !matches!(
+                e, ResourceEvent::Moved(_) | ResourceEvent::Returned(_)
+            )));
+        }
+    }
+
+    #[test]
+    fn 含有非_copyable_欄位的結構不能偷換成隱含複製後交給資源_ir() {
+        let illegal = SOURCE.replace("original.move()", "original");
+        let static_error = inspect(&illegal).unwrap_err();
+        let trace_error = trace_persistent_struct_move_source(&illegal, None).unwrap_err();
+        assert_eq!(static_error, trace_error);
+    }
+}
