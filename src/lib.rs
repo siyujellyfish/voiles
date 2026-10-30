@@ -6,6 +6,8 @@ mod lexer;
 mod expr;
 mod parser;
 mod syntax_shared;
+// AST 來源檢視目前是內部測試輔助，不納入公開靜態檢查二進位。
+#[cfg(test)]
 mod ast_debug;
 mod diagnostics;
 mod names;
