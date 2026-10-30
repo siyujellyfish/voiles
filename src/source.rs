@@ -247,7 +247,7 @@ mod tests {
         assert_eq!(diagnostics[0].span.unwrap().start, SourcePosition { line: 1, column: 1 });
         assert_eq!(diagnostics[1].span.unwrap().start, SourcePosition { line: 2, column: 1 });
         assert_eq!(diagnostics.last().unwrap().span.unwrap().start,
-            SourcePosition { line: 512, column: 1 });
+            SourcePosition { line: 513, column: 1 });
     }
 
 }
