@@ -22,21 +22,8 @@ fn trace_string_struct_source(
         }
         Some(content)
     }
-    let source = Source::new(text.as_bytes().to_vec());
-    if let Some(error) = source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens = lexer::scan(&source);
-    if let Some(error) = tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs, funcs) = Parser {
-        source: &source, tokens: &tokens.tokens, cursor: 0,
-    }.file()?;
-    Checker {
-        source: &source, structs: &structs, functions: &funcs,
-        function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&funcs)?;
+    let VerifiedPrivateSource { source, structs, functions: funcs } =
+        verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
     // 只接通單一確定執行的建立式，避免把不可達分支或
@@ -113,21 +100,8 @@ fn trace_persistent_struct_move_source(
         (!value.contains('\\') && !value.contains('\n')
             && !value.contains('\r')).then_some(value)
     }
-    let source=Source::new(text.as_bytes().to_vec());
-    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens=lexer::scan(&source);
-    if let Some(error)=tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs,functions)=Parser {
-        source:&source, tokens:&tokens.tokens, cursor:0,
-    }.file()?;
-    Checker {
-        source:&source, structs:&structs, functions:&functions,
-        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&functions)?;
+    let VerifiedPrivateSource { source, structs, functions: functions } =
+        verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
     let [declare, transfer, last]=main.body.as_slice() else {
@@ -216,21 +190,8 @@ fn trace_string_return_source(
         }
         Some(raw)
     }
-    let source = Source::new(text.as_bytes().to_vec());
-    if let Some(error) = source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens = lexer::scan(&source);
-    if let Some(error) = tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs, funcs) = Parser {
-        source: &source, tokens: &tokens.tokens, cursor: 0,
-    }.file()?;
-    Checker {
-        source: &source, structs: &structs, functions: &funcs,
-        function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&funcs)?;
+    let VerifiedPrivateSource { source, structs, functions: funcs } =
+        verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
     let called = funcs.iter().find(|fun| fun.name == provider
@@ -301,21 +262,8 @@ fn trace_persistent_struct_field_write_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let source=Source::new(text.as_bytes().to_vec());
-    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens=lexer::scan(&source);
-    if let Some(error)=tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs,functions)=Parser {
-        source:&source,tokens:&tokens.tokens,cursor:0,
-    }.file()?;
-    Checker {
-        source:&source,structs:&structs,functions:&functions,
-        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&functions)?;
+    let VerifiedPrivateSource { source, structs, functions: functions } =
+        verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
     let [declaration,assignment,last]=main.body.as_slice() else {
@@ -414,21 +362,8 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
             _=>None,
         }
     }
-    let source=Source::new(text.as_bytes().to_vec());
-    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens=lexer::scan(&source);
-    if let Some(error)=tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs,functions)=Parser {
-        source:&source,tokens:&tokens.tokens,cursor:0,
-    }.file()?;
-    Checker {
-        source:&source,structs:&structs,functions:&functions,
-        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&functions)?;
+    let VerifiedPrivateSource { source, structs, functions: functions } =
+        verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：缺少 main"))?;
     let [declare,transfer,end]=main.body.as_slice() else {
@@ -523,19 +458,8 @@ fn trace_scope_struct_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let source=Source::new(text.as_bytes().to_vec());
-    if let Some(err)=source.lexical_diagnostics().into_iter().next() {
-        return Err(err);
-    }
-    let tokens=lexer::scan(&source);
-    if let Some(err)=tokens.diagnostics.into_iter().next() {return Err(err);}
-    let (structs,functions)=Parser{
-        source:&source,tokens:&tokens.tokens,cursor:0,
-    }.file()?;
-    Checker {
-        source:&source,structs:&structs,functions:&functions,
-        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&functions)?;
+    let VerifiedPrivateSource { source, structs, functions: functions } =
+        verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
     let [outside,branch,final_return]=main.body.as_slice() else {
@@ -654,21 +578,8 @@ fn trace_persistent_struct_return_source(
         (!raw.contains('\\') && !raw.contains('\n')
             && !raw.contains('\r')).then_some(raw)
     }
-    let source=Source::new(text.as_bytes().to_vec());
-    if let Some(error)=source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens=lexer::scan(&source);
-    if let Some(error)=tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs,functions)=Parser {
-        source:&source,tokens:&tokens.tokens,cursor:0,
-    }.file()?;
-    Checker {
-        source:&source, structs:&structs, functions:&functions,
-        function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability:crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&functions)?;
+    let VerifiedPrivateSource { source, structs, functions: functions } =
+        verified_private_source(text)?;
     let main=functions.iter().find(|function| function.name=="main")
         .ok_or_else(||unsupported("P16：缺少有效 main"))?;
     let callee=functions.iter().find(|function| function.name==provider
@@ -762,21 +673,8 @@ fn trace_named_string_move_source(
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
-    let source = Source::new(text.as_bytes().to_vec());
-    if let Some(error) = source.lexical_diagnostics().into_iter().next() {
-        return Err(error);
-    }
-    let tokens = lexer::scan(&source);
-    if let Some(error) = tokens.diagnostics.into_iter().next() {
-        return Err(error);
-    }
-    let (structs, funcs) = Parser {
-        source: &source, tokens: &tokens.tokens, cursor: 0,
-    }.file()?;
-    Checker {
-        source: &source, structs: &structs, functions: &funcs,
-        function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: crate::ownership_policy::approved_leaf_copy_permission,
-    }.all(&funcs)?;
+    let VerifiedPrivateSource { source, structs, functions: funcs } =
+        verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;
     let [first, second, trailing_return] = main.body.as_slice() else {
