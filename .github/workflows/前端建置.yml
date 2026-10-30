@@ -70,7 +70,7 @@ jobs:
       - name: P13 六項候選驗收及完整人工驗收腳本實際執行
         run: |
           bash -n tools/核對-P13-驗收證據.sh
-          bash tools/人工驗收-P13.sh
+          VOILES_REUSE_CI_ARTIFACTS=1 bash tools/人工驗收-P13.sh
           bash tools/核對-P13-驗收證據.sh ./target/p13-accept/internal_tests target/p13-accept
       - name: P14～P16 受限私有模型的獨立候選證據
         run: |
