@@ -4842,3 +4842,46 @@ mod p15_2_借用回傳與逃逸正式來源 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p15_3_while_反向邊安全來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 局部借用每次迭代歸還後原來源可正常讀取() {
+        let src = "fn main()->int{\nvar owner:int = 3\nwhile(false){\nvar alias:int = owner.borrow()\nvar copied:int = alias\nvar direct:int = owner\n}\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 迴圈條件下次仍使用的借用不可在本次本體提前歸還() {
+        let src = "fn main()->int{\nvar owner:bool = true\nvar alias:bool = owner.borrow()\nwhile(alias){\nvar direct:bool = owner\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("迴圈下一次條件仍使用借用");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 迴圈反向邊不得讓移動後的來源再次使用() {
+        let src = "fn main()->int{\nvar owner:str = \"resource\"\nwhile(true){\nvar moved:str = owner.move()\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("移動外層來源的迭代不可證明穩定");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("反向邊"));
+    }
+
+    #[test]
+    fn 迴圈條件不能偷偷移動具名布林來源() {
+        let src = "fn main()->int{\nvar condition:bool = true\nwhile(condition.move()){\nvar count:int = 1\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("迴圈條件必須無消耗副作用");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("while"));
+    }
+
+    #[test]
+    fn 迴圈本體的區域借用名稱不可逃到迴圈出口() {
+        let src = "fn main()->int{\nvar owner:int = 1\nwhile(false){\nvar alias:int = owner.borrow()\nvar copied:int = alias\n}\nreturn alias\n}\n";
+        let error = inspect(src).expect_err("迭代區域借用必須在出口失效");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+}
