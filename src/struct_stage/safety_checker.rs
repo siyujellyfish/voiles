@@ -886,7 +886,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn check_loop_exit_stability(&self, vars: &Scopes, entry: &Scopes,
         statement: &Stmt) -> Result<(), Diagnostic> {
         for (depth, scope) in entry.iter().enumerate() {
-            for (name, original) in scope {
+            for (name, original) in scope.iter() {
                 let candidate = vars.get(depth).and_then(|scope| scope.get(name))
                     .ok_or_else(|| Diagnostic {
                         kind: DiagnosticKind::Static,
@@ -1173,7 +1173,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                     } else if can_repeat == FlowState::Fallthrough {
                         for (depth, scope) in snapshot.iter().enumerate() {
-                            for (name, original) in scope {
+                            for (name, original) in scope.iter() {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
                                 let old_loan = original.loan.as_ref().map(|loan|
@@ -1228,7 +1228,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         // 必須保持所有權、部分初始化及借用活性不變。
                         // 迴圈局部宣告會於每次區塊退出後消失。
                         for (depth, scope) in snapshot.iter().enumerate() {
-                            for (name, original) in scope {
+                            for (name, original) in scope.iter() {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
                                 let old_loan = original.loan.as_ref().map(|loan|
