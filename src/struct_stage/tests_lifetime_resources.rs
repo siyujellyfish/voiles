@@ -2070,3 +2070,51 @@ mod p16_6_r04_私有作用域快照回歸 {
         assert_eq!(inspect(invalid).err().unwrap().kind, DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r04_不必要作用域複製防回歸 {
+    use super::*;
+
+    fn binding(start: usize, loan: Option<LoanBinding>) -> Binding {
+        Binding {
+            declaration_start: start,
+            ty: "int".to_owned(),
+            mutable: true,
+            value: ValueSlot::initialized(CopyPermission::Allowed),
+            pending_fields: None,
+            loan,
+        }
+    }
+
+    #[test]
+    fn 無活躍借用與參數借用無須複製任何共享作用域() {
+        let mut source = HashMap::new();
+        for index in 0..96 {
+            source.insert(format!("value_{index}"), binding(index + 100, None));
+        }
+        source.insert("parameter".to_owned(), binding(20, Some(LoanBinding {
+            source: 20, kind: BorrowKind::SharedRead, active: true,
+        })));
+        let original = Rc::new(source);
+        let mut vars: Scopes = vec![original.clone()];
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(
+            &mut vars, &[], &[]);
+        assert!(Rc::ptr_eq(&original, &vars[0]));
+        assert!(vars[0]["parameter"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn 真正來源借用仍在最後使用點歸還且不污染快照() {
+        let mut source = HashMap::new();
+        source.insert("alias".to_owned(), binding(40, Some(LoanBinding {
+            source: 10, kind: BorrowKind::ExclusiveWrite, active: true,
+        })));
+        let original = Rc::new(source);
+        let mut vars: Scopes = vec![original.clone()];
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(
+            &mut vars, &[], &[]);
+        assert!(!Rc::ptr_eq(&original, &vars[0]));
+        assert!(original["alias"].loan.as_ref().unwrap().active);
+        assert!(!vars[0]["alias"].loan.as_ref().unwrap().active);
+    }
+}

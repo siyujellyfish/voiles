@@ -222,10 +222,24 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 跨作用域已解析身分表，因此仍採名稱保守掃描，不能提早歸還。
     fn release_last_uses(vars: &mut Scopes, rest: &[Stmt],
         continuation: &[(usize, Vec<Stmt>)]) {
+        // 沒有可提早歸還的有效借用時，原演算法雖然不改 Binding，
+        // 仍會在 Rc::make_mut 複製完整作用域。提前結束不改任何票據語意。
+        if !vars.iter().any(|scope| scope.values().any(|binding| {
+            binding.loan.as_ref().is_some_and(|loan|
+                loan.active && loan.source != binding.declaration_start)
+        })) {
+            return;
+        }
         let scope_names: Vec<HashSet<String>> = vars.iter()
             .map(|scope| scope.keys().cloned().collect()).collect();
         let mut younger_names = HashSet::new();
         for (depth, scope) in vars.iter_mut().enumerate().rev() {
+            // 單一作用域沒有可歸還票據時，仍記錄遮蔽名稱，
+            // 但不建立完整 HashMap 副本，避免大量分支中的無效 COW。
+            let has_releasable_loan = scope.values().any(|binding|
+                binding.loan.as_ref().is_some_and(|loan|
+                    loan.active && loan.source != binding.declaration_start));
+            if has_releasable_loan {
             for (name, binding) in Rc::make_mut(scope).iter_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
                     let needed_here = Self::scope_mentions_binding(
@@ -249,6 +263,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         loan.active = false;
                     }
                 }
+            }
             }
             younger_names.extend(scope.keys().cloned());
         }
