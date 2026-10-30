@@ -6318,3 +6318,63 @@ mod p15_6_方法非_copyable_參數借用退出安全來源 {
         assert_eq!(err.kind, DiagnosticKind::Static);
     }
 }
+
+#[cfg(test)]
+mod p15_3_函式預設借用跨分支迴圈交叉驗證 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    const SEE: &str = "fn see(value:str)->int{\nreturn 1\n}\n";
+
+    #[test]
+    fn 雙分支各自借用非_copyable_來源後可於合流移動() {
+        let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"資源\"\nif(true){{\nvar a:int = see(owner)\n}}else{{\nvar b:int = see(owner)\n}}\nvar moved:str = owner.move()\nreturn 0\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn 巢狀條件中的函式借用退出後仍可再次借用同來源() {
+        let src=format!("{SEE}fn main()->int{{\nconst owner:str = \"資源\"\nif(true){{\nif(true){{\nvar a:int = see(owner)\n}}\nvar b:int = see(owner)\n}}\nreturn see(owner)\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn 確定單次_for_函式借用與_continue_不錯把來源移走() {
+        let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"資源\"\nfor i in 0..1{{\nvar observed:int = see(owner)\ncontinue\n}}\nvar moved:str = owner.move()\nreturn 0\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn 多次_for_函式借用穩定返回且最後可移動() {
+        let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"資源\"\nfor i in 1..4{{\nvar observed:int = see(owner)\n}}\nvar moved:str = owner.move()\nreturn 0\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn while_內方法參數借用後_break_只退出目前迴圈() {
+        let src="struct Holder{\nvar count:int = 1\nfn see(value:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar resource:str = \"資源\"\nconst receiver:Holder = Holder()\nwhile(true){\nvar observed:int = receiver.see(resource)\nbreak\n}\nvar moved:str = resource.move()\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 迴圈內借用後再明確移動資源仍須拒絕不穩定反向邊() {
+        let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"資源\"\nfor i in 1..4{{\nvar observed:int = see(owner)\nvar moved:str = owner.move()\n}}\nreturn 0\n}}\n");
+        let err=inspect(&src).expect_err("函式借用退出不會容許多次迴圈移走持有者");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("反向邊"));
+    }
+
+    #[test]
+    fn 分支內仍活躍的獨占借用不能因函式呼叫提前釋放() {
+        let src="struct Resource{\nvar text:str = \"資源\"\nvar count:int = 1\n}\nfn see(value:Resource)->int{\nreturn value.count\n}\nfn main()->int{\nvar owner:Resource = Resource()\nvar alias:Resource = owner.borrow()\nif(true){\nvar observed:int = see(owner)\n}\nreturn alias.count\n}\n";
+        let err=inspect(src).expect_err("分支不能把未來還要使用的別名提前解鎖");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 迭代區域內同名資源遮蔽不應轉移外層持有者() {
+        let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"外層\"\nfor i in 0..1{{\nvar owner:str = \"內層\"\nvar observed:int = see(owner)\n}}\nvar moved:str = owner.move()\nreturn 0\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+}
