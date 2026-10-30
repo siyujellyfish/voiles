@@ -236,11 +236,38 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
+    /// P16.4：以資源身分追蹤建立、轉交與釋放。只看計數可能
+    /// 掩蓋同數量的漏釋放和重複釋放，因此最終需逐筆核對事件。
+    fn events_balanced(&self) -> bool {
+        let mut created = std::collections::HashSet::new();
+        let mut released = std::collections::HashSet::new();
+        for event in &self.events {
+            match event {
+                ResourceEvent::Created(id) => {
+                    if !created.insert(*id) { return false; }
+                }
+                ResourceEvent::Moved(id) | ResourceEvent::Returned(id) => {
+                    if !created.contains(id) || released.contains(id) {
+                        return false;
+                    }
+                }
+                ResourceEvent::Released(id) => {
+                    if !created.contains(id) || !released.insert(*id) {
+                        return false;
+                    }
+                }
+            }
+        }
+        created.len() == self.created
+            && released.len() == self.released
+            && created == released
+    }
+
     pub(crate) fn finish(mut self) -> Result<Vec<ResourceEvent>, StrRuntimeError> {
         if self.scopes.len() != 1 { return Err(StrRuntimeError::NoInnerScope); }
         let root = self.scopes.pop().expect("根作用域");
         self.cleanup_frame(root);
-        if self.created != self.released {
+        if self.created != self.released || !self.events_balanced() {
             return Err(StrRuntimeError::OutstandingResource);
         }
         Ok(self.events)
@@ -443,4 +470,67 @@ mod tests {
         assert_eq!(released(&runtime.finish().unwrap()), vec![1]);
     }
 
+}
+
+#[cfg(test)]
+mod p16_4_資源事件身分逐筆稽核 {
+    use super::*;
+
+    #[test]
+    fn 合法多次轉交和原子覆寫皆僅釋放一次() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.declare("a", true, "甲").unwrap();
+        rt.declare("b", true, "乙").unwrap();
+        rt.move_named("b", "c").unwrap();
+        rt.replace_from("c", "a").unwrap();
+        assert_eq!(rt.read("b"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(rt.read("c"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(rt.read("a"), Ok("乙"));
+        assert_eq!(rt.finish().unwrap(), vec![
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Moved(2),
+            ResourceEvent::Moved(2),
+            ResourceEvent::Released(1),
+            ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn 計數相等仍不得掩蓋同一身分重複釋放() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.declare("a", true, "甲").unwrap();
+        rt.declare("b", true, "乙").unwrap();
+        // 故意偽造一筆釋放事件；實際持有者最後仍依序清理。
+        // created/released 計數不會揭露事件帳簿的重複責任。
+        rt.events.push(ResourceEvent::Released(1));
+        assert_eq!(rt.finish(), Err(StrRuntimeError::OutstandingResource));
+    }
+
+    #[test]
+    fn 未建立的身分不可移動或回傳() {
+        for forged in [ResourceEvent::Moved(999), ResourceEvent::Returned(999)] {
+            let mut rt = OwnedStrRuntime::new();
+            rt.declare("owner", true, "資源").unwrap();
+            rt.events.push(forged);
+            assert_eq!(rt.finish(), Err(StrRuntimeError::OutstandingResource));
+        }
+    }
+
+    #[test]
+    fn 建立和釋放身分不一致即使數量相同仍要拒絕() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.declare("owner", true, "資源").unwrap();
+        rt.events[0] = ResourceEvent::Created(777);
+        assert_eq!(rt.finish(), Err(StrRuntimeError::OutstandingResource));
+    }
+
+    #[test]
+    fn 釋放後仍有轉移事件不得被視為有效所有權() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.declare("owner", true, "資源").unwrap();
+        rt.events.push(ResourceEvent::Released(1));
+        rt.events.push(ResourceEvent::Moved(1));
+        assert_eq!(rt.finish(), Err(StrRuntimeError::OutstandingResource));
+    }
 }
