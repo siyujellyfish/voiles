@@ -143,6 +143,14 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 未初始化_var_須投影為_init_none_而非讓整個_ast_失敗() {
+        let source = "fn main()->int{\\nvar value:int\\nvalue = 1\\nreturn value\\n}\\n";
+        let tree = compare(source);
+        assert!(matches!(&tree.functions[0].body[0],
+            crate::common_ir::ScalarStmt::Declare { init: None, .. }));
+    }
+
+    #[test]
     fn 非共有的資源語法不得冒充共同標量_ir() {
         let text = "fn main()->int{\nvar text:str = \"中文\"\nreturn 0\n}\n";
         let source = Source::new(text.as_bytes().to_vec());
