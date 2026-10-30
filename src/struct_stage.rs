@@ -56,6 +56,9 @@ enum StmtKind {
     If { condition: Term, yes: Vec<Stmt>, no: Option<Vec<Stmt>> },
     /// P15：只在能證明反向邊的所有權狀態不變時接受的 while 子集。
     While { condition: Term, body: Vec<Stmt> },
+    /// D04 右端點不含的整數常值區間；P15 僅建構靜態借用證據。
+    ForRange { iterator: String, iterator_start: usize,
+        lower: String, upper: String, body: Vec<Stmt> },
     Return(Term),
 }
 
@@ -386,6 +389,30 @@ impl Parser<'_> {
             StmtKind::Declare { name, ty, mutable, init }
         } else if self.keyword("if") {
             self.if_statement_kind()?
+        } else if self.keyword("for") {
+            self.cursor += 1;
+            let iterator_start = self.tok().start;
+            let iterator = self.name()?;
+            if !matches!(&self.tok().kind, TokenKind::Name(word) if word == "in") {
+                return Err(self.syntax("for 區間迭代變數後需要 in"));
+            }
+            self.cursor += 1;
+            let lower = match self.tok().kind.clone() {
+                TokenKind::Integer(number) if Self::valid_integer(&number) => number,
+                _ => return Err(self.syntax("此子集 for 左端點必須是合法整數常值")),
+            };
+            self.cursor += 1;
+            if !matches!(self.tok().kind, TokenKind::Range) {
+                return Err(self.syntax("for 半開區間缺少 .. 範圍記號"));
+            }
+            self.cursor += 1;
+            let upper = match self.tok().kind.clone() {
+                TokenKind::Integer(number) if Self::valid_integer(&number) => number,
+                _ => return Err(self.syntax("此子集 for 右端點必須是合法整數常值")),
+            };
+            self.cursor += 1;
+            let body = self.body()?;
+            StmtKind::ForRange { iterator, iterator_start, lower, upper, body }
         } else if self.keyword("while") {
             self.cursor += 1;
             self.take('(', "while 條件需要左括號")?;
@@ -687,6 +714,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             StmtKind::While { condition, body } =>
                 Self::term_mentions(condition, name)
                 || body.iter().any(|stmt| Self::statement_mentions(stmt, name)),
+            StmtKind::ForRange { body, .. } =>
+                body.iter().any(|stmt| Self::statement_mentions(stmt, name)),
             StmtKind::Return(term) => Self::term_mentions(term, name),
         }
     }
@@ -716,6 +745,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::While { condition, body } => {
                     if !hidden && (Self::term_mentions(condition, name)
                         || Self::scope_mentions_binding(body, name, false)) {
+                        return true;
+                    }
+                }
+                StmtKind::ForRange { iterator, body, .. } => {
+                    if !hidden && Self::scope_mentions_binding(
+                        body, name, iterator == name) {
                         return true;
                     }
                 }
@@ -1434,6 +1469,55 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     return Ok(false);
                 }
+                StmtKind::ForRange { iterator, iterator_start,
+                    lower, upper, body: loop_body } => {
+                    // D04-A 半開區間為已核准來源，但正式執行期的
+                    // 整數計數器／步幅不屬 P15，本階段只驗證借用
+                    // 與反向邊：一次以上迭代皆不能破壞外層狀態。
+                    let _bounds = (lower, upper);
+                    let snapshot = vars.clone();
+                    let mut simulated = snapshot.clone();
+                    // for 迭代名稱每次重新建立，不能在出口沿用前
+                    // 一次迭代的借用或將其誤認成外層同名宣告。
+                    simulated.push(HashMap::new());
+                    simulated.last_mut().expect("迭代作用域存在").insert(
+                        iterator.clone(),
+                        Binding {
+                            declaration_start: *iterator_start, ty: "int".into(),
+                            mutable: false,
+                            value: ValueSlot::initialized(CopyPermission::Allowed),
+                            pending_fields: None, loan: None,
+                        });
+                    let mut after_loop = Vec::with_capacity(continuation.len() + 2);
+                    after_loop.push((vars.len(), loop_body.clone()));
+                    after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
+                    after_loop.extend_from_slice(continuation);
+                    let can_repeat = self.statements_with_follow(
+                        loop_body, &mut simulated, expected_return, false, &after_loop)?;
+                    simulated.pop();
+                    if can_repeat {
+                        for (depth, scope) in snapshot.iter().enumerate() {
+                            for (name, original) in scope {
+                                let candidate = simulated[depth].get(name)
+                                    .expect("迴圈不得移除外層宣告");
+                                let old_loan = original.loan.as_ref().map(|loan|
+                                    (loan.source, loan.kind, loan.active));
+                                let new_loan = candidate.loan.as_ref().map(|loan|
+                                    (loan.source, loan.kind, loan.active));
+                                if candidate.declaration_start != original.declaration_start
+                                    || candidate.value != original.value
+                                    || candidate.pending_fields != original.pending_fields
+                                    || old_loan != new_loan {
+                                    return Err(Diagnostic {
+                                        kind: DiagnosticKind::Static,
+                                        message: "P15：for 反向邊來源狀態不穩定，不可跨迭代沿用借用／所有權".into(),
+                                        span: Some(self.source.span(statement.start, statement.end)),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 StmtKind::While { condition, body: loop_body } => {
                     // 條件於每次迭代重新求值；不得讓條件本身移動
                     // 所有者、建立借用或觸發未受控函式副作用。
@@ -1656,6 +1740,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::While { condition, .. } => {
                     return Err(self.error("P15：方法中的 while 借用重入尚未完成安全證明", condition));
+                }
+                StmtKind::ForRange { .. } => {
+                    return Err(Diagnostic { kind: DiagnosticKind::Static,
+                        message: "P15：方法中的 for 借用重入尚未完成安全證明".into(),
+                        span: Some(self.source.span(stmt.start, stmt.end)) });
                 }
             }
         }
@@ -1889,7 +1978,7 @@ mod tests {
 
     #[test]
     fn 不得把限制外的控制流程直接當成已驗證() {
-        let source = BASE.replace("return 0", "for i in 1..4{\nreturn 0\n}\nreturn 0");
+        let source = BASE.replace("return 0", "for i in 1..4{\nbreak\n}\nreturn 0");
         assert!(inspect_with_test_ability(&source, |_| Allowed).is_err());
     }
     #[test]
@@ -4894,6 +4983,47 @@ mod p15_3_while_反向邊安全來源 {
     fn 迴圈本體的區域借用名稱不可逃到迴圈出口() {
         let src = "fn main()->int{\nvar owner:int = 1\nwhile(false){\nvar alias:int = owner.borrow()\nvar copied:int = alias\n}\nreturn alias\n}\n";
         let error = inspect(src).expect_err("迭代區域借用必須在出口失效");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+}
+
+#[cfg(test)]
+mod p15_3_for_半開區間借用來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 核准半開區間的迭代名稱是可複製的局部整數() {
+        let src = "fn main()->int{\nfor i in 1..4{\nvar number:int = i\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 每次迭代局部借用在最後使用後可再讀來源() {
+        let src = "fn main()->int{\nfor i in 1..4{\nvar owner:int = i\nvar alias:int = owner.borrow()\nvar value:int = alias\nvar direct:int = owner\n}\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn for_反向邊不得再次讀取已移動資源() {
+        let src = "fn main()->int{\nvar owner:str = \"resource\"\nfor i in 1..4{\nvar moved:str = owner.move()\n}\nreturn 0\n}\n";
+        let error = inspect(src).expect_err("外層來源在每次迭代後不可變成已移動");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("反向邊"));
+    }
+
+    #[test]
+    fn 迴圈外仍有效的借用必須封鎖本體直接讀取原來源() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nfor i in 1..4{\nvar copy:int = owner\n}\nreturn alias\n}\n";
+        let error = inspect(src).expect_err("外層借用在迴圈後仍有效");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 區間迭代器不應逃逸迴圈作用域() {
+        let src = "fn main()->int{\nfor index in 1..4{\nvar value:int = index\n}\nreturn index\n}\n";
+        let error = inspect(src).expect_err("for 迭代變數不可跨作用域逃逸");
         assert_eq!(error.kind, DiagnosticKind::Static);
     }
 }
