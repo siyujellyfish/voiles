@@ -34,7 +34,7 @@ fn private_scalar_statements(stmts: &[Stmt], text: &str)
     use crate::common_ir::ScalarStmt;
     stmts.iter().map(|statement| Some(match &statement.kind {
         StmtKind::Declare { name, ty, mutable, init } => ScalarStmt::Declare {
-            declaration_start: statement.start,
+            declaration: DeclarationId(statement.start),
             name: name.clone(),
             ty: ty.clone(),
             mutable: *mutable,
@@ -110,7 +110,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
         assert_eq!(tree.functions.len(), 1);
         let common_ir::ScalarStmt::Declare { declaration_start, .. } =
             &tree.functions[0].body[0] else { panic!("第一個結點必須是宣告"); };
-        assert_eq!(code.as_bytes()[*declaration_start], b'v');
+        assert_eq!(code.as_bytes()[declaration.0], b'v');
     }
 
     #[test]
