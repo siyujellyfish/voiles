@@ -24,6 +24,24 @@ struct Field {
 struct StructDecl {
     fields: Vec<Field>,
     methods: Vec<Function>,
+    // 解析期維持原宣告順序，另建只讀名稱索引以減少重複線性搜尋。
+    field_index: HashMap<String, usize>,
+    method_index: HashMap<String, usize>,
+}
+impl StructDecl {
+    fn new(fields: Vec<Field>, methods: Vec<Function>) -> Self {
+        let field_index = fields.iter().enumerate()
+            .map(|(index, field)| (field.name.clone(), index)).collect();
+        let method_index = methods.iter().enumerate()
+            .map(|(index, method)| (method.name.clone(), index)).collect();
+        Self { fields, methods, field_index, method_index }
+    }
+    fn field(&self, name: &str) -> Option<&Field> {
+        self.field_index.get(name).and_then(|index| self.fields.get(*index))
+    }
+    fn method(&self, name: &str) -> Option<&Function> {
+        self.method_index.get(name).and_then(|index| self.methods.get(*index))
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -131,6 +149,7 @@ struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
     functions: &'a [Function],
+    function_index: HashMap<String, usize>,
     ability: C,
 }
 
@@ -148,7 +167,7 @@ fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     let tokens = lexer::scan(&source);
     if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
     let (structs, funcs) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
-    Checker { source: &source, structs: &structs, functions: &funcs, ability }.all(&funcs)
+    Checker { source: &source, structs: &structs, functions: &funcs, function_index: funcs.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability}.all(&funcs)
 }
 
 /** P13 已核准 HA13-A/HB13-A 的真實來源受限靜態入口。
