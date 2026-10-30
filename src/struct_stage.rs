@@ -308,6 +308,15 @@ impl Parser<'_> {
                     } else if self.symbol('.') {
                         self.cursor += 1;
                         let action = self.name()?;
+                        if action == "borrow" {
+                            self.take('(', "欄位借用呼叫缺少左括號")?;
+                            self.take(')', "欄位借用呼叫缺少右括號")?;
+                            return Err(Diagnostic {
+                                kind: DiagnosticKind::Static,
+                                message: "P15.4：直接借用結構欄位尚無獨立來源身分與有效期證明，保守拒絕".into(),
+                                span: Some(self.source.span(start, self.tokens[self.cursor - 1].end)),
+                            });
+                        }
                         if action != "move" {
                             return Err(self.syntax("此子集只接受明確整筆移動"));
                         }
@@ -332,6 +341,11 @@ impl Parser<'_> {
                         (TermKind::FieldRead(s, field_or_move),
                             self.tokens[self.cursor - 1].end)
                     }
+                } else if self.symbol('[') {
+                    // P15.4：仍無索引項目的來源身分／存活期證明，
+                    // 不得把 str、list 或 dict 的元素當成可直接借用的持有者。
+                    return Err(self.syntax(
+                        "P15.4：索引元素的借用／別名有效期尚未證明，私有所有權前端保守拒絕"));
                 } else {
                     (TermKind::Name(s), end)
                 }
@@ -5072,6 +5086,48 @@ mod p15_5_懸空與合法重新借用來源 {
     #[test]
     fn 巢狀區塊的借用歸還不應污染外層再次借用() {
         let src = "fn main()->int{\nvar owner:int = 1\nif (true){\nvar scoped:int = owner.borrow()\nvar value:int = scoped\n}\nvar second:int = owner.borrow()\nvar copied:int = second\nreturn owner\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod p15_4_欄位索引與容器借用界線 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 可複製的結構欄位直接讀取仍合法且非借用() {
+        let src = "struct Sample{\nvar count:int = 2\n}\nfn main()->int{\nvar owner:Sample = Sample()\nvar copied:int = owner.count\nreturn copied\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 直接借用結構欄位不應偷建未驗證的子來源別名() {
+        let src = "struct Sample{\nvar count:int = 2\n}\nfn main()->int{\nvar owner:Sample = Sample()\nvar alias:int = owner.count.borrow()\nreturn alias\n}\n";
+        let err = inspect(src).expect_err("欄位借用尚無有效期證明");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.4"));
+    }
+
+    #[test]
+    fn 非_copyable_字串欄位不得借用逃逸() {
+        let src = "struct Sample{\nvar title:str = \"文字\"\n}\nfn main()->int{\nvar owner:Sample = Sample()\nvar alias:str = owner.title.borrow()\nreturn 0\n}\n";
+        let err = inspect(src).expect_err("非 Copyable 子資源不得建立未證明別名");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.4"));
+    }
+
+    #[test]
+    fn 索引元素不得在沒有別名存活證明前被當作借用來源() {
+        let src = "fn main()->int{\nvar owner:str = \"甲乙\"\nvar alias:str = owner[0].borrow()\nreturn 0\n}\n";
+        let err = inspect(src).expect_err("索引來源尚未建立經驗證的借用文法");
+        assert_eq!(err.kind, DiagnosticKind::Syntax);
+        assert!(err.message.contains("P15.4"));
+    }
+
+    #[test]
+    fn 已核准的完整具名借用仍保持合法() {
+        let src = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar copied:int = alias\nreturn owner\n}\n";
         assert!(inspect(src).is_ok());
     }
 }
