@@ -2372,7 +2372,7 @@ fn trace_persistent_struct_move_source(
     ).collect::<Result<Vec<_>,Diagnostic>>()?;
     let mut runtime=OwnedStructRuntime::new();
     let status=runtime.construct(owner,&fields,&named,fail_after);
-    if let Err(StructRuntimeError::EvaluationFailed(_))=status {
+    if matches!(&status, Err(StructRuntimeError::EvaluationFailed(_))) {
         // 真實失敗注入下不得建立第二持有者，已建立的部分
         // 資源必須在回滾時依序釋放並完成事件帳簿平衡。
         return Ok((None,runtime.finish()
