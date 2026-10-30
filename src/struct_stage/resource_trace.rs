@@ -178,6 +178,7 @@ fn trace_string_return_source(
     text: &str, provider: &str, receiver: &str,
 ) -> Result<(String, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
     use crate::owned_str_runtime::OwnedStrRuntime;
+    use crate::verified_resource_ir::NamedResourceReturn;
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
@@ -212,17 +213,24 @@ fn trace_string_return_source(
     }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：呼叫端其他返回路徑尚未接通執行期"));
     }
-    let content = match called.body.as_slice() {
+    // 已驗證具名來源以真正宣告起點識別返回前後的唯一持有者。
+    // 直接 return "字串" 沒有來源宣告，維持原 P16 事件橋接，不偽造 DeclarationId。
+    let (content, named_return) = match called.body.as_slice() {
         [Stmt {kind: StmtKind::Return(term), ..}] =>
-            plain_literal(text, term),
-        [Stmt {kind: StmtKind::Declare {
+            (plain_literal(text, term), None),
+        [local @ Stmt {kind: StmtKind::Declare {
             name, ty, init: Some(value), ..
         }, ..}, Stmt {kind: StmtKind::Return(Term {
             kind: TermKind::Move(returned_name), ..
-        }), ..}] if ty == "str" && name == returned_name =>
-            plain_literal(text, value),
-        _ => None,
-    }.ok_or_else(|| unsupported(
+        }), ..}] if ty == "str" && name == returned_name => {
+            let proof = NamedResourceReturn::new(
+                DeclarationId(local.start), DeclarationId(declaration.start))
+                .map_err(|_| unsupported("P16：具名返回來源及接收者不可有相同宣告身分"))?;
+            (plain_literal(text, value), Some(proof))
+        }
+        _ => (None, None),
+    };
+    let content = content.ok_or_else(|| unsupported(
         "P16：被呼叫端僅接受獨立 str 常值或具名 str 的整筆移動返回"))?;
     // 以 Rust 真正 String 的單一持有者驗證作用域交接。
     // 呼叫端根作用域尚無同名來源，接收必須原子成功。
@@ -240,6 +248,10 @@ fn trace_string_return_source(
         .expect("返回資源必須仍由呼叫端唯一持有").to_owned();
     let events = runtime.finish()
         .expect("呼叫端退出後每個資源必須恰好釋放一次");
+    if let Some(proof) = named_return {
+        proof.verify_actual_events(&events)
+            .map_err(|_| unsupported("P16：具名返回資源事件與宣告身分及清理責任不一致"))?;
+    }
     Ok((retained, events))
 }
 
