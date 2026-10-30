@@ -1623,7 +1623,6 @@ mod p13_5_資源與可複製值來源對照矩陣 {
 #[cfg(test)]
 mod p13_函式參數來源安全 {
     use super::inspect;
-    use crate::DiagnosticKind;
 
     #[test]
     fn p13_可複製型別參數允許函式內讀取與回傳() {
