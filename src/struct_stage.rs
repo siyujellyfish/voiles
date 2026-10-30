@@ -121,14 +121,14 @@ include!("struct_stage/syntax.rs");
 
 #[derive(Clone)]
 struct LoanBinding {
-    source: usize,
+    source: DeclarationId,
     kind: BorrowKind,
     active: bool,
 }
 
 #[derive(Clone)]
 struct Binding {
-    declaration_start: usize,
+    declaration_start: DeclarationId,
     ty: String,
     mutable: bool,
     value: ValueSlot,
