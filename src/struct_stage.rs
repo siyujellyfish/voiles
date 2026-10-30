@@ -228,3 +228,7 @@ include!("struct_stage/perf_bench.rs");
 // P16.6-R02：公開與私有解析路徑交集的差異契約與入口隔離回歸。
 #[cfg(test)]
 include!("struct_stage/parity_tests.rs");
+
+// P16.6-R03：相同來源身分的 UTF-8 事件與借用／資源責任表對照。
+#[cfg(test)]
+include!("struct_stage/resource_contract_tests.rs");
