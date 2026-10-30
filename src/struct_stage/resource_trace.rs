@@ -273,6 +273,8 @@ fn trace_persistent_struct_field_write_source(
 ) -> Result<(String, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
     use crate::struct_initialization::{BuildStatus, NamedString,
         OwnedStructRuntime, StringField, StructRuntimeError};
+    use crate::struct_eval_plan::{self, FieldInfo};
+    use crate::verified_resource_ir::FieldOverwritePlan;
     let reject=|message:&str| Diagnostic {
         kind:DiagnosticKind::Static,message:message.into(),span:None,
     };
@@ -328,6 +330,18 @@ fn trace_persistent_struct_field_write_source(
             field:field.as_str(),value:text_value,
         }).ok_or_else(||reject("P16：具名引數只支援未轉義 str 常值"))
     ).collect::<Result<Vec<_>,Diagnostic>>()?;
+    // VB16 正式結構求值計畫是唯一的欄位實際完成順序證據。
+    // 未初始化 var 欄位不能假造舊資源，與源程式中欄位宣告順序亦不可混淆。
+    let schema: Vec<_>=fields.iter().map(|f|FieldInfo {
+        name:f.name,has_default:f.default.is_some(),immutable:f.immutable,
+    }).collect();
+    let provided: Vec<_>=named.iter().map(|n|n.field).collect();
+    let initialized=struct_eval_plan::plan(&schema,&provided)
+        .map_err(|_|reject("P16：欄位覆寫不能建立一致的具名求值順序"))?;
+    let old_index=initialized.steps.iter().position(|step|step.field==field);
+    let proof=FieldOverwritePlan::new(DeclarationId(declaration.start),
+        initialized.steps.len(),old_index)
+        .map_err(|_|reject("P16：欄位覆寫原值來源及資源身分不完整"))?;
     let mut rt=OwnedStructRuntime::new();
     let ready=rt.construct_with_access(owner,mutable,&fields,&named,None)
         .map_err(|_|reject("P16：真實來源結構無法安全完成建立"))?;
@@ -347,6 +361,8 @@ fn trace_persistent_struct_field_write_source(
         .to_owned();
     let resources=rt.finish()
         .map_err(|_|reject("P16：結構欄位覆寫未完整平衡資源身分"))?;
+    proof.verify_actual_events(&resources,fail_after_rhs)
+        .map_err(|_|reject("P16：欄位覆寫與已驗證來源的所有權／資源清理順序不一致"))?;
     Ok((observed,resources))
 }
 
