@@ -1,4 +1,6 @@
 //! P08 AST 內部位置檢視工具，僅供前端開發及 Rust 測試，不公開 CLI。
+// 僅供 Rust 內部檢視與測試；非公開二進位不需連結所有展示輔助函式。
+#![allow(dead_code)]
 
 use crate::{SourcePosition};
 use crate::expr::{Expr, ExprKind};
