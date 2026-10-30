@@ -2035,3 +2035,38 @@ mod p16_6_r03_來源安全事實一致性 {
         assert!(bridge.span.is_some());
     }
 }
+
+#[cfg(test)]
+mod p16_6_r04_私有作用域快照回歸 {
+    use super::*;
+
+    #[test]
+    fn 借用和移動的分支快照寫入不能污染來源() {
+        let mut original_map = HashMap::new();
+        original_map.insert("text".to_owned(), Binding {
+            declaration_start: 11,
+            ty: "str".to_owned(),
+            mutable: true,
+            value: ValueSlot::initialized(CopyPermission::Forbidden),
+            pending_fields: None,
+            loan: None,
+        });
+        let initial: Scopes = vec![Rc::new(original_map)];
+        let mut moved = initial.clone();
+        assert!(Rc::ptr_eq(&initial[0], &moved[0]));
+        let old = Rc::make_mut(&mut moved[0]).get_mut("text").unwrap();
+        assert!(old.value.move_whole().is_ok());
+        assert!(!Rc::ptr_eq(&initial[0], &moved[0]));
+        assert!(initial[0]["text"].value.read().is_ok());
+        assert!(moved[0]["text"].value.read().is_err());
+        assert_eq!(initial[0]["text"].declaration_start, moved[0]["text"].declaration_start);
+    }
+
+    #[test]
+    fn 原已通過的迴圈借用與提前轉移安全來源仍保留() {
+        let valid = "fn main()->int{\nvar x:int = 1\nfor i in 0..1{\nx = 2\n}\nreturn x\n}\n";
+        assert!(inspect(valid).is_ok());
+        let invalid = "fn main()->int{\nvar x:str = \"a\"\nif (true){\nvar moved:str = x.move()\n}else{\nreturn 0\n}\nvar again:str = x.move()\nreturn 0\n}\n";
+        assert_eq!(inspect(invalid).err().unwrap().kind, DiagnosticKind::Static);
+    }
+}
