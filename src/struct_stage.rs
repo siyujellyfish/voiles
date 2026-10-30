@@ -7099,3 +7099,73 @@ mod p16_真正_voil_結構欄位原子覆寫來源 {
             || matches!(err.kind,DiagnosticKind::Lexical|DiagnosticKind::Syntax));
     }
 }
+
+#[cfg(test)]
+mod p16_真正_voil_混合純值與_utf8_結構來源 {
+    use super::trace_mixed_struct_source;
+    use crate::owned_str_runtime::ResourceEvent as E;
+    use crate::DiagnosticKind;
+
+    const MIXED:&str="struct Mixed{\nvar num:int = 3\nvar text:str = \"舊值\"\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Mixed = Mixed(text=\"繁體中文🪼\",num=7)\nvar target:Mixed = original.move()\nreturn 0\n}\n";
+    const PLAIN:&str="struct Plain{\nvar num:int = 3\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Plain = Plain(num=9)\nvar target:Plain = original\nreturn 0\n}\n";
+
+    #[test]
+    fn 真正_voil_混合結構具名優先求值只有字串建立移動清理事件() {
+        let (value,events)=trace_mixed_struct_source(MIXED,None).unwrap();
+        assert_eq!(value,Some(7));
+        assert_eq!(events,vec![E::Created(1),E::Moved(1),E::Released(1)]);
+    }
+
+    #[test]
+    fn 真正_voil_全_copyable_結構整體複製不虛構資源事件() {
+        let (value,events)=trace_mixed_struct_source(PLAIN,None).unwrap();
+        assert_eq!(value,Some(9));
+        assert!(events.is_empty());
+    }
+
+    #[test]
+    fn 真正_voil_混合結構隱含複製必須在資源分配前靜態拒絕() {
+        let illegal=MIXED.replace("original.move()","original");
+        let err=trace_mixed_struct_source(&illegal,None)
+            .expect_err("str 欄位不得由隱含複製變成第二所有者");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_混合具名_str_成功後後續_int_失敗只逆序清理資源() {
+        let (value,events)=trace_mixed_struct_source(MIXED,Some("num")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![E::Created(1),E::Released(1)]);
+    }
+
+    #[test]
+    fn 真正_voil_混合預設_bool_失敗不假造純值資源() {
+        let (value,events)=trace_mixed_struct_source(MIXED,Some("flag")).unwrap();
+        assert_eq!(value,None);
+        assert_eq!(events,vec![E::Created(1),E::Released(1)]);
+    }
+
+    #[test]
+    fn 真正_voil_沒有執行的覆蓋預設欄位不能充當失敗注入切點() {
+        let err=trace_mixed_struct_source(MIXED,Some("unknown"))
+            .expect_err("不存在的求值步驟不得偽裝發生資源故障");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_尚未初始化的_str_var_不能被整筆轉移() {
+        let invalid=MIXED.replace("var text:str = \"舊值\"","var text:str")
+            .replace("text=\"繁體中文🪼\",","").replace("Mixed(,","Mixed(");
+        let err=trace_mixed_struct_source(&invalid,None)
+            .expect_err("部分初始化不可當完整資源所有者移動");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn 真正_voil_未經核准的混合複合求值不能假稱已執行() {
+        let extra=MIXED.replace("return 0","var extra:int = 1\nreturn 0");
+        let err=trace_mixed_struct_source(&extra,None)
+            .expect_err("沒有一般多語句執行模型前不得虛報清理");
+        assert_eq!(err.kind,DiagnosticKind::Static);
+    }
+}
