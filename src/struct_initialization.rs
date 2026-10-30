@@ -664,3 +664,130 @@ mod p16_真實持續存活結構值資源責任 {
         assert_eq!(ids(&rt.finish().unwrap(),false),vec![3,2,1,6,5,4]);
     }
 }
+
+#[cfg(test)]
+mod p16_持續結構欄位原子覆寫安全 {
+    use super::*;
+
+    fn fields()->[StringField<'static>;3] {
+        [
+            StringField{name:"a",default:Some("舊甲"),immutable:false},
+            StringField{name:"b",default:Some("原乙"),immutable:false},
+            StringField{name:"fixed",default:Some("固定🪼"),immutable:true},
+        ]
+    }
+    fn released(events:&[ResourceEvent])->Vec<u64> {
+        events.iter().filter_map(|item|
+            if let ResourceEvent::Released(id)=item {Some(*id)}else{None}
+        ).collect()
+    }
+
+    #[test]
+    fn 覆寫先建立新字串後立即釋放舊欄位_最後按更新初始化次序清理() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        rt.assign_field_checked("owner","a","新甲🪼",false).unwrap();
+        assert_eq!(rt.read_field("owner","a"),Ok("新甲🪼"));
+        assert_eq!(rt.read_field("owner","b"),Ok("原乙"));
+        assert_eq!(released(rt.events()),vec![1]);
+        assert_eq!(rt.finish().unwrap(),vec![
+            ResourceEvent::Created(1),ResourceEvent::Created(2),
+            ResourceEvent::Created(3),ResourceEvent::Created(4),
+            ResourceEvent::Released(1),
+            ResourceEvent::Released(4),ResourceEvent::Released(3),
+            ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn 右側求值失敗只釋放暫存不改原欄位() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        assert_eq!(rt.assign_field_checked("owner","a","不應提交",true),
+            Err(StructRuntimeError::EvaluationFailed("a".into())));
+        assert_eq!(rt.read_field("owner","a"),Ok("舊甲"));
+        assert_eq!(released(rt.events()),vec![4]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![4,3,2,1]);
+    }
+
+    #[test]
+    fn const_欄位拒絕覆寫且無任何新資源建立() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        let before=rt.events().len();
+        assert_eq!(rt.assign_field_checked("owner","fixed","非法",false),
+            Err(StructRuntimeError::ImmutableField));
+        assert_eq!(rt.events().len(),before);
+        assert_eq!(rt.read_field("owner","fixed"),Ok("固定🪼"));
+        assert_eq!(released(&rt.finish().unwrap()),vec![3,2,1]);
+    }
+
+    #[test]
+    fn const_結構實例不能因_var_欄位可寫就繞過_s18() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct_with_access("owner",false,&fields(),&[],None).unwrap();
+        let before=rt.events().len();
+        assert_eq!(rt.assign_field_checked("owner","a","非法",false),
+            Err(StructRuntimeError::ImmutableOwner));
+        assert_eq!(rt.events().len(),before);
+        assert_eq!(rt.read_field("owner","a"),Ok("舊甲"));
+        assert_eq!(released(&rt.finish().unwrap()),vec![3,2,1]);
+    }
+
+    #[test]
+    fn 無預設_var_欄位首次完整初始化不需釋放不存在舊資源() {
+        let schema=[
+            StringField{name:"pending",default:None,immutable:false},
+            StringField{name:"fixed",default:Some("固定"),immutable:true},
+        ];
+        let mut rt=OwnedStructRuntime::new();
+        assert_eq!(rt.construct("owner",&schema,&[],None),
+            Ok(BuildStatus::PartiallyInitialized(vec!["pending".into()])));
+        assert_eq!(rt.read_field("owner","pending"),
+            Err(StructRuntimeError::UninitializedField));
+        rt.assign_field_checked("owner","pending","首次🪼",false).unwrap();
+        assert_eq!(rt.read_field("owner","pending"),Ok("首次🪼"));
+        assert_eq!(rt.events(),&[
+            ResourceEvent::Created(1),ResourceEvent::Created(2)
+        ]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![2,1]);
+    }
+
+    #[test]
+    fn 不存在欄位不得先建立新資源() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        let before=rt.events().len();
+        assert_eq!(rt.assign_field_checked("owner","missing","不應存在",false),
+            Err(StructRuntimeError::UnknownField));
+        assert_eq!(rt.events().len(),before);
+        assert_eq!(released(&rt.finish().unwrap()),vec![3,2,1]);
+    }
+
+    #[test]
+    fn 整筆轉移後舊持有者不可覆寫_新持有者仍可安全原子覆寫() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        rt.move_whole("owner","moved").unwrap();
+        assert_eq!(rt.assign_field_checked("owner","a","非法",false),
+            Err(StructRuntimeError::MovedBinding));
+        rt.assign_field_checked("moved","a","新持有者",false).unwrap();
+        assert_eq!(rt.read_field("moved","a"),Ok("新持有者"));
+        assert_eq!(released(rt.events()),vec![1]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![1,4,3,2]);
+    }
+
+    #[test]
+    fn 先失敗再成功覆寫仍不提前釋放原值或重複釋放() {
+        let mut rt=OwnedStructRuntime::new();
+        rt.construct("owner",&fields(),&[],None).unwrap();
+        assert_eq!(rt.assign_field_checked("owner","b","先失敗",true),
+            Err(StructRuntimeError::EvaluationFailed("b".into())));
+        assert_eq!(rt.read_field("owner","b"),Ok("原乙"));
+        rt.assign_field_checked("owner","b","後成功",false).unwrap();
+        assert_eq!(rt.read_field("owner","b"),Ok("後成功"));
+        // 失敗暫存 id4，成功欄位 id5，舊欄位 id2 僅成功後釋放。
+        assert_eq!(released(rt.events()),vec![4,2]);
+        assert_eq!(released(&rt.finish().unwrap()),vec![4,2,5,3,1]);
+    }
+}
