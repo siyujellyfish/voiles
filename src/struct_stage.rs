@@ -60,6 +60,9 @@ enum StmtKind {
     ForRange { iterator: String, iterator_start: usize,
         lower: String, upper: String, body: Vec<Stmt> },
     Return(Term),
+    /// 既有 for／while 的最內層控制轉移；無迴圈時必須拒絕。
+    Break,
+    Continue,
 }
 
 #[derive(Debug, Clone)]
@@ -437,6 +440,12 @@ impl Parser<'_> {
         } else if self.keyword("return") {
             self.cursor += 1;
             StmtKind::Return(self.term()?)
+        } else if self.keyword("break") {
+            self.cursor += 1;
+            StmtKind::Break
+        } else if self.keyword("continue") {
+            self.cursor += 1;
+            StmtKind::Continue
         } else {
             let name = self.name()?;
             if self.symbol('.') {
@@ -731,6 +740,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             StmtKind::ForRange { body, .. } =>
                 body.iter().any(|stmt| Self::statement_mentions(stmt, name)),
             StmtKind::Return(term) => Self::term_mentions(term, name),
+            StmtKind::Break | StmtKind::Continue => false,
         }
     }
 
@@ -1300,22 +1310,56 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.error(message, term)
     }
     /// true 表示分支仍會繼續執行；false 表示所有目前路徑已 return。
+    /// P15.3：對 break／continue 的每條實際轉移路徑確認所有
+    /// 外層持有者、部分初始化與借用票據均與迴圈入口一致。
+    /// 不把未達不動點的資源變化偽裝成安全跳出或下一輪。
+    fn check_loop_exit_stability(&self, vars: &Scopes, entry: &Scopes,
+        statement: &Stmt) -> Result<(), Diagnostic> {
+        for (depth, scope) in entry.iter().enumerate() {
+            for (name, original) in scope {
+                let candidate = vars.get(depth).and_then(|scope| scope.get(name))
+                    .ok_or_else(|| Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "P15：跳轉後外層來源宣告遺失".into(),
+                        span: Some(self.source.span(statement.start, statement.end)),
+                    })?;
+                let original_loan = original.loan.as_ref().map(|loan|
+                    (loan.source, loan.kind, loan.active));
+                let candidate_loan = candidate.loan.as_ref().map(|loan|
+                    (loan.source, loan.kind, loan.active));
+                if candidate.declaration_start != original.declaration_start
+                    || candidate.value != original.value
+                    || candidate.pending_fields != original.pending_fields
+                    || original_loan != candidate_loan {
+                    return Err(Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "P15：break／continue 轉移時外層所有權或借用狀態不穩定".into(),
+                        span: Some(self.source.span(statement.start, statement.end)),
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn statements(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str, new_scope: bool) -> Result<bool, Diagnostic> {
-        self.statements_with_follow(body, vars, expected_return, new_scope, &[])
+        self.statements_with_follow(body, vars, expected_return, new_scope, &[], None)
     }
 
     fn statements_with_follow(&self, body: &[Stmt], vars: &mut Scopes,
         expected_return: &str, new_scope: bool,
-        continuation: &[(usize, Vec<Stmt>)]) -> Result<bool, Diagnostic> {
+        continuation: &[(usize, Vec<Stmt>)],
+        loop_entry: Option<&Scopes>) -> Result<bool, Diagnostic> {
         if new_scope { vars.push(HashMap::new()); }
-        let result = self.statement_body(body, vars, expected_return, continuation);
+        let result = self.statement_body(body, vars, expected_return, continuation, loop_entry);
         if new_scope { vars.pop(); }
         result
     }
 
     fn statement_body(&self, body: &[Stmt], vars: &mut Scopes,
-        expected_return: &str, continuation: &[(usize, Vec<Stmt>)]) -> Result<bool, Diagnostic> {
+        expected_return: &str, continuation: &[(usize, Vec<Stmt>)],
+        loop_entry: Option<&Scopes>) -> Result<bool, Diagnostic> {
         // 區塊入口若某外層借用在本條路徑及其外層後繼均不再使用，
         // 便已過最後使用點，不需要等到下一筆語句才歸還。
         Self::release_last_uses(vars, body, continuation);
@@ -1483,6 +1527,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     return Ok(false);
                 }
+                StmtKind::Break | StmtKind::Continue => {
+                    let Some(snapshot) = loop_entry else {
+                        return Err(Diagnostic {
+                            kind: DiagnosticKind::Static,
+                            message: "P15：break／continue 只能位於已核准的 for／while 迴圈內".into(),
+                            span: Some(self.source.span(statement.start, statement.end)),
+                        });
+                    };
+                    // 迴圈的中斷或反向邊都不能把外層來源變成
+                    // 另一個未證明的持有者／別名狀態。嵌套 if 各路
+                    // 徑在轉移點個別查核，因此不會把 continue 偷當 return。
+                    self.check_loop_exit_stability(vars, snapshot, statement)?;
+                    return Ok(false);
+                }
                 StmtKind::ForRange { iterator, iterator_start,
                     lower, upper, body: loop_body } => {
                     // D04-A 半開區間為已核准來源，但正式執行期的
@@ -1507,7 +1565,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_loop.extend_from_slice(continuation);
                     let can_repeat = self.statements_with_follow(
-                        loop_body, &mut simulated, expected_return, false, &after_loop)?;
+                        loop_body, &mut simulated, expected_return, false, &after_loop,
+                        Some(&snapshot))?;
                     simulated.pop();
                     if can_repeat {
                         for (depth, scope) in snapshot.iter().enumerate() {
@@ -1558,7 +1617,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_loop.extend_from_slice(continuation);
                     let can_repeat = self.statements_with_follow(
-                        loop_body, &mut simulated, expected_return, true, &after_loop)?;
+                        loop_body, &mut simulated, expected_return, true, &after_loop,
+                        Some(&snapshot))?;
                     if can_repeat {
                         // 未建立不動點證明前，所有會回到條件的外部來源
                         // 必須保持所有權、部分初始化及借用活性不變。
@@ -1599,11 +1659,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
                     let live_true = self.statements_with_follow(
-                        yes, &mut on_true, expected_return, true, &after_branch)?;
+                        yes, &mut on_true, expected_return, true, &after_branch,
+                        loop_entry)?;
                     let mut on_false = snapshot.clone();
                     let live_false = if let Some(otherwise) = no {
                         self.statements_with_follow(
-                            otherwise, &mut on_false, expected_return, true, &after_branch)?
+                            otherwise, &mut on_false, expected_return, true, &after_branch,
+                            loop_entry)?
                     } else {
                         Self::release_last_uses(&mut on_false, &[], &after_branch);
                         true
@@ -1758,6 +1820,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::ForRange { .. } => {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P15：方法中的 for 借用重入尚未完成安全證明".into(),
+                        span: Some(self.source.span(stmt.start, stmt.end)) });
+                }
+                StmtKind::Break | StmtKind::Continue => {
+                    return Err(Diagnostic { kind: DiagnosticKind::Static,
+                        message: "P15：方法內跳出／繼續迭代的 self 有效期尚未驗證".into(),
                         span: Some(self.source.span(stmt.start, stmt.end)) });
                 }
             }
