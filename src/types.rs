@@ -52,25 +52,14 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn integer(&self, literal: &str, expr: &Expr) -> Result<i64, Diagnostic> {
-        let (radix, digits) = if let Some(rest) = literal.strip_prefix("0x") {
-            (16, rest)
-        } else if let Some(rest) = literal.strip_prefix("0b") {
-            (2, rest)
-        } else if let Some(rest) = literal.strip_prefix("0o") {
-            (8, rest)
-        } else {
-            (10, literal)
-        };
-        let normalized: String = digits.chars().filter(|c| *c != '_').collect();
-        if normalized.is_empty() || !normalized.chars().all(|c| c.to_digit(radix).is_some()) {
-            return Err(self.error("整數字面值格式不合法", expr.start, expr.end));
-        }
-        let number = u128::from_str_radix(&normalized, radix)
-            .map_err(|_| self.error("整數字面值超出有號 64 位元範圍", expr.start, expr.end))?;
-        if number > i64::MAX as u128 {
-            return Err(self.error("整數字面值超出有號 64 位元範圍", expr.start, expr.end));
-        }
-        Ok(number as i64)
+        use crate::syntax_shared::{integer_i64, IntegerError};
+        integer_i64(literal).map_err(|error| {
+            let message = match error {
+                IntegerError::InvalidDigits => "整數字面值格式不合法",
+                IntegerError::OutOfRange => "整數字面值超出有號 64 位元範圍",
+            };
+            self.error(message, expr.start, expr.end)
+        })
     }
 
     fn expression(&self, expr: &Expr,
