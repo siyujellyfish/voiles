@@ -19,11 +19,7 @@ impl ScalarType {
     }
 }
 
-impl From<parser::Type> for ScalarType {
-    fn from(ty: parser::Type) -> Self {
-        match ty { parser::Type::Int => Self::Int, parser::Type::Bool => Self::Bool }
-    }
-}
+// parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,7 +86,7 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
             PublicStmtKind::Binding(binding) => ScalarStmt::Declare {
                 declaration: DeclarationId(binding.start),
                 name: binding.name.clone(),
-                ty: binding.ty.into(),
+                ty: binding.ty,
                 mutable: binding.mutable,
                 init: map_optional(binding.initializer.as_ref(), public_expression)?,
             },
@@ -124,7 +120,7 @@ pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
         let Item::Function(fun) = item else { return None };
         Some(ScalarFunction {
             name: fun.name.clone(),
-            result_ty: fun.returns.into(),
+            result_ty: fun.returns,
             body: public_statements(&fun.body.statements)?,
         })
     }).collect::<Option<Vec<_>>>()?;
@@ -139,5 +135,21 @@ fn map_optional<T, U>(
     match source {
         Some(value) => Some(Some(project(value)?)),
         None => Some(None),
+    }
+}
+
+#[cfg(test)]
+mod p16_6_r02_6_共通型別即公開解析型別 {
+    use super::*;
+
+    #[test]
+    fn 公開_parser_與共同語意樹在編譯期就是相同型別() {
+        let from_parser: crate::parser::Type = crate::parser::Type::Int;
+        let common: ScalarType = from_parser;
+        assert_eq!(common, ScalarType::Int);
+        let back: crate::parser::Type = ScalarType::Bool;
+        assert_eq!(back, crate::parser::Type::Bool);
+        assert_eq!(ScalarType::from_name("int"), Some(from_parser));
+        assert_eq!(ScalarType::from_name("str"), None);
     }
 }
