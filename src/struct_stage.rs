@@ -5443,3 +5443,37 @@ mod p15_3_迴圈轉移不等於函式返回 {
         assert!(inspect(src).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p15_6_函式參數與方法接收者歸還來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 函式參數建立的合法借用最後使用後能重新存取參數() {
+        let src = "fn observe(value:int)->int{\nconst alias:int = value.borrow()\nvar copy:int = alias\nreturn value\n}\nfn main()->int{\nreturn observe(1)\n}\n";
+        assert!(inspect(src).is_ok(), "參數內一般借用於最後使用點歸還");
+    }
+
+    #[test]
+    fn 函式參數別名仍待使用不得提前直接複製參數() {
+        let src = "fn observe(value:int)->int{\nconst alias:int = value.borrow()\nvar invalid:int = value\nreturn alias\n}\nfn main()->int{\nreturn observe(1)\n}\n";
+        let error = inspect(src).expect_err("借用有效期不可因函式參數為 Copyable 而提早結束");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+
+    #[test]
+    fn 共享別名方法退出且別名最後使用後原來源可複製() {
+        let src = "struct Holder{\nconst number:int = 1\nfn view()->int{\nreturn self.number\n}\n}\nfn main()->int{\nconst owner:Holder = Holder()\nconst alias:Holder = owner.borrow()\nvar result:int = alias.view()\nvar independent:Holder = owner\nreturn result\n}\n";
+        assert!(inspect(src).is_ok(), "方法 self 只在呼叫期間，別名於最後使用點解除");
+    }
+
+    #[test]
+    fn 方法別名尚待使用時原持有者不得提前複製() {
+        let src = "struct Holder{\nconst number:int = 1\nfn view()->int{\nreturn self.number\n}\n}\nfn main()->int{\nconst owner:Holder = Holder()\nconst alias:Holder = owner.borrow()\nvar invalid:Holder = owner\nreturn alias.view()\n}\n";
+        let error = inspect(src).expect_err("仍有效的別名封鎖來源，不能提前結束 self 關聯借用");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+}
