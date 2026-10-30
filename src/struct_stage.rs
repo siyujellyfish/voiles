@@ -224,3 +224,7 @@ include!("struct_stage/tests_lifetime_resources.rs");
 // P16.6-R04：靜態檢查效能基準與來源正反驗證；不屬公開入口。
 #[cfg(test)]
 include!("struct_stage/perf_bench.rs");
+
+// P16.6-R02：公開與私有解析路徑交集的差異契約與入口隔離回歸。
+#[cfg(test)]
+include!("struct_stage/parity_tests.rs");
