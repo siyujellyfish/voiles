@@ -1232,13 +1232,62 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if method.params.len() != args.len() {
                     return Err(self.error("P13：方法引數數量不符", term));
                 }
-                // 引數在 self 借用前求值：明確移動 Copyable 來源合法，
-                // 但下方將再次查核 self，禁止移交接收者後仍呼叫方法。
+                // P15.6：方法參數也屬函式的預設借用，但 self
+                // 在本次呼叫期間有自己的借用票據。先評估所有
+                // 參數並保持其借用到方法出口；具名 str 不等同複製。
+                let receiver_source = Self::lookup(vars, receiver)
+                    .ok_or_else(|| self.error("找不到方法接收者來源", term))?
+                    .declaration_start;
+                let mut argument_loans = BorrowSafety::new();
+                let mut argument_tickets = Vec::new();
+                let mut borrowed_names: Vec<String> = Vec::new();
                 for (arg, parameter) in args.iter().zip(&method.params) {
                     if !Self::method_argument_safe_before_borrow(arg) {
                         return Err(self.error(
-                            "P13：方法引數僅接受已證明安全的 Copyable 值或具名整筆移動", arg));
+                            "P13：方法引數僅接受已驗證的純值或具名整筆移動", arg));
                     }
+                    let is_default_borrow = self.permission(&parameter.ty)
+                        != CopyPermission::Allowed
+                        && matches!(&arg.kind, TermKind::Name(_))
+                        && !Self::parameter_is_consumed(method, &parameter.name);
+                    if !is_default_borrow && borrowed_names.iter()
+                        .any(|name| Self::term_mentions(arg, name)) {
+                        return Err(self.error(
+                            "P15.6：方法其餘引數不能使用尚未歸還的借用來源", arg));
+                    }
+                    if is_default_borrow {
+                        let TermKind::Name(name) = &arg.kind else { unreachable!() };
+                        let original = Self::lookup(vars, name)
+                            .ok_or_else(|| self.error("P15.6：方法引數借用來源不存在", arg))?;
+                        if original.loan.is_some() {
+                            return Err(self.error(
+                                "VB14：方法參數不可在未證明安全時再借用別名", arg));
+                        }
+                        if original.declaration_start == receiver_source {
+                            return Err(self.error(
+                                "P15.6：self 與方法參數不能對同一來源建立未證明的重疊借用", arg));
+                        }
+                        original.value.read().map_err(|err| self.model_error(err, arg))?;
+                        if original.ty != parameter.ty {
+                            return Err(self.error("P15.6：方法借用參數型別不一致", arg));
+                        }
+                        let kind = if original.mutable {
+                            BorrowKind::ExclusiveWrite
+                        } else { BorrowKind::SharedRead };
+                        BorrowSafety::validate_new_borrow(
+                            &Self::active_loans(vars, original.declaration_start), kind)
+                            .map_err(|_| self.error(
+                                "HC14：方法參數與既有借用衝突", arg))?;
+                        let ticket = argument_loans.acquire(
+                            DeclarationId(original.declaration_start), kind)
+                            .map_err(|_| self.error(
+                                "HC14：同一方法呼叫的參數借用衝突", arg))?;
+                        argument_tickets.push(ticket);
+                        borrowed_names.push(name.clone());
+                        continue;
+                    }
+                    // 非 Copyable 參數若確實被方法整筆 .move() 消耗，
+                    // 普通名稱仍不得通過 evaluate() 偷成第二所有者。
                     let (actual, ready) = self.evaluate(arg, vars)?;
                     if !ready || actual != parameter.ty {
                         return Err(self.error("P13：方法引數型別錯誤或尚未初始化", arg));
@@ -1273,6 +1322,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     loans.check_direct_access(DeclarationId(bound.declaration_start))
                         .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
+                // 方法實際完成後才歸還參數，不使用一般借用最後
+                // 使用點規則，也不讓未通過的其他控制路徑釋放票據。
+                argument_loans.finish_scope(&argument_tickets)
+                    .map_err(|_| self.error("P15.6：方法參數作用域歸還失敗", term))?;
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
@@ -4996,11 +5049,9 @@ mod p13_非_copyable_方法參數與回傳移交 {
     }
 
     #[test]
-    fn 非_copyable_方法參數禁止由具名來源隱含複製() {
+    fn 非_copyable_方法唯讀參數由具名來源預設借用() {
         let src="struct Holder{\nvar count:int = 1\nfn consume(text:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar source:str = \"資源\"\nconst holder:Holder = Holder()\nreturn holder.consume(source)\n}\n";
-        let error=inspect(src).expect_err("非 Copyable 參數不可隱含複製");
-        assert_eq!(error.kind,DiagnosticKind::Static);
-        assert!(error.message.contains("Copyable"));
+        assert!(inspect(src).is_ok(), "函式預設借用也適用合法結構方法參數");
     }
 
     #[test]
@@ -6206,5 +6257,66 @@ mod p15_6_非_copyable_函式預設借用來源 {
         let err=inspect(src).expect_err("borrowed str 不可由回傳變成擁有值");
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("Copyable"));
+    }
+}
+
+#[cfg(test)]
+mod p15_6_方法非_copyable_參數借用退出安全來源 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    const HOLDER: &str = "struct Holder{\nvar count:int = 1\nfn view(text:str)->int{\nreturn self.count\n}\n}\n";
+
+    #[test]
+    fn 唯讀方法接受具名資源借用且退出後仍可移動() {
+        let src=format!("{HOLDER}fn main()->int{{\nvar resource:str = \"資源🪼\"\nconst owner:Holder = Holder()\nvar value:int = owner.view(resource)\nvar taken:str = resource.move()\nreturn value\n}}\n");
+        assert!(inspect(&src).is_ok());
+    }
+
+    #[test]
+    fn 同次方法呼叫兩個獨占借用同一來源拒絕() {
+        let src="struct Holder{\nvar count:int = 1\nfn both(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar resource:str = \"資源\"\nconst owner:Holder = Holder()\nreturn owner.both(resource,resource)\n}\n";
+        let err=inspect(src).expect_err("方法參數不得重複獨占借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 同次方法呼叫兩個共享借用可並存() {
+        let src="struct Holder{\nvar count:int = 1\nfn both(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst resource:str = \"資源\"\nconst owner:Holder = Holder()\nreturn owner.both(resource,resource)\n}\n";
+        assert!(inspect(src).is_ok());
+    }
+
+    #[test]
+    fn 方法借用仍有效時後面參數不能移動原來源() {
+        let src="struct Holder{\nvar count:int = 1\nfn both(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar resource:str = \"資源\"\nconst owner:Holder = Holder()\nreturn owner.both(resource,resource.move())\n}\n";
+        let err=inspect(src).expect_err("借用參數的來源在方法呼叫期間不得再被移交");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("P15.6"));
+    }
+
+    #[test]
+    fn 方法自身持有者不可當成同次參數再獨占借用() {
+        let src="struct Holder{\nvar text:str = \"資源\"\nvar count:int = 1\nfn view(other:Holder)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:Holder = Holder()\nreturn owner.view(owner)\n}\n";
+        let err=inspect(src).expect_err("同一所有者同時當作 self 及其參數未完成安全證明");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("self"));
+    }
+
+    #[test]
+    fn 已借出的結構原來源不得進行方法預設借用參數交接() {
+        let src="struct Resource{\nvar text:str = \"資源\"\nvar count:int = 1\n}\nstruct Holder{\nvar count:int = 1\nfn view(other:Resource)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:Resource = Resource()\nvar alias:Resource = owner.borrow()\nconst receiver:Holder = Holder()\nvar result:int = receiver.view(owner)\nreturn alias.count\n}\n";
+        let err=inspect(src).expect_err("方法參數不得再借用活躍獨占來源");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 消耗資源的方法參數仍需明確_move_且舊正例不回退() {
+        let src="struct Holder{\nvar count:int = 1\nfn relay(text:str)->str{\nreturn text.move()\n}\n}\nfn main()->int{\nvar source:str = \"資源\"\nconst receiver:Holder = Holder()\nvar taken:str = receiver.relay(source.move())\nreturn 0\n}\n";
+        assert!(inspect(src).is_ok());
+        let illegal=src.replace("relay(source.move())","relay(source)");
+        let err=inspect(&illegal).expect_err("消耗參數不是預設非擁有借用");
+        assert_eq!(err.kind, DiagnosticKind::Static);
     }
 }
