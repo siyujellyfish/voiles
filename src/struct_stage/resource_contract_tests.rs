@@ -211,3 +211,61 @@ mod p16_6_r03_5_跨函式結構返回多資源責任 {
         assert_eq!(static_error, trace_error);
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::verified_resource_ir::FieldOverwritePlan;
+
+    const SOURCE: &str =
+        "struct Holder{\nvar title:str = \"舊值\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新值🪼\"\nreturn 0\n}\n";
+
+    #[test]
+    fn 真正_voil_覆寫後原值清理及失敗暫存回滾均核對同一宣告() {
+        let verified = verified_private_source(SOURCE).unwrap();
+        let main = verified.functions.iter().find(|f|f.name == "main").unwrap();
+        let [declare, write, _] = main.body.as_slice() else { panic!("只接受受限三語句"); };
+        assert!(matches!(write.kind, StmtKind::FieldAssign { .. }));
+        let owner = DeclarationId(declare.start);
+        let plan = FieldOverwritePlan::new(owner, 2, Some(0)).unwrap();
+        let (updated, success) = trace_persistent_struct_field_write_source(SOURCE, false).unwrap();
+        assert_eq!(updated, "新值🪼");
+        assert_eq!(success, vec![
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(1),
+            ResourceEvent::Released(3), ResourceEvent::Released(2),
+        ]);
+        assert_eq!(plan.verify_actual_events(&success,false), Ok(3));
+        let (preserved, failed) = trace_persistent_struct_field_write_source(SOURCE, true).unwrap();
+        assert_eq!(preserved, "舊值");
+        assert_eq!(failed, vec![
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+        assert_eq!(plan.verify_actual_events(&failed,true), Ok(3));
+        assert!(plan.verify_actual_events(&success,true).is_err());
+        assert!(plan.verify_actual_events(&failed,false).is_err());
+    }
+
+    #[test]
+    fn 未初始化的_var_str_第一次寫入不可清理不存在的舊欄位() {
+        let source = SOURCE.replace("var title:str = \"舊值\"", "var title:str");
+        let checked = verified_private_source(&source).unwrap();
+        let main = checked.functions.iter().find(|f|f.name == "main").unwrap();
+        let plan=FieldOverwritePlan::new(DeclarationId(main.body[0].start),1,None).unwrap();
+        let (value,events)=trace_persistent_struct_field_write_source(&source,false).unwrap();
+        assert_eq!(value,"新值🪼");
+        assert_eq!(plan.verify_actual_events(&events,false),Ok(2));
+    }
+
+    #[test]
+    fn 靜態禁止_const_欄位覆寫不能繞過安全_ir() {
+        let invalid=SOURCE.replace("owner.title = \"新值🪼\"",
+            "owner.id = \"不合法\"");
+        let original=inspect(&invalid).unwrap_err();
+        let runtime=trace_persistent_struct_field_write_source(&invalid,false).unwrap_err();
+        assert_eq!(original,runtime);
+    }
+}

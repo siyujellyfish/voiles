@@ -18,6 +18,7 @@ pub(crate) enum ResourceAuditError {
     CopyUndecided,
     ResourceCopyUnverified,
     OutstandingResources,
+    MissingOwnedResource,
 }
 
 /// 每一個資源追蹤身分只有一個持有者。此結構只是一張稽核責任表，
@@ -134,6 +135,32 @@ impl ResourceObligationAudit {
         Ok(count)
     }
 
+    /// 只釋放仍屬於指定宣告的單一 UTF-8 資源。
+    /// 結構欄位覆寫的舊資源、或 RHS 求值失敗的暫存資源
+    /// 不可提前清理其它欄位；預檢不改動任何帳簿。
+    pub(crate) fn check_release_resource(
+        &self, owner: DeclarationId, resource: u64,
+    ) -> Result<(), ResourceAuditError> {
+        let binding = self.values.get(&owner)
+            .ok_or(ResourceAuditError::MissingBinding)?;
+        if !binding.resources.contains(&resource) {
+            return Err(ResourceAuditError::MissingOwnedResource);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn release_resource(
+        &mut self, owner: DeclarationId, resource: u64,
+    ) -> Result<(), ResourceAuditError> {
+        self.check_release_resource(owner, resource)?;
+        let record = self.values.get_mut(&owner).expect("已預檢持有者");
+        let removed = record.resources.remove(&resource);
+        debug_assert!(removed);
+        let first = self.released.insert(resource);
+        debug_assert!(first);
+        Ok(())
+    }
+
     pub(crate) fn outstanding_count(&self) -> usize {
         self.ever_created.len() - self.released.len()
     }
@@ -150,6 +177,27 @@ impl ResourceObligationAudit {
 mod tests {
     use super::*;
     use CopyPermission::{Allowed, Forbidden, Undecided};
+
+    #[test]
+    fn 單一資源清理不得誤清其它欄位或提前結束所有者責任() {
+        let mut audit = ResourceObligationAudit::new();
+        let a = DeclarationId(11);
+        let b = DeclarationId(22);
+        audit.create_binding(a, Forbidden).unwrap();
+        audit.register_resource(a, 101).unwrap();
+        audit.register_resource(a, 102).unwrap();
+        assert_eq!(audit.check_release_resource(b, 101),
+            Err(ResourceAuditError::MissingBinding));
+        assert_eq!(audit.release_resource(a, 103),
+            Err(ResourceAuditError::MissingOwnedResource));
+        assert_eq!(audit.outstanding_count(), 2);
+        audit.release_resource(a, 101).unwrap();
+        assert_eq!(audit.release_resource(a, 101),
+            Err(ResourceAuditError::MissingOwnedResource));
+        assert_eq!(audit.outstanding_count(), 1);
+        assert_eq!(audit.release_batch(&[a]), Ok(1));
+        audit.require_no_leak().unwrap();
+    }
 
     #[test]
     fn p16_資源整筆移交不複製責任且目標一次釋放後無洩漏() {
