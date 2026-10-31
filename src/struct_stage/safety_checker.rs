@@ -92,12 +92,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
     /// 不能只以目前作用域或表面名稱判斷，否則遮蔽可繞過來源封鎖。
-    fn active_loans(vars: &Scopes, source: DeclarationId) -> Vec<BorrowKind> {
-        vars.iter().flat_map(|scope| scope.values()).filter_map(|binding| {
+    fn active_loan_kinds(
+        vars: &Scopes, source: DeclarationId,
+    ) -> impl Iterator<Item = BorrowKind> + '_ {
+        vars.iter().flat_map(|scope| scope.values()).filter_map(move |binding| {
             binding.loan.as_ref().and_then(|loan| {
                 (loan.active && loan.source == source).then_some(loan.kind)
             })
-        }).collect()
+        })
     }
 
     /// R03.12：宣告時直接借用、方法預設借用及一般函式預設借用
@@ -107,7 +109,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, vars: &Scopes, source: DeclarationId, kind: BorrowKind,
         term: &Term, diagnostic: &str,
     ) -> Result<(), Diagnostic> {
-        BorrowSafety::validate_new_borrow(&Self::active_loans(vars, source), kind)
+        BorrowSafety::validate_new_borrow(&Self::active_loan_kinds(vars, source).collect::<Vec<_>>(), kind)
             .map_err(|_| self.error(diagnostic, term))
     }
 
@@ -119,7 +121,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 別名自身仍遵守現有 evaluate／loan 權限與最後使用點證明。
         if owner.loan.is_none() {
             let has_active_loan =
-                !Self::active_loans(vars, owner.declaration_start).is_empty();
+                Self::active_loan_kinds(vars, owner.declaration_start).next().is_some();
             BorrowSafety::validate_direct_access(has_active_loan)
                 .map_err(|_| self.error(
                     "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
