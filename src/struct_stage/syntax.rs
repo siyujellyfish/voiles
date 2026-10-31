@@ -31,12 +31,11 @@ impl Parser<'_> {
             .ok_or_else(|| self.syntax("需要合法的名稱或型別名稱"))
     }
     fn end_statement(&mut self) -> Result<(), Diagnostic> {
-        if self.symbol('}') { return Ok(()); }
-        if !matches!(self.tok().kind, TokenKind::Newline) {
-            return Err(self.syntax("語句之間必須換行"));
+        if crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
+            Ok(())
+        } else {
+            Err(self.syntax("語句之間必須換行"))
         }
-        self.lines();
-        Ok(())
     }
     /// 和 MVP-A i64 有效整數字面值規則一致；底線只作分隔，
     /// 範圍溢位在靜態前端拒絕，不移交未知執行時處理。
