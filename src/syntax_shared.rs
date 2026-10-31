@@ -189,6 +189,30 @@ mod tests {
     }
 
     #[test]
+    fn 真正左結合折疊保留求值順序及錯誤立即傳回() {
+        let mut operators = [('-', 3_i64), ('+', 2), ('-', 4)].into_iter();
+        let value = fold_additive(
+            10_i64,
+            || Ok::<_, &'static str>(operators.next()),
+            |left, op, right| if op == '+' {left + right} else {left - right},
+        ).unwrap();
+        assert_eq!(value, 5, "10 - 3 + 2 - 4 必須依左結合求值");
+
+        let mut called = 0;
+        let result = fold_additive(
+            7_i64,
+            || {
+                called += 1;
+                if called == 1 { Ok(Some(('+', 5))) }
+                else { Err("右運算元語法錯誤") }
+            },
+            |left, _, right| left + right,
+        );
+        assert_eq!(result, Err("右運算元語法錯誤"));
+        assert_eq!(called, 2, "右運算元失敗不得被忽略而輸出部分樹");
+    }
+
+    #[test]
     fn 兩套真正解析器共用的加減規則只能回傳核准二元運算子() {
         let source = Source::new(b"+ - * /".to_vec());
         let tokens = lexer::scan(&source);
