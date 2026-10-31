@@ -73,6 +73,28 @@ mod tests {
     use crate::{lexer, source::Source};
 
     #[test]
+    fn 名稱原語只消耗真正_name_其他_token_及結束位置不變() {
+        let tokens = [
+            Token {kind:TokenKind::Name("水母_7".into()),start:0,end:8},
+            Token {kind:TokenKind::Symbol('('),start:8,end:9},
+            Token {kind:TokenKind::Keyword("return".into()),start:9,end:15},
+            Token {kind:TokenKind::End,start:15,end:15},
+        ];
+        let mut cursor=0usize;
+        assert_eq!(take_name(&tokens,&mut cursor),Some("水母_7".into()));
+        assert_eq!(cursor,1);
+        for _ in 0..3 {
+            assert_eq!(take_name(&tokens,&mut cursor),None);
+            assert_eq!(cursor,1,"不合法名稱絕不能跳過原先錯誤位置");
+        }
+        for position in [2,3,4] {
+            let mut cursor=position;
+            assert_eq!(take_name(&tokens,&mut cursor),None);
+            assert_eq!(cursor,position);
+        }
+    }
+
+    #[test]
     fn 兩套真正解析器共用的加減規則只能回傳核准二元運算子() {
         let source = Source::new(b"+ - * /".to_vec());
         let tokens = lexer::scan(&source);
