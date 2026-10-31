@@ -70,11 +70,8 @@ impl<'a> ExprParser<'a> {
     }
 
     fn expect_symbol(&mut self, expected: char, message: &str) -> Result<usize, Diagnostic> {
-        if self.symbol(expected) {
-            Ok(self.next().unwrap().end)
-        } else {
-            Err(self.error(message))
-        }
+        crate::syntax_shared::take_symbol(self.tokens, &mut self.cursor, expected)
+            .ok_or_else(|| self.error(message))
     }
 
     /// MVP-A 算術二元 +、- 同層左結合；括號及合法函式運算元。
