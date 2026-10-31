@@ -109,7 +109,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, vars: &Scopes, source: DeclarationId, kind: BorrowKind,
         term: &Term, diagnostic: &str,
     ) -> Result<(), Diagnostic> {
-        BorrowSafety::validate_new_borrow(&Self::active_loan_kinds(vars, source).collect::<Vec<_>>(), kind)
+        BorrowSafety::validate_new_borrow(Self::active_loan_kinds(vars, source), kind)
             .map_err(|_| self.error(diagnostic, term))
     }
 
