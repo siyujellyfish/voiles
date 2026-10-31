@@ -125,15 +125,8 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.err("缺少合法名稱"))
     }
     fn ty(&mut self) -> Result<Type, Diagnostic> {
-        match self.current().map(|t| &t.kind) {
-            Some(TokenKind::Name(n)) if n == "int" => {
-                self.next(); Ok(Type::Int)
-            }
-            Some(TokenKind::Name(n)) if n == "bool" => {
-                self.next(); Ok(Type::Bool)
-            }
-            _ => Err(self.err("首版僅接受明確的 int 或 bool 型別")),
-        }
+        crate::syntax_shared::take_scalar_type(self.tokens, &mut self.cursor)
+            .ok_or_else(|| self.err("首版僅接受明確的 int 或 bool 型別"))
     }
     fn expression(&mut self) -> Result<Expr, Diagnostic> {
         let mut parser = ExprParser::new(self.source, self.tokens, self.cursor);
@@ -348,6 +341,23 @@ mod tests {
         let lexed = scan(&source);
         assert!(lexed.diagnostics.is_empty(), "測試案例須先能完成詞彙分析");
         parse(&source, &lexed.tokens)
+    }
+
+    #[test]
+    fn 公開純值型別規則與私有結構型別界線保持原診斷及錯誤位置() {
+        for ty in ["str","list","Custom"] {
+            let source=format!("fn main()->int{{\nvar value:{ty}\nreturn 0\n}}\n");
+            let error=parse_text(&source).unwrap_err();
+            assert_eq!(error.kind,DiagnosticKind::Syntax);
+            assert_eq!(&*error.message,"首版僅接受明確的 int 或 bool 型別");
+            let location=error.span.expect("型別錯誤不能丟失來源位置");
+            assert_eq!(location.start.line,2);
+            assert_eq!(location.start.column,11);
+        }
+        for ty in ["int","bool"] {
+            let src=format!("fn main()->int{{\nvar value:{ty}\nreturn 0\n}}\n");
+            assert!(parse_text(&src).is_ok(),"{ty} 必須仍被 P01 Parser 接受");
+        }
     }
 
     #[test]

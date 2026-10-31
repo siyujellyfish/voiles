@@ -38,6 +38,18 @@ pub(crate) fn take_name(tokens: &[Token], cursor: &mut usize) -> Option<String> 
     Some(value.clone())
 }
 
+/// R02.9：公開 MVP-A 的純值型別消耗原語，唯一合法集合由
+/// 共通 ScalarType 定義。私有 P13 的 str／struct 型別不由此函式擴張。
+/// 若 token 不屬 int／bool，游標及錯誤位置必須完全不變。
+pub(crate) fn take_scalar_type(
+    tokens: &[Token], cursor: &mut usize,
+) -> Option<crate::common_ir::ScalarType> {
+    let TokenKind::Name(name) = &tokens.get(*cursor)?.kind else { return None };
+    let ty = crate::common_ir::ScalarType::from_name(name)?;
+    *cursor += 1;
+    Some(ty)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegerError {
     InvalidDigits,
@@ -71,6 +83,33 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 公開純值型別須由共同_scalar_type_決定且拒絕私有型別() {
+        let tokens=[
+            Token {kind:TokenKind::Name("int".into()),start:0,end:3},
+            Token {kind:TokenKind::Name("bool".into()),start:4,end:8},
+            Token {kind:TokenKind::Name("str".into()),start:9,end:12},
+            Token {kind:TokenKind::Name("Custom".into()),start:13,end:19},
+            Token {kind:TokenKind::Keyword("return".into()),start:20,end:26},
+            Token {kind:TokenKind::End,start:26,end:26},
+        ];
+        let mut cursor=0;
+        assert_eq!(take_scalar_type(&tokens,&mut cursor),
+            Some(crate::common_ir::ScalarType::Int));
+        assert_eq!(take_scalar_type(&tokens,&mut cursor),
+            Some(crate::common_ir::ScalarType::Bool));
+        assert_eq!(cursor,2);
+        for _ in 0..3 {
+            assert_eq!(take_scalar_type(&tokens,&mut cursor),None);
+            assert_eq!(cursor,2,"私有 str 不能成為公開 MVP-A 型別");
+        }
+        for pos in 3..=tokens.len() {
+            let mut at=pos;
+            assert_eq!(take_scalar_type(&tokens,&mut at),None);
+            assert_eq!(at,pos);
+        }
+    }
 
     #[test]
     fn 名稱原語只消耗真正_name_其他_token_及結束位置不變() {
