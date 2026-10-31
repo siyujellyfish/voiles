@@ -229,6 +229,17 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 多行及布林_if_條件在公開與私有解析器投影結果相同() {
+        let src = "\n\nfn main()->int{\n\nvar flag:bool = true\n\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n\nreturn 0\n}\n";
+        let tree = compare(src);
+        assert_eq!(tree.functions.len(), 1);
+        assert!(matches!(&tree.functions[0].body[0],
+            crate::common_ir::ScalarStmt::Declare {ty:crate::common_ir::ScalarType::Bool,init:Some(crate::common_ir::ScalarExpr::Bool(true)),..}));
+        assert!(matches!(&tree.functions[0].body[1],
+            crate::common_ir::ScalarStmt::If {condition:crate::common_ir::ScalarExpr::Bool(false),no:Some(_),..}));
+    }
+
+    #[test]
     fn 三重加減混合及巢狀分組的共同左結合樹不得因解析器而分歧() {
         let src = "fn main()->int{\nreturn 10 - 3 + 2 - (1 + 4)\n}\n";
         let ast = compare(src);
