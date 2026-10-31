@@ -19,7 +19,7 @@ impl Parser<'_> {
     }
     fn eof(&self) -> bool { crate::syntax_shared::end(self.tokens, self.cursor) }
     fn lines(&mut self) {
-        while crate::syntax_shared::newline(self.tokens, self.cursor) { self.cursor += 1; }
+        crate::syntax_shared::skip_newlines(self.tokens, &mut self.cursor);
     }
     fn take(&mut self, ch: char, msg: &str) -> Result<(), Diagnostic> {
         crate::syntax_shared::take_symbol(self.tokens, &mut self.cursor, ch)
