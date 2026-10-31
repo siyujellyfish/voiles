@@ -192,6 +192,24 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 三套_parser_共同括號消耗保留合法算術及缺括號的原診斷位置() {
+        compare("fn main()->int{\nreturn (8 - 3) + 2\n}\n");
+        let code="fn main()->int{\nreturn (8 - 3\n}\n";
+        let source=Source::new(code.as_bytes().to_vec());
+        let tokens=lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let public=parser::parse(&source,&tokens.tokens).unwrap_err();
+        let private=Parser {
+            source:&source,tokens:&tokens.tokens,cursor:0,
+        }.file().unwrap_err();
+        assert_eq!(public.kind,DiagnosticKind::Syntax);
+        assert_eq!(private.kind,DiagnosticKind::Syntax);
+        assert_eq!(&*public.message,"算術分組缺少右圓括號");
+        assert_eq!(&*private.message,"括號運算式缺少右括號");
+        assert_eq!(public.span,private.span,"缺符號時不能越過原錯誤 token");
+    }
+
+    #[test]
     fn 雙解析器合法名稱與非法位置診斷不跳過_token() {
         compare("fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = 3\nreturn helper() + n\n}\n");
         let text = "fn ()->int{\nreturn 0\n}\n";
