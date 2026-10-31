@@ -113,8 +113,8 @@ impl<'a> Parser<'a> {
         }
     }
     fn expect_symbol(&mut self, target: char, msg: &str) -> Result<usize, Diagnostic> {
-        if self.symbol(target) { Ok(self.next().unwrap().end) }
-        else { Err(self.err(msg)) }
+        crate::syntax_shared::take_symbol(self.tokens, &mut self.cursor, target)
+            .ok_or_else(|| self.err(msg))
     }
     fn expect_keyword(&mut self, target: &str, msg: &str) -> Result<usize, Diagnostic> {
         if self.keyword(target) { Ok(self.next().unwrap().start) }

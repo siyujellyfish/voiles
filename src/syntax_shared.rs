@@ -29,6 +29,20 @@ pub(crate) fn additive_operator(tokens: &[Token], cursor: usize) -> Option<char>
     }
 }
 
+/// R02.10：公開檔案 Parser、公開算式 Parser、私有 P13 Parser
+/// 真正共用的符號消耗原語。僅精確匹配指定 Symbol 時推進一次，
+/// 並返回來源原有 token 終點；失敗不消耗任何符號或改寫錯誤位置。
+pub(crate) fn take_symbol(
+    tokens: &[Token], cursor: &mut usize, expected: char,
+) -> Option<usize> {
+    let token = tokens.get(*cursor)?;
+    if !matches!(&token.kind, TokenKind::Symbol(ch) if *ch == expected) {
+        return None;
+    }
+    *cursor += 1;
+    Some(token.end)
+}
+
 /// R02.8：公開與私有 Parser 實際共用的名稱 token 消耗原語。
 /// 僅在 Name 時推進游標，失敗不能消耗任何 token；
 /// 診斷文字／位置由呼叫端保留原先所屬的解析模式。
@@ -83,6 +97,31 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 指定符號只在完全匹配時移動且回傳原本_utf8_位元組終點() {
+        let tokens=[
+            Token {kind:TokenKind::Name("字".into()),start:0,end:3},
+            Token {kind:TokenKind::Symbol('('),start:3,end:4},
+            Token {kind:TokenKind::Symbol(')'),start:4,end:5},
+            Token {kind:TokenKind::End,start:5,end:5},
+        ];
+        let mut cursor=0;
+        assert_eq!(take_symbol(&tokens,&mut cursor,'('),None);
+        assert_eq!(cursor,0);
+        cursor=1;
+        assert_eq!(take_symbol(&tokens,&mut cursor,')'),None);
+        assert_eq!(cursor,1);
+        assert_eq!(take_symbol(&tokens,&mut cursor,'('),Some(4));
+        assert_eq!(cursor,2);
+        assert_eq!(take_symbol(&tokens,&mut cursor,')'),Some(5));
+        assert_eq!(cursor,3);
+        for pos in [3,4] {
+            let mut at=pos;
+            assert_eq!(take_symbol(&tokens,&mut at,'('),None);
+            assert_eq!(at,pos,"結束 token／超界不可以推進游標");
+        }
+    }
 
     #[test]
     fn 公開純值型別須由共同_scalar_type_決定且拒絕私有型別() {
