@@ -224,6 +224,27 @@ mod tests {
     }
 
     #[test]
+    fn 共同語句分隔_右大括號不消耗_換行連續消耗_非法來源保持位置() {
+        let tokens=[
+            Token {kind:TokenKind::Newline,start:0,end:1},
+            Token {kind:TokenKind::Newline,start:1,end:2},
+            Token {kind:TokenKind::Symbol('}'),start:2,end:3},
+            Token {kind:TokenKind::Keyword("return".into()),start:4,end:10},
+            Token {kind:TokenKind::End,start:10,end:10},
+        ];
+        let mut cursor=0;
+        assert!(finish_statement(&tokens,&mut cursor));
+        assert_eq!(cursor,2);
+        assert!(finish_statement(&tokens,&mut cursor));
+        assert_eq!(cursor,2,"右大括號應由所屬 block 自己消耗");
+        for pos in [3,4,5] {
+            let mut cursor=pos;
+            assert!(!finish_statement(&tokens,&mut cursor));
+            assert_eq!(cursor,pos,"錯誤分隔不可跨越保留字或 End");
+        }
+    }
+
+    #[test]
     fn 連續換行只消耗_newline_不跨越原來的其它_token() {
         let tokens = [
             Token {kind:TokenKind::Newline,start:0,end:1},
