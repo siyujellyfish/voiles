@@ -53,12 +53,8 @@ pub(crate) struct Binding {
     pub(crate) end: usize,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct Stmt {
-    pub(crate) kind: StmtKind,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-}
+/// 公開 MVP-A 語句 AST 的位元組範圍結構與私有 P13 共用。
+pub(crate) type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
 pub(crate) enum StmtKind {
