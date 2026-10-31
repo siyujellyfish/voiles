@@ -29,6 +29,20 @@ pub(crate) fn additive_operator(tokens: &[Token], cursor: usize) -> Option<char>
     }
 }
 
+/// R02.10：公開檔案 Parser、公開算式 Parser、私有 P13 Parser
+/// 真正共用的符號消耗原語。僅精確匹配指定 Symbol 時推進一次，
+/// 並返回來源原有 token 終點；失敗不消耗任何符號或改寫錯誤位置。
+pub(crate) fn take_symbol(
+    tokens: &[Token], cursor: &mut usize, expected: char,
+) -> Option<usize> {
+    let token = tokens.get(*cursor)?;
+    if !matches!(&token.kind, TokenKind::Symbol(ch) if *ch == expected) {
+        return None;
+    }
+    *cursor += 1;
+    Some(token.end)
+}
+
 /// R02.8：公開與私有 Parser 實際共用的名稱 token 消耗原語。
 /// 僅在 Name 時推進游標，失敗不能消耗任何 token；
 /// 診斷文字／位置由呼叫端保留原先所屬的解析模式。
