@@ -104,8 +104,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         -> Result<(), Diagnostic> {
         let owner = Self::lookup(vars, name)
             .ok_or_else(|| self.error("找不到原始來源宣告", term))?;
-        if owner.loan.is_none() && !Self::active_loans(vars, owner.declaration_start).is_empty() {
-            return Err(self.error("HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term));
+        // 與抽象 BorrowTicket 使用同一個 HC14-A 直接存取規則；
+        // 別名自身仍遵守現有 evaluate／loan 權限與最後使用點證明。
+        if owner.loan.is_none() {
+            let has_active_loan =
+                !Self::active_loans(vars, owner.declaration_start).is_empty();
+            BorrowSafety::validate_direct_access(has_active_loan)
+                .map_err(|_| self.error(
+                    "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
         }
         Ok(())
     }
