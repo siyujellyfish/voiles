@@ -99,6 +99,31 @@ mod tests {
     use crate::{lexer, source::Source};
 
     #[test]
+    fn 指定符號只在完全匹配時移動且回傳原本_utf8_位元組終點() {
+        let tokens=[
+            Token {kind:TokenKind::Name("字".into()),start:0,end:3},
+            Token {kind:TokenKind::Symbol('('),start:3,end:4},
+            Token {kind:TokenKind::Symbol(')'),start:4,end:5},
+            Token {kind:TokenKind::End,start:5,end:5},
+        ];
+        let mut cursor=0;
+        assert_eq!(take_symbol(&tokens,&mut cursor,'('),None);
+        assert_eq!(cursor,0);
+        cursor=1;
+        assert_eq!(take_symbol(&tokens,&mut cursor,')'),None);
+        assert_eq!(cursor,1);
+        assert_eq!(take_symbol(&tokens,&mut cursor,'('),Some(4));
+        assert_eq!(cursor,2);
+        assert_eq!(take_symbol(&tokens,&mut cursor,')'),Some(5));
+        assert_eq!(cursor,3);
+        for pos in [3,4] {
+            let mut at=pos;
+            assert_eq!(take_symbol(&tokens,&mut at,'('),None);
+            assert_eq!(at,pos,"結束 token／超界不可以推進游標");
+        }
+    }
+
+    #[test]
     fn 公開純值型別須由共同_scalar_type_決定且拒絕私有型別() {
         let tokens=[
             Token {kind:TokenKind::Name("int".into()),start:0,end:3},
