@@ -77,7 +77,7 @@ impl<'a> ExprParser<'a> {
     /// MVP-A 算術二元 +、- 同層左結合；括號及合法函式運算元。
     pub(crate) fn expression(&mut self) -> Result<Expr, Diagnostic> {
         let left = self.postfix()?;
-        crate::syntax_shared::fold_additive(
+        crate::syntax_shared::fold_additive_spanned(
             left,
             || {
                 let Some(op) = crate::syntax_shared::additive_operator(
@@ -85,9 +85,10 @@ impl<'a> ExprParser<'a> {
                 self.next();
                 Ok(Some((op, self.postfix()?)))
             },
-            |left, op, right| {
-                let start = left.start;
-                let end = right.end;
+            |expr| crate::common_ir::NodeSpan::new(expr.start, expr.end),
+            |left, op, right, span| {
+                let start = span.start;
+                let end = span.end;
                 let kind = if op == '+' {
                     ExprKind::Add(Box::new(left), Box::new(right))
                 } else {
