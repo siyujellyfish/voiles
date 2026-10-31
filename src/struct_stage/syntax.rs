@@ -364,8 +364,8 @@ impl Parser<'_> {
         Ok(body)
     }
     fn function(&mut self) -> Result<Function, Diagnostic> {
-        if !self.keyword("fn") { return Err(self.syntax("函式必須以 fn 宣告")); }
-        self.cursor += 1;
+        crate::syntax_shared::take_keyword(self.tokens, &mut self.cursor, "fn")
+            .ok_or_else(|| self.syntax("函式必須以 fn 宣告"))?;
         let name = self.name()?;
         self.take('(', "函式名稱後需左括號")?;
         let mut params = Vec::new();
