@@ -53,6 +53,26 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     }
 
     #[test]
+    fn 已驗證宣告依來源身分區分遮蔽與跨函式所有者() {
+        let src = "fn create()->str{\nvar same:str = \"來源\"\nreturn same.move()\n}\nfn main()->int{\nvar same:str = create()\nif(true){\nvar same:int = 1\n}\nreturn 0\n}\n";
+        let checked = verified_private_source(src).expect("保留已核准私有來源驗證");
+        let create = checked.functions.iter().find(|f| f.name == "create").unwrap();
+        let main = checked.functions.iter().find(|f| f.name == "main").unwrap();
+        let from = DeclarationId(create.body[0].start);
+        let to = DeclarationId(main.body[0].start);
+        let StmtKind::If { yes, .. } = &main.body[1].kind
+            else { panic!("必須有分支遮蔽") };
+        let shadow = DeclarationId(yes[0].start);
+        assert!(checked.declarations.matches(from, "str", true));
+        assert!(checked.declarations.matches(to, "str", true));
+        assert!(checked.declarations.matches(shadow, "int", true));
+        assert!(!checked.declarations.matches(shadow, "str", true));
+        assert!(!checked.declarations.matches(DeclarationId(src.len()+10), "str", true));
+        assert_ne!(from, to);
+        assert_ne!(to, shadow);
+    }
+
+    #[test]
     fn 不合法隱含複製不能在資源模擬器中繞過已驗證門檻() {
         let illegal = "fn main()->int{\nvar owner:str = \"中文\"\nvar target:str = owner\nreturn 0\n}\n";
         let original = inspect(illegal).unwrap_err();
