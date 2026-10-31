@@ -831,6 +831,11 @@ fn trace_named_string_move_source(
         || !declarations.matches(DeclarationId(second.start), "str", true) {
         return Err(unsupported("P16：資源持有者未出現在已驗證宣告身分與型別表"));
     }
+    if !declarations.has_direct_move(
+        DeclarationId(first.start), DeclarationId(second.start)
+    ) {
+        return Err(unsupported("P16：不存在已驗證來源的直接具名整筆轉移證據"));
+    }
     let transfer = NamedResourceTransfer::new(
         DeclarationId(first.start), DeclarationId(second.start))
         .map_err(|_| unsupported("P16：具名移動的來源宣告身分不唯一"))?;
