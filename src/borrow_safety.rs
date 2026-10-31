@@ -82,11 +82,20 @@ impl BorrowSafety {
 
     /// 對直接讀、寫、複製或 .move() 均先執行此檢查。
     /// 借用關係本身的合法使用不等於原來源可直接被讀取。
+    /// HC14-A：由唯一規則判定原所有者能否直接讀、寫、複製或整筆移動。
+    /// 私有 Checker 的借用有效期已由 P15 解析為活躍旗標，
+    /// 票據追蹤器則由實際票據表得出同一布林事實；兩者不得各自改規則。
+    pub(crate) fn validate_direct_access(has_active_loan: bool)
+        -> Result<(), BorrowSafetyError> {
+        if has_active_loan { Err(BorrowSafetyError::SourceIsBorrowed) }
+        else { Ok(()) }
+    }
+
     pub(crate) fn check_direct_access(&self, declaration: DeclarationId)
         -> Result<(), BorrowSafetyError> {
-        if self.active.get(&declaration).is_some_and(|loans| !loans.is_empty()) {
-            Err(BorrowSafetyError::SourceIsBorrowed)
-        } else { Ok(()) }
+        Self::validate_direct_access(
+            self.active.get(&declaration).is_some_and(|loans| !loans.is_empty())
+        )
     }
 
     pub(crate) fn release(&mut self, ticket: BorrowTicket)
@@ -135,6 +144,20 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 靜態來源活躍旗標與真正票據的直接存取規則必須相同() {
+        let owner=DeclarationId(48);
+        let mut tickets=BorrowSafety::new();
+        assert_eq!(BorrowSafety::validate_direct_access(false),
+            tickets.check_direct_access(owner));
+        let borrow=tickets.acquire(owner,BorrowKind::SharedRead).unwrap();
+        assert_eq!(BorrowSafety::validate_direct_access(true),
+            tickets.check_direct_access(owner));
+        tickets.release(borrow).unwrap();
+        assert_eq!(BorrowSafety::validate_direct_access(false),
+            tickets.check_direct_access(owner));
+    }
 
     #[test]
     fn hc14_同來源兩個共享唯讀借用可並存_但來源不得直接使用() {
