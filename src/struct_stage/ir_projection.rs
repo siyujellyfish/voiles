@@ -192,7 +192,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
-    fn 雙解析器的合法_name_與非法位置保持各自診斷且不跳過 token() {
+    fn 雙解析器合法名稱與非法位置診斷不跳過_token() {
         compare("fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = 3\nreturn helper() + n\n}\n");
         let text = "fn ()->int{\nreturn 0\n}\n";
         let source = Source::new(text.as_bytes().to_vec());
