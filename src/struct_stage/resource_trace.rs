@@ -22,7 +22,7 @@ fn trace_string_struct_source(
         }
         Some(content)
     }
-    let VerifiedPrivateSource { source: _, structs, functions: funcs } =
+    let VerifiedPrivateSource { source: _, structs, functions: funcs, .. } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
@@ -101,7 +101,7 @@ fn trace_persistent_struct_move_source(
         (!value.contains('\\') && !value.contains('\n')
             && !value.contains('\r')).then_some(value)
     }
-    let VerifiedPrivateSource { source: _, structs, functions } =
+    let VerifiedPrivateSource { source: _, structs, functions, .. } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
@@ -200,7 +200,7 @@ fn trace_string_return_source(
         }
         Some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, .. } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
@@ -285,7 +285,7 @@ fn trace_persistent_struct_field_write_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions } =
+    let VerifiedPrivateSource { source: _, structs, functions, .. } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
@@ -401,7 +401,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
             _=>None,
         }
     }
-    let VerifiedPrivateSource { source: _, structs, functions } =
+    let VerifiedPrivateSource { source: _, structs, functions, .. } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：缺少 main"))?;
@@ -527,7 +527,7 @@ fn trace_scope_struct_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions } =
+    let VerifiedPrivateSource { source: _, structs, functions, .. } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
@@ -692,7 +692,7 @@ fn trace_persistent_struct_return_source(
         (!raw.contains('\\') && !raw.contains('\n')
             && !raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions } =
+    let VerifiedPrivateSource { source: _, structs, functions, .. } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function| function.name=="main")
         .ok_or_else(||unsupported("P16：缺少有效 main"))?;
@@ -796,7 +796,7 @@ fn trace_named_string_move_source(
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, declarations } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;
@@ -827,6 +827,10 @@ fn trace_named_string_move_source(
     }
     // 只在真正來源 Lexer／Parser／Checker 完整驗證之後建立持有者證據，
     // 以宣告起點而非可遮蔽的字串名稱標定唯一所有者。
+    if !declarations.matches(DeclarationId(first.start), "str", mutable)
+        || !declarations.matches(DeclarationId(second.start), "str", true) {
+        return Err(unsupported("P16：資源持有者未出現在已驗證宣告身分與型別表"));
+    }
     let transfer = NamedResourceTransfer::new(
         DeclarationId(first.start), DeclarationId(second.start))
         .map_err(|_| unsupported("P16：具名移動的來源宣告身分不唯一"))?;

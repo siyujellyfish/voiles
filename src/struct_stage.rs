@@ -3,7 +3,7 @@
 //! 正式內部入口依 HA13-A／str 方案 A 使用核准政策；自訂能力僅限 Rust 測試。
 #![allow(dead_code)]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::rc::Rc;
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
@@ -164,10 +164,59 @@ include!("struct_stage/resource_trace.rs");
 
 /// 已通過同一組原始來源、解析、型別、所有權、借用及有效期檢查的私有安全事實。
 /// P16 資源橋接只可消耗此成果，不可單獨從未驗證的 AST 假造安全來源。
+/// R03.15：只在完整 Checker 成功後由已解析宣告建立的權威來源身分表。
+/// 此處保證宣告來源、型別與可變權限，不假設動態持有者或資源實例。
+struct VerifiedDeclarationFacts {
+    by_source: BTreeMap<DeclarationId, (String, bool)>,
+}
+impl VerifiedDeclarationFacts {
+    fn from_checked(functions: &[Function]) -> Self {
+        fn collect(body: &[Stmt], found: &mut BTreeMap<DeclarationId, (String, bool)>) {
+            for statement in body {
+                match &statement.kind {
+                    StmtKind::Declare { ty, mutable, .. } => {
+                        let replaced = found.insert(
+                            DeclarationId(statement.start), (ty.clone(), *mutable));
+                        debug_assert!(replaced.is_none(), "同一來源跨度不應建立兩個宣告");
+                    }
+                    StmtKind::If { yes, no, .. } => {
+                        collect(yes, found);
+                        if let Some(otherwise) = no { collect(otherwise, found); }
+                    }
+                    StmtKind::While { body, .. } => collect(body, found),
+                    StmtKind::ForRange { iterator_start, body, .. } => {
+                        let replaced = found.insert(
+                            DeclarationId(*iterator_start), ("int".into(), false));
+                        debug_assert!(replaced.is_none(), "迴圈位置須為獨立宣告");
+                        collect(body, found);
+                    }
+                    _ => {}
+                }
+            }
+        }
+        let mut by_source = BTreeMap::new();
+        for function in functions {
+            for param in &function.params {
+                let replaced = by_source.insert(
+                    DeclarationId(param.declaration_start), (param.ty.clone(), false));
+                debug_assert!(replaced.is_none(), "參數來源須唯一");
+            }
+            collect(&function.body, &mut by_source);
+        }
+        Self { by_source }
+    }
+
+    fn matches(&self, source: DeclarationId, ty: &str, mutable: bool) -> bool {
+        self.by_source.get(&source)
+            .is_some_and(|(actual, can_write)| actual == ty && *can_write == mutable)
+    }
+}
+
 struct VerifiedPrivateSource {
     source: Source,
     structs: HashMap<String, StructDecl>,
     functions: Vec<Function>,
+    declarations: VerifiedDeclarationFacts,
 }
 
 fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
@@ -184,7 +233,8 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         source: &source, structs: &structs, functions: &functions,
         function_index, ability,
     }.all(&functions)?;
-    Ok(VerifiedPrivateSource { source, structs, functions })
+    let declarations = VerifiedDeclarationFacts::from_checked(&functions);
+    Ok(VerifiedPrivateSource { source, structs, functions, declarations })
 }
 
 #[cfg(test)]
