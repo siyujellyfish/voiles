@@ -196,9 +196,7 @@ impl<'a> Parser<'a> {
                 return Ok(Block { statements, start, end });
             }
             statements.push(self.statement()?);
-            if self.at_newline() {
-                self.skip_newlines();
-            } else if !self.symbol('}') {
+            if !crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
                 return Err(self.err("語句之間必須以換行分隔"));
             }
         }
