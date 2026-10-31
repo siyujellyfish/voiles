@@ -15,6 +15,22 @@ pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
 
+/// R02.12：兩套正式 Parser 共用連續換行略過。
+/// 只略過實際 Newline token；不吞掉 End、符號及其它詞彙。
+pub(crate) fn skip_newlines(tokens: &[Token], cursor: &mut usize) {
+    while newline(tokens, *cursor) { *cursor += 1; }
+}
+
+/// R02.12：公開運算式與私有結構解析器共用唯一 bool 常值判讀。
+/// 不將普通 Name、其它保留字或大小寫變體當成布林常值。
+pub(crate) fn boolean_keyword(word: &str) -> Option<bool> {
+    match word {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn end(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::End) | None)
 }
