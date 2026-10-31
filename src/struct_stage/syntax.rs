@@ -22,9 +22,9 @@ impl Parser<'_> {
         while crate::syntax_shared::newline(self.tokens, self.cursor) { self.cursor += 1; }
     }
     fn take(&mut self, ch: char, msg: &str) -> Result<(), Diagnostic> {
-        if !self.symbol(ch) { return Err(self.syntax(msg)); }
-        self.cursor += 1;
-        Ok(())
+        crate::syntax_shared::take_symbol(self.tokens, &mut self.cursor, ch)
+            .map(|_| ())
+            .ok_or_else(|| self.syntax(msg))
     }
     fn name(&mut self) -> Result<String, Diagnostic> {
         crate::syntax_shared::take_name(self.tokens, &mut self.cursor)
