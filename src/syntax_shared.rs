@@ -205,6 +205,36 @@ mod tests {
     }
 
     #[test]
+    fn 布林常值不誤認其它保留字或不同大小寫名稱() {
+        assert_eq!(boolean_keyword("true"), Some(true));
+        assert_eq!(boolean_keyword("false"), Some(false));
+        for word in ["True", "FALSE", "if", "return", "bool", "true_"] {
+            assert_eq!(boolean_keyword(word), None);
+        }
+    }
+
+    #[test]
+    fn 連續換行只消耗_newline_不跨越原來的其它_token() {
+        let tokens = [
+            Token {kind:TokenKind::Newline,start:0,end:1},
+            Token {kind:TokenKind::Newline,start:1,end:2},
+            Token {kind:TokenKind::Keyword("return".into()),start:2,end:8},
+            Token {kind:TokenKind::Newline,start:8,end:9},
+            Token {kind:TokenKind::End,start:9,end:9},
+        ];
+        let mut cursor=0;
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,2);
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,2,"不可跨越 return 保留字");
+        cursor=3;
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,4);
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,4,"不可消耗 End");
+    }
+
+    #[test]
     fn 真正左結合折疊保留求值順序及錯誤立即傳回() {
         let mut operators = [('-', 3_i64), ('+', 2), ('-', 4)].into_iter();
         let value = fold_additive(
