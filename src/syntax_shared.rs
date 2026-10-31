@@ -11,6 +11,14 @@ pub(crate) fn keyword(tokens: &[Token], cursor: usize, word: &str) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Keyword(s)) if s == word)
 }
 
+/// 兩種正式解析器共用：只有指定 Keyword 才推進，失敗游標不變。
+pub(crate) fn take_keyword(tokens: &[Token], cursor: &mut usize, word: &str) -> Option<usize> {
+    let token = tokens.get(*cursor)?;
+    if !matches!(&token.kind, TokenKind::Keyword(value) if value == word) { return None; }
+    *cursor += 1;
+    Some(token.start)
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
@@ -139,6 +147,31 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 關鍵字只能精確消耗且失敗保留游標() {
+        let tokens = [
+            Token {kind:TokenKind::Name("fn".into()),start:0,end:2},
+            Token {kind:TokenKind::Keyword("fn".into()),start:3,end:5},
+            Token {kind:TokenKind::Keyword("if".into()),start:6,end:8},
+            Token {kind:TokenKind::End,start:8,end:8},
+        ];
+        let mut at=0;
+        assert_eq!(take_keyword(&tokens,&mut at,"fn"),None);
+        assert_eq!(at,0);
+        at=1;
+        assert_eq!(take_keyword(&tokens,&mut at,"if"),None);
+        assert_eq!(at,1);
+        assert_eq!(take_keyword(&tokens,&mut at,"fn"),Some(3));
+        assert_eq!(at,2);
+        assert_eq!(take_keyword(&tokens,&mut at,"if"),Some(6));
+        assert_eq!(at,3);
+        for pos in [3,4] {
+            let mut cursor=pos;
+            assert_eq!(take_keyword(&tokens,&mut cursor,"fn"),None);
+            assert_eq!(cursor,pos);
+        }
+    }
 
     #[test]
     fn 指定符號只在完全匹配時移動且回傳原本_utf8_位元組終點() {
