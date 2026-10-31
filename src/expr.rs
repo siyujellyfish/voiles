@@ -76,23 +76,26 @@ impl<'a> ExprParser<'a> {
 
     /// MVP-A 算術二元 +、- 同層左結合；括號及合法函式運算元。
     pub(crate) fn expression(&mut self) -> Result<Expr, Diagnostic> {
-        let mut left = self.postfix()?;
-        loop {
-            let operator = crate::syntax_shared::additive_operator(
-                self.tokens, self.cursor);
-            let Some(op) = operator else { break; };
-            self.next();
-            let right = self.postfix()?;
-            let start = left.start;
-            let end = right.end;
-            let kind = if op == '+' {
-                ExprKind::Add(Box::new(left), Box::new(right))
-            } else {
-                ExprKind::Subtract(Box::new(left), Box::new(right))
-            };
-            left = Expr { kind, start, end };
-        }
-        Ok(left)
+        let left = self.postfix()?;
+        crate::syntax_shared::fold_additive(
+            left,
+            || {
+                let Some(op) = crate::syntax_shared::additive_operator(
+                    self.tokens, self.cursor) else { return Ok(None) };
+                self.next();
+                Ok(Some((op, self.postfix()?)))
+            },
+            |left, op, right| {
+                let start = left.start;
+                let end = right.end;
+                let kind = if op == '+' {
+                    ExprKind::Add(Box::new(left), Box::new(right))
+                } else {
+                    ExprKind::Subtract(Box::new(left), Box::new(right))
+                };
+                Expr { kind, start, end }
+            },
+        )
     }
 
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {

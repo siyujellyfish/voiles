@@ -29,6 +29,22 @@ pub(crate) fn additive_operator(tokens: &[Token], cursor: usize) -> Option<char>
     }
 }
 
+/// R02.11：共用真正左結合算術解析折疊。各 Parser 仍只由自身
+/// 的 operand 解析器決定可用後綴、AST 型別及語法診斷；本層
+/// 只在 next 成功提供一組已核准運算子／右運算元時建立左結合節點。
+/// 任一右運算元解析失敗須立即中止，不可吞掉失敗變成部分 AST。
+pub(crate) fn fold_additive<T, E>(
+    mut left: T,
+    mut next: impl FnMut() -> Result<Option<(char, T)>, E>,
+    mut combine: impl FnMut(T, char, T) -> T,
+) -> Result<T, E> {
+    while let Some((op, right)) = next()? {
+        debug_assert!(matches!(op, '+' | '-'), "僅接受核准的加減運算子");
+        left = combine(left, op, right);
+    }
+    Ok(left)
+}
+
 /// R02.10：公開檔案 Parser、公開算式 Parser、私有 P13 Parser
 /// 真正共用的符號消耗原語。僅精確匹配指定 Symbol 時推進一次，
 /// 並返回來源原有 token 終點；失敗不消耗任何符號或改寫錯誤位置。
@@ -170,6 +186,30 @@ mod tests {
             assert_eq!(take_name(&tokens,&mut cursor),None);
             assert_eq!(cursor,position);
         }
+    }
+
+    #[test]
+    fn 真正左結合折疊保留求值順序及錯誤立即傳回() {
+        let mut operators = [('-', 3_i64), ('+', 2), ('-', 4)].into_iter();
+        let value = fold_additive(
+            10_i64,
+            || Ok::<_, &'static str>(operators.next()),
+            |left, op, right| if op == '+' {left + right} else {left - right},
+        ).unwrap();
+        assert_eq!(value, 5, "10 - 3 + 2 - 4 必須依左結合求值");
+
+        let mut called = 0;
+        let result = fold_additive(
+            7_i64,
+            || {
+                called += 1;
+                if called == 1 { Ok(Some(('+', 5))) }
+                else { Err("右運算元語法錯誤") }
+            },
+            |left, _, right| left + right,
+        );
+        assert_eq!(result, Err("右運算元語法錯誤"));
+        assert_eq!(called, 2, "右運算元失敗不得被忽略而輸出部分樹");
     }
 
     #[test]
