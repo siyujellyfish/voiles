@@ -192,6 +192,25 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 雙解析器合法名稱與非法位置診斷不跳過_token() {
+        compare("fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = 3\nreturn helper() + n\n}\n");
+        let text = "fn ()->int{\nreturn 0\n}\n";
+        let source = Source::new(text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let public = parser::parse(&source,&tokens.tokens).unwrap_err();
+        let private = Parser {
+            source:&source,tokens:&tokens.tokens,cursor:0
+        }.file().unwrap_err();
+        assert_eq!(public.kind,DiagnosticKind::Syntax);
+        assert_eq!(private.kind,DiagnosticKind::Syntax);
+        assert_eq!(&*public.message,"缺少合法名稱");
+        assert_eq!(&*private.message,"需要合法的名稱或型別名稱");
+        assert_eq!(public.span,private.span,
+            "同一個不合法名稱 token 的定位不因共用讀取原語而移動");
+    }
+
+    #[test]
     fn 公開與私有解析器真正共用的加減運算維持左結合及括號次序() {
         let src = "fn main()->int{\nvar n:int = 10\nreturn n - 3 + (2 - 1)\n}\n";
         let ast = compare(src);

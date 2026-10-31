@@ -27,14 +27,8 @@ impl Parser<'_> {
         Ok(())
     }
     fn name(&mut self) -> Result<String, Diagnostic> {
-        match &self.tok().kind {
-            TokenKind::Name(s) => {
-                let out = s.clone();
-                self.cursor += 1;
-                Ok(out)
-            }
-            _ => Err(self.syntax("需要合法的名稱或型別名稱")),
-        }
+        crate::syntax_shared::take_name(self.tokens, &mut self.cursor)
+            .ok_or_else(|| self.syntax("需要合法的名稱或型別名稱"))
     }
     fn end_statement(&mut self) -> Result<(), Diagnostic> {
         if self.symbol('}') { return Ok(()); }

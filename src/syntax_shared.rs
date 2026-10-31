@@ -29,6 +29,15 @@ pub(crate) fn additive_operator(tokens: &[Token], cursor: usize) -> Option<char>
     }
 }
 
+/// R02.8：公開與私有 Parser 實際共用的名稱 token 消耗原語。
+/// 僅在 Name 時推進游標，失敗不能消耗任何 token；
+/// 診斷文字／位置由呼叫端保留原先所屬的解析模式。
+pub(crate) fn take_name(tokens: &[Token], cursor: &mut usize) -> Option<String> {
+    let TokenKind::Name(value) = &tokens.get(*cursor)?.kind else { return None };
+    *cursor += 1;
+    Some(value.clone())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegerError {
     InvalidDigits,
@@ -62,6 +71,28 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 名稱原語只消耗真正_name_其他_token_及結束位置不變() {
+        let tokens = [
+            Token {kind:TokenKind::Name("水母_7".into()),start:0,end:8},
+            Token {kind:TokenKind::Symbol('('),start:8,end:9},
+            Token {kind:TokenKind::Keyword("return".into()),start:9,end:15},
+            Token {kind:TokenKind::End,start:15,end:15},
+        ];
+        let mut cursor=0usize;
+        assert_eq!(take_name(&tokens,&mut cursor),Some("水母_7".into()));
+        assert_eq!(cursor,1);
+        for _ in 0..3 {
+            assert_eq!(take_name(&tokens,&mut cursor),None);
+            assert_eq!(cursor,1,"不合法名稱絕不能跳過原先錯誤位置");
+        }
+        for position in [2,3,4] {
+            let mut cursor=position;
+            assert_eq!(take_name(&tokens,&mut cursor),None);
+            assert_eq!(cursor,position);
+        }
+    }
 
     #[test]
     fn 兩套真正解析器共用的加減規則只能回傳核准二元運算子() {

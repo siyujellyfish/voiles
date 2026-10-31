@@ -121,14 +121,8 @@ impl<'a> Parser<'a> {
         else { Err(self.err(msg)) }
     }
     fn name(&mut self) -> Result<String, Diagnostic> {
-        match self.current().map(|t| &t.kind) {
-            Some(TokenKind::Name(s)) => {
-                let result = s.clone();
-                self.next();
-                Ok(result)
-            }
-            _ => Err(self.err("缺少合法名稱")),
-        }
+        crate::syntax_shared::take_name(self.tokens, &mut self.cursor)
+            .ok_or_else(|| self.err("缺少合法名稱"))
     }
     fn ty(&mut self) -> Result<Type, Diagnostic> {
         match self.current().map(|t| &t.kind) {
