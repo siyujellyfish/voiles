@@ -2157,3 +2157,32 @@ mod p16_6_r03_7_私有借用來源強型別身分 {
         assert!(Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, alias).is_empty());
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_11_私有借用與票據來源直接存取規則一致性 {
+    use super::*;
+    use crate::borrow_safety::{BorrowSafety,BorrowSafetyError};
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 真正私有來源借用中禁止直接讀與整筆移動_仍維持原診斷() {
+        let read="fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nvar copied:int = source\nreturn alias\n}\n";
+        let move_source="fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nvar moved:int = source.move()\nreturn alias\n}\n";
+        for src in [read,move_source] {
+            let diag=inspect(src).expect_err("借用仍有效時不得從原所有者直接操作");
+            assert_eq!(diag.kind,DiagnosticKind::Static);
+            assert!(diag.message.contains("HC14"),"原診斷類別不可被改寫");
+            assert_eq!(diag.span.unwrap().start.line,4);
+        }
+        assert_eq!(BorrowSafety::validate_direct_access(true),
+            Err(BorrowSafetyError::SourceIsBorrowed));
+    }
+
+    #[test]
+    fn 真正私有來源借用最後使用點之後仍可讀取原所有者() {
+        let allowed="fn main()->int{\nconst source:int = 9\nconst alias:int = source.borrow()\nvar copied:int = alias\nreturn copied + source\n}\n";
+        assert!(inspect(allowed).is_ok(),
+            "已驗證 P15 最後使用點規則不應由共用 HC14 存取規則提前封鎖");
+        assert!(BorrowSafety::validate_direct_access(false).is_ok());
+    }
+}
