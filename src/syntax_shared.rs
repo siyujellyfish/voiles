@@ -149,6 +149,31 @@ mod tests {
     use crate::{lexer, source::Source};
 
     #[test]
+    fn 關鍵字只能精確消耗且失敗保留游標() {
+        let tokens = [
+            Token {kind:TokenKind::Name("fn".into()),start:0,end:2},
+            Token {kind:TokenKind::Keyword("fn".into()),start:3,end:5},
+            Token {kind:TokenKind::Keyword("if".into()),start:6,end:8},
+            Token {kind:TokenKind::End,start:8,end:8},
+        ];
+        let mut at=0;
+        assert_eq!(take_keyword(&tokens,&mut at,"fn"),None);
+        assert_eq!(at,0);
+        at=1;
+        assert_eq!(take_keyword(&tokens,&mut at,"if"),None);
+        assert_eq!(at,1);
+        assert_eq!(take_keyword(&tokens,&mut at,"fn"),Some(3));
+        assert_eq!(at,2);
+        assert_eq!(take_keyword(&tokens,&mut at,"if"),Some(6));
+        assert_eq!(at,3);
+        for pos in [3,4] {
+            let mut cursor=pos;
+            assert_eq!(take_keyword(&tokens,&mut cursor,"fn"),None);
+            assert_eq!(cursor,pos);
+        }
+    }
+
+    #[test]
     fn 指定符號只在完全匹配時移動且回傳原本_utf8_位元組終點() {
         let tokens=[
             Token {kind:TokenKind::Name("字".into()),start:0,end:3},
