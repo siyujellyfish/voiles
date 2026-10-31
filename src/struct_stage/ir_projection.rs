@@ -116,6 +116,24 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 公私正式語句節點使用相同來源跨度契約() {
+        let src = "fn main()->int{\nvar n:int = 5\nreturn n\n}\n";
+        let source = Source::new(src.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let public = parser::parse(&source, &tokens.tokens).unwrap();
+        let (private_structs, private_funcs) =
+            Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file().unwrap();
+        assert!(private_structs.is_empty());
+        let parser::Item::Function(fun) = &public.items[0] else {
+            panic!("公開函式必須存在");
+        };
+        assert_eq!(fun.body.statements.len(), private_funcs[0].body.len());
+        for (public, private) in fun.body.statements.iter().zip(&private_funcs[0].body) {
+            assert_eq!(public.node_span(), private.node_span());
+        }
+    }
+
+    #[test]
     fn scalar_int64_與分支合流的共同宣告身分及語法樹完全一致() {
         let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
         let tree = compare(code);
