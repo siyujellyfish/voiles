@@ -93,7 +93,7 @@ impl Parser<'_> {
                 self.cursor += 1;
                 Ok(Some((op, self.atom()?)))
             },
-            |term| crate::common_ir::NodeSpan::new(term.start, term.end),
+            |term| term.node_span(),
             |left, operator, right, span| Term {
                 start: span.start, end: span.end,
                 kind: TermKind::BinaryInt {
