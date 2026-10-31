@@ -25,12 +25,8 @@ pub(crate) enum ExprKind {
     FirstIndexWrite(Box<Expr>, Box<Expr>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Expr {
-    pub(crate) kind: ExprKind,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-}
+/// 公開 MVP-A 運算式實際共用的 AST 外殼；節點種類維持公開核准子集。
+pub(crate) type Expr = crate::common_ir::SpannedNode<ExprKind>;
 
 pub(crate) struct ExprParser<'a> {
     source: &'a Source,
@@ -85,7 +81,7 @@ impl<'a> ExprParser<'a> {
                 self.next();
                 Ok(Some((op, self.postfix()?)))
             },
-            |expr| crate::common_ir::NodeSpan::new(expr.start, expr.end),
+            |expr| expr.node_span(),
             |left, op, right, span| {
                 let start = span.start;
                 let end = span.end;
