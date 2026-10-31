@@ -127,7 +127,8 @@ impl Parser<'_> {
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("str"), end)
             }
-            TokenKind::Keyword(s) if s == "true" || s == "false" => {
+            TokenKind::Keyword(s)
+                if crate::syntax_shared::boolean_keyword(&s).is_some() => {
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("bool"), end)
             }
