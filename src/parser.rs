@@ -125,15 +125,8 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.err("缺少合法名稱"))
     }
     fn ty(&mut self) -> Result<Type, Diagnostic> {
-        match self.current().map(|t| &t.kind) {
-            Some(TokenKind::Name(n)) if n == "int" => {
-                self.next(); Ok(Type::Int)
-            }
-            Some(TokenKind::Name(n)) if n == "bool" => {
-                self.next(); Ok(Type::Bool)
-            }
-            _ => Err(self.err("首版僅接受明確的 int 或 bool 型別")),
-        }
+        crate::syntax_shared::take_scalar_type(self.tokens, &mut self.cursor)
+            .ok_or_else(|| self.err("首版僅接受明確的 int 或 bool 型別"))
     }
     fn expression(&mut self) -> Result<Expr, Diagnostic> {
         let mut parser = ExprParser::new(self.source, self.tokens, self.cursor);
