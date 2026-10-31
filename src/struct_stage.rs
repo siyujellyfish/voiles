@@ -3,7 +3,7 @@
 //! 正式內部入口依 HA13-A／str 方案 A 使用核准政策；自訂能力僅限 Rust 測試。
 #![allow(dead_code)]
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
@@ -160,6 +160,8 @@ include!("struct_stage/resource_trace.rs");
 /// 此處保證宣告來源、型別與可變權限，不假設動態持有者或資源實例。
 struct VerifiedDeclarationFacts {
     by_source: BTreeMap<DeclarationId, (String, bool)>,
+    /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
+    direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
 }
 impl VerifiedDeclarationFacts {
     fn from_checked(functions: &[Function]) -> Self {
@@ -195,7 +197,29 @@ impl VerifiedDeclarationFacts {
             }
             collect(&function.body, &mut by_source);
         }
-        Self { by_source }
+        // 直線語句以既有 Checker 通過的 AST 宣告來源解析具名移動；
+        // 不記錄分支或迴圈的「可能移動」，以免偽造未執行的資源事件。
+        let mut direct_moves = BTreeSet::new();
+        for function in functions {
+            let mut names: HashMap<&str, DeclarationId> = function.params.iter()
+                .map(|parameter| (parameter.name.as_str(),
+                    DeclarationId(parameter.declaration_start))).collect();
+            for statement in &function.body {
+                if let StmtKind::Declare { name, init, .. } = &statement.kind {
+                    if let Some(Term { kind: TermKind::Move(from), .. }) = init {
+                        if let Some(&source) = names.get(from.as_str()) {
+                            direct_moves.insert((source, DeclarationId(statement.start)));
+                        }
+                    }
+                    names.insert(name.as_str(), DeclarationId(statement.start));
+                }
+            }
+        }
+        Self { by_source, direct_moves }
+    }
+
+    fn has_direct_move(&self, source: DeclarationId, target: DeclarationId) -> bool {
+        self.direct_moves.contains(&(source, target))
     }
 
     fn matches(&self, source: DeclarationId, ty: &str, mutable: bool) -> bool {

@@ -29,6 +29,12 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         assert_ne!(first.start, second.start);
         let source_id = DeclarationId(first.start);
         let target_id = DeclarationId(second.start);
+        assert!(checked.declarations.has_direct_move(source_id, target_id),
+            "已驗證來源直接產生真正具名整筆移動證據");
+        assert!(!checked.declarations.has_direct_move(target_id, source_id),
+            "不得顛倒真實資源移交方向");
+        assert!(!checked.declarations.has_direct_move(source_id, DeclarationId(code.len()+1)),
+            "不存在的接收宣告不可冒充已驗證移動目標");
         let events = trace_named_string_move_source(code)
             .expect("UTF-8 字串實際生命週期證據");
         let [ResourceEvent::Created(resource), ResourceEvent::Moved(moved),
