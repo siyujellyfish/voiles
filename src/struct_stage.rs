@@ -60,12 +60,8 @@ struct Parameter {
     declaration_start: usize,
 }
 
-#[derive(Debug, Clone)]
-struct Stmt {
-    kind: StmtKind,
-    start: usize,
-    end: usize,
-}
+/// 私有安全語句 AST 共用相同具位置的節點外殼。
+type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
 enum StmtKind {
