@@ -22,6 +22,21 @@ impl NodeSpan {
     }
 }
 
+/// R02.16：公開 Expr 與私有 Term 直接使用相同的正式 AST 外殼。
+/// K 表示各入口已核准的節點種類，保持能力隔離，不讓語法聯集公開。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SpannedNode<K> {
+    pub(crate) kind: K,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+impl<K> SpannedNode<K> {
+    pub(crate) fn node_span(&self) -> NodeSpan {
+        NodeSpan::new(self.start, self.end)
+    }
+}
+
+
 /// R02.5：只允許公開 MVP-A 與已核准 P13 交集的具體純值型別。
 /// 其他型別（含非 Copyable str、struct、容器）不可用任意字串冒充。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -103,6 +103,19 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 公開與私有運算式確實使用同一通用節點外殼並保存原位置() {
+        let public: crate::expr::Expr = crate::common_ir::SpannedNode {
+            kind: crate::expr::ExprKind::BoolLiteral(true), start: 3, end: 7,
+        };
+        let private: Term = crate::common_ir::SpannedNode {
+            kind: TermKind::Literal("bool"), start: 3, end: 7,
+        };
+        assert_eq!(public.node_span(), private.node_span());
+        assert_eq!(private.start, 3);
+        assert_eq!(public.end, 7);
+    }
+
+    #[test]
     fn scalar_int64_與分支合流的共同宣告身分及語法樹完全一致() {
         let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
         let tree = compare(code);
