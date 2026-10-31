@@ -100,6 +100,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }).collect()
     }
 
+    /// R03.12：宣告時直接借用、方法預設借用及一般函式預設借用
+    /// 一律透過相同的 DeclarationId／活躍借用快照／HC14 衝突規則。
+    /// 診斷內容仍由三種已核准的呼叫情境各自指定。
+    fn check_borrow_conflicts(
+        &self, vars: &Scopes, source: DeclarationId, kind: BorrowKind,
+        term: &Term, diagnostic: &str,
+    ) -> Result<(), Diagnostic> {
+        BorrowSafety::validate_new_borrow(&Self::active_loans(vars, source), kind)
+            .map_err(|_| self.error(diagnostic, term))
+    }
+
     fn check_direct(&self, vars: &Scopes, name: &str, term: &Term)
         -> Result<(), Diagnostic> {
         let owner = Self::lookup(vars, name)
@@ -128,9 +139,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             return Err(self.error("VA14-01：借用變數的 var／const 權限必須跟隨來源", term));
         }
         let kind = if mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
-        let conflicts = Self::active_loans(vars, owner.declaration_start);
-        BorrowSafety::validate_new_borrow(&conflicts, kind)
-            .map_err(|_| self.error("HC14：共享／獨占借用與現有別名衝突", term))?;
+        self.check_borrow_conflicts(
+            vars, owner.declaration_start, kind, term,
+            "HC14：共享／獨占借用與現有別名衝突",
+        )?;
         Ok((owner.ty.clone(), LoanBinding {
             source: owner.declaration_start, kind, active: true,
         }))
@@ -682,10 +694,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         let kind = if original.mutable {
                             BorrowKind::ExclusiveWrite
                         } else { BorrowKind::SharedRead };
-                        BorrowSafety::validate_new_borrow(
-                            &Self::active_loans(vars, original.declaration_start), kind)
-                            .map_err(|_| self.error(
-                                "HC14：方法參數與既有借用衝突", arg))?;
+                        self.check_borrow_conflicts(
+                            vars, original.declaration_start, kind, arg,
+                            "HC14：方法參數與既有借用衝突",
+                        )?;
                         let ticket = argument_loans.acquire(
                             original.declaration_start, kind)
                             .map_err(|_| self.error(
@@ -796,10 +808,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 let kind = if original.mutable {
                                     BorrowKind::ExclusiveWrite
                                 } else { BorrowKind::SharedRead };
-                                BorrowSafety::validate_new_borrow(
-                                    &Self::active_loans(vars, original.declaration_start), kind)
-                                    .map_err(|_| self.error(
-                                        "HC14：函式參數借用與仍有效別名衝突", arg))?;
+                                self.check_borrow_conflicts(
+                                    vars, original.declaration_start, kind, arg,
+                                    "HC14：函式參數借用與仍有效別名衝突",
+                                )?;
                                 let ticket = call_loans.acquire(
                                     original.declaration_start, kind)
                                     .map_err(|_| self.error(
