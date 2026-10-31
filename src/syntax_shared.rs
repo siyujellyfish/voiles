@@ -85,6 +85,33 @@ mod tests {
     use crate::{lexer, source::Source};
 
     #[test]
+    fn 公開純值型別須由共同_scalar_type_決定且拒絕私有型別() {
+        let tokens=[
+            Token {kind:TokenKind::Name("int".into()),start:0,end:3},
+            Token {kind:TokenKind::Name("bool".into()),start:4,end:8},
+            Token {kind:TokenKind::Name("str".into()),start:9,end:12},
+            Token {kind:TokenKind::Name("Custom".into()),start:13,end:19},
+            Token {kind:TokenKind::Keyword("return".into()),start:20,end:26},
+            Token {kind:TokenKind::End,start:26,end:26},
+        ];
+        let mut cursor=0;
+        assert_eq!(take_scalar_type(&tokens,&mut cursor),
+            Some(crate::common_ir::ScalarType::Int));
+        assert_eq!(take_scalar_type(&tokens,&mut cursor),
+            Some(crate::common_ir::ScalarType::Bool));
+        assert_eq!(cursor,2);
+        for _ in 0..3 {
+            assert_eq!(take_scalar_type(&tokens,&mut cursor),None);
+            assert_eq!(cursor,2,"私有 str 不能成為公開 MVP-A 型別");
+        }
+        for pos in 3..=tokens.len() {
+            let mut at=pos;
+            assert_eq!(take_scalar_type(&tokens,&mut at),None);
+            assert_eq!(at,pos);
+        }
+    }
+
+    #[test]
     fn 名稱原語只消耗真正_name_其他_token_及結束位置不變() {
         let tokens = [
             Token {kind:TokenKind::Name("水母_7".into()),start:0,end:8},
