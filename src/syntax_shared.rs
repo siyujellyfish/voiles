@@ -15,6 +15,16 @@ pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
 
+/// R02.13：兩套正式 Parser 共用的語句分隔規則。
+/// 右大括號結束目前區塊但不可在此消耗，換行序列則須全數消耗；
+/// 其它 token 一律拒絕並保留原來的錯誤游標。
+pub(crate) fn finish_statement(tokens: &[Token], cursor: &mut usize) -> bool {
+    if symbol(tokens, *cursor, '}') { return true; }
+    if !newline(tokens, *cursor) { return false; }
+    skip_newlines(tokens, cursor);
+    true
+}
+
 /// R02.12：兩套正式 Parser 共用連續換行略過。
 /// 只略過實際 Newline token；不吞掉 End、符號及其它詞彙。
 pub(crate) fn skip_newlines(tokens: &[Token], cursor: &mut usize) {
