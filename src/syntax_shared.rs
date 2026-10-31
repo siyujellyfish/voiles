@@ -15,6 +15,16 @@ pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
 
+/// R02.13：兩套正式 Parser 共用的語句分隔規則。
+/// 右大括號結束目前區塊但不可在此消耗，換行序列則須全數消耗；
+/// 其它 token 一律拒絕並保留原來的錯誤游標。
+pub(crate) fn finish_statement(tokens: &[Token], cursor: &mut usize) -> bool {
+    if symbol(tokens, *cursor, '}') { return true; }
+    if !newline(tokens, *cursor) { return false; }
+    skip_newlines(tokens, cursor);
+    true
+}
+
 /// R02.12：兩套正式 Parser 共用連續換行略過。
 /// 只略過實際 Newline token；不吞掉 End、符號及其它詞彙。
 pub(crate) fn skip_newlines(tokens: &[Token], cursor: &mut usize) {
@@ -210,6 +220,27 @@ mod tests {
         assert_eq!(boolean_keyword("false"), Some(false));
         for word in ["True", "FALSE", "if", "return", "bool", "true_"] {
             assert_eq!(boolean_keyword(word), None);
+        }
+    }
+
+    #[test]
+    fn 共同語句分隔_右大括號不消耗_換行連續消耗_非法來源保持位置() {
+        let tokens=[
+            Token {kind:TokenKind::Newline,start:0,end:1},
+            Token {kind:TokenKind::Newline,start:1,end:2},
+            Token {kind:TokenKind::Symbol('}'),start:2,end:3},
+            Token {kind:TokenKind::Keyword("return".into()),start:4,end:10},
+            Token {kind:TokenKind::End,start:10,end:10},
+        ];
+        let mut cursor=0;
+        assert!(finish_statement(&tokens,&mut cursor));
+        assert_eq!(cursor,2);
+        assert!(finish_statement(&tokens,&mut cursor));
+        assert_eq!(cursor,2,"右大括號應由所屬 block 自己消耗");
+        for pos in [3,4,5] {
+            let mut cursor=pos;
+            assert!(!finish_statement(&tokens,&mut cursor));
+            assert_eq!(cursor,pos,"錯誤分隔不可跨越保留字或 End");
         }
     }
 
