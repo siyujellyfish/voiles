@@ -99,7 +99,7 @@ impl<'a> Parser<'a> {
         crate::syntax_shared::newline(self.tokens, self.cursor)
     }
     fn skip_newlines(&mut self) {
-        while self.at_newline() { self.cursor += 1; }
+        crate::syntax_shared::skip_newlines(self.tokens, &mut self.cursor);
     }
     fn err(&self, text: &str) -> Diagnostic {
         let (start, end) = match self.current() {

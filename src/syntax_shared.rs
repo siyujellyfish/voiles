@@ -15,6 +15,22 @@ pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
 
+/// R02.12：兩套正式 Parser 共用連續換行略過。
+/// 只略過實際 Newline token；不吞掉 End、符號及其它詞彙。
+pub(crate) fn skip_newlines(tokens: &[Token], cursor: &mut usize) {
+    while newline(tokens, *cursor) { *cursor += 1; }
+}
+
+/// R02.12：公開運算式與私有結構解析器共用唯一 bool 常值判讀。
+/// 不將普通 Name、其它保留字或大小寫變體當成布林常值。
+pub(crate) fn boolean_keyword(word: &str) -> Option<bool> {
+    match word {
+        "true" => Some(true),
+        "false" => Some(false),
+        _ => None,
+    }
+}
+
 pub(crate) fn end(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::End) | None)
 }
@@ -186,6 +202,36 @@ mod tests {
             assert_eq!(take_name(&tokens,&mut cursor),None);
             assert_eq!(cursor,position);
         }
+    }
+
+    #[test]
+    fn 布林常值不誤認其它保留字或不同大小寫名稱() {
+        assert_eq!(boolean_keyword("true"), Some(true));
+        assert_eq!(boolean_keyword("false"), Some(false));
+        for word in ["True", "FALSE", "if", "return", "bool", "true_"] {
+            assert_eq!(boolean_keyword(word), None);
+        }
+    }
+
+    #[test]
+    fn 連續換行只消耗_newline_不跨越原來的其它_token() {
+        let tokens = [
+            Token {kind:TokenKind::Newline,start:0,end:1},
+            Token {kind:TokenKind::Newline,start:1,end:2},
+            Token {kind:TokenKind::Keyword("return".into()),start:2,end:8},
+            Token {kind:TokenKind::Newline,start:8,end:9},
+            Token {kind:TokenKind::End,start:9,end:9},
+        ];
+        let mut cursor=0;
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,2);
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,2,"不可跨越 return 保留字");
+        cursor=3;
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,4);
+        skip_newlines(&tokens,&mut cursor);
+        assert_eq!(cursor,4,"不可消耗 End");
     }
 
     #[test]
