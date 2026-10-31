@@ -11,6 +11,14 @@ pub(crate) fn keyword(tokens: &[Token], cursor: usize, word: &str) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Keyword(s)) if s == word)
 }
 
+/// 兩種正式解析器共用：只有指定 Keyword 才推進，失敗游標不變。
+pub(crate) fn take_keyword(tokens: &[Token], cursor: &mut usize, word: &str) -> Option<usize> {
+    let token = tokens.get(*cursor)?;
+    if !matches!(&token.kind, TokenKind::Keyword(value) if value == word) { return None; }
+    *cursor += 1;
+    Some(token.start)
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
