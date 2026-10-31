@@ -8,6 +8,20 @@ use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
 use crate::parser::{self, Item, StmtKind as PublicStmtKind};
 use crate::ownership_ledger::DeclarationId;
 
+/// 原始 UTF-8 位元組半開範圍，供共同解析核心與各模式正式 AST 使用。
+/// 此型別不是已換算為一基行列的公開診斷位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NodeSpan {
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+impl NodeSpan {
+    pub(crate) fn new(start: usize, end: usize) -> Self {
+        debug_assert!(start <= end, "節點來源半開範圍不可反向");
+        Self { start, end }
+    }
+}
+
 /// R02.5：只允許公開 MVP-A 與已核准 P13 交集的具體純值型別。
 /// 其他型別（含非 Copyable str、struct、容器）不可用任意字串冒充。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -82,6 +82,22 @@ pub(crate) fn fold_additive<T, E>(
 /// R02.10：公開檔案 Parser、公開算式 Parser、私有 P13 Parser
 /// 真正共用的符號消耗原語。僅精確匹配指定 Symbol 時推進一次，
 /// 並返回來源原有 token 終點；失敗不消耗任何符號或改寫錯誤位置。
+/// R02.15：真實公開與私有加減 AST 共用半開來源範圍合成。
+/// 建樹仍由原 Parser 決定，以保留不同的後綴及錯誤診斷契約。
+pub(crate) fn fold_additive_spanned<T, E>(
+    left: T,
+    next: impl FnMut() -> Result<Option<(char, T)>, E>,
+    span_of: impl Fn(&T) -> crate::common_ir::NodeSpan,
+    mut combine: impl FnMut(T, char, T, crate::common_ir::NodeSpan) -> T,
+) -> Result<T, E> {
+    fold_additive(left, next, |left, op, right| {
+        let span = crate::common_ir::NodeSpan::new(
+            span_of(&left).start, span_of(&right).end,
+        );
+        combine(left, op, right, span)
+    })
+}
+
 pub(crate) fn take_symbol(
     tokens: &[Token], cursor: &mut usize, expected: char,
 ) -> Option<usize> {
@@ -296,6 +312,22 @@ mod tests {
         assert_eq!(cursor,4);
         skip_newlines(&tokens,&mut cursor);
         assert_eq!(cursor,4,"不可消耗 End");
+    }
+
+    #[test]
+    fn 共通加減節點半開跨度以最左運算元及最右運算元合成() {
+        use crate::common_ir::NodeSpan;
+        let mut operands = [
+            ('-', NodeSpan::new(9, 15)),
+            ('+', NodeSpan::new(19, 22)),
+        ].into_iter();
+        let tree = fold_additive_spanned(
+            NodeSpan::new(2, 7),
+            || Ok::<_, ()>(operands.next()),
+            |node| *node,
+            |_, _, _, span| span,
+        ).unwrap();
+        assert_eq!(tree, NodeSpan::new(2, 22));
     }
 
     #[test]
