@@ -2151,10 +2151,10 @@ mod p16_6_r03_7_私有借用來源強型別身分 {
             Rc::new(HashMap::from([("text".to_owned(), overshadow)])),
         ];
         let source_loans =
-            Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, original);
+            Checker::<fn(&str) -> CopyPermission>::active_loan_kinds(&vars, original).collect::<Vec<_>>();
         assert_eq!(source_loans, vec![BorrowKind::SharedRead]);
-        assert!(Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, shadow).is_empty());
-        assert!(Checker::<fn(&str) -> CopyPermission>::active_loans(&vars, alias).is_empty());
+        assert!(Checker::<fn(&str) -> CopyPermission>::active_loan_kinds(&vars, shadow).next().is_none());
+        assert!(Checker::<fn(&str) -> CopyPermission>::active_loan_kinds(&vars, alias).next().is_none());
     }
 }
 
