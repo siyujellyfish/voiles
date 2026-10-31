@@ -140,8 +140,11 @@ impl<'a> ExprParser<'a> {
             TokenKind::Integer(text) => Ok(Expr { kind: ExprKind::IntLiteral(text.clone()), start, end }),
             TokenKind::Decimal(text) => Ok(Expr { kind: ExprKind::DecimalLiteral(text.clone()), start, end }),
             TokenKind::StringLiteral(text) => Ok(Expr { kind: ExprKind::StringLiteral(text.clone()), start, end }),
-            TokenKind::Keyword(word) if word == "true" || word == "false" => Ok(Expr {
-                kind: ExprKind::BoolLiteral(word == "true"), start, end
+            TokenKind::Keyword(word)
+                if crate::syntax_shared::boolean_keyword(word).is_some() => Ok(Expr {
+                kind: ExprKind::BoolLiteral(
+                    crate::syntax_shared::boolean_keyword(word).expect("已預檢 bool 常值")
+                ), start, end
             }),
             TokenKind::Name(name) => {
                 if self.symbol('(') {
