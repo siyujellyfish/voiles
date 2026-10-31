@@ -117,8 +117,8 @@ impl<'a> Parser<'a> {
             .ok_or_else(|| self.err(msg))
     }
     fn expect_keyword(&mut self, target: &str, msg: &str) -> Result<usize, Diagnostic> {
-        if self.keyword(target) { Ok(self.next().unwrap().start) }
-        else { Err(self.err(msg)) }
+        crate::syntax_shared::take_keyword(self.tokens, &mut self.cursor, target)
+            .ok_or_else(|| self.err(msg))
     }
     fn name(&mut self) -> Result<String, Diagnostic> {
         crate::syntax_shared::take_name(self.tokens, &mut self.cursor)
