@@ -200,7 +200,7 @@ fn trace_string_return_source(
         }
         Some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, declarations } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, .. } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
@@ -796,7 +796,7 @@ fn trace_named_string_move_source(
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, declarations } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;
