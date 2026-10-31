@@ -301,16 +301,16 @@ mod p14_單一借用衝突規則 {
 
     #[test]
     fn 抽象票據與來源衝突規則維持相同共享獨占矩陣() {
-        assert_eq!(BorrowSafety::validate_new_borrow(&[],BorrowKind::SharedRead),Ok(()));
-        assert_eq!(BorrowSafety::validate_new_borrow(&[],BorrowKind::ExclusiveWrite),Ok(()));
+        assert_eq!(BorrowSafety::validate_new_borrow([].into_iter(),BorrowKind::SharedRead),Ok(()));
+        assert_eq!(BorrowSafety::validate_new_borrow([].into_iter(),BorrowKind::ExclusiveWrite),Ok(()));
         assert_eq!(BorrowSafety::validate_new_borrow(
-            &[BorrowKind::SharedRead,BorrowKind::SharedRead],BorrowKind::SharedRead),Ok(()));
+            [BorrowKind::SharedRead,BorrowKind::SharedRead].into_iter(),BorrowKind::SharedRead),Ok(()));
         for (existing, requested) in [
             (vec![BorrowKind::SharedRead],BorrowKind::ExclusiveWrite),
             (vec![BorrowKind::ExclusiveWrite],BorrowKind::SharedRead),
             (vec![BorrowKind::ExclusiveWrite],BorrowKind::ExclusiveWrite),
         ] {
-            assert_eq!(BorrowSafety::validate_new_borrow(&existing,requested),
+            assert_eq!(BorrowSafety::validate_new_borrow(existing.iter().copied(),requested),
                 Err(BorrowSafetyError::BorrowConflict));
         }
     }
