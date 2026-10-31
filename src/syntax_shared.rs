@@ -38,6 +38,18 @@ pub(crate) fn take_name(tokens: &[Token], cursor: &mut usize) -> Option<String> 
     Some(value.clone())
 }
 
+/// R02.9：公開 MVP-A 的純值型別消耗原語，唯一合法集合由
+/// 共通 ScalarType 定義。私有 P13 的 str／struct 型別不由此函式擴張。
+/// 若 token 不屬 int／bool，游標及錯誤位置必須完全不變。
+pub(crate) fn take_scalar_type(
+    tokens: &[Token], cursor: &mut usize,
+) -> Option<crate::common_ir::ScalarType> {
+    let TokenKind::Name(name) = &tokens.get(*cursor)?.kind else { return None };
+    let ty = crate::common_ir::ScalarType::from_name(name)?;
+    *cursor += 1;
+    Some(ty)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegerError {
     InvalidDigits,
