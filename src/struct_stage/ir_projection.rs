@@ -229,6 +229,18 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 三重加減混合及巢狀分組的共同左結合樹不得因解析器而分歧() {
+        let src = "fn main()->int{\nreturn 10 - 3 + 2 - (1 + 4)\n}\n";
+        let ast = compare(src);
+        let crate::common_ir::ScalarStmt::Return(expr) = &ast.functions[0].body[0]
+            else {panic!("必須保留返回運算式")};
+        let crate::common_ir::ScalarExpr::Binary {op:'-',left,right} = expr
+            else {panic!("最外層應為最後的減法")};
+        assert!(matches!(&**left,crate::common_ir::ScalarExpr::Binary{op:'+',..}));
+        assert!(matches!(&**right,crate::common_ir::ScalarExpr::Binary{op:'+',..}));
+    }
+
+    #[test]
     fn 公開與私有解析器真正共用的加減運算維持左結合及括號次序() {
         let src = "fn main()->int{\nvar n:int = 10\nreturn n - 3 + (2 - 1)\n}\n";
         let ast = compare(src);
