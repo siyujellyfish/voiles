@@ -344,6 +344,23 @@ mod tests {
     }
 
     #[test]
+    fn 公開純值型別規則與私有結構型別界線保持原診斷及錯誤位置() {
+        for ty in ["str","list","Custom"] {
+            let source=format!("fn main()->int{{\nvar value:{ty}\nreturn 0\n}}\n");
+            let error=parse_text(&source).unwrap_err();
+            assert_eq!(error.kind,DiagnosticKind::Syntax);
+            assert_eq!(&*error.message,"首版僅接受明確的 int 或 bool 型別");
+            let location=error.span.expect("型別錯誤不能丟失來源位置");
+            assert_eq!(location.start.line,2);
+            assert_eq!(location.start.column,11);
+        }
+        for ty in ["int","bool"] {
+            let src=format!("fn main()->int{{\nvar value:{ty}\nreturn 0\n}}\n");
+            assert!(parse_text(&src).is_ok(),"{ty} 必須仍被 P01 Parser 接受");
+        }
+    }
+
+    #[test]
     fn p01_所有十九個正例皆可完成首版語法解析() {
         for index in 1..=19 {
             let filename = format!("tests/fixtures/voiles/P01-正{index:02}.voil");
