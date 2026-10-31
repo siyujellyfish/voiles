@@ -29,6 +29,15 @@ pub(crate) fn additive_operator(tokens: &[Token], cursor: usize) -> Option<char>
     }
 }
 
+/// R02.8：公開與私有 Parser 實際共用的名稱 token 消耗原語。
+/// 僅在 Name 時推進游標，失敗不能消耗任何 token；
+/// 診斷文字／位置由呼叫端保留原先所屬的解析模式。
+pub(crate) fn take_name(tokens: &[Token], cursor: &mut usize) -> Option<String> {
+    let TokenKind::Name(value) = &tokens.get(*cursor)?.kind else { return None };
+    *cursor += 1;
+    Some(value.clone())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum IntegerError {
     InvalidDigits,
