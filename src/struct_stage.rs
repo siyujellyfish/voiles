@@ -84,12 +84,8 @@ enum StmtKind {
     Continue,
 }
 
-#[derive(Debug, Clone)]
-struct Term {
-    kind: TermKind,
-    start: usize,
-    end: usize,
-}
+/// 私有受限運算式與公開 Expr 使用同一 AST 外殼，仍保留私有節點種類。
+type Term = crate::common_ir::SpannedNode<TermKind>;
 
 #[derive(Debug, Clone)]
 enum TermKind {
