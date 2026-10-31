@@ -2186,3 +2186,41 @@ mod p16_6_r03_11_私有借用與票據來源直接存取規則一致性 {
         assert!(BorrowSafety::validate_direct_access(false).is_ok());
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_12_共同借用衝突預檢 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 真正直接借用同一變數兩個獨占別名維持原_hc14_診斷() {
+        let src="fn main()->int{\nvar source:int = 1\nvar first:int = source.borrow()\nvar second:int = source.borrow()\nreturn first + second\n}\n";
+        let error=inspect(src).expect_err("第二個獨占借用須拒絕");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert_eq!(&*error.message,"HC14：共享／獨占借用與現有別名衝突");
+    }
+
+    #[test]
+    fn 真正函式及方法重複可變字串借用仍禁止但常數共享可通過() {
+        let function="fn both(a:str,b:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nreturn both(owner,owner)\n}\n";
+        let method="struct Holder{\nvar count:int = 1\nfn both(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:str = \"資源\"\nconst holder:Holder = Holder()\nreturn holder.both(owner,owner)\n}\n";
+        for (src,expected) in [
+            (function,"HC14：同一呼叫內函式借用來源衝突"),
+            (method,"HC14：同一方法呼叫的參數借用衝突"),
+        ] {
+            let error=inspect(src).expect_err("相同來源不得重複獨占借用");
+            assert_eq!(error.kind,DiagnosticKind::Static);
+            assert_eq!(&*error.message,expected);
+            let shared=src.replace("var owner:str","const owner:str");
+            assert!(inspect(&shared).is_ok(),"相同來源的共享唯讀借用應維持合法");
+        }
+    }
+
+    #[test]
+    fn 真正函式參數不得繞過外層仍有效的借用別名() {
+        let src="fn view(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nvar value:int = view(owner)\nreturn alias\n}\n";
+        let error=inspect(src).expect_err("參數不能在已有獨占別名時重新借用 owner");
+        assert_eq!(error.kind,DiagnosticKind::Static);
+        assert_eq!(&*error.message,"HC14：函式參數借用與仍有效別名衝突");
+    }
+}
