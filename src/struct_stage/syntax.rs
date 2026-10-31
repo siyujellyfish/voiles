@@ -85,7 +85,7 @@ impl Parser<'_> {
     fn term(&mut self) -> Result<Term, Diagnostic> {
         // P01 加減為相同優先序、左結合；括號在原子解析處理。
         let left = self.atom()?;
-        crate::syntax_shared::fold_additive(
+        crate::syntax_shared::fold_additive_spanned(
             left,
             || {
                 let Some(op) = crate::syntax_shared::additive_operator(
@@ -93,8 +93,9 @@ impl Parser<'_> {
                 self.cursor += 1;
                 Ok(Some((op, self.atom()?)))
             },
-            |left, operator, right| Term {
-                start: left.start, end: right.end,
+            |term| crate::common_ir::NodeSpan::new(term.start, term.end),
+            |left, operator, right, span| Term {
+                start: span.start, end: span.end,
                 kind: TermKind::BinaryInt {
                     left: Box::new(left), operator, right: Box::new(right),
                 },
