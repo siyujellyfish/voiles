@@ -229,6 +229,22 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn 雙_parser_語句分隔含緊鄰結束大括號且拒絕缺少換行() {
+        compare("fn main()->int{\nvar n:int = 3\nreturn n}\n");
+        let invalid="fn main()->int{\nvar n:int = 3 return n\n}\n";
+        let source=Source::new(invalid.as_bytes().to_vec());
+        let lexed=lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let public=parser::parse(&source,&lexed.tokens).unwrap_err();
+        let private=Parser {source:&source,tokens:&lexed.tokens,cursor:0}
+            .file().unwrap_err();
+        assert_eq!(&*public.message,"語句之間必須以換行分隔");
+        assert_eq!(&*private.message,"語句之間必須換行");
+        assert_eq!(public.span,private.span,
+            "雙 Parser 都必須停在尚未以換行分隔的 return token");
+    }
+
+    #[test]
     fn 多行及布林_if_條件在公開與私有解析器投影結果相同() {
         let src = "\n\nfn main()->int{\n\nvar flag:bool = true\n\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n\nreturn 0\n}\n";
         let tree = compare(src);
