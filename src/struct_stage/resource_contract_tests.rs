@@ -8,6 +8,75 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     use crate::owned_str_runtime::ResourceEvent;
 
     #[test]
+    fn f11_資源安全證據必須在型別來源和欄位權限上完全閉合() {
+        let code = "struct Holder{\nvar title:str = \"舊\"\nconst id:str = \"固定\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新\"\nvar transferred:Holder = owner.move()\nreturn 0\n}\n";
+        let checked = verified_private_source(code).expect("合法結構整筆資源來源");
+        let main = checked.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let owner = DeclarationId(main.body[0].start);
+        let write = main.body[1].start;
+        let target = DeclarationId(main.body[2].start);
+        let facts = &checked.declarations;
+        assert!(facts.evidence_is_consistent(&checked.structs));
+        assert!(facts.verified_direct_move(owner, target, "Holder").is_some());
+        assert!(facts.verified_field_write(owner, write, "Holder", "title").is_some());
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.direct_moves.insert((owner, owner));
+        assert!(!forged.evidence_is_consistent(&checked.structs),
+            "來源與目的不得共用唯一擁有者");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.by_source.insert(target, ("str".to_owned(), true));
+        assert!(!forged.evidence_is_consistent(&checked.structs),
+            "型別錯置的移交即使存在 Checker AST 也不能產生有效計畫");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.field_writes.insert((owner, write, "id".to_owned()));
+        assert!(!forged.evidence_is_consistent(&checked.structs),
+            "const 欄位不得在有效安全計畫中被當成可寫");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.by_source.remove(&owner);
+        assert!(!forged.evidence_is_consistent(&checked.structs),
+            "任何資源證據都不可引用不存在的來源身分");
+    }
+
+    #[test]
+    fn f11_已驗證返回位置必須對應真實具名持有者且不得倒序() {
+        let code = "fn provide()->str{\nvar value:str = \"資料\"\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+        let checked = verified_private_source(code).expect("具名返回通過 Checker");
+        let facts = &checked.declarations;
+        assert!(facts.evidence_is_consistent(&checked.structs));
+        let provider = checked.functions.iter().find(|fun| fun.name == "provide").unwrap();
+        let owner = DeclarationId(provider.body[0].start);
+        let StmtKind::Return(value) = &provider.body[1].kind
+            else { panic!("應為已驗證具名返回") };
+        assert!(facts.verified_named_return(owner, value.start, "str").is_some());
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.named_returns.insert((owner, owner.0.saturating_sub(1)));
+        assert!(!forged.evidence_is_consistent(&checked.structs));
+        forged.named_returns.remove(&(owner, owner.0.saturating_sub(1)));
+        forged.named_returns.insert((DeclarationId(code.len() + 1), value.start));
+        assert!(!forged.evidence_is_consistent(&checked.structs));
+    }
+
+    #[test]
     fn f11_沒有_checker_成功轉移證據即使_ast_寫有_move_也不得授權資源橋接() {
         let code = "fn main()->int{\nvar owner:str = \"資源\"\nvar target:str = owner.move()\nreturn 0\n}\n";
         let source = Source::new(code.as_bytes().to_vec());
