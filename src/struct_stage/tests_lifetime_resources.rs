@@ -2152,11 +2152,13 @@ mod p16_6_r03_7_私有借用來源強型別身分 {
                                    ("alias".to_owned(), borrowed)])),
             Rc::new(HashMap::from([("text".to_owned(), overshadow)])),
         ];
-        let source_loans =
-            Checker::<fn(&str) -> CopyPermission>::active_loan_kinds(&vars, original).collect::<Vec<_>>();
-        assert_eq!(source_loans, vec![BorrowKind::SharedRead]);
-        assert!(Checker::<fn(&str) -> CopyPermission>::active_loan_kinds(&vars, shadow).next().is_none());
-        assert!(Checker::<fn(&str) -> CopyPermission>::active_loan_kinds(&vars, alias).next().is_none());
+        let snapshot = Checker::<fn(&str) -> CopyPermission>::active_loan_snapshot(&vars);
+        assert_eq!(snapshot.kinds_for(original).collect::<Vec<_>>(), vec![BorrowKind::SharedRead]);
+        assert!(!snapshot.has_active(shadow));
+        assert!(!snapshot.has_active(alias));
+        assert_eq!(snapshot.validate_acquire(shadow, BorrowKind::ExclusiveWrite), Ok(()));
+        assert_eq!(snapshot.validate_direct(original),
+            Err(crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed));
     }
 }
 
