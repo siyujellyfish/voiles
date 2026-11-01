@@ -261,7 +261,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     // 未來宣告在 RHS 之後才遮蔽外層。詞法位置不是
                     // 下一輪迭代的動態借用票據身分。
-                    visible.insert(name.clone(), DeclarationId(statement.start));
+                    // 本次掃描只關心入口既存的借用身分。
+                    // 無論新宣告位置是否與入口 ID 相同，重建的動態
+                    // 別名都是另一個實例；後續名稱不再代表舊票據。
+                    visible.remove(name);
                 }
                 StmtKind::Assign { name, value } => {
                     Self::record_named_future_use(visible, used, name);
@@ -286,7 +289,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::ForRange { iterator, iterator_start, body, .. } => {
                     let mut nested = visible.clone();
-                    nested.insert(iterator.clone(), DeclarationId(*iterator_start));
+                    let _ = iterator_start;
+                    // for 迭代器不是進入此後繼掃描前已存在的借用實例，
+                    // 即使重用相同 AST DeclarationId 也不得替舊別名續命。
+                    nested.remove(iterator);
                     Self::scan_future_block_uses(body, &mut nested, used);
                 }
                 StmtKind::Return(term) =>
