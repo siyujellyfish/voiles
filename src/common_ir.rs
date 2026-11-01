@@ -37,6 +37,15 @@ impl<K> SpannedNode<K> {
 }
 
 
+/// 兩條正式 Checker 共用的詞彙遮蔽查找：由最內層往最外層，
+/// 只決定可見的當前名稱，不改變兩個入口各自的前向參照或型別規則。
+pub(crate) fn lookup_lexical<'a, V: 'a>(
+    scopes: impl DoubleEndedIterator<Item = &'a std::collections::HashMap<String, V>>,
+    name: &str,
+) -> Option<&'a V> {
+    scopes.rev().find_map(|scope| scope.get(name))
+}
+
 /// R02.5：只允許公開 MVP-A 與已核准 P13 交集的具體純值型別。
 /// 其他型別（含非 Copyable str、struct、容器）不可用任意字串冒充。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
