@@ -365,30 +365,13 @@ impl Parser<'_> {
         Ok(body)
     }
     fn function(&mut self) -> Result<Function, Diagnostic> {
-        crate::syntax_shared::take_keyword(self.tokens, &mut self.cursor, "fn")
-            .ok_or_else(|| self.syntax("函式必須以 fn 宣告"))?;
-        let name = self.name()?;
-        self.take('(', "函式名稱後需左括號")?;
-        let mut params = Vec::new();
-        let mut seen = HashSet::new();
-        while !self.symbol(')') {
-            let declaration_start = self.tok().start;
-            let parameter = self.name()?;
-            if !seen.insert(parameter.clone()) {
-                return Err(self.syntax("函式參數名稱不得重複"));
-            }
-            self.take(':', "函式參數需要明確型別")?;
-            let ty = self.name()?;
-            params.push(Parameter { name: parameter, ty, declaration_start });
-            if self.symbol(',') { self.cursor += 1; }
-            else if !self.symbol(')') { return Err(self.syntax("函式參數之間需要逗號")); }
-        }
-        self.take(')', "函式參數缺少右括號")?;
-        crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
-            .ok_or_else(|| self.syntax("函式需要回傳型別標註"))?;
-        let result_ty = self.name()?;
-        let body = self.body()?;
-        Ok(Function { name, params, result_ty, body })
+        let parsed = crate::syntax_shared::parse_function_decl(self)?;
+        Ok(Function {
+            name: parsed.name,
+            params: parsed.params,
+            result_ty: parsed.result_ty,
+            body: parsed.body,
+        })
     }
     fn strukt(&mut self) -> Result<(String, StructDecl), Diagnostic> {
         self.cursor += 1; // struct
@@ -505,4 +488,49 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
     }
     fn next_is_if(&self) -> bool { self.keyword("if") }
     fn last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
+}
+
+/// 私有已核准參數與型別仍由本解析器獨立驗證；只有語法組構順序共用。
+impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
+    type Params = Vec<Parameter>;
+    type ResultType = String;
+    type Body = Vec<Stmt>;
+
+    fn begin_function(&mut self) -> Result<usize, Diagnostic> {
+        crate::syntax_shared::take_keyword(self.tokens, &mut self.cursor, "fn")
+            .ok_or_else(|| self.syntax("函式必須以 fn 宣告"))
+    }
+    fn function_name(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn function_left_paren(&mut self) -> Result<(), Diagnostic> {
+        self.take('(', "函式名稱後需左括號")
+    }
+    fn function_params(&mut self) -> Result<Vec<Parameter>, Diagnostic> {
+        let mut params = Vec::new();
+        let mut seen = HashSet::new();
+        while !self.symbol(')') {
+            let declaration_start = self.tok().start;
+            let parameter = self.name()?;
+            if !seen.insert(parameter.clone()) {
+                return Err(self.syntax("函式參數名稱不得重複"));
+            }
+            self.take(':', "函式參數需要明確型別")?;
+            let ty = self.name()?;
+            params.push(Parameter { name: parameter, ty, declaration_start });
+            if self.symbol(',') { self.cursor += 1; }
+            else if !self.symbol(')') {
+                return Err(self.syntax("函式參數之間需要逗號"));
+            }
+        }
+        Ok(params)
+    }
+    fn function_right_paren(&mut self) -> Result<(), Diagnostic> {
+        self.take(')', "函式參數缺少右括號")
+    }
+    fn function_return_arrow(&mut self) -> Result<(), Diagnostic> {
+        crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
+            .map(|_| ()).ok_or_else(|| self.syntax("函式需要回傳型別標註"))
+    }
+    fn function_result_type(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn function_body(&mut self) -> Result<Vec<Stmt>, Diagnostic> { self.body() }
+    fn function_last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
 }
