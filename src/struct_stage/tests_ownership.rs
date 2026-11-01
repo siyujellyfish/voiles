@@ -6,6 +6,43 @@ mod tests {
     const BASE: &str = "struct Sample{\nconst flag:bool = true\nvar number:int = 1\n}\nfn main()->int{\nvar a:Sample = Sample()\nvar b:Sample = a.move()\nreturn 0\n}\n";
 
     #[test]
+    fn 正式_checker_活躍借用快照以宣告身分保守拒絕跨分支衝突() {
+        fn binding(source: usize, declaration: usize, kind: BorrowKind) -> Binding {
+            Binding {
+                declaration_start: DeclarationId(declaration), ty: "int".into(),
+                mutable: kind == BorrowKind::ExclusiveWrite,
+                value: ValueSlot::initialized(Allowed),
+                pending_fields: None,
+                loan: Some(LoanBinding {
+                    source: DeclarationId(source), kind, active: true,
+                }),
+            }
+        }
+        let source = 101;
+        let shared = binding(source, 201, BorrowKind::SharedRead);
+        let exclusive = binding(source, 202, BorrowKind::ExclusiveWrite);
+        let different_source = binding(102, 203, BorrowKind::ExclusiveWrite);
+        let same_source = vec![Rc::new(HashMap::from([
+            ("alias1".into(), shared.clone()),
+            ("alias2".into(), exclusive.clone()),
+        ]))];
+        assert!(!Checker::<fn(&str) -> CopyPermission>::active_loan_state_is_consistent(&same_source),
+            "同一來源不得同時持有共享與獨占別名");
+        let different = vec![Rc::new(HashMap::from([
+            ("alias1".into(), shared.clone()),
+            ("alias2".into(), different_source),
+        ]))];
+        assert!(Checker::<fn(&str) -> CopyPermission>::active_loan_state_is_consistent(&different),
+            "不同宣告來源不互相衝突");
+        let shared_only = vec![Rc::new(HashMap::from([
+            ("alias1".into(), shared),
+            ("alias2".into(), binding(source, 204, BorrowKind::SharedRead)),
+        ]))];
+        assert!(Checker::<fn(&str) -> CopyPermission>::active_loan_state_is_consistent(&shared_only),
+            "同來源多共享借用維持 HC14-A 核准政策");
+    }
+
+    #[test]
     fn 真正_struct_ast_具名整筆移動_來源失效() {
         assert!(inspect_with_test_ability(BASE, |_| Allowed).is_ok());
         let invalid = BASE.replace("return 0", "var c:Sample = a\nreturn 0");
