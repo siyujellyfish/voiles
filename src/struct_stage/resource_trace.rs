@@ -561,7 +561,7 @@ fn trace_scope_struct_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, .. } =
+    let VerifiedPrivateSource { source: _, structs, functions, declarations } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
@@ -633,6 +633,9 @@ fn trace_scope_struct_source(
             } if ty==ctor=>(name.as_str(),ty.as_str(),*mutable,args),
             _=>return Err(reject("P16：區塊橋接僅執行明確結構建立")),
         };
+        if !declarations.matches(DeclarationId(stmt.start), ty, mutable) {
+            return Err(reject("P16：實際執行分支的結構持有者缺少 Checker 已驗證來源身分或寫入權限"));
+        }
         let def=structs.get(ty)
             .ok_or_else(||reject("P16：區塊結構型別未宣告"))?;
         let mut fields=Vec::new();
