@@ -62,7 +62,9 @@ impl Analyzer<'_> {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
                         facts.reference_at(expr.node_span()).is_some_and(|use_| {
-                            candidate.declaration.matches_use(use_.resolved)
+                            facts.declaration(candidate.declaration.declaration)
+                                == Some(candidate.declaration)
+                                && candidate.declaration.matches_use(use_.resolved)
                         })
                     }))
                     .ok_or_else(|| self.err(
@@ -118,7 +120,9 @@ impl Analyzer<'_> {
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
                             facts.assignment_at(statement.node_span()).is_some_and(|use_| {
-                                candidate.declaration.matches_use(use_.resolved)
+                                facts.declaration(candidate.declaration.declaration)
+                                    == Some(candidate.declaration)
+                                    && candidate.declaration.matches_use(use_.resolved)
                             })
                         }))
                         .ok_or_else(|| self.err(
@@ -280,21 +284,25 @@ mod tests {
         assert_eq!(facts.references.get(&read), Some(&inner));
         assert_eq!(check_with_names(&ast, &source, &facts), Ok(()));
 
-        facts.declarations.insert(inner, ScalarType::Bool);
+        facts.declarations.insert(inner,
+            TypedDeclaration::new(inner, ScalarType::Bool, true));
         let err = check_with_names(&ast, &source, &facts).unwrap_err();
         assert_eq!(&*err.message, "賦值目標沒有可見宣告",
             "P11 不能在身份正確時忽視 P09 型別事實遭篡改");
-        facts.declarations.insert(inner, ScalarType::Int);
+        facts.declarations.insert(inner,
+            TypedDeclaration::new(inner, ScalarType::Int, true));
         facts.assignments.insert(assignment, outer);
         let err = check_with_names(&ast, &source, &facts).unwrap_err();
         assert_eq!(&*err.message, "賦值目標沒有可見宣告");
         facts.assignments.insert(assignment, inner);
-        facts.declarations.insert(inner, ScalarType::Bool);
+        facts.declarations.insert(inner,
+            TypedDeclaration::new(inner, ScalarType::Bool, true));
         facts.assignments.remove(&assignment);
         let err = check_with_names(&ast, &source, &facts).unwrap_err();
         assert_eq!(&*err.message, "賦值目標沒有可見宣告");
         facts.assignments.insert(assignment, inner);
-        facts.declarations.insert(inner, ScalarType::Int);
+        facts.declarations.insert(inner,
+            TypedDeclaration::new(inner, ScalarType::Int, true));
         facts.references.insert(read, outer);
         let err = check_with_names(&ast, &source, &facts).unwrap_err();
         assert_eq!(&*err.message, "具名來源不存在可見宣告");
