@@ -9,7 +9,7 @@ use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
 use crate::ownership_model::{CopyPermission, ModelError, ValueSlot, ValueState};
 use crate::ownership_ledger::DeclarationId;
-use crate::borrow_safety::{BorrowKind, BorrowSafety};
+use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowSafety};
 use crate::source::Source;
 use crate::struct_ownership::{self, MoveTarget, SelfAction};
 
@@ -113,8 +113,7 @@ include!("struct_stage/syntax.rs");
 
 #[derive(Clone)]
 struct LoanBinding {
-    source: DeclarationId,
-    kind: BorrowKind,
+    fact: BorrowFact,
     active: bool,
 }
 

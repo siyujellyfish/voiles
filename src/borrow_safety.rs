@@ -25,6 +25,19 @@ pub(crate) enum BorrowSafetyError {
     TooManySharedLoans,
 }
 
+/// 共通不可變借用事實：來源宣告身分與 HC14-A 共享／獨占權限。
+/// 由真正票據與正式私有 Checker 同時使用，不包含動態有效期判斷。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct BorrowFact {
+    pub(crate) source: DeclarationId,
+    pub(crate) kind: BorrowKind,
+}
+impl BorrowFact {
+    pub(crate) fn new(source: DeclarationId, kind: BorrowKind) -> Self {
+        Self { source, kind }
+    }
+}
+
 /// 借用票據綁定原宣告身分與實際授權次序，避免同名遮蔽或假票據提前解除限制。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BorrowTicket {
@@ -32,6 +45,12 @@ pub(crate) struct BorrowTicket {
     serial: u64,
     tracker_id: u64,
     kind: BorrowKind,
+}
+
+impl BorrowTicket {
+    pub(crate) fn fact(self) -> BorrowFact {
+        BorrowFact::new(self.declaration, self.kind)
+    }
 }
 
 #[derive(Debug)]
@@ -175,6 +194,16 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 真實票據與靜態借用事實共用同一來源身分及權限型別() {
+        let source = DeclarationId(217);
+        let mut tracker = BorrowSafety::new();
+        let ticket = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        assert_eq!(ticket.fact(), BorrowFact::new(source, BorrowKind::SharedRead));
+        tracker.release(ticket).unwrap();
+        assert_eq!(tracker.check_direct_access(source), Ok(()));
+    }
 
     #[test]
     fn 分支合流活躍借用快照以來源身分檢查共享及獨占一致性() {
