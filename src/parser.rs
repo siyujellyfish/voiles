@@ -277,10 +277,8 @@ impl<'a> Parser<'a> {
         let name = self.name()?;
         self.expect_symbol('(', "首版函式宣告必須包含空參數圓括號")?;
         self.expect_symbol(')', "首版函式不得有參數")?;
-        if !matches!(self.current().map(|t| &t.kind), Some(TokenKind::Arrow)) {
-            return Err(self.err("首版函式必須標註 -> int 或 -> bool"));
-        }
-        self.next();
+        crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
+            .ok_or_else(|| self.err("首版函式必須標註 -> int 或 -> bool"))?;
         let returns = self.ty()?;
         let body = self.block()?;
         if !matches!(body.statements.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
