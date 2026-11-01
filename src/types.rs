@@ -310,6 +310,38 @@ mod tests {
     }
 
     #[test]
+    fn f04_篡改相同型別身分或宣告型別皆不得繞過真正詞彙綁定() {
+        let code = "fn main()->int{\nvar n:int = 1\nif(true){\nvar n:int = 2\nn = 3\nreturn n\n}\nreturn n\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let original = names::resolve_with_facts(&ast, &source).unwrap();
+        let outer = DeclarationId(code.find("var n:int = 1").unwrap());
+        let inner = DeclarationId(code.find("var n:int = 2").unwrap());
+        let write = code.find("n = 3").unwrap();
+        let read = code.find("return n").unwrap() + "return ".len();
+        assert_eq!(original.references.get(&read), Some(&inner));
+        assert_eq!(original.assignments.get(&write), Some(&inner));
+        assert_eq!(check_with_names(&ast, &source, &original), Ok(()));
+
+        let mut changed = names::resolve_with_facts(&ast, &source).unwrap();
+        changed.references.insert(read, outer);
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "無法解析具名來源型別",
+            "型別相同但宣告位置不同，不可在 P10 偷渡非可見持有者");
+        changed.references.insert(read, inner);
+        changed.assignments.insert(write, outer);
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析");
+
+        changed.assignments.insert(write, inner);
+        changed.declarations.insert(inner, Type::Bool);
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析",
+            "篡改 P09 型別事實不能改變正式 Parser 宣告的 int 身分");
+    }
+
+    #[test]
     fn 正式_p10_賦值目標型別直接由_p09_已解析身分提供() {
         let code = "fn main()->int{\nvar item:int = 1\nif(true){\nvar item:bool = false\nitem = true\n}\nitem = 3\nreturn item\n}\n";
         let source = source::Source::new(code.as_bytes().to_vec());
