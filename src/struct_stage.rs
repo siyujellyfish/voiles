@@ -240,6 +240,26 @@ impl VerifiedDeclarationFacts {
         Self { by_source, direct_moves, named_returns, field_writes }
     }
 
+    /// F11：Checker 證據只有在全表互相吻合時才可交給 P16 資源橋接。
+    /// 不得把沒有宣告來源或型別不同的分支推測事件當成安全計畫。
+    fn evidence_is_consistent(&self, structs: &HashMap<String, StructDecl>) -> bool {
+        self.direct_moves.iter().all(|(source, target)| {
+            source != target
+                && self.by_source.get(source).zip(self.by_source.get(target))
+                    .is_some_and(|((from_ty, _), (to_ty, _))| from_ty == to_ty)
+        })
+        && self.named_returns.iter().all(|(source, return_start)| {
+            self.by_source.contains_key(source) && *return_start >= source.0
+        })
+        && self.field_writes.iter().all(|(source, statement_start, field)| {
+            self.by_source.get(source).is_some_and(|(ty, can_write)| {
+                *can_write && *statement_start >= source.0
+                    && structs.get(ty).and_then(|definition| definition.field(field))
+                        .is_some_and(|member| !member.immutable)
+            })
+        })
+    }
+
     /// 一筆具名返回須由 Checker 在真正成功驗證 `return name.move()`
     /// 後按來源 DeclarationId 及原始運算式位置直接簽出證據。
     fn verified_named_return(
@@ -329,6 +349,14 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
     let field_writes = checker.recorded_field_writes.into_inner();
     let declarations = VerifiedDeclarationFacts::from_checker(
         by_source, direct_moves, named_returns, field_writes);
+    // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
+    if !declarations.evidence_is_consistent(&structs) {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：Checker 資源證據與宣告型別、欄位權限或來源身分不一致".into(),
+            span: None,
+        });
+    }
     Ok(VerifiedPrivateSource { source, structs, functions, declarations })
 }
 
