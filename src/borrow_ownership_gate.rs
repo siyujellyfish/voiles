@@ -30,11 +30,20 @@ impl BorrowOwnershipGate {
         Self { values: BTreeMap::new(), loans: BorrowSafety::new() }
     }
 
+    pub(crate) fn check_declare(&self, id: DeclarationId) -> Result<(), GateError> {
+        if self.values.contains_key(&id) { Err(GateError::DuplicateDestination) } else { Ok(()) }
+    }
+
     pub(crate) fn declare(&mut self, id: DeclarationId, value: ValueSlot)
         -> Result<(), GateError> {
-        if self.values.contains_key(&id) { return Err(GateError::DuplicateDestination); }
-        self.values.insert(id, value);
+        self.check_declare(id)?;
+        self.commit_declare_checked(id, value);
         Ok(())
+    }
+
+    pub(crate) fn commit_declare_checked(&mut self, id: DeclarationId, value: ValueSlot) {
+        debug_assert!(!self.values.contains_key(&id));
+        self.values.insert(id, value);
     }
 
     pub(crate) fn borrow(&mut self, id: DeclarationId, kind: BorrowKind)
