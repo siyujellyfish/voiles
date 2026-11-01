@@ -71,9 +71,9 @@ fn stmt(out: &mut Vec<NodeLocation>, source: &Source, s: &Stmt) {
         StmtKind::Assignment { value, .. } | StmtKind::Return(value) =>
             expression(out,source,value),
         StmtKind::IfChain { branches, otherwise } => {
-            for (cond,body) in branches {
-                expression(out,source,cond);
-                block(out,source,body);
+            for arm in branches {
+                expression(out,source,&arm.condition);
+                block(out,source,&arm.body);
             }
             if let Some(body)=otherwise { block(out,source,body); }
         }
