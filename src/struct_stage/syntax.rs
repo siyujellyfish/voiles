@@ -258,30 +258,20 @@ impl Parser<'_> {
     /// 讓已核准的 else if 與獨立 if 共用同一個可達控制流程節點；
     /// 不將 else if 視為不同所有權語法，三條分支均由後端合流追蹤。
     fn if_statement_kind(&mut self) -> Result<StmtKind, Diagnostic> {
-        self.cursor += 1; // if
-        self.take('(', "if 條件需要左括號")?;
-        let condition = self.term()?;
-        self.take(')', "if 條件需要右括號")?;
-        let yes = self.body()?;
-        let saved = self.cursor;
-        self.lines();
-        let no = if self.keyword("else") {
-            self.cursor += 1;
-            if self.keyword("if") {
-                let start = self.tok().start;
-                let kind = self.if_statement_kind()?;
-                let end = self.tokens[self.cursor - 1].end;
-                Some(vec![Stmt { kind, start, end }])
-            } else {
-                Some(self.body()?)
-            }
-        } else {
-            self.cursor = saved;
-            None
-        };
-        Ok(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(condition, yes), no,
-        })
+        let parsed = crate::syntax_shared::parse_if_chain(self)?;
+        let mut arms = parsed.arms.into_iter();
+        let first = arms.next().expect("if 文法至少產生一條分支");
+        let mut no = parsed.otherwise;
+        // 公開平面鏈在私有既有 AST 中仍需折成原來的 else-if 巢狀鏈，
+        // 合流規則與原始半開位置不變，不能憑此開放新語言能力。
+        for arm in arms.collect::<Vec<_>>().into_iter().rev() {
+            no = Some(vec![Stmt {
+                kind: StmtKind::If { branch: arm.branch, no },
+                start: arm.start,
+                end: parsed.end,
+            }]);
+        }
+        Ok(StmtKind::If { branch: first.branch, no })
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -480,3 +470,39 @@ impl Parser<'_> {
     }
 }
 
+
+/// 正式私有受限 Parser 與公開 Parser 實作同一條 if/else-if 核心文法。
+/// 條件、區塊、診斷與允許的所有權行為仍完全由本入口負責。
+impl crate::syntax_shared::IfSyntax for Parser<'_> {
+    type Condition = Term;
+    type Body = Vec<Stmt>;
+
+    fn current_if_start(&self) -> usize { self.tok().start }
+    fn begin_if(&mut self) -> Result<(), Diagnostic> {
+        if !self.keyword("if") {
+            return Err(self.syntax("此階段不接受的運算式或來源形式"));
+        }
+        self.cursor += 1;
+        Ok(())
+    }
+    fn if_condition(&mut self) -> Result<Term, Diagnostic> {
+        self.take('(', "if 條件需要左括號")?;
+        let condition = self.term()?;
+        self.take(')', "if 條件需要右括號")?;
+        Ok(condition)
+    }
+    fn if_body(&mut self) -> Result<Vec<Stmt>, Diagnostic> { self.body() }
+    fn maybe_else(&mut self) -> bool {
+        let saved = self.cursor;
+        self.lines();
+        if self.keyword("else") {
+            self.cursor += 1;
+            true
+        } else {
+            self.cursor = saved;
+            false
+        }
+    }
+    fn next_is_if(&self) -> bool { self.keyword("if") }
+    fn last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
+}

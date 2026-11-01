@@ -27,6 +27,59 @@ pub(crate) fn take_return_arrow(tokens: &[Token], cursor: &mut usize) -> Option<
     Some(token.end)
 }
 
+/// 公私共同 if/else-if 文法產生的單一條件分支。
+pub(crate) struct ParsedIfArm<E, B> {
+    pub(crate) start: usize,
+    pub(crate) branch: crate::common_ir::ConditionalBranch<E, B>,
+}
+
+/// 不依賴任何特定 Parser 的完整已核准 if/else-if 鏈。
+pub(crate) struct ParsedIfChain<E, B> {
+    pub(crate) arms: Vec<ParsedIfArm<E, B>>,
+    pub(crate) otherwise: Option<B>,
+    pub(crate) end: usize,
+}
+
+/// 入口各自保留條件限制與診斷；真正共同的 if/else-if 順序、
+/// 可選 else、換行回退與節點順序由以下解析器唯一維護。
+pub(crate) trait IfSyntax {
+    type Condition;
+    type Body;
+    fn current_if_start(&self) -> usize;
+    fn begin_if(&mut self) -> Result<(), crate::Diagnostic>;
+    fn if_condition(&mut self) -> Result<Self::Condition, crate::Diagnostic>;
+    fn if_body(&mut self) -> Result<Self::Body, crate::Diagnostic>;
+    fn maybe_else(&mut self) -> bool;
+    fn next_is_if(&self) -> bool;
+    fn last_end(&self) -> usize;
+}
+
+pub(crate) fn parse_if_chain<P: IfSyntax>(
+    parser: &mut P,
+) -> Result<ParsedIfChain<P::Condition, P::Body>, crate::Diagnostic> {
+    let mut arms = Vec::new();
+    loop {
+        let start = parser.current_if_start();
+        parser.begin_if()?;
+        let condition = parser.if_condition()?;
+        let body = parser.if_body()?;
+        arms.push(ParsedIfArm {
+            start, branch: crate::common_ir::ConditionalBranch::new(condition, body),
+        });
+        if !parser.maybe_else() {
+            return Ok(ParsedIfChain {
+                arms, otherwise: None, end: parser.last_end(),
+            });
+        }
+        if !parser.next_is_if() {
+            let otherwise = parser.if_body()?;
+            return Ok(ParsedIfChain {
+                arms, otherwise: Some(otherwise), end: parser.last_end(),
+            });
+        }
+    }
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }

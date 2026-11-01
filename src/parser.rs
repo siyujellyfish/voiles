@@ -209,36 +209,11 @@ impl<'a> Parser<'a> {
     }
 
     fn if_chain(&mut self) -> Result<(StmtKind, usize), Diagnostic> {
-        self.expect_keyword("if", "缺少 if")?;
-        let condition = self.condition()?;
-        let block = self.block()?;
-        let mut end = block.end;
-        let mut branches = vec![crate::common_ir::ConditionalBranch::new(condition, block)];
-        let mut otherwise = None;
-        loop {
-            // 可容許 else 銜接前方 } 或在換行後出現；
-            // 非 else 時還原位置，讓外層強制換行分句。
-            let old = self.cursor;
-            self.skip_newlines();
-            if !self.keyword("else") {
-                self.cursor = old;
-                break;
-            }
-            self.next();
-            if self.keyword("if") {
-                self.next();
-                let cond = self.condition()?;
-                let body = self.block()?;
-                end = body.end;
-                branches.push(crate::common_ir::ConditionalBranch::new(cond, body));
-            } else {
-                let body = self.block()?;
-                end = body.end;
-                otherwise = Some(body);
-                break;
-            }
-        }
-        Ok((StmtKind::IfChain { branches, otherwise }, end))
+        let parsed = crate::syntax_shared::parse_if_chain(self)?;
+        Ok((StmtKind::IfChain {
+            branches: parsed.arms.into_iter().map(|arm| arm.branch).collect(),
+            otherwise: parsed.otherwise,
+        }, parsed.end))
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -310,6 +285,33 @@ impl<'a> Parser<'a> {
         }
         Ok(File { items, start: 0, end: self.source.bytes.len() })
     }
+}
+
+impl crate::syntax_shared::IfSyntax for Parser<'_> {
+    type Condition = Expr;
+    type Body = Block;
+
+    fn current_if_start(&self) -> usize {
+        self.current().expect("已確認 if token").start
+    }
+    fn begin_if(&mut self) -> Result<(), Diagnostic> {
+        self.expect_keyword("if", "缺少 if").map(|_| ())
+    }
+    fn if_condition(&mut self) -> Result<Expr, Diagnostic> { self.condition() }
+    fn if_body(&mut self) -> Result<Block, Diagnostic> { self.block() }
+    fn maybe_else(&mut self) -> bool {
+        let saved = self.cursor;
+        self.skip_newlines();
+        if self.keyword("else") {
+            self.next();
+            true
+        } else {
+            self.cursor = saved;
+            false
+        }
+    }
+    fn next_is_if(&self) -> bool { self.keyword("if") }
+    fn last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
 }
 
 pub(crate) fn parse(source: &Source, tokens: &[Token]) -> Result<File, Diagnostic> {
