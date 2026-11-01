@@ -50,6 +50,27 @@ impl StaticBorrowSnapshot {
         Self { facts: facts.into_iter().collect() }
     }
 
+    /// F08：以同一份已解析借用快照查詢來源的有效借用。
+    /// 不按可變名稱推論，也不把已失效別名重新授權。
+    pub(crate) fn kinds_for(&self, source: DeclarationId)
+        -> impl Iterator<Item = BorrowKind> + '_ {
+        self.facts.iter().filter(move |fact| fact.source == source).map(|fact| fact.kind)
+    }
+
+    pub(crate) fn has_active(&self, source: DeclarationId) -> bool {
+        self.kinds_for(source).next().is_some()
+    }
+
+    pub(crate) fn validate_acquire(&self, source: DeclarationId, requested: BorrowKind)
+        -> Result<(), BorrowSafetyError> {
+        BorrowSafety::validate_new_borrow(self.kinds_for(source), requested)
+    }
+
+    pub(crate) fn validate_direct(&self, source: DeclarationId)
+        -> Result<(), BorrowSafetyError> {
+        BorrowSafety::validate_direct_access(self.has_active(source))
+    }
+
     pub(crate) fn validate(&self) -> Result<(), BorrowSafetyError> {
         BorrowSafety::validate_active_set(
             self.facts.iter().map(|fact| (fact.source, fact.kind)),
@@ -252,6 +273,31 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f08_靜態合流與新借用及直接讀寫都引用同一宣告身分快照() {
+        let outer = DeclarationId(401);
+        let shadow = DeclarationId(407);
+        let facts = StaticBorrowSnapshot::from_active([
+            BorrowFact::new(outer, BorrowKind::SharedRead),
+            BorrowFact::new(outer, BorrowKind::SharedRead),
+            BorrowFact::new(shadow, BorrowKind::ExclusiveWrite),
+        ]);
+        assert!(facts.has_active(outer));
+        assert!(facts.has_active(shadow));
+        assert!(!facts.has_active(DeclarationId(408)));
+        assert_eq!(facts.kinds_for(outer).count(), 2);
+        assert_eq!(facts.validate_acquire(outer, BorrowKind::SharedRead), Ok(()));
+        assert_eq!(facts.validate_acquire(outer, BorrowKind::ExclusiveWrite),
+            Err(BorrowSafetyError::BorrowConflict));
+        assert_eq!(facts.validate_acquire(shadow, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::BorrowConflict));
+        assert_eq!(facts.validate_direct(outer), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(facts.validate_direct(shadow), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(facts.validate_direct(DeclarationId(408)), Ok(()));
+        assert_eq!(facts.validate_acquire(DeclarationId(408), BorrowKind::ExclusiveWrite),
+            Ok(()));
+    }
 
     #[test]
     fn f06_正式靜態快照合流與真實票據來源權限一致且不可造假() {
