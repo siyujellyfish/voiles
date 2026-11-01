@@ -221,7 +221,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return true;
                     }
                     if declared == name {
-                        visible = Some(DeclarationId(statement.start));
+                        let next = DeclarationId(statement.start);
+                        // 同一詞法位置出現在迴圈下一次迭代時是新綁定
+                        // 實例，不能讓前次迭代已失效的票據代理延續。
+                        // 同一 AST 來源身分不是動態借用票據的實例身分。
+                        visible = (next != target).then_some(next);
                     }
                 }
                 StmtKind::If { branch, no } => {
