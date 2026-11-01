@@ -17,7 +17,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let main = &parsed[0];
         let origin = DeclarationId(main.body[0].start);
         let target = DeclarationId(main.body[1].start);
-        let no_checker_proof = VerifiedDeclarationFacts::from_checked(&parsed, BTreeSet::new());
+        let no_checker_proof = VerifiedDeclarationFacts::from_checker(BTreeMap::new(), BTreeSet::new());
         assert!(!no_checker_proof.has_direct_move(origin, target),
             "光有具名 move AST 不能自動獲得資源移交證據");
         assert_eq!(no_checker_proof.verified_direct_move(origin, target, "str"), None);

@@ -3,6 +3,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn find_function(&self, name: &str) -> Option<&Function> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
     }
+    fn record_declaration(&self, id: DeclarationId, ty: &str, mutable: bool) {
+        let fact = (ty.to_owned(), mutable);
+        let replaced = self.recorded_declarations.borrow_mut()
+            .insert(id, fact.clone());
+        // 同一 AST 宣告若因靜態可達路徑分析再次造訪，可重用相同證據；
+        // 但絕不能以相同原始位元組起點宣稱不同型別或寫入權限。
+        debug_assert!(replaced.is_none_or(|previous| previous == fact),
+            "同一來源身分在不同可達路徑不得擁有衝突的型別或可變權限");
+    }
     fn error(&self, text: &str, term: &Term) -> Diagnostic {
         Diagnostic {
             kind: DiagnosticKind::Static,
@@ -1061,6 +1070,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         declaration_start: DeclarationId(statement.start), ty: ty.clone(),
                         mutable: *mutable, value: slot, pending_fields, loan
                     });
+                    self.record_declaration(DeclarationId(statement.start), ty, *mutable);
                     // 僅成功完成 RHS 型別、借用與所有權驗證且寫入目標之後，
                     // 才允許 Checker 輸出此具名整筆轉移證據。
                     if let Some(source) = direct_move_source {
@@ -1200,6 +1210,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::ForRange { iterator, iterator_start,
                     lower, upper, body: loop_body } => {
+                    // 靜態迭代宣告即使區間為零次，仍只有一個詞彙來源身分。
+                    self.record_declaration(DeclarationId(*iterator_start), "int", false);
                     // D04-A 半開區間為已核准來源，但正式執行期的
                     // 整數計數器／步幅不屬 P15，本階段只驗證借用
                     // 與反向邊：一次以上迭代皆不能破壞外層狀態。
@@ -1477,6 +1489,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         ), active: true,
                     }),
             });
+            self.record_declaration(DeclarationId(parameter.declaration_start), ty, false);
         }
         self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
         Ok(())
