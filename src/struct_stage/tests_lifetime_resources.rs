@@ -1159,6 +1159,19 @@ mod p16_真正_voil_來源至_utf8_緩衝區清理 {
     }
 
     #[test]
+    fn f12_具名結構建構須先具有_checker_來源身分型別及可變權限證據() {
+        use super::{verified_private_source, DeclarationId};
+        let verified = verified_private_source(SOURCE).expect("合法來源必須通過真實 Checker");
+        let main = verified.functions.iter().find(|function| function.name == "main").unwrap();
+        let id = DeclarationId(main.body[0].start);
+        assert!(verified.declarations.matches(id, "Message", true));
+        assert!(!verified.declarations.matches(id, "Message", false));
+        assert!(!verified.declarations.matches(id, "str", true));
+        assert!(!verified.declarations.matches(DeclarationId(SOURCE.len() + 1), "Message", true));
+        assert!(trace_string_struct_source(SOURCE, "item", None).is_ok());
+    }
+
+    #[test]
     fn 真實來源先依具名順序再依預設配置且反向釋放() {
         let trace = trace_string_struct_source(SOURCE, "item", None).unwrap();
         assert_eq!(trace.status, BuildStatus::Complete);
