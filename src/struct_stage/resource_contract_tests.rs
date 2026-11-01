@@ -231,8 +231,19 @@ mod p16_6_r03_4_結構整筆移交與失敗回滾資源責任 {
         let verified = verified_private_source(SOURCE).expect("來源先完成安全檢查");
         let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
         let [source, target, _] = main.body.as_slice() else { panic!("只接受三語句"); };
-        let plan = WholeStructResourcePlan::new(
-            DeclarationId(source.start), DeclarationId(target.start)).unwrap();
+        let source_id = DeclarationId(source.start);
+        let target_id = DeclarationId(target.start);
+        assert!(verified.declarations.verified_direct_move(source_id, target_id, "Message").is_some(),
+            "整筆結構移交必須有 Checker 真正驗證並交付的宣告身分與型別");
+        assert!(verified.declarations.verified_direct_move(source_id, target_id, "str").is_none(),
+            "不得把結構整筆移交偽裝成單一 str 欄位移動");
+        assert!(verified.declarations.verified_direct_move(target_id, source_id, "Message").is_none(),
+            "不得顛倒所有權移交方向");
+        assert!(VerifiedDeclarationFacts::from_checker(
+            BTreeMap::new(), BTreeSet::new(),
+        ).verified_direct_move(source_id, target_id, "Message").is_none(),
+            "沒有 Checker 完整證據時 AST 看似合法也不能驅動資源計畫");
+        let plan = WholeStructResourcePlan::new(source_id, target_id).unwrap();
         let (retained, events) = trace_persistent_struct_move_source(SOURCE, None).unwrap();
         assert_eq!(retained.as_deref(), Some("固定🪼"));
         assert_eq!(events, vec![

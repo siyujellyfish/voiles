@@ -101,7 +101,7 @@ fn trace_persistent_struct_move_source(
         (!value.contains('\\') && !value.contains('\n')
             && !value.contains('\r')).then_some(value)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, .. } =
+    let VerifiedPrivateSource { source: _, structs, functions, declarations } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
@@ -126,8 +126,12 @@ fn trace_persistent_struct_move_source(
         } if ty==struct_name && source==owner => name.as_str(),
         _=>return Err(reject("P16：第二語句須將剛建立的整個結構 .move() 至新持有者")),
     };
-    let plan = WholeStructResourcePlan::new(
-        DeclarationId(declare.start), DeclarationId(transfer.start))
+    // 先消費 Checker 真正通過所有權、借用及完整初始化證明後交付的
+    // 直線整筆移交事實，不能只憑 AST 形狀自行造出資源移動許可。
+    let proof = declarations.verified_direct_move(
+        DeclarationId(declare.start), DeclarationId(transfer.start), struct_name)
+        .ok_or_else(||reject("P16：缺少 Checker 已驗證整筆結構移交來源證據"))?;
+    let plan = WholeStructResourcePlan::new(proof.source, proof.target)
         .map_err(|_|reject("P16：整筆結構來源與新持有者不可共用宣告身分"))?;
     let definition=structs.get(struct_name)
         .ok_or_else(||reject("P16：結構宣告型別不存在"))?;
