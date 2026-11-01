@@ -133,6 +133,14 @@ struct Binding {
     loan: Option<LoanBinding>,
 }
 
+impl Binding {
+    /// 正式私有 Checker 的詞彙已解析宣告及受限型別，與 P09→P10/P11
+    /// 共用同一 HIR 引用契約；實際所有權安全仍以本綁定的 ValueSlot/loan 為準。
+    fn semantic_use(&self) -> crate::common_ir::ResolvedUse<&str> {
+        crate::common_ir::ResolvedUse::new(self.declaration_start, self.ty.as_str())
+    }
+}
+
 /// 各大括號區塊都有獨立詞彙作用域；內層同名宣告不得覆蓋外層所有權來源。
 // 分支與迴圈快照共用不可變狀態；只有實際寫入的詞彙作用域才複製。
 type Scopes = Vec<Rc<HashMap<String, Binding>>>;
