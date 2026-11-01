@@ -5,7 +5,7 @@
 
 use std::collections::BTreeMap;
 use crate::borrow_safety::{
-    BorrowKind, BorrowSafety, BorrowSafetyError, BorrowTicket,
+    BorrowFact, BorrowKind, BorrowSafety, BorrowSafetyError, BorrowTicket,
 };
 use crate::ownership_ledger::DeclarationId;
 use crate::ownership_model::{ModelError, ValueSlot};
@@ -130,6 +130,13 @@ impl BorrowOwnershipGate {
         self.values.get_mut(&id).ok_or(GateError::MissingSource)?
             .mark_reinitialized();
         Ok(())
+    }
+
+    /// F06：由實際票據追蹤器唯讀核對 Checker 所持的靜態借用快照。
+    pub(crate) fn verify_static_borrows(
+        &self, facts: impl IntoIterator<Item = BorrowFact>,
+    ) -> Result<(), GateError> {
+        self.loans.verify_static_snapshot(facts).map_err(GateError::Borrow)
     }
 
     pub(crate) fn finish_method_scope(&mut self, tickets: &[BorrowTicket])
