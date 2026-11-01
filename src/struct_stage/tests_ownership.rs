@@ -11,9 +11,11 @@ mod tests {
             value: ValueSlot::initialized(Forbidden),
             pending_fields: None, loan: None,
         };
-        let resolved = private.semantic_use();
-        assert_eq!(resolved.declaration, DeclarationId(420));
-        assert_eq!(resolved.ty, "str");
+        let span = crate::common_ir::NodeSpan::new(420, 429);
+        let typed = private.semantic_use_at(span);
+        assert_eq!(typed.span, span);
+        assert_eq!(typed.resolved.declaration, DeclarationId(420));
+        assert_eq!(typed.resolved.ty, "str");
         let scalar = crate::common_ir::ResolvedUse::new(
             DeclarationId(421), crate::common_ir::ScalarType::Bool);
         assert_eq!(scalar.declaration, DeclarationId(421));
