@@ -250,6 +250,24 @@ fn map_optional<T, U>(
 }
 
 #[cfg(test)]
+mod f04_共通詞彙查找回歸 {
+    use super::lookup_lexical;
+    use std::collections::HashMap;
+
+    #[test]
+    fn 遮蔽查找由最內層到最外層且不推定型別() {
+        let mut outer = HashMap::new();
+        outer.insert("item".to_owned(), 1_i32);
+        let mut inner = HashMap::new();
+        inner.insert("item".to_owned(), 2_i32);
+        let scopes = [outer, inner];
+        assert_eq!(lookup_lexical(scopes.iter(), "item"), Some(&2));
+        assert_eq!(lookup_lexical(scopes[..1].iter(), "item"), Some(&1));
+        assert_eq!(lookup_lexical(scopes.iter(), "absent"), None);
+    }
+}
+
+#[cfg(test)]
 mod p16_6_r02_6_共通型別即公開解析型別 {
     use super::*;
 
