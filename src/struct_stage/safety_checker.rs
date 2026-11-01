@@ -672,9 +672,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error("VA14-01：借用別名不是所有者，不能 .move()", term));
                 }
                 // 必須在移動改變來源狀態之前固定已解析型別及宣告。
-                let declaration = self.checked_binding_use(binding, term)?;
+                let verified_type = self.checked_binding_use(binding, term)?
+                    .resolved.ty.to_owned();
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
-                Ok((declaration.resolved.ty.to_owned(), true))
+                Ok((verified_type, true))
             }
             TermKind::FieldRead(owner, name) => {
                 if owner == "self" {
