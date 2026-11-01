@@ -104,12 +104,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// 合流後不許把不同可達分支的活躍借用狀態組成 HC14 不合法組合。
     /// 此處是對既有 LoanBinding 的保守驗證，尚未取代實際 BorrowTicket 身分表。
-    fn active_loan_state_is_consistent(vars: &Scopes) -> bool {
-        BorrowSafety::validate_active_set(vars.iter()
+    fn active_loan_snapshot(vars: &Scopes) -> StaticBorrowSnapshot {
+        StaticBorrowSnapshot::from_active(vars.iter()
             .flat_map(|scope| scope.values())
             .filter_map(|binding| binding.loan.as_ref().and_then(|loan| {
-                loan.active.then_some((loan.fact.source, loan.fact.kind))
-            }))).is_ok()
+                loan.active.then_some(loan.fact)
+            })))
+    }
+
+    fn active_loan_state_is_consistent(vars: &Scopes) -> bool {
+        Self::active_loan_snapshot(vars).validate().is_ok()
     }
 
     /// R03.12：宣告時直接借用、方法預設借用及一般函式預設借用
