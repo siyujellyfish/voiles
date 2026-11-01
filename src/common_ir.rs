@@ -55,10 +55,35 @@ pub(crate) struct ResolvedNames {
     pub(crate) assignments: std::collections::BTreeMap<usize, DeclarationId>,
     pub(crate) declarations: std::collections::BTreeMap<DeclarationId, ScalarType>,
 }
+/// 一次名稱解析已證明的帶型別宣告來源身分；無法從任意字串自行建構。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ResolvedScalarUse {
+    pub(crate) declaration: DeclarationId,
+    pub(crate) ty: ScalarType,
+}
+
 impl ResolvedNames {
+    fn use_for(&self, starts: &std::collections::BTreeMap<usize, DeclarationId>,
+        start: usize) -> Option<ResolvedScalarUse> {
+        let declaration = *starts.get(&start)?;
+        let ty = *self.declarations.get(&declaration)?;
+        Some(ResolvedScalarUse { declaration, ty })
+    }
+
+    pub(crate) fn reference(&self, start: usize) -> Option<ResolvedScalarUse> {
+        self.use_for(&self.references, start)
+    }
+
+    pub(crate) fn assignment(&self, start: usize) -> Option<ResolvedScalarUse> {
+        self.use_for(&self.assignments, start)
+    }
+
     pub(crate) fn reference_type(&self, start: usize) -> Option<ScalarType> {
-        let id = self.references.get(&start)?;
-        self.declarations.get(id).copied()
+        self.reference(start).map(|value| value.ty)
+    }
+
+    pub(crate) fn assignment_type(&self, start: usize) -> Option<ScalarType> {
+        self.assignment(start).map(|value| value.ty)
     }
 }
 
