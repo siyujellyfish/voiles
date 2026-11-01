@@ -17,7 +17,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let main = &parsed[0];
         let origin = DeclarationId(main.body[0].start);
         let target = DeclarationId(main.body[1].start);
-        let no_checker_proof = VerifiedDeclarationFacts::from_checker(BTreeMap::new(), BTreeSet::new(), BTreeSet::new());
+        let no_checker_proof = VerifiedDeclarationFacts::from_checker(BTreeMap::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         assert!(!no_checker_proof.has_direct_move(origin, target),
             "光有具名 move AST 不能自動獲得資源移交證據");
         assert_eq!(no_checker_proof.verified_direct_move(origin, target, "str"), None);
@@ -205,7 +205,7 @@ mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
             target_id, return_term.start, "str",
         ), None, "不能用呼叫端接收者冒充被呼叫端返回來源");
         let no_proof = VerifiedDeclarationFacts::from_checker(
-            verified.declarations.by_source.clone(), BTreeSet::new(), BTreeSet::new());
+            verified.declarations.by_source.clone(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         assert!(no_proof.verified_named_return(source_id, return_term.start, "str").is_none(),
             "只有 AST 與宣告型別、卻沒有 Checker 回傳證據不可建立資源橋接");
         assert_ne!(source_id, target_id);
@@ -255,7 +255,7 @@ mod p16_6_r03_4_結構整筆移交與失敗回滾資源責任 {
         assert!(verified.declarations.verified_direct_move(target_id, source_id, "Message").is_none(),
             "不得顛倒所有權移交方向");
         assert!(VerifiedDeclarationFacts::from_checker(
-            BTreeMap::new(), BTreeSet::new(), BTreeSet::new(),
+            BTreeMap::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new(),
         ).verified_direct_move(source_id, target_id, "Message").is_none(),
             "沒有 Checker 完整證據時 AST 看似合法也不能驅動資源計畫");
         let plan = WholeStructResourcePlan::new(source_id, target_id).unwrap();
