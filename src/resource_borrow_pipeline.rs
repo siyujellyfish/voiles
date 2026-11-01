@@ -50,6 +50,9 @@ impl SafetyPipeline {
 
     pub(crate) fn borrow(&mut self, id: DeclarationId, kind: BorrowKind)
         -> Result<BorrowTicket, PipelineError> {
+        // 真實票據簽發前，責任帳簿必須有同一 DeclarationId；
+        // 否則兩表分歧時不得簽發可被其他管線誤用的票據。
+        self.resources.check_release_batch(&[id]).map_err(PipelineError::Resource)?;
         self.ownership.borrow(id, kind).map_err(PipelineError::Ownership)
     }
 
@@ -96,8 +99,8 @@ impl SafetyPipeline {
         self.ownership.read(owner).map_err(PipelineError::Ownership)?;
         self.resources.check_release_resource(owner, resource)
             .map_err(PipelineError::Resource)?;
-        self.resources.release_resource(owner, resource)
-            .map_err(PipelineError::Resource)
+        self.resources.commit_release_resource_checked(owner, resource);
+        Ok(())
     }
 
     pub(crate) fn read(&self, owner: DeclarationId) -> Result<(), PipelineError> {
@@ -118,6 +121,41 @@ mod tests {
     use super::*;
     use crate::borrow_safety::BorrowSafetyError;
     use crate::ownership_model::{CopyPermission::{Allowed, Forbidden, Undecided}, ModelError};
+
+    #[test]
+    fn 真實借用票據須先有相同宣告來源的資源責任表() {
+        let mut p = SafetyPipeline::new();
+        let id = DeclarationId(8999);
+        p.declare(id, Forbidden).unwrap();
+        p.resources.release_batch(&[id]).unwrap();
+        assert_eq!(p.borrow(id, BorrowKind::SharedRead),
+            Err(PipelineError::Resource(ResourceAuditError::MissingBinding)));
+        assert!(p.read(id).is_ok(), "資源帳簿分歧不能私自鎖定來源");
+    }
+
+    #[test]
+    fn 單項資源清理預檢拒絕不得清除其它欄位或持有者() {
+        let mut p = SafetyPipeline::new();
+        let first = DeclarationId(8981);
+        let second = DeclarationId(8982);
+        p.declare(first, Forbidden).unwrap();
+        p.declare(second, Forbidden).unwrap();
+        p.register_resource(first, 881).unwrap();
+        p.register_resource(first, 882).unwrap();
+        p.register_resource(second, 883).unwrap();
+        assert_eq!(p.record_resource_cleanup(first, 883),
+            Err(PipelineError::Resource(ResourceAuditError::MissingOwnedResource)));
+        assert_eq!(p.outstanding(), 3);
+        assert!(p.read(first).is_ok());
+        assert!(p.read(second).is_ok());
+        p.record_resource_cleanup(first, 881).unwrap();
+        assert_eq!(p.outstanding(), 2);
+        assert_eq!(p.record_resource_cleanup(first, 881),
+            Err(PipelineError::Resource(ResourceAuditError::MissingOwnedResource)));
+        assert_eq!(p.record_cleanup(first), Ok(1));
+        assert_eq!(p.record_cleanup(second), Ok(1));
+        assert!(p.audit_finished().is_ok());
+    }
 
     #[test]
     fn 原子宣告_責任帳簿重複身分時所有權不得提前宣告() {
