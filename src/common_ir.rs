@@ -95,6 +95,19 @@ impl<T> ResolvedUse<T> {
     }
 }
 
+/// F04：正式型別化引用的來源半開跨度與已解析宣告必須同行傳遞。
+/// 不以名稱文字重新推測擁有者；具體型別能力仍由不同模式的 Checker 驗證。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TypedUse<T> {
+    pub(crate) span: NodeSpan,
+    pub(crate) resolved: ResolvedUse<T>,
+}
+impl<T> TypedUse<T> {
+    pub(crate) fn new(span: NodeSpan, resolved: ResolvedUse<T>) -> Self {
+        Self { span, resolved }
+    }
+}
+
 /// 公開純值 HIR 引用是共同語意引用的 int／bool 專用形式。
 pub(crate) type ResolvedScalarUse = ResolvedUse<ScalarType>;
 
@@ -112,6 +125,15 @@ impl ResolvedNames {
 
     pub(crate) fn assignment(&self, start: usize) -> Option<ResolvedScalarUse> {
         self.use_for(&self.assignments, start)
+    }
+
+    /// 只接受 P09 已驗證的來源身分，保留正式 Parser 提供的半開來源跨度。
+    pub(crate) fn reference_at(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.reference(span.start).map(|resolved| TypedUse::new(span, resolved))
+    }
+
+    pub(crate) fn assignment_at(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.assignment(span.start).map(|resolved| TypedUse::new(span, resolved))
     }
 
     pub(crate) fn reference_type(&self, start: usize) -> Option<ScalarType> {
@@ -246,6 +268,35 @@ fn map_optional<T, U>(
     match source {
         Some(value) => Some(Some(project(value)?)),
         None => Some(None),
+    }
+}
+
+#[cfg(test)]
+mod f04_正式具位置引用權威回歸 {
+    use super::*;
+
+    #[test]
+    fn 已解析來源型別必須隨真正節點跨度同行傳遞() {
+        let owner = DeclarationId(5);
+        let shadow = DeclarationId(20);
+        let mut facts = ResolvedNames::default();
+        facts.declarations.insert(owner, ScalarType::Int);
+        facts.declarations.insert(shadow, ScalarType::Bool);
+        facts.references.insert(50, owner);
+        facts.assignments.insert(71, shadow);
+        let use_span = NodeSpan::new(50, 56);
+        let write_span = NodeSpan::new(71, 77);
+        let reference = facts.reference_at(use_span).unwrap();
+        let assignment = facts.assignment_at(write_span).unwrap();
+        assert_eq!(reference.span, use_span);
+        assert_eq!(reference.resolved, ResolvedUse::new(owner, ScalarType::Int));
+        assert_eq!(assignment.span, write_span);
+        assert_eq!(assignment.resolved, ResolvedUse::new(shadow, ScalarType::Bool));
+        assert_eq!(facts.reference_at(NodeSpan::new(49, 56)), None);
+        assert_eq!(facts.assignment_at(NodeSpan::new(70, 77)), None);
+        // 兩個宣告即使名稱相同也不能以其中一個身分推定另一個的能力。
+        facts.references.remove(&50);
+        assert_eq!(facts.reference_at(use_span), None);
     }
 }
 

@@ -39,6 +39,33 @@ impl BorrowFact {
     }
 }
 
+/// F06：CFG 分支可以安全複製與合流的靜態借用事實快照。
+/// 僅儲存 DeclarationId 與權限，不簽發、持有或偽造真實 BorrowTicket。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct StaticBorrowSnapshot {
+    facts: Vec<BorrowFact>,
+}
+impl StaticBorrowSnapshot {
+    pub(crate) fn from_active(facts: impl IntoIterator<Item = BorrowFact>) -> Self {
+        Self { facts: facts.into_iter().collect() }
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), BorrowSafetyError> {
+        BorrowSafety::validate_active_set(
+            self.facts.iter().map(|fact| (fact.source, fact.kind)),
+        )
+    }
+
+    /// 只准已驗證執行路徑將快照核對真實票據；不能依快照創造票據。
+    pub(crate) fn verify_tracker(&self, tracker: &BorrowSafety)
+        -> Result<(), BorrowSafetyError> {
+        self.validate()?;
+        tracker.verify_static_snapshot(self.facts.iter().copied())
+    }
+
+    pub(crate) fn facts(&self) -> &[BorrowFact] { &self.facts }
+}
+
 /// 借用票據綁定原宣告身分與實際授權次序，避免同名遮蔽或假票據提前解除限制。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct BorrowTicket {
@@ -225,6 +252,40 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f06_正式靜態快照合流與真實票據來源權限一致且不可造假() {
+        let source = DeclarationId(77);
+        let sibling = DeclarationId(79);
+        let mut tracker = BorrowSafety::new();
+        let first = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let second = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let actual = StaticBorrowSnapshot::from_active([first.fact(), second.fact()]);
+        assert_eq!(actual.validate(), Ok(()));
+        assert_eq!(actual.verify_tracker(&tracker), Ok(()));
+        let missing = StaticBorrowSnapshot::from_active([first.fact()]);
+        assert_eq!(missing.validate(), Ok(()));
+        assert_eq!(missing.verify_tracker(&tracker),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        let wrong_source = StaticBorrowSnapshot::from_active([
+            first.fact(), BorrowFact::new(sibling, BorrowKind::SharedRead),
+        ]);
+        assert_eq!(wrong_source.verify_tracker(&tracker),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        let conflicting = StaticBorrowSnapshot::from_active([
+            first.fact(), BorrowFact::new(source, BorrowKind::ExclusiveWrite),
+        ]);
+        assert_eq!(conflicting.validate(), Err(BorrowSafetyError::BorrowConflict));
+        assert_eq!(conflicting.verify_tracker(&tracker),
+            Err(BorrowSafetyError::BorrowConflict));
+        // 快照檢查失敗仍不得對實際追蹤器產生副作用。
+        assert_eq!(tracker.check_direct_access(source),
+            Err(BorrowSafetyError::SourceIsBorrowed));
+        tracker.finish_scope(&[first, second]).unwrap();
+        assert_eq!(actual.verify_tracker(&tracker),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(StaticBorrowSnapshot::default().verify_tracker(&tracker), Ok(()));
+    }
 
     #[test]
     fn f06_靜態快照須與真實票據的來源權限及共享重數完全相等() {

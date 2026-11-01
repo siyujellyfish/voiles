@@ -73,7 +73,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::Name(name) => {
                 let ty = match self.resolved {
                     // 正式 check_file：P10 直接使用 P09 的已驗證引用身分與宣告型別。
-                    Some(facts) => facts.reference(expr.start).map(|reference| reference.ty),
+                    Some(facts) => facts.reference_at(expr.node_span()).map(|use_| use_.resolved.ty),
                     // 獨立 P10、已核准內部探針仍沿用原有測試介面。
                     None => self.variable_type(name, expr.start, scopes),
                 }.ok_or_else(|| self.error(
@@ -141,7 +141,7 @@ impl<'a> TypeChecker<'a> {
                     // 正式 P09 已綁定賦值目標的宣告身分；不得在 P10 按同名
                     // 字串自行挑選另一個遮蔽宣告。
                     let declared = match self.resolved {
-                        Some(names) => names.assignment(stmt.start).map(|reference| reference.ty),
+                        Some(names) => names.assignment_at(stmt.node_span()).map(|use_| use_.resolved.ty),
                         None => self.variable_type(name, stmt.start, scopes),
                     }.ok_or_else(|| self.error(
                         "賦值目標型別不可解析", stmt.start, stmt.end))?;

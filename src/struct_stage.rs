@@ -9,7 +9,7 @@ use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
 use crate::ownership_model::{CopyPermission, ModelError, ValueSlot, ValueState};
 use crate::ownership_ledger::DeclarationId;
-use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowSafety};
+use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowSafety, StaticBorrowSnapshot};
 use crate::source::Source;
 use crate::struct_ownership::{self, MoveTarget, SelfAction};
 
@@ -136,8 +136,13 @@ struct Binding {
 impl Binding {
     /// 正式私有 Checker 的詞彙已解析宣告及受限型別，與 P09→P10/P11
     /// 共用同一 HIR 引用契約；實際所有權安全仍以本綁定的 ValueSlot/loan 為準。
-    fn semantic_use(&self) -> crate::common_ir::ResolvedUse<&str> {
-        crate::common_ir::ResolvedUse::new(self.declaration_start, self.ty.as_str())
+    fn semantic_use_at(&self, span: crate::common_ir::NodeSpan)
+        -> crate::common_ir::TypedUse<&str> {
+        crate::common_ir::TypedUse::new(
+            span, crate::common_ir::ResolvedUse::new(
+                self.declaration_start, self.ty.as_str(),
+            ),
+        )
     }
 }
 
