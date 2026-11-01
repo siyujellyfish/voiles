@@ -4,6 +4,41 @@ mod tests {
     use crate::ownership_model::CopyPermission::{Allowed, Forbidden, Undecided};
 
     #[test]
+    fn f10_同種與混合的迴圈跳轉必須保留_break_continue_各自可達類別() {
+        fn branch_transfer(left: StmtKind, right: StmtKind) -> FlowState {
+            let source = Source::new(b"true".to_vec());
+            let structs = HashMap::new();
+            let functions = Vec::new();
+            let checker = Checker {
+                source: &source, structs: &structs, functions: &functions,
+                function_index: HashMap::new(),
+                ability: crate::ownership_policy::approved_leaf_copy_permission,
+            };
+            let cond = Term { kind: TermKind::Literal("bool"), start: 0, end: 4 };
+            let mk = |kind| Stmt { kind, start: 0, end: 4 };
+            let conditional = mk(StmtKind::If {
+                branch: crate::common_ir::ConditionalBranch::new(
+                    cond, vec![mk(left)],
+                ),
+                no: Some(vec![mk(right)]),
+            });
+            let mut vars = vec![Rc::new(HashMap::new())];
+            let entry = vars.clone();
+            checker.statement_body(
+                &[conditional], &mut vars, "int", &[], Some(&entry),
+            ).expect("兩條跳轉在迴圈內不應自行改變外層來源")
+        }
+
+        assert_eq!(branch_transfer(StmtKind::Break, StmtKind::Break),
+            FlowState::Break);
+        assert_eq!(branch_transfer(StmtKind::Continue, StmtKind::Continue),
+            FlowState::Continue);
+        assert_eq!(branch_transfer(StmtKind::Break, StmtKind::Continue),
+            FlowState::LoopTransfer,
+            "來源分支有不同跳轉類型時仍須保守，不能假定全是反向邊");
+    }
+
+    #[test]
     fn 公私正式_checker_具型別引用契約保留實際來源且不放寬私有型別() {
         let private = Binding {
             declaration_start: DeclarationId(420),
