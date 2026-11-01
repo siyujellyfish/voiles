@@ -111,14 +111,18 @@ pub fn check_file(path: &Path) -> CheckResult {
             if diagnostics.is_empty() {
                 match parser::parse(&source, &lexical.tokens) {
                     Ok(ast) => {
-                        if let Err(error) = names::resolve(&ast, &source) {
-                            diagnostics.push(error);
-                        } else if let Err(error) = types::check(&ast, &source) {
-                            diagnostics.push(error);
-                        } else if let Err(error) = flow::check(&ast, &source) {
-                            diagnostics.push(error);
-                        } else if let Err(error) = functions::check(&ast, &source) {
-                            diagnostics.push(error);
+                        // P09 交付已解析的來源身分證據，P10 不再重新推斷名稱引用。
+                        match names::resolve_with_facts(&ast, &source) {
+                            Err(error) => diagnostics.push(error),
+                            Ok(names) => {
+                                if let Err(error) = types::check_with_names(&ast, &source, &names) {
+                                    diagnostics.push(error);
+                                } else if let Err(error) = flow::check(&ast, &source) {
+                                    diagnostics.push(error);
+                                } else if let Err(error) = functions::check(&ast, &source) {
+                                    diagnostics.push(error);
+                                }
+                            }
                         }
                     }
                     Err(error) => diagnostics.push(error),

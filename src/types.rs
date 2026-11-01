@@ -25,6 +25,7 @@ struct TypeChecker<'a> {
     functions: HashMap<String, Type>,
     globals: HashMap<String, (DeclarationId, Type)>,
     probe_move: bool,
+    resolved: Option<&'a crate::common_ir::ResolvedNames>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -72,8 +73,13 @@ impl<'a> TypeChecker<'a> {
             }),
             ExprKind::BoolLiteral(_) => Ok(TypedValue::new(Type::Bool)),
             ExprKind::Name(name) => {
-                let ty = self.variable_type(name, expr.start, scopes)
-                    .ok_or_else(|| self.error("無法解析具名來源型別", expr.start, expr.end))?;
+                let ty = match self.resolved {
+                    // 正式 check_file：P10 直接使用 P09 的已驗證引用身分與宣告型別。
+                    Some(facts) => facts.reference_type(expr.start),
+                    // 獨立 P10、已核准內部探針仍沿用原有測試介面。
+                    None => self.variable_type(name, expr.start, scopes),
+                }.ok_or_else(|| self.error(
+                    "無法解析具名來源型別", expr.start, expr.end))?;
                 Ok(TypedValue::new(ty))
             }
             ExprKind::ZeroArgCall(name) => {
@@ -164,15 +170,25 @@ impl<'a> TypeChecker<'a> {
 /// 只在 P09 名稱解析及 P07 安全解析成功時呼叫；
 /// 不意味 P11 definite initialization／可變權限／P12 main 等驗收完成。
 pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
-    check_with_move_probe(file, source, false)
+    check_with_move_probe(file, source, false, None)
+}
+
+/// 供正式 P09→P10 資料流使用的已解析引用／宣告型別證據入口。
+pub(crate) fn check_with_names(
+    file: &File, source: &Source, names: &crate::common_ir::ResolvedNames,
+) -> Result<(), Diagnostic> {
+    check_with_move_probe(file, source, false, Some(names))
 }
 
 /// P13 測試模式不擴大 P01 公開介面。
 pub(crate) fn check_move_probe(file: &File, source: &Source) -> Result<(), Diagnostic> {
-    check_with_move_probe(file, source, true)
+    check_with_move_probe(file, source, true, None)
 }
 
-fn check_with_move_probe(file: &File, source: &Source, probe_move: bool) -> Result<(), Diagnostic> {
+fn check_with_move_probe<'a>(
+    file: &File, source: &'a Source, probe_move: bool,
+    resolved: Option<&'a crate::common_ir::ResolvedNames>,
+) -> Result<(), Diagnostic> {
     let mut functions = HashMap::new();
     let mut globals = HashMap::new();
     for item in &file.items {
@@ -181,7 +197,7 @@ fn check_with_move_probe(file: &File, source: &Source, probe_move: bool) -> Resu
             Item::Binding(b) => { globals.insert(b.name.clone(), (DeclarationId(b.start), b.ty)); }
         }
     }
-    let checker = TypeChecker { source, functions, globals, probe_move };
+    let checker = TypeChecker { source, functions, globals, probe_move, resolved };
     for item in &file.items {
         match item {
             Item::Binding(b) => checker.initializer(b, &[])?,
@@ -271,6 +287,18 @@ mod tests {
         ] {
             assert_eq!(inspect(code).unwrap_err().kind, DiagnosticKind::Static);
         }
+    }
+
+    #[test]
+    fn 真正名稱階段的宣告身分供正式型別階段辨識遮蔽() {
+        let code = "fn main()->int{\nvar item:int = 2\nif(true){\nvar item:bool = true\nif(item){\nreturn 1\n}\n}\nreturn item\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let names = names::resolve_with_facts(&ast, &source).unwrap();
+        assert_eq!(check_with_names(&ast, &source, &names), Ok(()));
+        let inner_name = code.find("if(item)").unwrap() + 3;
+        assert_eq!(names.reference_type(inner_name), Some(Type::Bool));
     }
 
     #[test]

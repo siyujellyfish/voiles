@@ -15,6 +15,7 @@ struct Resolver<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
     globals: HashMap<String, DeclarationId>,
+    facts: crate::common_ir::ResolvedNames,
 }
 
 impl<'a> Resolver<'a> {
@@ -36,14 +37,14 @@ impl<'a> Resolver<'a> {
         self.globals.get(name).copied().filter(|id| id.0 < pos)
     }
 
-    fn check_expr(&self, e: &Expr, scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
+    fn check_expr(&mut self, e: &Expr, scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
         match &e.kind {
             ExprKind::Name(name) => {
-                if self.binding_for_reference(name, e.start, scopes).is_some() {
-                    Ok(())
-                } else {
-                    Err(self.error("找不到已宣告且可讀取的具名變數", e.start, e.end))
-                }
+                let declaration = self.binding_for_reference(name, e.start, scopes)
+                    .ok_or_else(|| self.error(
+                        "找不到已宣告且可讀取的具名變數", e.start, e.end))?;
+                self.facts.references.insert(e.start, declaration);
+                Ok(())
             }
             ExprKind::ZeroArgCall(name) => {
                 if self.functions.contains_key(name) {
@@ -64,7 +65,7 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn initializer(&self, b: &Binding,
+    fn initializer(&mut self, b: &Binding,
         scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
         if let Some(value) = &b.initializer {
             self.check_expr(value, scopes)?;
@@ -72,7 +73,7 @@ impl<'a> Resolver<'a> {
         Ok(())
     }
 
-    fn block(&self, block: &Block,
+    fn block(&mut self, block: &Block,
         scopes: &mut Vec<HashMap<String, DeclarationId>>) -> Result<(), Diagnostic> {
         scopes.push(HashMap::new());
         for statement in &block.statements {
@@ -84,7 +85,9 @@ impl<'a> Resolver<'a> {
                     // 先檢查初始化來源，再加入當前作用域名稱。
                     // 不因同名宣告預設自己能讀取尚未建立的變數。
                     self.initializer(b, scopes)?;
-                    scopes.last_mut().unwrap().insert(b.name.clone(), DeclarationId(b.start));
+                    let id = DeclarationId(b.start);
+                    self.facts.declarations.insert(id, b.ty);
+                    scopes.last_mut().unwrap().insert(b.name.clone(), id);
                 }
                 StmtKind::Assignment { name, value } => {
                     if self.binding_for_reference(name, statement.start, scopes).is_none() {
@@ -110,8 +113,16 @@ impl<'a> Resolver<'a> {
 }
 
 pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
+    resolve_with_facts(file, source).map(|_| ())
+}
+
+/// 與原 P09 完全相同的名稱檢查，同時回傳已驗證之具體來源身分。
+pub(crate) fn resolve_with_facts(
+    file: &File, source: &Source,
+) -> Result<crate::common_ir::ResolvedNames, Diagnostic> {
     let mut functions = HashMap::new();
     let mut globals = HashMap::new();
+    let mut facts = crate::common_ir::ResolvedNames::default();
     for item in &file.items {
         match item {
             Item::Function(f) => {
@@ -132,6 +143,7 @@ pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
                         span: Some(source.span(b.start,b.end)),
                     });
                 }
+                facts.declarations.insert(DeclarationId(b.start), b.ty);
             }
         }
     }
@@ -143,14 +155,14 @@ pub(crate) fn resolve(file: &File, source: &Source) -> Result<(), Diagnostic> {
             span: None,
         });
     }
-    let resolver=Resolver {source,functions,globals};
+    let mut resolver=Resolver {source,functions,globals,facts};
     for item in &file.items {
         match item {
             Item::Binding(b) => resolver.initializer(b,&[])?,
             Item::Function(f) => resolver.block(&f.body,&mut Vec::new())?,
         }
     }
-    Ok(())
+    Ok(resolver.facts)
 }
 
 #[cfg(test)]
@@ -174,6 +186,23 @@ mod tests {
             let text=std::fs::read_to_string(&path).unwrap();
             assert!(resolve_text(&text).is_ok(), "{path}");
         }
+    }
+
+    #[test]
+    fn 名稱解析將同名遮蔽的不同使用點繫結至不同來源身分() {
+        let text = "fn main()->int{\nvar item:int = 1\nif(true){\nvar item:bool = true\nif(item){\nreturn 1\n}\n}\nreturn item\n}\n";
+        let source = Source::new(text.as_bytes().to_vec());
+        let tokens = scan(&source);
+        let file = parse(&source, &tokens.tokens).unwrap();
+        let facts = super::resolve_with_facts(&file, &source).unwrap();
+        let first = DeclarationId(text.find("var item:int").unwrap());
+        let inner = DeclarationId(text.find("var item:bool").unwrap());
+        let inner_use = text.find("if(item)").unwrap() + 3;
+        let outer_use = text.rfind("return item").unwrap() + 7;
+        assert_eq!(facts.references.get(&inner_use), Some(&inner));
+        assert_eq!(facts.references.get(&outer_use), Some(&first));
+        assert_eq!(facts.reference_type(inner_use), Some(crate::common_ir::ScalarType::Bool));
+        assert_eq!(facts.reference_type(outer_use), Some(crate::common_ir::ScalarType::Int));
     }
 
     #[test]
@@ -233,6 +262,7 @@ mod tests {
             source: &source,
             functions: HashMap::new(),
             globals: HashMap::new(),
+            facts: crate::common_ir::ResolvedNames::default(),
         };
         let mut scopes = vec![HashMap::new()];
         scopes[0].insert(outer.name.clone(), DeclarationId(outer.start));
