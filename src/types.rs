@@ -46,11 +46,9 @@ impl<'a> TypeChecker<'a> {
     /// 可用性與名稱重複已由 P09 優先驗證。
     fn variable_type(&self, name: &str, pos: usize,
         scopes: &[HashMap<String, Type>]) -> Option<Type> {
-        for scope in scopes.iter().rev() {
-            if let Some(ty) = scope.get(name) { return Some(*ty); }
-        }
-        self.globals.get(name)
-            .and_then(|(declaration, ty)| (declaration.0 < pos).then_some(*ty))
+        crate::common_ir::lookup_lexical(scopes.iter(), name).copied()
+            .or_else(|| self.globals.get(name)
+                .and_then(|(declaration, ty)| (declaration.0 < pos).then_some(*ty)))
     }
 
     fn integer(&self, literal: &str, expr: &Expr) -> Result<i64, Diagnostic> {
