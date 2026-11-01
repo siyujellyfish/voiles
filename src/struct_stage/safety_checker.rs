@@ -249,22 +249,39 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    /// F10：只確認「執行此語句就不會繼續執行同一序列」的確定出口。
-    /// 只接受直線 return／break／continue 或有 else 且兩側均必定退出；
-    /// while／for 可能零次執行，不憑循環形式猜測終止。
-    /// 這是 CFG 可達性下界，不等同完整路徑／反向邊驗證。
-    fn future_stmt_must_exit(statement: &Stmt) -> bool {
+    /// F10：正式 CFG 分支合流與未來活性掃描共用同一種退出分類。
+    /// 兩側只要都不再正常繼續，混合的 return／break／continue
+    /// 仍屬必定離開當前序列，但其實際控制流類別不能被猜成 return。
+    fn combine_non_fallthrough(left: FlowState, right: FlowState) -> FlowState {
+        debug_assert!(left != FlowState::Fallthrough && right != FlowState::Fallthrough);
+        if left == right { left } else { FlowState::LoopTransfer }
+    }
+
+    fn future_stmt_exit(statement: &Stmt) -> Option<FlowState> {
         match &statement.kind {
-            StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => true,
-            StmtKind::If { branch, no: Some(otherwise) } =>
-                Self::future_block_must_exit(&branch.body)
-                    && Self::future_block_must_exit(otherwise),
-            _ => false,
+            StmtKind::Return(_) => Some(FlowState::Returned),
+            StmtKind::Break => Some(FlowState::Break),
+            StmtKind::Continue => Some(FlowState::Continue),
+            StmtKind::If { branch, no: Some(otherwise) } => {
+                let left = Self::future_block_exit(&branch.body)?;
+                let right = Self::future_block_exit(otherwise)?;
+                Some(Self::combine_non_fallthrough(left, right))
+            }
+            // 不對可能零次執行的迴圈或無 else 的條件猜測終止。
+            _ => None,
         }
     }
 
+    fn future_block_exit(body: &[Stmt]) -> Option<FlowState> {
+        body.iter().find_map(Self::future_stmt_exit)
+    }
+
+    fn future_stmt_must_exit(statement: &Stmt) -> bool {
+        Self::future_stmt_exit(statement).is_some()
+    }
+
     fn future_block_must_exit(body: &[Stmt]) -> bool {
-        body.iter().any(Self::future_stmt_must_exit)
+        Self::future_block_exit(body).is_some()
     }
 
     fn scan_future_block_uses(
@@ -1520,16 +1537,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let live_true = true_flow == FlowState::Fallthrough;
                     let live_false = false_flow == FlowState::Fallthrough;
                     if !live_true && !live_false {
-                        return Ok(if true_flow == FlowState::Returned
-                            && false_flow == FlowState::Returned {
-                            FlowState::Returned
-                        } else if true_flow == FlowState::Break
-                            && false_flow == FlowState::Break {
-                            FlowState::Break
-                        } else if true_flow == FlowState::Continue
-                            && false_flow == FlowState::Continue {
-                            FlowState::Continue
-                        } else { FlowState::LoopTransfer });
+                        return Ok(Self::combine_non_fallthrough(true_flow, false_flow));
                     }
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
                     for (depth, scope) in vars.iter_mut().enumerate() {

@@ -2422,3 +2422,75 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
         }
     }
 }
+
+#[cfg(test)]
+mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
+    use super::*;
+
+    fn statement(kind: StmtKind, at: usize) -> Stmt {
+        Stmt { kind, start: at, end: at + 1 }
+    }
+    fn result_statement(flow: FlowState, at: usize) -> Stmt {
+        let kind = match flow {
+            FlowState::Returned => StmtKind::Return(Term {
+                kind: TermKind::Literal("int"), start: at, end: at + 1,
+            }),
+            FlowState::Break => StmtKind::Break,
+            FlowState::Continue => StmtKind::Continue,
+            _ => panic!("只比較實際明確退出類別"),
+        };
+        statement(kind, at)
+    }
+    fn conditional(left: FlowState, right: FlowState) -> Stmt {
+        statement(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(
+                Term { kind: TermKind::Literal("bool"), start: 10, end: 14 },
+                vec![result_statement(left, 20)]),
+            no: Some(vec![result_statement(right, 30)]),
+        }, 8)
+    }
+
+    #[test]
+    fn 兩個正常不可達分支應與正式_checker_合流返回同一_flowstate() {
+        for (left, right, expected) in [
+            (FlowState::Returned, FlowState::Returned, FlowState::Returned),
+            (FlowState::Break, FlowState::Break, FlowState::Break),
+            (FlowState::Continue, FlowState::Continue, FlowState::Continue),
+            (FlowState::Returned, FlowState::Break, FlowState::LoopTransfer),
+            (FlowState::Continue, FlowState::Returned, FlowState::LoopTransfer),
+            (FlowState::Break, FlowState::Continue, FlowState::LoopTransfer),
+        ] {
+            let condition = conditional(left, right);
+            let future = Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(&condition);
+            assert_eq!(future, Some(expected));
+            let joined = Checker::<fn(&str) -> CopyPermission>::combine_non_fallthrough(
+                left, right);
+            assert_eq!(future, Some(joined),
+                "F07 後繼 CFG 分類不能與真實 Checker 的合流規則分歧");
+            assert!(Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
+                &condition));
+        }
+    }
+
+    #[test]
+    fn 巢狀混合退出仍不擅自判定為全部_return() {
+        let nested = statement(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(
+                Term { kind: TermKind::Literal("bool"), start: 50, end: 54 },
+                vec![conditional(FlowState::Returned, FlowState::Break)]),
+            no: Some(vec![result_statement(FlowState::Continue, 80)]),
+        }, 49);
+        let classified = Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(
+            &nested);
+        assert_eq!(classified, Some(FlowState::LoopTransfer));
+        assert_ne!(classified, Some(FlowState::Returned));
+        let no_else = statement(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(
+                Term { kind: TermKind::Literal("bool"), start: 90, end: 94 },
+                vec![result_statement(FlowState::Returned, 95)]),
+            no: None,
+        }, 89);
+        assert_eq!(Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(
+            &no_else), None);
+    }
+}
