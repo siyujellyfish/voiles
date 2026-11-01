@@ -16,9 +16,9 @@ mod p16_6_r02_公開私有前端交集契約 {
             return Err(first);
         }
         let ast = parser::parse(&source, &tokens.tokens)?;
-        names::resolve(&ast, &source)?;
-        types::check(&ast, &source)?;
-        flow::check(&ast, &source)?;
+        let facts = names::resolve_with_facts(&ast, &source)?;
+        types::check_with_names(&ast, &source, &facts)?;
+        flow::check_with_names(&ast, &source, &facts)?;
         functions::check(&ast, &source)?;
         Ok(())
     }

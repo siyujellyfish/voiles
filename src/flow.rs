@@ -26,7 +26,9 @@ struct Flow {
 
 impl Flow {
     fn lookup(&self, name: &str) -> Option<Variable> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name).copied())
+        crate::common_ir::lookup_lexical(
+            self.scopes.iter().map(|scope| scope.as_ref()), name,
+        ).copied()
     }
 
     fn write(&mut self, name: &str) -> Option<&mut Variable> {
@@ -238,6 +240,28 @@ mod tests {
         assert_eq!(facts.assignments.get(&write_inner), Some(&inner));
         assert_eq!(facts.assignments.get(&write_outer), Some(&outer));
         assert_eq!(check_with_names(&ast, &source, &facts), Ok(()));
+    }
+
+    #[test]
+    fn 正式_p11_偽造相同型別但不同宣告身分不能跨作用域繞過檢查() {
+        let code = "fn main()->int{\nvar n:int = 1\nif(true){\nvar n:int = 2\n}\nreturn n\n}\n";
+        let src = source::Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&src);
+        let ast = parser::parse(&src, &lexed.tokens).unwrap();
+        let mut facts = names::resolve_with_facts(&ast, &src).unwrap();
+        let outer = DeclarationId(code.find("var n:int = 1").unwrap());
+        let inner = DeclarationId(code.find("var n:int = 2").unwrap());
+        let read_at = code.find("return n").unwrap() + "return ".len();
+        assert_eq!(facts.references.get(&read_at), Some(&outer));
+        assert_eq!(check_with_names(&ast, &src, &facts), Ok(()));
+        // 篡改後即使型別相同，也不能以同名推測重新授權外層引用。
+        facts.references.insert(read_at, inner);
+        let error = check_with_names(&ast, &src, &facts).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert_eq!(&*error.message, "具名來源不存在可見宣告");
+        assert!(error.span.is_some());
+        facts.references.remove(&read_at);
+        assert!(check_with_names(&ast, &src, &facts).is_err());
     }
 
     #[test]
