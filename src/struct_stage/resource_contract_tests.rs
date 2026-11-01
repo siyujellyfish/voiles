@@ -13,7 +13,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let code = "fn main()->int{\nvar n:int = 1\nconst label:int = 2\nvar alias:int = n\nn = alias\nreturn n\n}\n";
         let checked = verified_private_source(code).expect("合法來源應交付完整 Checker HIR");
         let facts = &checked.declarations;
-        assert!(facts.scalar_hir_is_consistent(&checked.scalar_hir, code.len()));
+        assert!(facts.scalar_hir_is_consistent(&checked.scalar_hir, code));
         let owner = DeclarationId(code.find("var n:int").unwrap());
         let constant = DeclarationId(code.find("const label:int").unwrap());
         let span = NodeSpan::new(
@@ -23,27 +23,52 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let mut hir = VerifiedScalarHir::default();
         hir.record_reference(TypedUse::new(span, ResolvedUse::new(
             owner, ScalarType::Int)));
-        assert!(facts.scalar_hir_is_consistent(&hir, code.len()));
+        hir.record_expression(span, ScalarType::Int);
+        assert!(facts.scalar_hir_is_consistent(&hir, code));
+        let mut unclosed = VerifiedScalarHir::default();
+        unclosed.record_reference(TypedUse::new(span, ResolvedUse::new(
+            owner, ScalarType::Int)));
+        assert!(!facts.scalar_hir_is_consistent(&unclosed, code),
+            "同來源身分的具名引用沒有 P10／Checker 運算式型別事實不得簽發");
         let mut wrong_source = VerifiedScalarHir::default();
         wrong_source.record_reference(TypedUse::new(span, ResolvedUse::new(
             DeclarationId(code.len() + 20), ScalarType::Int)));
-        assert!(!facts.scalar_hir_is_consistent(&wrong_source, code.len()),
+        assert!(!facts.scalar_hir_is_consistent(&wrong_source, code),
             "沒有 Checker 真實宣告的身分不可進入安全計畫");
         let mut wrong_type = VerifiedScalarHir::default();
         wrong_type.record_reference(TypedUse::new(span, ResolvedUse::new(
             owner, ScalarType::Bool)));
-        assert!(!facts.scalar_hir_is_consistent(&wrong_type, code.len()),
+        assert!(!facts.scalar_hir_is_consistent(&wrong_type, code),
             "不能將來源 int 偷換為 bool");
         let mut immutable_write = VerifiedScalarHir::default();
         immutable_write.record_assignment(TypedUse::new(span, ResolvedUse::new(
             constant, ScalarType::Int)));
-        assert!(!facts.scalar_hir_is_consistent(&immutable_write, code.len()),
+        assert!(!facts.scalar_hir_is_consistent(&immutable_write, code),
             "const 不能產生合法的 var 賦值型別 HIR");
         let mut out_of_bounds = VerifiedScalarHir::default();
         out_of_bounds.record_expression(NodeSpan::new(code.len() + 1, code.len() + 3),
             ScalarType::Int);
-        assert!(!facts.scalar_hir_is_consistent(&out_of_bounds, code.len()),
+        assert!(!facts.scalar_hir_is_consistent(&out_of_bounds, code),
             "未經原始 UTF-8 範圍驗證的位置不可冒充型別證據");
+    }
+
+    #[test]
+    fn f11_不能將_utf8_字元中間的位元組冒充合法已驗證_hir_來源() {
+        use crate::common_ir::{NodeSpan, ScalarType, VerifiedScalarHir};
+        let code = "fn main()->int{\nvar text:str = \"海洋🪼\"\nreturn 0\n}\n";
+        let checked = verified_private_source(code).expect("合法 UTF-8 私有來源應被接受");
+        assert!(checked.declarations.scalar_hir_is_consistent(&checked.scalar_hir, code));
+        let first = code.find('海').expect("必須有多位元組 UTF-8 字元");
+        assert!(!code.is_char_boundary(first + 1));
+        assert!(!code.is_char_boundary(first + 2));
+        let mut fake = VerifiedScalarHir::default();
+        fake.record_expression(NodeSpan::new(first + 1, first + 2),
+            ScalarType::Int);
+        assert!(!checked.declarations.scalar_hir_is_consistent(&fake, code),
+            "即使在原始碼長度內，字元中間的範圍也不是合法來源跨度");
+        let mut fake_end = VerifiedScalarHir::default();
+        fake_end.record_expression(NodeSpan::new(first, first + 2), ScalarType::Int);
+        assert!(!checked.declarations.scalar_hir_is_consistent(&fake_end, code));
     }
 
     #[test]
