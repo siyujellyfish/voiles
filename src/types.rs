@@ -82,7 +82,7 @@ impl<'a> TypeChecker<'a> {
 
     fn expression(&self, expr: &Expr,
         scopes: &[HashMap<String, TypedDeclaration<Type>>]) -> Result<TypedValue, Diagnostic> {
-        match &expr.kind {
+        let value = match &expr.kind {
             ExprKind::IntLiteral(text) => Ok(TypedValue {
                 ty: Type::Int,
                 integer: Some(self.integer(text, expr)?),
@@ -130,7 +130,12 @@ impl<'a> TypeChecker<'a> {
             ExprKind::IndexAccess(_, _) | ExprKind::FirstIndexWrite(_, _) |
             ExprKind::ZeroArgMethod(_, _) =>
                 Err(self.error("首版不支援此運算式型別或操作", expr.start, expr.end)),
+        }?;
+        if self.resolved.is_some() {
+            self.verified_hir.borrow_mut()
+                .record_expression(expr.node_span(), value.ty);
         }
+        Ok(value)
     }
 
     fn initializer(&self, binding: &Binding,

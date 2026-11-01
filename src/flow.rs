@@ -58,6 +58,12 @@ impl Analyzer<'_> {
     }
 
     fn read(&self, expr: &Expr, state: &Flow) -> Result<(), Diagnostic> {
+        if self.typed.is_some_and(|hir| hir.expression(expr.node_span()).is_none()) {
+            return Err(self.err(
+                "運算式缺少 P10 已驗證的來源位置與型別",
+                expr.start, expr.end,
+            ));
+        }
         match &expr.kind {
             ExprKind::Name(name) => {
                 let var = state.lookup(name)
@@ -144,6 +150,14 @@ impl Analyzer<'_> {
                     for arm in branches {
                         // 所有一般 bool 條件的具名來源都要先初始化。
                         self.read(&arm.condition, &entry)?;
+                        if self.typed.is_some_and(|hir|
+                            hir.expression(arm.condition.node_span())
+                                .is_none_or(|fact| fact.ty != ScalarType::Bool)) {
+                            return Err(self.err(
+                                "if 條件缺少 P10 已驗證的 bool 型別",
+                                arm.condition.start, arm.condition.end,
+                            ));
+                        }
                         let mut branch = entry.clone();
                         self.block(&arm.body, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
@@ -369,8 +383,41 @@ mod tests {
 
         let no_proof = crate::common_ir::VerifiedScalarHir::default();
         let error = check_with_typed_hir(&ast, &source, &facts, &no_proof).unwrap_err();
-        assert_eq!(&*error.message, "具名來源不存在可見宣告",
+        assert_eq!(&*error.message, "運算式缺少 P10 已驗證的來源位置與型別",
             "未出具 P10 型別 HIR 時，P11 不得由 P09 自行重建合法存取");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+
+    #[test]
+    fn f04_具型別_hir_涵蓋字面值_加法_分組_函式呼叫與_if_bool_條件() {
+        let code = "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = 1\nif(true){\nreturn (n + helper())\n}\nreturn n\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let facts = names::resolve_with_facts(&ast, &source).unwrap();
+        let hir = types::check_with_names_and_hir(&ast, &source, &facts).unwrap();
+        let span = |fragment: &str| {
+            let start = code.find(fragment).unwrap();
+            crate::common_ir::NodeSpan::new(start, start + fragment.len())
+        };
+        assert_eq!(hir.expression(span("true")).unwrap().ty, ScalarType::Bool);
+        assert_eq!(hir.expression(span("n + helper()")).unwrap().ty, ScalarType::Int);
+        assert_eq!(hir.expression(span("(n + helper())")).unwrap().ty, ScalarType::Int);
+        let called_at = code.rfind("helper()").unwrap();
+        assert_eq!(hir.expression(crate::common_ir::NodeSpan::new(
+            called_at, called_at + "helper()".len())).unwrap().ty, ScalarType::Int);
+        assert_eq!(check_with_typed_hir(&ast, &source, &facts, &hir), Ok(()));
+
+        // P10 沒有交付任何運算式型別的 HIR，即使全檔只使用 int
+        // 常值，P11 也不能自行宣稱該來源已通過 P10。
+        let simple = "fn main()->int{\nreturn 1\n}\n";
+        let src = source::Source::new(simple.as_bytes().to_vec());
+        let toks = lexer::scan(&src);
+        let file = parser::parse(&src, &toks.tokens).unwrap();
+        let facts = names::resolve_with_facts(&file, &src).unwrap();
+        let empty = crate::common_ir::VerifiedScalarHir::default();
+        let error = check_with_typed_hir(&file, &src, &facts, &empty).unwrap_err();
+        assert_eq!(&*error.message, "運算式缺少 P10 已驗證的來源位置與型別");
         assert_eq!(error.kind, DiagnosticKind::Static);
     }
 

@@ -137,12 +137,29 @@ impl<T> TypedUse<T> {
 /// F04：P10 成功完成型別檢查後才可交付 P11 的正式具型別讀寫 HIR。
 /// 只保存原始來源跨度及 P09 已解析並在 P10 驗證的宣告身分與型別。
 /// 不表示任何私有借用／移動資源已獲准。
+/// 已驗證純值運算式完整節點的來源跨度及 P10 推導型別。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VerifiedScalarExpression {
+    pub(crate) span: NodeSpan,
+    pub(crate) ty: ScalarType,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedScalarHir {
     references: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
     assignments: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
+    expressions: std::collections::BTreeMap<(usize, usize), VerifiedScalarExpression>,
 }
 impl VerifiedScalarHir {
+    pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
+        let fact = VerifiedScalarExpression { span, ty };
+        let previous = self.expressions.insert((span.start, span.end), fact);
+        debug_assert!(previous.is_none_or(|old| old == fact),
+            "同一個來源位置不能有兩種衝突的運算式型別");
+    }
+    pub(crate) fn expression(&self, span: NodeSpan) -> Option<VerifiedScalarExpression> {
+        self.expressions.get(&(span.start, span.end)).copied()
+    }
     pub(crate) fn record_reference(&mut self, use_at: TypedUse<ScalarType>) {
         let previous = self.references.insert(use_at.span.start, use_at);
         debug_assert!(previous.is_none_or(|old| old == use_at),
@@ -367,6 +384,10 @@ mod f04_正式_p10_交付給_p11_的具型別存取證據 {
         let mut hir = VerifiedScalarHir::default();
         hir.record_reference(a.use_at(read));
         hir.record_assignment(a.use_at(write));
+        hir.record_expression(read, ScalarType::Int);
+        assert_eq!(hir.expression(read),
+            Some(VerifiedScalarExpression { span: read, ty: ScalarType::Int }));
+        assert_eq!(hir.expression(NodeSpan::new(50, 57)), None);
         assert_eq!(hir.reference(read), Some(a.use_at(read)));
         assert_eq!(hir.assignment(write), Some(a.use_at(write)));
         assert_eq!(hir.reference(write), None);
