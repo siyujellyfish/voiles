@@ -351,18 +351,18 @@ mod tests {
 
     #[test]
     fn f04_正式_p10_成功產生的_hir_必須逐一被_p11_消費() {
-        let code = "fn main()->int{\nvar n:int = 1\nn = n + 2\nreturn n\n}\n";
+        let code = "fn main()->int{\nvar n:int = 1\nvar alias:int = n\nn = alias\nreturn n\n}\n";
         let source = source::Source::new(code.as_bytes().to_vec());
         let lexical = lexer::scan(&source);
         let ast = parser::parse(&source, &lexical.tokens).unwrap();
         let facts = names::resolve_with_facts(&ast, &source).unwrap();
         let typed = types::check_with_names_and_hir(&ast, &source, &facts).unwrap();
-        let write = code.find("n = n").unwrap();
+        let write = code.find("n = alias").unwrap();
         let read = write + "n = ".len();
         let returning = code.find("return n").unwrap() + "return ".len();
         assert!(typed.assignment(crate::common_ir::NodeSpan::new(
-            write, write + "n = n + 2".len())).is_some());
-        assert!(typed.reference(crate::common_ir::NodeSpan::new(read, read + 1)).is_some());
+            write, write + "n = alias".len())).is_some());
+        assert!(typed.reference(crate::common_ir::NodeSpan::new(read, read + "alias".len())).is_some());
         assert!(typed.reference(crate::common_ir::NodeSpan::new(
             returning, returning + 1)).is_some());
         assert_eq!(check_with_typed_hir(&ast, &source, &facts, &typed), Ok(()));
