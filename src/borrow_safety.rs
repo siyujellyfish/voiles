@@ -63,11 +63,15 @@ impl StaticBorrowSnapshot {
 
     pub(crate) fn validate_acquire(&self, source: DeclarationId, requested: BorrowKind)
         -> Result<(), BorrowSafetyError> {
+        // 不得在全域活躍集合已自相矛盾的 CFG 快照上，憑另一個來源的
+        // 局部授權繼續取得借用，否則會把錯誤狀態掩藏在後續分支。
+        self.validate()?;
         BorrowSafety::validate_new_borrow(self.kinds_for(source), requested)
     }
 
     pub(crate) fn validate_direct(&self, source: DeclarationId)
         -> Result<(), BorrowSafetyError> {
+        self.validate()?;
         BorrowSafety::validate_direct_access(self.has_active(source))
     }
 
@@ -273,6 +277,25 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f08_失效合流快照不可對無關來源發放新借用或直接操作授權() {
+        let a = DeclarationId(4201);
+        let unrelated = DeclarationId(4202);
+        let invalid = StaticBorrowSnapshot::from_active([
+            BorrowFact::new(a, BorrowKind::SharedRead),
+            BorrowFact::new(a, BorrowKind::ExclusiveWrite),
+        ]);
+        assert_eq!(invalid.validate(), Err(BorrowSafetyError::BorrowConflict));
+        assert_eq!(invalid.validate_acquire(unrelated, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::BorrowConflict));
+        assert_eq!(invalid.validate_direct(unrelated),
+            Err(BorrowSafetyError::BorrowConflict));
+        assert!(!invalid.has_active(unrelated));
+        let clean = StaticBorrowSnapshot::default();
+        assert_eq!(clean.validate_acquire(unrelated, BorrowKind::ExclusiveWrite), Ok(()));
+        assert_eq!(clean.validate_direct(unrelated), Ok(()));
+    }
 
     #[test]
     fn f08_靜態合流與新借用及直接讀寫都引用同一宣告身分快照() {
