@@ -58,6 +58,12 @@ impl Analyzer<'_> {
     }
 
     fn read(&self, expr: &Expr, state: &Flow) -> Result<(), Diagnostic> {
+        if self.typed.is_some_and(|hir| hir.expression(expr.node_span()).is_none()) {
+            return Err(self.err(
+                "運算式缺少 P10 已驗證的來源位置與型別",
+                expr.start, expr.end,
+            ));
+        }
         match &expr.kind {
             ExprKind::Name(name) => {
                 let var = state.lookup(name)
@@ -144,6 +150,14 @@ impl Analyzer<'_> {
                     for arm in branches {
                         // 所有一般 bool 條件的具名來源都要先初始化。
                         self.read(&arm.condition, &entry)?;
+                        if self.typed.is_some_and(|hir|
+                            hir.expression(arm.condition.node_span())
+                                .is_none_or(|fact| fact.ty != ScalarType::Bool)) {
+                            return Err(self.err(
+                                "if 條件缺少 P10 已驗證的 bool 型別",
+                                arm.condition.start, arm.condition.end,
+                            ));
+                        }
                         let mut branch = entry.clone();
                         self.block(&arm.body, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
