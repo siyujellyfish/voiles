@@ -12,8 +12,8 @@ pub(crate) enum ExprKind {
     StringLiteral(String),
     Name(String),
     ZeroArgCall(String),
-    Add(Box<Expr>, Box<Expr>),
-    Subtract(Box<Expr>, Box<Expr>),
+    Add(crate::common_ir::ArithmeticNode<Expr>),
+    Subtract(crate::common_ir::ArithmeticNode<Expr>),
     Group(Box<Expr>),
     /// 僅為完整語言字串索引語法的內部準備；MVP-A 不接受。
     IndexAccess(Box<Expr>, Box<Expr>),
@@ -85,10 +85,11 @@ impl<'a> ExprParser<'a> {
             |left, op, right, span| {
                 let start = span.start;
                 let end = span.end;
+                let binary = crate::common_ir::ArithmeticNode::new(left, op, right);
                 let kind = if op == '+' {
-                    ExprKind::Add(Box::new(left), Box::new(right))
+                    ExprKind::Add(binary)
                 } else {
-                    ExprKind::Subtract(Box::new(left), Box::new(right))
+                    ExprKind::Subtract(binary)
                 };
                 Expr { kind, start, end }
             },
@@ -215,9 +216,10 @@ mod tests {
     fn 同層加減依左結合形成_ast() {
         let e = parse("8 - 3 - 1");
         match e.kind {
-            ExprKind::Subtract(left, right) => {
-                assert!(matches!(right.kind, ExprKind::IntLiteral(_)));
-                assert!(matches!(left.kind, ExprKind::Subtract(_, _)));
+            ExprKind::Subtract(binary) => {
+                assert_eq!(binary.operator, '-');
+                assert!(matches!(binary.right.kind, ExprKind::IntLiteral(_)));
+                assert!(matches!(binary.left.kind, ExprKind::Subtract(_)));
             }
             _ => panic!("二元減法必須左結合"),
         }
@@ -227,7 +229,7 @@ mod tests {
     fn 算術括號保留且不變更結合方向() {
         let e = parse("8 - (3 - 1)");
         match e.kind {
-            ExprKind::Subtract(_, right) => assert!(matches!(right.kind, ExprKind::Group(_))),
+            ExprKind::Subtract(binary) => assert!(matches!(binary.right.kind, ExprKind::Group(_))),
             _ => panic!("分組須保留為內部節點"),
         }
     }
@@ -236,7 +238,7 @@ mod tests {
     fn 已核准零引數函式結果可作加法運算元() {
         let e = parse("helper() + 2");
         match e.kind {
-            ExprKind::Add(left, _) => assert!(matches!(left.kind, ExprKind::ZeroArgCall(ref n) if n=="helper")),
+            ExprKind::Add(binary) => assert!(matches!(binary.left.kind, ExprKind::ZeroArgCall(ref n) if n=="helper")),
             _ => panic!("缺少合法函式運算元"),
         }
     }
