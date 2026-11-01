@@ -3,6 +3,25 @@ mod tests {
     use super::*;
     use crate::ownership_model::CopyPermission::{Allowed, Forbidden, Undecided};
 
+    #[test]
+    fn 公私正式_checker_具型別引用契約保留實際來源且不放寬私有型別() {
+        let private = Binding {
+            declaration_start: DeclarationId(420),
+            ty: "str".into(), mutable: true,
+            value: ValueSlot::initialized(Forbidden),
+            pending_fields: None, loan: None,
+        };
+        let resolved = private.semantic_use();
+        assert_eq!(resolved.declaration, DeclarationId(420));
+        assert_eq!(resolved.ty, "str");
+        let scalar = crate::common_ir::ResolvedUse::new(
+            DeclarationId(421), crate::common_ir::ScalarType::Bool);
+        assert_eq!(scalar.declaration, DeclarationId(421));
+        assert_eq!(scalar.ty, crate::common_ir::ScalarType::Bool);
+        assert_eq!(crate::common_ir::ScalarType::from_name("str"), None,
+            "共同 HIR 型別外殼不可把 str 解鎖成公開 scalar");
+    }
+
     const BASE: &str = "struct Sample{\nconst flag:bool = true\nvar number:int = 1\n}\nfn main()->int{\nvar a:Sample = Sample()\nvar b:Sample = a.move()\nreturn 0\n}\n";
 
     #[test]
