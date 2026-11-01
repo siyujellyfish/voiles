@@ -328,8 +328,7 @@ impl Parser<'_> {
                 let value = self.term()?;
                 StmtKind::FieldAssign { receiver: name, field, value }
             } else {
-                self.take('=', "此階段具名語句必須為賦值")?;
-                let value = self.term()?;
+                let value = crate::syntax_shared::parse_assignment(self)?;
                 StmtKind::Assign { name, value }
             }
         };
@@ -500,6 +499,15 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
     fn declaration_end(&self, _initializer: &Option<Term>) -> usize {
         self.tokens[self.cursor - 1].end
     }
+}
+
+impl crate::syntax_shared::AssignmentSyntax for Parser<'_> {
+    type Expression = Term;
+    fn assignment_equals(&mut self) -> Result<(), Diagnostic> {
+        self.take('=', "此階段具名語句必須為賦值")
+    }
+    fn assignment_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }
+    fn validate_assignment(&self, _expression: &Term) -> Result<(), Diagnostic> { Ok(()) }
 }
 
 impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
