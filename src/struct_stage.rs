@@ -180,6 +180,8 @@ struct Checker<'a, C> {
     recorded_named_returns: RefCell<BTreeSet<(DeclarationId, usize)>>,
     /// 真正完成型別、寫入授權及 RHS 評估後的結構欄位提交證據。
     recorded_field_writes: RefCell<BTreeSet<(DeclarationId, usize, String)>>,
+    /// F04：私有 Checker 真正求值成功才產生共同 int／bool 運算式型別 HIR。
+    recorded_scalar_hir: RefCell<crate::common_ir::VerifiedScalarHir>,
 }
 
 // P13～P16 的受限靜態安全檢查；下一步再分離型別／資料流責任。
@@ -352,6 +354,7 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
         recorded_field_writes: RefCell::new(BTreeSet::new()),
+        recorded_scalar_hir: RefCell::new(crate::common_ir::VerifiedScalarHir::default()),
     };
     checker.all(&functions)?;
     let by_source = checker.recorded_declarations.into_inner();
