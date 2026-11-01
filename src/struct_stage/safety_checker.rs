@@ -101,16 +101,6 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
     /// 不能只以目前作用域或表面名稱判斷，否則遮蔽可繞過來源封鎖。
-    fn active_loan_kinds(
-        vars: &Scopes, source: DeclarationId,
-    ) -> impl Iterator<Item = BorrowKind> + '_ {
-        vars.iter().flat_map(|scope| scope.values()).filter_map(move |binding| {
-            binding.loan.as_ref().and_then(|loan| {
-                (loan.active && loan.fact.source == source).then_some(loan.fact.kind)
-            })
-        })
-    }
-
     /// 合流後不許把不同可達分支的活躍借用狀態組成 HC14 不合法組合。
     /// 此處是對既有 LoanBinding 的保守驗證，尚未取代實際 BorrowTicket 身分表。
     fn active_loan_snapshot(vars: &Scopes) -> StaticBorrowSnapshot {
@@ -132,7 +122,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, vars: &Scopes, source: DeclarationId, kind: BorrowKind,
         term: &Term, diagnostic: &str,
     ) -> Result<(), Diagnostic> {
-        BorrowSafety::validate_new_borrow(Self::active_loan_kinds(vars, source), kind)
+        Self::active_loan_snapshot(vars).validate_acquire(source, kind)
             .map_err(|_| self.error(diagnostic, term))
     }
 
@@ -144,9 +134,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 別名自身仍遵守現有 evaluate／loan 權限與最後使用點證明。
         if owner.loan.is_none() {
             let reference = owner.semantic_use_at(term.node_span());
-            let has_active_loan =
-                Self::active_loan_kinds(vars, reference.resolved.declaration).next().is_some();
-            BorrowSafety::validate_direct_access(has_active_loan)
+            Self::active_loan_snapshot(vars).validate_direct(reference.resolved.declaration)
                 .map_err(|_| self.error(
                     "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
         }
