@@ -51,6 +51,8 @@ pub(crate) fn lookup_lexical<'a, V: 'a>(
 #[derive(Debug, Default)]
 pub(crate) struct ResolvedNames {
     pub(crate) references: std::collections::BTreeMap<usize, DeclarationId>,
+    /// 賦值語句原始位元組起點對應的目標宣告身分。
+    pub(crate) assignments: std::collections::BTreeMap<usize, DeclarationId>,
     pub(crate) declarations: std::collections::BTreeMap<DeclarationId, ScalarType>,
 }
 impl ResolvedNames {
