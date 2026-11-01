@@ -210,17 +210,10 @@ impl Parser<'_> {
                             self.tokens[self.cursor - 1].end)
                     } else if self.symbol('(') {
                         self.cursor += 1;
-                        let mut args = Vec::new();
-                        while !self.symbol(')') {
-                            args.push(self.term()?);
-                            if self.symbol(',') { self.cursor += 1; }
-                            else if !self.symbol(')') {
-                                return Err(self.syntax("方法位置引數之間需要逗號"));
-                            }
-                        }
-                        self.take(')', "方法呼叫缺少右括號")?;
-                        (TermKind::MethodCall(s, field_or_move, args),
-                            self.tokens[self.cursor - 1].end)
+                        let (args, end) = crate::syntax_shared::parse_call(
+                            &mut MethodCallSyntax { parser: self },
+                        )?;
+                        (TermKind::MethodCall(s, field_or_move, args), end)
                     } else {
                         (TermKind::FieldRead(s, field_or_move),
                             self.tokens[self.cursor - 1].end)
@@ -486,6 +479,28 @@ impl crate::syntax_shared::BlockSyntax for Parser<'_> {
 }
 
 /// 已核准的私有括號運算式沿用原節點，並由共同核心擴展來源跨度。
+/// 公私函式呼叫與私有方法呼叫消費相同的 CallSyntax 序列，
+/// 但方法尾段歷史診斷與一般函式不同，必須留在專用 adapter。
+struct MethodCallSyntax<'p, 'src> { parser: &'p mut Parser<'src> }
+impl crate::syntax_shared::CallSyntax for MethodCallSyntax<'_, '_> {
+    type Arguments = Vec<Term>;
+    fn call_arguments(&mut self) -> Result<Vec<Term>, Diagnostic> {
+        let mut args = Vec::new();
+        while !self.parser.symbol(')') {
+            args.push(self.parser.term()?);
+            if self.parser.symbol(',') { self.parser.cursor += 1; }
+            else if !self.parser.symbol(')') {
+                return Err(self.parser.syntax("方法位置引數之間需要逗號"));
+            }
+        }
+        Ok(args)
+    }
+    fn call_right_paren(&mut self) -> Result<usize, Diagnostic> {
+        self.parser.take(')', "方法呼叫缺少右括號")?;
+        Ok(self.parser.tokens[self.parser.cursor - 1].end)
+    }
+}
+
 impl crate::syntax_shared::CallSyntax for Parser<'_> {
     type Arguments = Vec<Term>;
     fn call_arguments(&mut self) -> Result<Vec<Term>, Diagnostic> {
