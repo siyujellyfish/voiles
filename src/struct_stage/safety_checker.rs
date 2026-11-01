@@ -206,44 +206,54 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    /// 依語句來源順序分辨「同名新宣告」與「原借用別名」：
-    /// 新宣告的初始化式先在外層環境求值，宣告完成後才遮蔽。
-    /// if 分支各有新作用域，不得把分支內遮蔽誤帶到另一分支。
-    fn scope_mentions_binding(body: &[Stmt], name: &str, initially_hidden: bool) -> bool {
-        let mut hidden = initially_hidden;
+    /// F07：以實際詞彙環境的 DeclarationId 而非僅名稱，判定未來
+    /// 具名使用是否仍屬同一借用別名。初始化式先於新宣告入域；
+    /// 子區塊只繼承可見身分，不回寫父區塊的遮蔽狀態。
+    fn scope_mentions_binding(
+        body: &[Stmt], name: &str, target: DeclarationId,
+        mut visible: Option<DeclarationId>,
+    ) -> bool {
         for statement in body {
             match &statement.kind {
                 StmtKind::Declare { name: declared, init, .. } => {
-                    if !hidden && init.as_ref().is_some_and(|value|
-                        Self::term_mentions(value, name)) {
+                    if visible == Some(target) && init.as_ref().is_some_and(|expr|
+                        Self::term_mentions(expr, name)) {
                         return true;
                     }
-                    if declared == name { hidden = true; }
+                    if declared == name {
+                        let next = DeclarationId(statement.start);
+                        // 同一詞法位置出現在迴圈下一次迭代時是新綁定
+                        // 實例，不能讓前次迭代已失效的票據代理延續。
+                        // 同一 AST 來源身分不是動態借用票據的實例身分。
+                        visible = (next != target).then_some(next);
+                    }
                 }
                 StmtKind::If { branch, no } => {
-                    let condition = &branch.condition;
-                    let yes = &branch.body;
-                    if !hidden && (Self::term_mentions(condition, name)
-                        || Self::scope_mentions_binding(yes, name, false)
-                        || no.as_ref().is_some_and(|other|
-                            Self::scope_mentions_binding(other, name, false))) {
+                    if (visible == Some(target)
+                        && Self::term_mentions(&branch.condition, name))
+                        || Self::scope_mentions_binding(
+                            &branch.body, name, target, visible)
+                        || no.as_ref().is_some_and(|otherwise|
+                            Self::scope_mentions_binding(otherwise, name, target, visible)) {
                         return true;
                     }
                 }
                 StmtKind::While { condition, body } => {
-                    if !hidden && (Self::term_mentions(condition, name)
-                        || Self::scope_mentions_binding(body, name, false)) {
+                    if (visible == Some(target) && Self::term_mentions(condition, name))
+                        || Self::scope_mentions_binding(body, name, target, visible) {
                         return true;
                     }
                 }
-                StmtKind::ForRange { iterator, body, .. } => {
-                    if !hidden && Self::scope_mentions_binding(
-                        body, name, iterator == name) {
+                StmtKind::ForRange { iterator, iterator_start, body, .. } => {
+                    let in_loop = if iterator == name {
+                        Some(DeclarationId(*iterator_start))
+                    } else { visible };
+                    if Self::scope_mentions_binding(body, name, target, in_loop) {
                         return true;
                     }
                 }
                 _ => {
-                    if !hidden && Self::statement_mentions(statement, name) {
+                    if visible == Some(target) && Self::statement_mentions(statement, name) {
                         return true;
                     }
                 }
@@ -252,9 +262,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         false
     }
 
-    /// VA15-01-A：在已知的當前作用域中，以來源順序及宣告遮蔽
-    /// 計算最後合法使用點。外層 continuation 尚未有完整的
-    /// 跨作用域已解析身分表，因此仍採名稱保守掃描，不能提早歸還。
+    /// VA15-01-A：以既有已解析 AST 宣告位置重建未來詞彙遮蔽，
+    /// 並由目前 Binding.declaration_start 鎖定借用別名身份。
+    /// 尚未得到完整 CFG use-def 時仍保守保留所有未能證明不可達的使用。
     fn release_last_uses(vars: &mut Scopes, rest: &[Stmt],
         continuation: &[(usize, Vec<Stmt>)]) {
         // 沒有可提早歸還的有效借用時，原演算法雖然不改 Binding，
@@ -278,7 +288,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             for (name, binding) in Rc::make_mut(scope).iter_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
                     let needed_here = Self::scope_mentions_binding(
-                        rest, name, younger_names.contains(name));
+                        rest, name, binding.declaration_start,
+                        (!younger_names.contains(name)).then_some(binding.declaration_start));
                     // 各後繼分開保留真正的詞彙深度：內層局部遮蔽
                     // 不會延長外層別名；退出內層後重新可見的外層
                     // 借用，仍須保留至外層自己的最後使用點。
@@ -287,7 +298,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             && (*at_depth == depth
                                 || !scope_names[depth + 1..=*at_depth].iter()
                                     .any(|known| known.contains(name)))
-                            && Self::scope_mentions_binding(following, name, false)
+                            && Self::scope_mentions_binding(
+                                following, name, binding.declaration_start,
+                                Some(binding.declaration_start))
                     });
                     // 函式預設借用參數以其本身宣告身分保存非擁有
                     // 借用票據代理，直到函式作用域真正退出才歸還。

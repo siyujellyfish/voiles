@@ -2228,3 +2228,77 @@ mod p16_6_r03_12_共同借用衝突預檢 {
         assert_eq!(&*error.message,"HC14：函式參數借用與仍有效別名衝突");
     }
 }
+
+#[cfg(test)]
+mod p16_6_f07_以宣告身分確認最後使用點 {
+    use super::*;
+
+    fn term(name: &str) -> Term {
+        Term { kind: TermKind::Name(name.to_owned()), start: 100, end: 101 }
+    }
+    fn stmt(kind: StmtKind, start: usize) -> Stmt {
+        Stmt { kind, start, end: start + 1 }
+    }
+    fn declare(name: &str, start: usize, init: Option<Term>) -> Stmt {
+        stmt(StmtKind::Declare {
+            name: name.to_owned(), ty: "int".into(), mutable: true, init,
+        }, start)
+    }
+    fn read(name: &str) -> Stmt { stmt(StmtKind::Return(term(name)), 200) }
+    fn mentions(body: &[Stmt], visible: Option<DeclarationId>) -> bool {
+        Checker::<fn(&str) -> CopyPermission>::scope_mentions_binding(
+            body, "alias", DeclarationId(10), visible)
+    }
+
+    #[test]
+    fn 新宣告的初始化先引用外層宣告但後續同名讀取只屬新身分() {
+        let old = Some(DeclarationId(10));
+        assert!(mentions(&[declare("alias", 30, Some(term("alias")))], old));
+        assert!(!mentions(&[declare("alias", 30, None), read("alias")], old));
+        assert!(!mentions(&[read("alias")], Some(DeclarationId(30))));
+        assert!(mentions(&[read("alias")], old));
+        assert!(!mentions(&[read("alias")], None));
+        // for 反向邊重新執行同一個 AST 宣告，不能把下一次
+        // 詞法來源相同但動態借用票據不同的別名當成當前別名。
+        assert!(!mentions(&[declare("alias", 10, None), read("alias")], old));
+    }
+
+    #[test]
+    fn 分支遮蔽不會污染兄弟分支與外層可見來源() {
+        let outer = Some(DeclarationId(10));
+        let yes = vec![declare("alias", 30, None), read("alias")];
+        let no = vec![read("alias")];
+        let cond = Term { kind: TermKind::Literal("bool"), start: 40, end: 44 };
+        let only_shadow = stmt(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(
+                cond.clone(), yes.clone()),
+            no: Some(vec![declare("alias", 50, None), read("alias")]),
+        }, 50);
+        assert!(!mentions(&[only_shadow], outer));
+        let sibling_uses_outer = stmt(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(cond, yes),
+            no: Some(no),
+        }, 60);
+        assert!(mentions(&[sibling_uses_outer], outer));
+    }
+
+    #[test]
+    fn 迭代變數遮蔽不應誤延長別名但退出迴圈後須恢復原身分() {
+        let looping = stmt(StmtKind::ForRange {
+            iterator: "alias".into(), iterator_start: 80,
+            lower: "0".into(), upper: "2".into(),
+            body: vec![read("alias")],
+        }, 81);
+        let old = Some(DeclarationId(10));
+        assert!(!mentions(&[looping.clone()], old));
+        assert!(mentions(&[looping, read("alias")], old));
+    }
+
+    #[test]
+    fn 正式私有檢查不能因內層遮蔽而提早釋放外層仍會使用的借用() {
+        let illegal = "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nif(true){\nvar alias:int = 3\nvar shadow_copy:int = source\n}\nreturn alias\n}\n";
+        let error = inspect(illegal).expect_err("外層仍使用 alias 必須保留借用");
+        assert_eq!(error.kind, crate::DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+}
