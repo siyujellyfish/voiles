@@ -9,11 +9,11 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
-use crate::common_ir::TypedDeclaration;
+use crate::common_ir::{TypedDeclaration, ScalarType};
 
 #[derive(Debug, Clone, Copy)]
 struct Variable {
-    declaration: TypedDeclaration<()>,
+    declaration: TypedDeclaration<ScalarType>,
     initialized: bool,
 }
 
@@ -61,8 +61,9 @@ impl Analyzer<'_> {
             ExprKind::Name(name) => {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
-                        facts.reference_at(expr.node_span()).map(|use_| use_.resolved.declaration)
-                            == Some(candidate.declaration.declaration)
+                        facts.reference_at(expr.node_span()).is_some_and(|use_| {
+                            candidate.declaration.matches_use(use_.resolved)
+                        })
                     }))
                     .ok_or_else(|| self.err(
                         "具名來源不存在可見宣告", expr.start, expr.end
@@ -95,7 +96,7 @@ impl Analyzer<'_> {
         // 首版局部 var 允許延後初始化，但不能因宣告本身當成已初始化。
         let scope = state.scopes.last_mut().expect("全檔至少有頂層作用域");
         Rc::make_mut(scope).insert(b.name.clone(), Variable {
-            declaration: TypedDeclaration::new(DeclarationId(b.start), (), b.mutable),
+            declaration: TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable),
             initialized: b.initializer.is_some(),
         });
         Ok(())
@@ -116,8 +117,9 @@ impl Analyzer<'_> {
                     self.read(value, state)?;
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
-                            facts.assignment_at(statement.node_span()).map(|use_| use_.resolved.declaration)
-                                == Some(candidate.declaration.declaration)
+                            facts.assignment_at(statement.node_span()).is_some_and(|use_| {
+                                candidate.declaration.matches_use(use_.resolved)
+                            })
                         }))
                         .ok_or_else(|| self.err(
                             "賦值目標沒有可見宣告", statement.start, statement.end
@@ -158,7 +160,7 @@ impl Analyzer<'_> {
                             for (name, var) in Rc::make_mut(outer_scope).iter_mut() {
                                 var.initialized = exits.iter().all(|exit| {
                                     exit.scopes[scope_idx].get(name).is_some_and(|v| {
-                                        v.declaration.declaration == var.declaration.declaration && v.initialized
+                                        v.declaration == var.declaration && v.initialized
                                     })
                                 });
                             }
@@ -323,7 +325,7 @@ mod tests {
     fn p16_6_r04_分支快照共用作用域並在寫入時隔離() {
         let mut scope = HashMap::new();
         scope.insert("value".to_owned(), Variable {
-            declaration: TypedDeclaration::new(DeclarationId(10), (), true),
+            declaration: TypedDeclaration::new(DeclarationId(10), ScalarType::Int, true),
             initialized: false,
         });
         let original = Flow { scopes: vec![Rc::new(scope)], reachable: true };
