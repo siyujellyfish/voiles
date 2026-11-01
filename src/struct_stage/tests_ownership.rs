@@ -16,7 +16,9 @@ mod tests {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())
             };
             let cond = Term { kind: TermKind::Literal("bool"), start: 0, end: 4 };
             let mk = |kind| Stmt { kind, start: 0, end: 4 };
@@ -55,6 +57,8 @@ mod tests {
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default()),
         };
         let owner = DeclarationId(0);
         let term = Term { kind: TermKind::Name("value".into()), start: 18, end: 23 };
@@ -85,6 +89,42 @@ mod tests {
         let moved = Term { kind: TermKind::Move("value".into()), start: 18, end: 23 };
         assert_eq!(checker.evaluate(&moved, &mut vars), Ok(("int".into(), true)),
             "只有已驗證的同一個來源身分與型別才能整筆 move");
+    }
+
+    #[test]
+    fn f04_私有_checker_真正評估純值運算式時使用共通_typed_hir() {
+        let source = Source::new(b"1+2".to_vec());
+        let structs = HashMap::new();
+        let functions = Vec::new();
+        let checker = Checker {
+            source: &source, structs: &structs, functions: &functions,
+            function_index: HashMap::new(),
+            ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default()),
+        };
+        let left = Term { kind: TermKind::Literal("int"), start: 0, end: 1 };
+        let right = Term { kind: TermKind::Literal("int"), start: 2, end: 3 };
+        let expression = Term {
+            kind: TermKind::BinaryInt(crate::common_ir::ArithmeticNode::new(
+                left, '+', right)),
+            start: 0, end: 3,
+        };
+        assert_eq!(checker.evaluate(&expression, &mut vec![Rc::new(HashMap::new())]),
+            Ok(("int".into(), true)));
+        let hir = checker.recorded_scalar_hir.borrow();
+        for (start, end) in [(0, 1), (2, 3), (0, 3)] {
+            let fact = hir.expression(crate::common_ir::NodeSpan::new(start, end))
+                .expect("私有真正求值後應產生各層已驗證 int 運算式");
+            assert_eq!(fact.ty, crate::common_ir::ScalarType::Int);
+        }
+        assert!(hir.expression(crate::common_ir::NodeSpan::new(0, 2)).is_none(),
+            "不能憑相同起點冒充已驗證來源半開跨度");
+        assert!(hir.expression(crate::common_ir::NodeSpan::new(1, 3)).is_none());
     }
 
     #[test]
@@ -571,7 +611,9 @@ mod automatic_self_borrow_tests {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())};
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())};
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
             BorrowKind::SharedRead);
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "set").unwrap()).unwrap(),
@@ -638,7 +680,9 @@ mod conditional_self_inference_tests {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())};
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())};
         let method = &types["Counter"].methods[0];
         assert_eq!(checker.check_method("Counter", method).unwrap(), BorrowKind::ExclusiveWrite);
     }
@@ -1015,7 +1059,9 @@ mod float_copyable_approved_tests {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())
         };
         assert_eq!(checker.permission("FloatBox"), CopyPermission::Allowed);
         assert_eq!(checker.permission("NestedFloat"), CopyPermission::Allowed);
@@ -1061,7 +1107,9 @@ mod float_copyable_method_tests {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())
         };
         assert_eq!(
             checker.check_method("FloatHolder", &types["FloatHolder"].methods[0]).unwrap(),
@@ -1083,7 +1131,9 @@ mod float_copyable_method_tests {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())
         };
         assert_eq!(
             checker.check_method("FloatPair", &types["FloatPair"].methods[0]).unwrap(),
@@ -2318,7 +2368,9 @@ mod p13_1_copyable_完整能力分類 {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())
         };
         checker.permission(ty)
     }
@@ -2372,7 +2424,9 @@ mod p13_1_正式來源閉包 {
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
-            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new())
+            recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default())
         }.permission(ty)
     }
 
