@@ -4,7 +4,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
     }
     fn record_declaration(&self, id: DeclarationId, ty: &str, mutable: bool) {
-        let fact = (ty.to_owned(), mutable);
+        let fact = crate::common_ir::TypedDeclaration::new(
+            id, ty.to_owned(), mutable,
+        );
         let replaced = self.recorded_declarations.borrow_mut()
             .insert(id, fact.clone());
         // 同一 AST 宣告若因靜態可達路徑分析再次造訪，可重用相同證據；
