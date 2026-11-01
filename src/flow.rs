@@ -41,6 +41,8 @@ impl Flow {
 
 struct Analyzer<'a> {
     source: &'a Source,
+    /// 正式 P09 已完成的來源身分證據；獨立 P11 測試仍可使用原入口。
+    resolved: Option<&'a crate::common_ir::ResolvedNames>,
 }
 
 impl Analyzer<'_> {
@@ -55,9 +57,13 @@ impl Analyzer<'_> {
     fn read(&self, expr: &Expr, state: &Flow) -> Result<(), Diagnostic> {
         match &expr.kind {
             ExprKind::Name(name) => {
-                let var = state.lookup(name).ok_or_else(|| self.err(
-                    "具名來源不存在可見宣告", expr.start, expr.end
-                ))?;
+                let var = state.lookup(name)
+                    .filter(|candidate| self.resolved.is_none_or(|facts| {
+                        facts.references.get(&expr.start) == Some(&candidate.declaration_start)
+                    }))
+                    .ok_or_else(|| self.err(
+                        "具名來源不存在可見宣告", expr.start, expr.end
+                    ))?;
                 if !var.initialized {
                     return Err(self.err("變數在所有可達路徑完成初始化前不可讀取", expr.start, expr.end));
                 }
@@ -103,9 +109,14 @@ impl Analyzer<'_> {
                 StmtKind::Assignment { name, value } => {
                     // 先依 AY02 驗證來源讀取，再處理目標初始化狀態。
                     self.read(value, state)?;
-                    let target = state.lookup(name).ok_or_else(|| self.err(
-                        "賦值目標沒有可見宣告", statement.start, statement.end
-                    ))?;
+                    let target = state.lookup(name)
+                        .filter(|candidate| self.resolved.is_none_or(|facts| {
+                            facts.assignments.get(&statement.start)
+                                == Some(&candidate.declaration_start)
+                        }))
+                        .ok_or_else(|| self.err(
+                            "賦值目標沒有可見宣告", statement.start, statement.end
+                        ))?;
                     if !target.mutable {
                         return Err(self.err("const 宣告不可再次賦值", statement.start, statement.end));
                     }
@@ -159,7 +170,20 @@ impl Analyzer<'_> {
 /// 須在 P07 解析、P09 名稱及 P10 基本型別成功後才呼叫。
 /// 不具備 P12 的完整函式／控制流程驗收。
 pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
-    let analyzer = Analyzer { source };
+    check_with_names_internal(file, source, None)
+}
+
+/// 正式 P11 靜態流程檢查消耗 P09 的引用及賦值目標來源身分證據。
+pub(crate) fn check_with_names(
+    file: &File, source: &Source, names: &crate::common_ir::ResolvedNames,
+) -> Result<(), Diagnostic> {
+    check_with_names_internal(file, source, Some(names))
+}
+
+fn check_with_names_internal<'a>(
+    file: &File, source: &'a Source, resolved: Option<&'a crate::common_ir::ResolvedNames>,
+) -> Result<(), Diagnostic> {
+    let analyzer = Analyzer { source, resolved };
     let mut globals = Flow {
         scopes: vec![Rc::new(HashMap::new())],
         reachable: true,
@@ -194,6 +218,22 @@ mod tests {
         names::resolve(&ast, &source)?;
         types::check(&ast, &source)?;
         check(&ast, &source)
+    }
+
+    #[test]
+    fn 正式_p11_依_p09_已解析身分辨識內外同名賦值與讀取() {
+        let code = "fn main()->int{\nvar n:int\nif(true){\nvar n:int = 1\nn = 2\n}\nn = 3\nreturn n\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let ast = parser::parse(&source, &lexed.tokens).unwrap();
+        let facts = names::resolve_with_facts(&ast, &source).unwrap();
+        let inner = DeclarationId(code.find("var n:int = 1").unwrap());
+        let outer = DeclarationId(code.find("var n:int\n").unwrap());
+        let write_inner = code.find("n = 2").unwrap();
+        let write_outer = code.find("n = 3").unwrap();
+        assert_eq!(facts.assignments.get(&write_inner), Some(&inner));
+        assert_eq!(facts.assignments.get(&write_outer), Some(&outer));
+        assert_eq!(check_with_names(&ast, &source, &facts), Ok(()));
     }
 
     #[test]
