@@ -1185,9 +1185,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     destination.pending_fields = None;
                 }
                 StmtKind::Return(term) => {
+                    // 提前取得真正詞彙來源；evaluate(move) 將讓原來源失效。
+                    // 不得僅從 return AST 形狀對外授權資源交接。
+                    let moved_from = if let TermKind::Move(name) = &term.kind {
+                        Self::lookup(vars, name).map(|binding| binding.declaration_start)
+                    } else { None };
                     let (actual, ready) = self.evaluate(term, vars)?;
                     if actual != expected_return || !ready {
                         return Err(self.error("函式回傳型別不一致或來源未初始化", term));
+                    }
+                    if let Some(source) = moved_from {
+                        self.recorded_named_returns.borrow_mut().insert((source, term.start));
                     }
                     return Ok(FlowState::Returned);
                 }
