@@ -568,7 +568,7 @@ fn trace_scope_struct_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
@@ -584,6 +584,12 @@ fn trace_scope_struct_source(
         StmtKind::If{branch,no}=>(&branch.condition,&branch.body,no),
         _=>return Err(reject("P16：須有一個可靜態確定的 if 分支")),
     };
+    // 真實分支只允許消費整份 Checker 通過後交付的型別 HIR。
+    // 單靠原始 if(true)/if(false) 字串並不足以授權 P16 動態事件。
+    if scalar_hir.expression(cond.node_span())
+        .is_none_or(|typed| typed.ty != crate::common_ir::ScalarType::Bool) {
+        return Err(reject("P16：作用域分支缺少正式 Checker 已驗證 bool HIR"));
+    }
     let condition=if matches!(&cond.kind,TermKind::Literal("bool")) {
         match text.get(cond.start..cond.end) {
             Some("true")=>true,Some("false")=>false,
