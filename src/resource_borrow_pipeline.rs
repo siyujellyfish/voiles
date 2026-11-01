@@ -98,14 +98,25 @@ impl SafetyPipeline {
         Ok(())
     }
 
+    /// F09：同一交易中的所有持有者都通過借用／有效所有權及資源責任預檢，
+    /// 才允許以同一組 DeclarationId 提交兩張表，杜絕部分釋放。
+    /// 僅記錄外部已確認的清理事件，不推定執行期析構順序。
+    pub(crate) fn record_cleanup_batch(&mut self, owners: &[DeclarationId])
+        -> Result<usize, PipelineError> {
+        // 必須預先拒絕重複目標，否則所有權表第二次提交會部分成功。
+        self.resources.check_release_batch(owners).map_err(PipelineError::Resource)?;
+        for &owner in owners {
+            self.ownership.read(owner).map_err(PipelineError::Ownership)?;
+        }
+        for &owner in owners {
+            self.ownership.commit_finish_owner_checked(owner);
+        }
+        Ok(self.resources.commit_release_batch_checked(owners))
+    }
+
     pub(crate) fn record_cleanup(&mut self, owner: DeclarationId)
         -> Result<usize, PipelineError> {
-        // 在紀錄抽象清理前，先確認沒有活躍借用及無效來源，
-        // 同時檢查 P16 責任表確實有對應所有者。
-        self.ownership.read(owner).map_err(PipelineError::Ownership)?;
-        self.resources.check_release_batch(&[owner]).map_err(PipelineError::Resource)?;
-        self.ownership.commit_finish_owner_checked(owner);
-        Ok(self.resources.commit_release_batch_checked(&[owner]))
+        self.record_cleanup_batch(&[owner])
     }
 
     /// 真實欄位覆寫或 RHS 失敗後，只清理已由執行期確認釋放的資源。
@@ -138,6 +149,60 @@ mod tests {
     use super::*;
     use crate::borrow_safety::BorrowSafetyError;
     use crate::ownership_model::{CopyPermission::{Allowed, Forbidden, Undecided}, ModelError};
+
+    #[test]
+    fn f09_同一批次所有持有者必須通過兩側預檢才可原子清理() {
+        let mut pipeline = SafetyPipeline::new();
+        let first = DeclarationId(2001);
+        let second = DeclarationId(2002);
+        let third = DeclarationId(2003);
+        for owner in [first, second, third] {
+            pipeline.declare(owner, CopyPermission::Forbidden).unwrap();
+        }
+        pipeline.register_resource(first, 3101).unwrap();
+        pipeline.register_resource(first, 3102).unwrap();
+        pipeline.register_resource(second, 3103).unwrap();
+        pipeline.register_resource(third, 3104).unwrap();
+        assert_eq!(pipeline.record_cleanup_batch(&[first, first, second]),
+            Err(PipelineError::Resource(ResourceAuditError::DuplicateCleanupTarget)));
+        assert_eq!(pipeline.record_cleanup_batch(&[first, DeclarationId(9999)]),
+            Err(PipelineError::Resource(ResourceAuditError::MissingBinding)));
+        assert_eq!(pipeline.outstanding(), 4);
+        assert!(pipeline.read(first).is_ok());
+        assert!(pipeline.read(second).is_ok());
+
+        let ticket = pipeline.borrow(second, BorrowKind::SharedRead).unwrap();
+        let blocked = PipelineError::Ownership(
+            GateError::Borrow(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(pipeline.record_cleanup_batch(&[first, second, third]), Err(blocked));
+        assert_eq!(pipeline.outstanding(), 4);
+        for owner in [first, third] {
+            assert!(pipeline.read(owner).is_ok(), "後端失敗不能提前清理其他來源");
+        }
+
+        pipeline.finish_method(&[ticket]).unwrap();
+        assert_eq!(pipeline.record_cleanup_batch(&[first, second, third]), Ok(4));
+        assert_eq!(pipeline.outstanding(), 0);
+        pipeline.audit_finished().unwrap();
+        assert!(pipeline.record_cleanup_batch(&[first, second, third]).is_err());
+    }
+
+    #[test]
+    fn f09_責任帳簿分歧不能提前清理另一個有效持有者() {
+        let mut pipeline = SafetyPipeline::new();
+        let good = DeclarationId(2101);
+        let missing = DeclarationId(2102);
+        pipeline.declare(good, CopyPermission::Forbidden).unwrap();
+        pipeline.declare(missing, CopyPermission::Forbidden).unwrap();
+        pipeline.register_resource(good, 3201).unwrap();
+        pipeline.resources.release_batch(&[missing]).unwrap();
+        assert_eq!(pipeline.record_cleanup_batch(&[good, missing]),
+            Err(PipelineError::Resource(ResourceAuditError::MissingBinding)));
+        assert_eq!(pipeline.read(good), Ok(()));
+        assert_eq!(pipeline.outstanding(), 1);
+        assert_eq!(pipeline.record_cleanup(good), Ok(1));
+        pipeline.audit_finished().unwrap();
+    }
 
     #[test]
     fn f06_票據與靜態快照不一致不得歸還或解鎖任何資源() {
