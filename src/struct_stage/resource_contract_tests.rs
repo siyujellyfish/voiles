@@ -660,6 +660,36 @@ mod p16_6_r03_10_單層布林分支與作用域資源清理 {
     }
 
     #[test]
+    fn f04_f12_完整_checker_成功後才將_已驗證_bool_hir_交予真正作用域資源橋接() {
+        let verified = verified_private_source(SRC).unwrap();
+        let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let StmtKind::If { branch, .. } = &main.body[1].kind
+            else { panic!("原始來源必須是單一已驗證 if") };
+        let actual = verified.scalar_hir.expression(branch.condition.node_span())
+            .expect("真實 Checker 全部成功後必須交付 if 的 Typed HIR");
+        assert_eq!(actual.ty, crate::common_ir::ScalarType::Bool);
+        assert_eq!(actual.span, branch.condition.node_span());
+        assert!(verified.scalar_hir.expression(
+            crate::common_ir::NodeSpan::new(actual.span.start,
+                actual.span.end + 1)).is_none(),
+            "不允許相同起點、不同終點的偽造條件證據");
+
+        let StmtKind::Return(return_term) = &main.body[2].kind
+            else { panic!("必須有最後 return 0") };
+        assert_eq!(verified.scalar_hir.expression(return_term.node_span())
+            .expect("合法 return int 應有成功求值證據").ty,
+            crate::common_ir::ScalarType::Int);
+        for source in [SRC.to_owned(), SRC.replace("if(true)", "if(false)")] {
+            assert!(trace_scope_struct_source(&source, None).is_ok(),
+                "真實作用域橋接應直接消費 Checker 成功交付的 bool HIR");
+        }
+        let invalid = SRC.replace("if(true)", "if(1)");
+        assert!(verified_private_source(&invalid).is_err(),
+            "Checker 沒有全部成功時不得產生可交付 P16 橋接的 HIR");
+        assert!(trace_scope_struct_source(&invalid, None).is_err());
+    }
+
+    #[test]
     fn 真正_if_true_內層釋放先於外層_資源事件和宣告身分一致() {
         let events=trace_scope_struct_source(SRC,None).unwrap();
         assert_eq!(events,vec![
