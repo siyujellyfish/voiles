@@ -90,9 +90,10 @@ impl<'a> Resolver<'a> {
                     scopes.last_mut().unwrap().insert(b.name.clone(), id);
                 }
                 StmtKind::Assignment { name, value } => {
-                    if self.binding_for_reference(name, statement.start, scopes).is_none() {
-                        return Err(self.error("賦值目標尚未宣告", statement.start, statement.end));
-                    }
+                    let declaration = self.binding_for_reference(name, statement.start, scopes)
+                        .ok_or_else(|| self.error(
+                            "賦值目標尚未宣告", statement.start, statement.end))?;
+                    self.facts.assignments.insert(statement.start, declaration);
                     self.check_expr(value, scopes)?;
                 }
                 StmtKind::Return(expr) => self.check_expr(expr, scopes)?,
