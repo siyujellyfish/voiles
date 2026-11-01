@@ -194,6 +194,13 @@ struct VerifiedMoveEvidence {
     target: DeclarationId,
 }
 
+/// F12：無 Checker 已驗證轉移事實時不得寫入任何資源安全帳簿。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VerifiedMoveError {
+    MissingEvidence,
+    Pipeline(crate::resource_borrow_pipeline::PipelineError),
+}
+
 struct VerifiedDeclarationFacts {
     by_source: BTreeMap<DeclarationId, (String, bool)>,
     /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
@@ -218,6 +225,18 @@ impl VerifiedDeclarationFacts {
         (source != target && from_type == ty && to_type == ty
             && self.direct_moves.contains(&(source, target)))
             .then_some(VerifiedMoveEvidence { source, target })
+    }
+
+    /// 唯一可由已核准直線 Checker 移交事實接入抽象資源管線的操作。
+    /// 拒絕錯誤來源、型別與方向，且在 Pipeline 任一側失敗時不提交。
+    fn apply_verified_direct_move(
+        &self, pipeline: &mut crate::resource_borrow_pipeline::SafetyPipeline,
+        source: DeclarationId, target: DeclarationId, ty: &str,
+    ) -> Result<(), VerifiedMoveError> {
+        let proof = self.verified_direct_move(source, target, ty)
+            .ok_or(VerifiedMoveError::MissingEvidence)?;
+        pipeline.move_into(proof.source, proof.target)
+            .map_err(VerifiedMoveError::Pipeline)
     }
 
     fn has_direct_move(&self, source: DeclarationId, target: DeclarationId) -> bool {

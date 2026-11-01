@@ -75,7 +75,20 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let mut pipeline = SafetyPipeline::new();
         pipeline.declare(source_id, CopyPermission::Forbidden).unwrap();
         pipeline.register_resource(source_id, *resource).unwrap();
-        pipeline.move_into(source_id, target_id).unwrap();
+        for (from, to, ty) in [
+            (source_id, target_id, "int"),
+            (target_id, source_id, "str"),
+            (source_id, DeclarationId(code.len() + 1), "str"),
+        ] {
+            assert_eq!(checked.declarations.apply_verified_direct_move(
+                &mut pipeline, from, to, ty,
+            ), Err(VerifiedMoveError::MissingEvidence));
+            assert!(pipeline.read(source_id).is_ok(), "沒有 Checker 證據不能搬走所有者");
+            assert_eq!(pipeline.outstanding(), 1);
+        }
+        checked.declarations.apply_verified_direct_move(
+            &mut pipeline, source_id, target_id, "str",
+        ).expect("只有真正經 Checker 核准的來源及型別可進行抽象移交");
         assert!(pipeline.read(source_id).is_err(), "移動後原來源已失效");
         assert!(pipeline.read(target_id).is_ok());
         assert_eq!(pipeline.outstanding(), 1);
@@ -84,6 +97,36 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         pipeline.audit_finished().expect("雙模型均無資源漏放");
         assert!(pipeline.record_cleanup(target_id).is_err(),
             "同一持有者不能清理兩次");
+    }
+
+    #[test]
+    fn f12_驗證證據存在但目標已占用時不容許部分移交() {
+        let source_text = "fn main()->int{\nvar from:str = \"數據\"\nvar to:str = from.move()\nreturn 0\n}\n";
+        let checked = verified_private_source(source_text).unwrap();
+        let main = checked.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let source = DeclarationId(main.body[0].start);
+        let target = DeclarationId(main.body[1].start);
+        let mut pipeline = SafetyPipeline::new();
+        pipeline.declare(source, CopyPermission::Forbidden).unwrap();
+        pipeline.register_resource(source, 7001).unwrap();
+        // Checker 具備真實的移交證據，但目標在安全帳簿已被占用，
+        // 雙側交易仍須預檢拒絕，不能先讓來源失效。
+        pipeline.declare(target, CopyPermission::Allowed).unwrap();
+        assert_eq!(checked.declarations.apply_verified_direct_move(
+            &mut pipeline, source, target, "bool",
+        ), Err(VerifiedMoveError::MissingEvidence));
+        assert_eq!(checked.declarations.apply_verified_direct_move(
+            &mut pipeline, source, target, "str",
+        ), Err(VerifiedMoveError::Pipeline(
+            crate::resource_borrow_pipeline::PipelineError::Ownership(
+                crate::borrow_ownership_gate::GateError::DuplicateDestination,
+            ),
+        )));
+        assert_eq!(pipeline.outstanding(), 1);
+        assert!(pipeline.read(source).is_ok());
+        assert!(pipeline.read(target).is_ok());
+        assert_eq!(pipeline.record_cleanup_batch(&[source, target]), Ok(1));
+        assert!(pipeline.audit_finished().is_ok());
     }
 
     #[test]
