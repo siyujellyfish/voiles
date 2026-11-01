@@ -2259,8 +2259,14 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
     }
     fn read(name: &str) -> Stmt { stmt(StmtKind::Return(term(name)), 200) }
     fn mentions(body: &[Stmt], visible: Option<DeclarationId>) -> bool {
-        Checker::<fn(&str) -> CopyPermission>::scope_mentions_binding(
-            body, "alias", DeclarationId(10), visible)
+        let mut initial = HashMap::new();
+        if let Some(declaration) = visible {
+            initial.insert("alias".to_owned(), declaration);
+        }
+        let mut used = BTreeSet::new();
+        Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
+            body, &mut initial, &mut used);
+        used.contains(&DeclarationId(10))
     }
 
     #[test]

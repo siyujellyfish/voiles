@@ -2596,3 +2596,89 @@ mod p16_6_r05_定義索引安全回歸 {
         assert!(error.span.is_some());
     }
 }
+
+#[cfg(test)]
+mod f07_全後繼詞彙使用身分計畫 {
+    use super::*;
+
+    fn scan(code: &str) -> (BTreeSet<DeclarationId>, DeclarationId, DeclarationId) {
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let (_, functions) =
+            Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }
+                .file().expect("必須可解析私有受限語法");
+        let main = functions.iter().find(|f| f.name == "main").unwrap();
+        let owner = DeclarationId(main.body[0].start);
+        let alias = DeclarationId(main.body[1].start);
+        let mut visible = HashMap::from([
+            ("owner".to_owned(), owner), ("alias".to_owned(), alias),
+        ]);
+        let mut future = BTreeSet::new();
+        Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
+            &main.body[2..], &mut visible, &mut future);
+        (future, owner, alias)
+    }
+
+    #[test]
+    fn 分支內的遮蔽借用別名與外層同名來源必須有不同_use_def() {
+        let code = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif(true){\nvar alias:int = 2\nvar copied:int = alias\n}\nreturn owner\n}\n";
+        let (used, owner, alias) = scan(code);
+        assert!(used.contains(&owner));
+        assert!(!used.contains(&alias),
+            "只讀取分支內同名新宣告不能延長外層借用票據");
+        let inner = DeclarationId(code.rfind("var alias:int").unwrap());
+        assert_ne!(inner, alias);
+        assert!(!used.contains(&inner),
+            "後繼掃描只追蹤進入時仍存活的詞彙借用；新宣告不屬原票據");
+        assert!(inspect(code).is_ok(),
+            "內層遮蔽的最後使用點之後，原來源可直接使用");
+    }
+
+    #[test]
+    fn 分支內宣告初始化式必須先引用外層而後再遮蔽() {
+        let code = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif(true){\nvar alias:int = alias\nreturn alias\n}\nreturn 0\n}\n";
+        let (used, _, alias) = scan(code);
+        let inner = DeclarationId(code.rfind("var alias:int").unwrap());
+        assert!(used.contains(&alias),
+            "內層宣告右值先使用外層已驗證借用身分");
+        assert!(!used.contains(&inner),
+            "新宣告後的使用不應延長掃描入口的舊借用票據");
+    }
+
+    #[test]
+    fn 迴圈迭代器遮蔽與分支外層使用分開記錄() {
+        let outer = DeclarationId(12);
+        let iterator = DeclarationId(90);
+        let t = Term { kind: TermKind::Name("alias".to_owned()),
+            start: 115, end: 120 };
+        let body = vec![Stmt {
+            start: 100, end: 130,
+            kind: StmtKind::ForRange {
+                iterator: "alias".to_owned(), iterator_start: iterator.0,
+                lower: "0".to_owned(), upper: "2".to_owned(),
+                body: vec![Stmt {
+                    start: 113, end: 124, kind: StmtKind::Return(t),
+                }],
+            },
+        }];
+        let mut visible = HashMap::from([("alias".to_owned(), outer)]);
+        let mut used = BTreeSet::new();
+        Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
+            &body, &mut visible, &mut used);
+        assert!(!used.contains(&iterator),
+            "for 新迭代實例不是入口既有的借用身分");
+        assert!(!used.contains(&outer),
+            "迴圈迭代器不得依相同名稱誤延長外層借用票據");
+        assert_eq!(visible["alias"], outer,
+            "迴圈出口不可以污染外層的詞彙可見來源");
+    }
+
+    #[test]
+    fn 真正跨分支後繼仍使用外層別名時不可提前解除借用() {
+        let code = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nif(true){\nvar alias:int = 2\n}else{\nvar copy:int = alias\n}\nreturn alias\n}\n";
+        let (used, _, alias) = scan(code);
+        assert!(used.contains(&alias),
+            "至少一條可達後繼使用外層別名時必須保守保留票據");
+    }
+}

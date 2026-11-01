@@ -205,137 +205,160 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    fn statement_mentions(statement: &Stmt, name: &str) -> bool {
-        match &statement.kind {
-            StmtKind::Declare { init, .. } => init.as_ref()
-                .is_some_and(|expr| Self::term_mentions(expr, name)),
-            StmtKind::Assign { name: target, value } =>
-                target == name || Self::term_mentions(value, name),
-            StmtKind::FieldAssign { receiver, value, .. } =>
-                receiver == name || Self::term_mentions(value, name),
-            StmtKind::If { branch, no } =>
-                Self::term_mentions(&branch.condition, name)
-                || branch.body.iter().any(|stmt| Self::statement_mentions(stmt, name))
-                || no.as_ref().is_some_and(|body|
-                    body.iter().any(|stmt| Self::statement_mentions(stmt, name))),
-            StmtKind::While { condition, body } =>
-                Self::term_mentions(condition, name)
-                || body.iter().any(|stmt| Self::statement_mentions(stmt, name)),
-            StmtKind::ForRange { body, .. } =>
-                body.iter().any(|stmt| Self::statement_mentions(stmt, name)),
-            StmtKind::Return(term) => Self::term_mentions(term, name),
-            StmtKind::Break | StmtKind::Continue => false,
+    /// F07：從實際詞彙宣告環境一次解析後繼中的全部 use-def 身分。
+    /// 語句 RHS 先於新宣告入域；分支／迴圈有獨立的名稱遮蔽，
+    /// 不把動態迭代實例誤認為同一個靜態票據。
+    fn record_named_future_use(
+        visible: &HashMap<String, DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>, name: &str,
+    ) {
+        if let Some(id) = visible.get(name) {
+            used.insert(*id);
         }
     }
 
-    /// F07：以實際詞彙環境的 DeclarationId 而非僅名稱，判定未來
-    /// 具名使用是否仍屬同一借用別名。初始化式先於新宣告入域；
-    /// 子區塊只繼承可見身分，不回寫父區塊的遮蔽狀態。
-    fn scope_mentions_binding(
-        body: &[Stmt], name: &str, target: DeclarationId,
-        mut visible: Option<DeclarationId>,
-    ) -> bool {
+    fn scan_future_term_uses(
+        term: &Term, visible: &HashMap<String, DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>,
+    ) {
+        match &term.kind {
+            TermKind::Name(name) | TermKind::Move(name) | TermKind::Borrow(name)
+            | TermKind::FieldRead(name, _) | TermKind::FieldMove(name, _) =>
+                Self::record_named_future_use(visible, used, name),
+            TermKind::MethodCall(receiver, _, arguments) => {
+                Self::record_named_future_use(visible, used, receiver);
+                for term in arguments {
+                    Self::scan_future_term_uses(term, visible, used);
+                }
+            }
+            TermKind::Construct(_, fields) => {
+                for (_, term) in fields {
+                    Self::scan_future_term_uses(term, visible, used);
+                }
+            }
+            TermKind::Call(_, arguments) => {
+                for term in arguments {
+                    Self::scan_future_term_uses(term, visible, used);
+                }
+            }
+            TermKind::BinaryInt(binary) => {
+                Self::scan_future_term_uses(&binary.left, visible, used);
+                Self::scan_future_term_uses(&binary.right, visible, used);
+            }
+            TermKind::Literal(_) => {}
+        }
+    }
+
+    fn scan_future_block_uses(
+        body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>,
+    ) {
         for statement in body {
             match &statement.kind {
-                StmtKind::Declare { name: declared, init, .. } => {
-                    if visible == Some(target) && init.as_ref().is_some_and(|expr|
-                        Self::term_mentions(expr, name)) {
-                        return true;
+                StmtKind::Declare { name, init, .. } => {
+                    if let Some(term) = init {
+                        Self::scan_future_term_uses(term, visible, used);
                     }
-                    if declared == name {
-                        let next = DeclarationId(statement.start);
-                        // 同一詞法位置出現在迴圈下一次迭代時是新綁定
-                        // 實例，不能讓前次迭代已失效的票據代理延續。
-                        // 同一 AST 來源身分不是動態借用票據的實例身分。
-                        visible = (next != target).then_some(next);
-                    }
+                    // 未來宣告在 RHS 之後才遮蔽外層。詞法位置不是
+                    // 下一輪迭代的動態借用票據身分。
+                    // 本次掃描只關心入口既存的借用身分。
+                    // 無論新宣告位置是否與入口 ID 相同，重建的動態
+                    // 別名都是另一個實例；後續名稱不再代表舊票據。
+                    visible.remove(name);
+                }
+                StmtKind::Assign { name, value } => {
+                    Self::record_named_future_use(visible, used, name);
+                    Self::scan_future_term_uses(value, visible, used);
+                }
+                StmtKind::FieldAssign { receiver, value, .. } => {
+                    Self::record_named_future_use(visible, used, receiver);
+                    Self::scan_future_term_uses(value, visible, used);
                 }
                 StmtKind::If { branch, no } => {
-                    if (visible == Some(target)
-                        && Self::term_mentions(&branch.condition, name))
-                        || Self::scope_mentions_binding(
-                            &branch.body, name, target, visible)
-                        || no.as_ref().is_some_and(|otherwise|
-                            Self::scope_mentions_binding(otherwise, name, target, visible)) {
-                        return true;
+                    Self::scan_future_term_uses(&branch.condition, visible, used);
+                    Self::scan_future_block_uses(
+                        &branch.body, &mut visible.clone(), used);
+                    if let Some(otherwise) = no {
+                        Self::scan_future_block_uses(
+                            otherwise, &mut visible.clone(), used);
                     }
                 }
                 StmtKind::While { condition, body } => {
-                    if (visible == Some(target) && Self::term_mentions(condition, name))
-                        || Self::scope_mentions_binding(body, name, target, visible) {
-                        return true;
-                    }
+                    Self::scan_future_term_uses(condition, visible, used);
+                    Self::scan_future_block_uses(body, &mut visible.clone(), used);
                 }
                 StmtKind::ForRange { iterator, iterator_start, body, .. } => {
-                    let in_loop = if iterator == name {
-                        Some(DeclarationId(*iterator_start))
-                    } else { visible };
-                    if Self::scope_mentions_binding(body, name, target, in_loop) {
-                        return true;
-                    }
+                    let mut nested = visible.clone();
+                    let _ = iterator_start;
+                    // for 迭代器不是進入此後繼掃描前已存在的借用實例，
+                    // 即使重用相同 AST DeclarationId 也不得替舊別名續命。
+                    nested.remove(iterator);
+                    Self::scan_future_block_uses(body, &mut nested, used);
                 }
-                _ => {
-                    if visible == Some(target) && Self::statement_mentions(statement, name) {
-                        return true;
-                    }
-                }
+                StmtKind::Return(term) =>
+                    Self::scan_future_term_uses(term, visible, used),
+                StmtKind::Break | StmtKind::Continue => {}
             }
+            // CFG 可達性尚未完成：即使出現 return／break 也繼續
+            // 保守掃描後繼，寧可延長借用，不可憑未證明的分支提前釋放。
         }
-        false
     }
 
-    /// VA15-01-A：以既有已解析 AST 宣告位置重建未來詞彙遮蔽，
-    /// 並由目前 Binding.declaration_start 鎖定借用別名身份。
-    /// 尚未得到完整 CFG use-def 時仍保守保留所有未能證明不可達的使用。
+    fn visible_future_sources(vars: &Scopes, depth: usize)
+        -> HashMap<String, DeclarationId> {
+        let mut result = HashMap::new();
+        for scope in vars.iter().take(depth + 1) {
+            for (name, binding) in scope.iter() {
+                result.insert(name.clone(), binding.declaration_start);
+            }
+        }
+        result
+    }
+
+    /// F07：每個詞法後繼只解析一次所有受影響的 DeclarationId；
+    /// 取代每個借用別名對每個後繼重掃 AST 名稱／遮蔽位置的重複權威。
     fn release_last_uses(vars: &mut Scopes, rest: &[Stmt],
         continuation: &[(usize, Vec<Stmt>)]) {
-        // 沒有可提早歸還的有效借用時，原演算法雖然不改 Binding，
-        // 仍會在 Rc::make_mut 複製完整作用域。提前結束不改任何票據語意。
         if !vars.iter().any(|scope| scope.values().any(|binding| {
             binding.loan.as_ref().is_some_and(|loan|
                 loan.active && loan.fact.source != binding.declaration_start)
         })) {
             return;
         }
-        let scope_names: Vec<HashSet<String>> = vars.iter()
-            .map(|scope| scope.keys().cloned().collect()).collect();
-        let mut younger_names = HashSet::new();
-        for (depth, scope) in vars.iter_mut().enumerate().rev() {
-            // 單一作用域沒有可歸還票據時，仍記錄遮蔽名稱，
-            // 但不建立完整 HashMap 副本，避免大量分支中的無效 COW。
-            let has_releasable_loan = scope.values().any(|binding|
+        let mut needed_here = BTreeSet::new();
+        Self::scan_future_block_uses(rest,
+            &mut Self::visible_future_sources(vars, vars.len() - 1),
+            &mut needed_here);
+        let needed_later: Vec<(usize, BTreeSet<DeclarationId>)> =
+            continuation.iter().map(|(depth, following)| {
+                let mut used = BTreeSet::new();
+                Self::scan_future_block_uses(following,
+                    &mut Self::visible_future_sources(vars, *depth),
+                    &mut used);
+                (*depth, used)
+            }).collect();
+
+        for (depth, scope) in vars.iter_mut().enumerate() {
+            let has_releasable = scope.values().any(|binding|
                 binding.loan.as_ref().is_some_and(|loan|
                     loan.active && loan.fact.source != binding.declaration_start));
-            if has_releasable_loan {
-            for (name, binding) in Rc::make_mut(scope).iter_mut() {
+            if !has_releasable {
+                continue;
+            }
+            for binding in Rc::make_mut(scope).values_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
-                    let needed_here = Self::scope_mentions_binding(
-                        rest, name, binding.declaration_start,
-                        (!younger_names.contains(name)).then_some(binding.declaration_start));
-                    // 各後繼分開保留真正的詞彙深度：內層局部遮蔽
-                    // 不會延長外層別名；退出內層後重新可見的外層
-                    // 借用，仍須保留至外層自己的最後使用點。
-                    let needed_later = continuation.iter().any(|(at_depth, following)| {
-                        *at_depth >= depth
-                            && (*at_depth == depth
-                                || !scope_names[depth + 1..=*at_depth].iter()
-                                    .any(|known| known.contains(name)))
-                            && Self::scope_mentions_binding(
-                                following, name, binding.declaration_start,
-                                Some(binding.declaration_start))
-                    });
-                    // 函式預設借用參數以其本身宣告身分保存非擁有
-                    // 借用票據代理，直到函式作用域真正退出才歸還。
-                    // 一般 owner.borrow() 來源不同，仍以最後使用點歸還。
-                    let parameter_scope_loan = loan.fact.source == binding.declaration_start;
-                    if loan.active && !parameter_scope_loan
-                        && !needed_here && !needed_later {
+                    // 函式借用參數仍由函式作用域出口管理，不能提前歸還。
+                    let parameter_scope_loan =
+                        loan.fact.source == binding.declaration_start;
+                    let future_use = needed_here.contains(&binding.declaration_start)
+                        || needed_later.iter().any(|(at_depth, used)|
+                            *at_depth >= depth
+                                && used.contains(&binding.declaration_start));
+                    if loan.active && !parameter_scope_loan && !future_use {
                         loan.active = false;
                     }
                 }
             }
-            }
-            younger_names.extend(scope.keys().cloned());
         }
     }
 
