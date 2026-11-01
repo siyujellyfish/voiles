@@ -258,6 +258,30 @@ mod tests {
     }
 
     #[test]
+    fn 共同呼叫核心仍只允許公開零參數且完整保留來源位元組跨度() {
+        let call = parse("水母()");
+        assert_eq!(call.start, 0);
+        assert_eq!(call.end, "水母()".len());
+        assert!(matches!(call.kind, ExprKind::ZeroArgCall(ref name) if name == "水母"));
+        let nested = parse("helper() + 2");
+        assert!(matches!(nested.kind, ExprKind::Add(_)));
+    }
+
+    #[test]
+    fn 共同呼叫核心拒絕未核准參數且不吞掉原始診斷位置() {
+        for source_text in ["helper(1)", "helper(", "helper(中)", "helper(1, 2)"] {
+            let source = Source::new(source_text.as_bytes().to_vec());
+            let tokens = scan(&source);
+            assert!(tokens.diagnostics.is_empty(), "測試必須能完成詞彙解析");
+            let mut parser = ExprParser::new(&source, &tokens.tokens, 0);
+            let err = parser.expression().expect_err("公開 MVP-A 不接受具參數函式呼叫");
+            assert_eq!(err.kind, crate::DiagnosticKind::Syntax);
+            assert_eq!(&*err.message, "首版零引數函式呼叫必須為空引數列表");
+            assert!(err.span.is_some());
+        }
+    }
+
+    #[test]
     fn 多位元組來源跨度按原始位元組保留() {
         let e = parse("\"中\"[0]");
         assert_eq!(e.start, 0);
