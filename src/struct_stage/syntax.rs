@@ -384,10 +384,8 @@ impl Parser<'_> {
             else if !self.symbol(')') { return Err(self.syntax("函式參數之間需要逗號")); }
         }
         self.take(')', "函式參數缺少右括號")?;
-        if !matches!(self.tok().kind, TokenKind::Arrow) {
-            return Err(self.syntax("函式需要回傳型別標註"));
-        }
-        self.cursor += 1;
+        crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
+            .ok_or_else(|| self.syntax("函式需要回傳型別標註"))?;
         let result_ty = self.name()?;
         let body = self.body()?;
         Ok(Function { name, params, result_ty, body })
