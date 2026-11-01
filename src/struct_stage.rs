@@ -152,7 +152,16 @@ type Scopes = Vec<Rc<HashMap<String, Binding>>>;
 
 /// 資料流需區分正常後繼、函式返回與迴圈轉移；後兩者不能混用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum FlowState { Fallthrough, Returned, LoopTransfer }
+enum FlowState {
+    Fallthrough,
+    Returned,
+    /// 已驗證的本層迴圈提前離開，並非下一輪反向邊。
+    Break,
+    /// 已驗證的本層迴圈反向邊，並非正常後繼或 return。
+    Continue,
+    /// 多分支混合的跳轉，未能證明屬單一 break／continue 類別。
+    LoopTransfer,
+}
 
 struct Checker<'a, C> {
     source: &'a Source,
