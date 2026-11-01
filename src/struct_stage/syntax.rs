@@ -105,14 +105,22 @@ impl Parser<'_> {
 
     fn atom(&mut self) -> Result<Term, Diagnostic> {
         let start = self.tok().start;
-        let (kind, mut end) = match self.tok().kind.clone() {
-            TokenKind::Integer(text) => {
-                if !Self::valid_integer(&text) {
-                    return Err(self.syntax("整數字面值無效或超出有號 64 位元範圍"));
+        let (kind, mut end) = if let Some(literal) =
+            crate::syntax_shared::peek_scalar_literal(self.tokens, self.cursor) {
+            let kind = match &literal.kind {
+                crate::syntax_shared::ScalarLiteral::Integer(text) => {
+                    if !Self::valid_integer(text) {
+                        return Err(self.syntax("整數字面值無效或超出有號 64 位元範圍"));
+                    }
+                    TermKind::Literal("int")
                 }
-                let end = self.tok().end; self.cursor += 1;
-                (TermKind::Literal("int"), end)
-            }
+                crate::syntax_shared::ScalarLiteral::Boolean(_) => TermKind::Literal("bool"),
+            };
+            // 完成私有安全驗證才消耗；保留非法 i64 的原始診斷 token。
+            self.cursor += 1;
+            (kind, literal.end)
+        } else {
+        match self.tok().kind.clone() {
             TokenKind::Decimal(ref text) => {
                 if Self::decimal64_checked_subset(text).is_none() {
                     return Err(self.syntax(
@@ -126,11 +134,6 @@ impl Parser<'_> {
             TokenKind::StringLiteral(_) => {
                 let end = self.tok().end; self.cursor += 1;
                 (TermKind::Literal("str"), end)
-            }
-            TokenKind::Keyword(s)
-                if crate::syntax_shared::boolean_keyword(&s).is_some() => {
-                let end = self.tok().end; self.cursor += 1;
-                (TermKind::Literal("bool"), end)
             }
             TokenKind::Symbol('(') => {
                 self.cursor += 1;
@@ -240,6 +243,7 @@ impl Parser<'_> {
                 }
             }
             _ => return Err(self.syntax("此階段不接受的運算式或來源形式")),
+        }
         };
         if self.symbol('.') || self.symbol('(') || self.symbol('[') {
             return Err(self.syntax("此階段尚不支援複合接收者或額外後綴操作"));
