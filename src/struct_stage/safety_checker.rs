@@ -670,6 +670,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // 不得以一般名稱使用把 str 借用轉成新資源擁有者。
                 binding.value.duplicate().map_err(|err| self.model_error(err, term))?;
                 let reference = self.checked_binding_use(binding, term)?;
+                if let Some(scalar) = crate::common_ir::ScalarType::from_name(
+                    reference.resolved.ty
+                ) {
+                    self.recorded_scalar_hir.borrow_mut().record_reference(
+                        crate::common_ir::TypedUse::new(
+                            term.node_span(),
+                            crate::common_ir::ResolvedUse::new(
+                                reference.resolved.declaration, scalar,
+                            ),
+                        ),
+                    );
+                }
                 Ok((reference.resolved.ty.to_owned(), true))
             }
             TermKind::Borrow(_) => Err(self.error(
@@ -1231,6 +1243,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let destination = Self::lookup_mut(vars, name).expect("已確認來源");
                     destination.value.mark_reinitialized();
                     destination.pending_fields = None;
+                    // 只在 RHS 型別、初始化與真正寫入全部成功後簽發
+                    // P10 同一種類的 typed assignment 證據；不為非純值
+                    // str/struct 資源覆寫假造 ScalarType 型別授權。
+                    if let Some(scalar) = crate::common_ir::ScalarType::from_name(&ty) {
+                        let declared = destination.semantic_declaration();
+                        let verified = crate::common_ir::TypedUse::new(
+                            statement.node_span(),
+                            crate::common_ir::ResolvedUse::new(
+                                declared.declaration, scalar,
+                            ),
+                        );
+                        self.recorded_scalar_hir.borrow_mut().record_assignment(verified);
+                    }
                 }
                 StmtKind::Return(term) => {
                     // 提前取得真正詞彙來源；evaluate(move) 將讓原來源失效。
