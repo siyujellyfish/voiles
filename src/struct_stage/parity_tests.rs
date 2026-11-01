@@ -17,10 +17,58 @@ mod p16_6_r02_公開私有前端交集契約 {
         }
         let ast = parser::parse(&source, &tokens.tokens)?;
         let facts = names::resolve_with_facts(&ast, &source)?;
-        types::check_with_names(&ast, &source, &facts)?;
-        flow::check_with_names(&ast, &source, &facts)?;
+        // 交集回歸必須走正式 check_file 相同的 P09→P10 型別 HIR→P11，
+        // 不能透過 P10／P11 的獨立相容入口略過 HIR 交付證據。
+        let typed = types::check_with_names_and_hir(&ast, &source, &facts)?;
+        flow::check_with_typed_hir(&ast, &source, &facts, &typed)?;
         functions::check(&ast, &source)?;
         Ok(())
+    }
+
+    #[test]
+    fn f05_公私正式_checker_相同已核准純值來源產生相同型別與半開位置證據() {
+        let code = "fn main()->int{\nvar value:int = 3\nif(true){\nreturn value\n}\nreturn 0\n}\n";
+        assert_eq!(public_check(code), Ok(()));
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let names = names::resolve_with_facts(&ast, &source).unwrap();
+        let public = types::check_with_names_and_hir(&ast, &source, &names).unwrap();
+        assert_eq!(flow::check_with_typed_hir(&ast, &source, &names, &public), Ok(()));
+        let private = verified_private_source(code).unwrap();
+        let span = |start: usize, length: usize|
+            crate::common_ir::NodeSpan::new(start, start + length);
+        let condition = code.find("true").unwrap();
+        let read = code.find("return value").unwrap() + "return ".len();
+        let final_return = code.rfind("return 0").unwrap() + "return ".len();
+        let init = code.find("= 3").unwrap() + 2;
+        for (start, length, expected) in [
+            (condition, 4, crate::common_ir::ScalarType::Bool),
+            (read, "value".len(), crate::common_ir::ScalarType::Int),
+            (final_return, 1, crate::common_ir::ScalarType::Int),
+            (init, 1, crate::common_ir::ScalarType::Int),
+        ] {
+            let at = span(start, length);
+            assert_eq!(public.expression(at).map(|fact| fact.ty), Some(expected),
+                "公開 P10 缺少完整型別 HIR：{at:?}");
+            assert_eq!(private.scalar_hir.expression(at).map(|fact| fact.ty),
+                Some(expected), "私有 Checker 與公開 P10 型別／來源位置不一致：{at:?}");
+            assert!(private.scalar_hir.expression(
+                span(start, length + 1)).is_none(),
+                "較長的半開位置不得冒充 Checker 真正核准的純值節點");
+        }
+        let declaration = crate::ownership_ledger::DeclarationId(
+            code.find("var value").unwrap());
+        let pub_decl = names.declaration(declaration).unwrap();
+        let priv_decl = private.declarations.typed_declaration(declaration).unwrap();
+        assert_eq!(pub_decl.declaration, priv_decl.declaration);
+        assert_eq!(match pub_decl.ty {
+            crate::common_ir::ScalarType::Int => "int",
+            crate::common_ir::ScalarType::Bool => "bool",
+        }, priv_decl.ty);
+        assert_eq!(pub_decl.mutable, priv_decl.mutable);
+        assert!(public_check(&code.replace("if(true)", "if(1)")).is_err());
+        assert!(verified_private_source(&code.replace("if(true)", "if(1)")).is_err());
     }
 
     #[test]
