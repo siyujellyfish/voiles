@@ -274,6 +274,33 @@ impl VerifiedDeclarationFacts {
         })
     }
 
+    /// F11：已成功型別檢查的所有純值 HIR 必須與同一 Checker 的
+    /// 宣告／var-const 權威完全一致；只讀交叉稽核，不從 AST 猜測
+    /// 動態資源實例、所有權或尚未核准的完整 CFG。
+    fn scalar_hir_is_consistent(
+        &self, hir: &crate::common_ir::VerifiedScalarHir, source_len: usize,
+    ) -> bool {
+        let valid_span = |span: crate::common_ir::NodeSpan| {
+            span.start < span.end && span.end <= source_len
+        };
+        hir.verified_expressions().all(|expr| valid_span(expr.span))
+            && hir.verified_references().all(|entry| {
+                valid_span(entry.span)
+                    && self.typed_declaration(entry.resolved.declaration)
+                        .is_some_and(|decl| decl.declaration.0 <= entry.span.start
+                            && crate::common_ir::ScalarType::from_name(decl.ty)
+                                == Some(entry.resolved.ty))
+            })
+            && hir.verified_assignments().all(|entry| {
+                valid_span(entry.span)
+                    && self.typed_declaration(entry.resolved.declaration)
+                        .is_some_and(|decl| decl.mutable
+                            && decl.declaration.0 <= entry.span.start
+                            && crate::common_ir::ScalarType::from_name(decl.ty)
+                                == Some(entry.resolved.ty))
+            })
+    }
+
     /// 一筆具名返回須由 Checker 在真正成功驗證 `return name.move()`
     /// 後按來源 DeclarationId 及原始運算式位置直接簽出證據。
     fn verified_named_return(
@@ -367,10 +394,11 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
     let declarations = VerifiedDeclarationFacts::from_checker(
         by_source, direct_moves, named_returns, field_writes);
     // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
-    if !declarations.evidence_is_consistent(&structs) {
+    if !declarations.evidence_is_consistent(&structs)
+        || !declarations.scalar_hir_is_consistent(&scalar_hir, text.len()) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
-            message: "P16：Checker 資源證據與宣告型別、欄位權限或來源身分不一致".into(),
+            message: "P16：Checker 安全證據與宣告、型別 HIR 或資源權限不一致".into(),
             span: None,
         });
     }
