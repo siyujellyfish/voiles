@@ -2601,7 +2601,7 @@ mod p16_6_r05_定義索引安全回歸 {
 mod f07_全後繼詞彙使用身分計畫 {
     use super::*;
 
-    fn scan(code: &str) -> (HashSet<DeclarationId>, DeclarationId, DeclarationId) {
+    fn scan(code: &str) -> (BTreeSet<DeclarationId>, DeclarationId, DeclarationId) {
         let source = Source::new(code.as_bytes().to_vec());
         let tokens = lexer::scan(&source);
         assert!(tokens.diagnostics.is_empty());
@@ -2614,7 +2614,7 @@ mod f07_全後繼詞彙使用身分計畫 {
         let mut visible = HashMap::from([
             ("owner".to_owned(), owner), ("alias".to_owned(), alias),
         ]);
-        let mut future = HashSet::new();
+        let mut future = BTreeSet::new();
         Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
             &main.body[2..], &mut visible, &mut future);
         (future, owner, alias)
@@ -2662,7 +2662,7 @@ mod f07_全後繼詞彙使用身分計畫 {
             },
         }];
         let mut visible = HashMap::from([("alias".to_owned(), outer)]);
-        let mut used = HashSet::new();
+        let mut used = BTreeSet::new();
         Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
             &body, &mut visible, &mut used);
         assert!(used.contains(&iterator));
