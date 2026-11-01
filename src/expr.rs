@@ -130,19 +130,23 @@ impl<'a> ExprParser<'a> {
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
+        // 直接消耗共通 Parser 核心建立的具跨度純值字面值 AST。
+        if let Some(literal) =
+            crate::syntax_shared::take_scalar_literal(self.tokens, &mut self.cursor) {
+            let kind = match literal.kind {
+                crate::syntax_shared::ScalarLiteral::Integer(text) =>
+                    ExprKind::IntLiteral(text),
+                crate::syntax_shared::ScalarLiteral::Boolean(value) =>
+                    ExprKind::BoolLiteral(value),
+            };
+            return Ok(Expr { kind, start: literal.start, end: literal.end });
+        }
         let token = self.next().ok_or_else(|| self.error("缺少運算式"))?;
         let start = token.start;
         let end = token.end;
         match &token.kind {
-            TokenKind::Integer(text) => Ok(Expr { kind: ExprKind::IntLiteral(text.clone()), start, end }),
             TokenKind::Decimal(text) => Ok(Expr { kind: ExprKind::DecimalLiteral(text.clone()), start, end }),
             TokenKind::StringLiteral(text) => Ok(Expr { kind: ExprKind::StringLiteral(text.clone()), start, end }),
-            TokenKind::Keyword(word)
-                if crate::syntax_shared::boolean_keyword(word).is_some() => Ok(Expr {
-                kind: ExprKind::BoolLiteral(
-                    crate::syntax_shared::boolean_keyword(word).expect("已預檢 bool 常值")
-                ), start, end
-            }),
             TokenKind::Name(name) => {
                 if self.symbol('(') {
                     self.next();
