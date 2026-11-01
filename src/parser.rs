@@ -150,29 +150,11 @@ impl<'a> Parser<'a> {
         }
     }
     fn binding(&mut self) -> Result<Binding, Diagnostic> {
-        let start = self.current().ok_or_else(|| self.err("缺少宣告"))?.start;
-        let mutable = self.keyword("var");
-        if !mutable && !self.keyword("const") {
-            return Err(self.err("首版只接受 var 或 const 宣告"));
-        }
-        self.next();
-        let name = self.name()?;
-        self.expect_symbol(':', "一般變數宣告必須標註型別")?;
-        let ty = self.ty()?;
-        let mut initializer = None;
-        if self.symbol('=') {
-            self.next();
-            let expr = self.expression()?;
-            if !self.is_initial_value(&expr) {
-                return Err(self.err("首版宣告初始化僅接受相符型別常值或合法具名變數"));
-            }
-            initializer = Some(expr);
-        } else if !mutable {
-            return Err(self.err("const 宣告時必須立即初始化"));
-        }
-        let end = initializer.as_ref().map(|x| x.end)
-            .unwrap_or_else(|| self.tokens[self.cursor - 1].end);
-        Ok(Binding { name, ty, mutable, initializer, start, end })
+        let parsed = crate::syntax_shared::parse_declaration(self)?;
+        Ok(Binding {
+            name: parsed.name, ty: parsed.ty, mutable: parsed.mutable,
+            initializer: parsed.initializer, start: parsed.start, end: parsed.end,
+        })
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
@@ -260,6 +242,47 @@ impl<'a> Parser<'a> {
             return Err(self.err("來源檔案至少需要合法頂層宣告"));
         }
         Ok(File { items, start: 0, end: self.source.bytes.len() })
+    }
+}
+
+impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
+    type Type = Type;
+    type Expression = Expr;
+    fn declaration_start(&self) -> usize {
+        self.current().map(|token| token.start).unwrap_or(self.source.bytes.len())
+    }
+    fn begin_declaration(&mut self) -> Result<bool, Diagnostic> {
+        let mutable = self.keyword("var");
+        if !mutable && !self.keyword("const") {
+            return Err(self.err("首版只接受 var 或 const 宣告"));
+        }
+        self.next();
+        Ok(mutable)
+    }
+    fn declaration_name(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn declaration_colon(&mut self) -> Result<(), Diagnostic> {
+        self.expect_symbol(':', "一般變數宣告必須標註型別").map(|_| ())
+    }
+    fn declaration_type(&mut self) -> Result<Type, Diagnostic> { self.ty() }
+    fn declaration_has_initializer(&self) -> bool { self.symbol('=') }
+    fn declaration_equals(&mut self) { self.next(); }
+    fn declaration_expression(&mut self) -> Result<Expr, Diagnostic> {
+        let expression = self.expression()?;
+        if !self.is_initial_value(&expression) {
+            return Err(self.err("首版宣告初始化僅接受相符型別常值或合法具名變數"));
+        }
+        Ok(expression)
+    }
+    fn validate_declaration_initializer(
+        &self, mutable: bool, initializer: &Option<Expr>,
+    ) -> Result<(), Diagnostic> {
+        if !mutable && initializer.is_none() {
+            Err(self.err("const 宣告時必須立即初始化"))
+        } else { Ok(()) }
+    }
+    fn declaration_end(&self, initializer: &Option<Expr>) -> usize {
+        initializer.as_ref().map(|value| value.end)
+            .unwrap_or_else(|| self.tokens[self.cursor - 1].end)
     }
 }
 
