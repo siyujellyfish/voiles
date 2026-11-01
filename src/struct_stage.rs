@@ -335,6 +335,8 @@ struct VerifiedPrivateSource {
     structs: HashMap<String, StructDecl>,
     functions: Vec<Function>,
     declarations: VerifiedDeclarationFacts,
+    /// 僅在整份私有 Checker 全部成功後交付的公私共同純值 HIR。
+    scalar_hir: crate::common_ir::VerifiedScalarHir,
 }
 
 fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
@@ -361,6 +363,7 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
     let direct_moves = checker.recorded_direct_moves.into_inner();
     let named_returns = checker.recorded_named_returns.into_inner();
     let field_writes = checker.recorded_field_writes.into_inner();
+    let scalar_hir = checker.recorded_scalar_hir.into_inner();
     let declarations = VerifiedDeclarationFacts::from_checker(
         by_source, direct_moves, named_returns, field_writes);
     // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
@@ -371,7 +374,7 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
             span: None,
         });
     }
-    Ok(VerifiedPrivateSource { source, structs, functions, declarations })
+    Ok(VerifiedPrivateSource { source, structs, functions, declarations, scalar_hir })
 }
 
 #[cfg(test)]
