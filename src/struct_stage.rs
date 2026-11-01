@@ -88,7 +88,7 @@ enum TermKind {
     Literal(&'static str),
     Name(String),
     /// P01 已核准的 int 加減；計算前必須依序驗證兩端所有權。
-    BinaryInt { left: Box<Term>, operator: char, right: Box<Term> },
+    BinaryInt(crate::common_ir::ArithmeticNode<Term>),
     Construct(String, Vec<(String, Term)>),
     /// 一般函式位置引數；呼叫端所有權資料流完成前不得接受。
     Call(String, Vec<Term>),
