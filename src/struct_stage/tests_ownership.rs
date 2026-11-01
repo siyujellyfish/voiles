@@ -43,6 +43,51 @@ mod tests {
     }
 
     #[test]
+    fn f04_f08_私有實際讀取借用及移動必須消費同一_checker_具型別宣告權威() {
+        let source = Source::new(b"var value:int = 1\nvalue\n".to_vec());
+        let structs = HashMap::new();
+        let functions = Vec::new();
+        let checker = Checker {
+            source: &source, structs: &structs, functions: &functions,
+            function_index: HashMap::new(),
+            ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+        };
+        let owner = DeclarationId(0);
+        let term = Term { kind: TermKind::Name("value".into()), start: 18, end: 23 };
+        let mut vars = vec![Rc::new(HashMap::from([("value".into(), Binding {
+            declaration_start: owner, ty: "int".into(), mutable: true,
+            value: ValueSlot::initialized(Allowed), pending_fields: None, loan: None,
+        })]))];
+        assert!(checker.check_direct(&vars, "value", &term).is_err(),
+            "不可以只有一份自行組裝的 Binding 就授權直接存取");
+        checker.record_declaration(owner, "int", true);
+        assert_eq!(checker.evaluate(&term, &mut vars), Ok(("int".into(), true)));
+        assert_eq!(checker.authorize_borrow(&vars, "value", true, &term)
+            .map(|(ty, _)| ty), Ok("int".into()));
+
+        for changed in [
+            crate::common_ir::TypedDeclaration::new(owner, "bool".into(), true),
+            crate::common_ir::TypedDeclaration::new(owner, "int".into(), false),
+            crate::common_ir::TypedDeclaration::new(DeclarationId(6), "int".into(), true),
+        ] {
+            checker.recorded_declarations.borrow_mut().insert(owner, changed);
+            assert!(checker.check_direct(&vars, "value", &term).is_err(),
+                "型別、const/var 權限或身分竄改時不可讀取或直接移動");
+            assert!(checker.authorize_borrow(&vars, "value", true, &term).is_err(),
+                "相同宣告權威不合法時不可取得任何借用票據");
+        }
+        checker.recorded_declarations.borrow_mut().insert(owner,
+            crate::common_ir::TypedDeclaration::new(owner, "int".into(), true));
+        let moved = Term { kind: TermKind::Move("value".into()), start: 18, end: 23 };
+        assert_eq!(checker.evaluate(&moved, &mut vars), Ok(("int".into(), true)),
+            "只有已驗證的同一個來源身分與型別才能整筆 move");
+    }
+
+    #[test]
     fn 公私正式_checker_具型別引用契約保留實際來源且不放寬私有型別() {
         let private = Binding {
             declaration_start: DeclarationId(420),
