@@ -625,7 +625,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// 正式私有求值成功後，直接以與公開 P10 相同的 HIR 型別
+    /// 記錄原運算式的來源半開跨度；失敗不交付任何新的合法證據。
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
+        -> Result<(String, bool), Diagnostic> {
+        let result = self.evaluate_inner(term, vars)?;
+        if result.1 {
+            if let Some(ty) = crate::common_ir::ScalarType::from_name(&result.0) {
+                self.recorded_scalar_hir.borrow_mut()
+                    .record_expression(term.node_span(), ty);
+            }
+        }
+        Ok(result)
+    }
+
+    fn evaluate_inner(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
@@ -1348,6 +1362,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != "bool" || !ready {
                         return Err(self.error("while 條件必須是已初始化 bool", condition));
                     }
+                    if self.recorded_scalar_hir.borrow()
+                        .expression(condition.node_span())
+                        .is_none_or(|fact| fact.ty != crate::common_ir::ScalarType::Bool) {
+                        return Err(self.error(
+                            "P16：控制流程條件缺少 Checker 已驗證 bool 運算式 HIR",
+                            condition,
+                        ));
+                    }
                     let snapshot = vars.clone();
                     let mut simulated = snapshot.clone();
                     // 下一次條件檢查及迭代本體都屬未來可達路徑，
@@ -1397,6 +1419,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let (actual, ready) = self.evaluate(condition, vars)?;
                     if actual != "bool" || !ready {
                         return Err(self.error("if 條件必須是已初始化 bool", condition));
+                    }
+                    if self.recorded_scalar_hir.borrow()
+                        .expression(condition.node_span())
+                        .is_none_or(|fact| fact.ty != crate::common_ir::ScalarType::Bool) {
+                        return Err(self.error(
+                            "P16：控制流程條件缺少 Checker 已驗證 bool 運算式 HIR",
+                            condition,
+                        ));
                     }
                     let snapshot = vars.clone();
                     // 每條分支只能參考自己之後真正可達的語句。
