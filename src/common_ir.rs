@@ -95,6 +95,19 @@ impl<T> ResolvedUse<T> {
     }
 }
 
+/// F04：正式型別化引用的來源半開跨度與已解析宣告必須同行傳遞。
+/// 不以名稱文字重新推測擁有者；具體型別能力仍由不同模式的 Checker 驗證。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TypedUse<T> {
+    pub(crate) span: NodeSpan,
+    pub(crate) resolved: ResolvedUse<T>,
+}
+impl<T> TypedUse<T> {
+    pub(crate) fn new(span: NodeSpan, resolved: ResolvedUse<T>) -> Self {
+        Self { span, resolved }
+    }
+}
+
 /// 公開純值 HIR 引用是共同語意引用的 int／bool 專用形式。
 pub(crate) type ResolvedScalarUse = ResolvedUse<ScalarType>;
 
@@ -112,6 +125,15 @@ impl ResolvedNames {
 
     pub(crate) fn assignment(&self, start: usize) -> Option<ResolvedScalarUse> {
         self.use_for(&self.assignments, start)
+    }
+
+    /// 只接受 P09 已驗證的來源身分，保留正式 Parser 提供的半開來源跨度。
+    pub(crate) fn reference_at(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.reference(span.start).map(|resolved| TypedUse::new(span, resolved))
+    }
+
+    pub(crate) fn assignment_at(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.assignment(span.start).map(|resolved| TypedUse::new(span, resolved))
     }
 
     pub(crate) fn reference_type(&self, start: usize) -> Option<ScalarType> {
