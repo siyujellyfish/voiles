@@ -57,6 +57,8 @@ mod tests {
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default()),
         };
         let owner = DeclarationId(0);
         let term = Term { kind: TermKind::Name("value".into()), start: 18, end: 23 };
