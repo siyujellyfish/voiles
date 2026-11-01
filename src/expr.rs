@@ -164,11 +164,7 @@ impl<'a> ExprParser<'a> {
         match &token.kind {
             TokenKind::Decimal(text) => Ok(Expr { kind: ExprKind::DecimalLiteral(text.clone()), start, end }),
             TokenKind::StringLiteral(text) => Ok(Expr { kind: ExprKind::StringLiteral(text.clone()), start, end }),
-            TokenKind::Symbol('(') => {
-                let nested = self.expression()?;
-                let end = self.expect_symbol(')', "算術分組缺少右圓括號")?;
-                Ok(Expr { kind: ExprKind::Group(Box::new(nested)), start, end })
-            }
+            TokenKind::Symbol('(') => crate::syntax_shared::parse_group(self, start),
             _ => {
                 self.cursor -= 1;
                 Err(self.error("缺少合法運算元或首版未支援此運算式"))
@@ -195,6 +191,17 @@ impl<'a> ExprParser<'a> {
             end: value.end,
             kind: ExprKind::FirstIndexWrite(Box::new(target), Box::new(value)),
         })
+    }
+}
+
+impl crate::syntax_shared::GroupSyntax for ExprParser<'_> {
+    type Expression = Expr;
+    fn group_expression(&mut self) -> Result<Expr, Diagnostic> { self.expression() }
+    fn group_right_paren(&mut self) -> Result<usize, Diagnostic> {
+        self.expect_symbol(')', "算術分組缺少右圓括號")
+    }
+    fn group_result(&mut self, expression: Expr, start: usize, end: usize) -> Expr {
+        Expr { kind: ExprKind::Group(Box::new(expression)), start, end }
     }
 }
 
