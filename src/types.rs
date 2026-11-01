@@ -342,6 +342,16 @@ mod tests {
         assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
             "賦值目標型別不可解析",
             "篡改 P09 型別事實不能改變正式 Parser 宣告的 int 身分");
+        changed.declarations.insert(inner,
+            TypedDeclaration::new(inner, Type::Int, false));
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析",
+            "P09 var/const 權限被偽造時，P10 不得視為同一個 TypedDeclaration");
+        changed.declarations.insert(inner,
+            TypedDeclaration::new(outer, Type::Int, true));
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析",
+            "P09 宣告表鍵與宣告值的 DeclarationId 不能不一致");
     }
 
     #[test]
