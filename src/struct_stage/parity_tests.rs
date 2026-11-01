@@ -110,3 +110,43 @@ mod p16_6_r02_f03_結構欄位共用宣告核心與錯誤隔離 {
         assert!(crate::parser::parse(&src, &lexed.tokens).is_err());
     }
 }
+
+#[cfg(test)]
+mod p16_6_r02_f02_方法位置引數共用正式呼叫解析 {
+    use super::*;
+
+    fn parse_private(code: &str) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
+        let source = Source::new(code.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty());
+        Parser { source: &source, tokens: &scan.tokens, cursor: 0 }.file()
+    }
+
+    #[test]
+    fn 私有方法呼叫零個及多個位置引數保留順序與完整來源跨度() {
+        for (args_text, count) in [("", 0), ("1", 1), ("1, 2, 3", 3)] {
+            let code = format!("fn main()->int{{\nvar receiver:int = 1\nreturn receiver.work({args_text})\n}}\n");
+            let (_, functions) = parse_private(&code).expect("具名方法呼叫語法原本即可解析");
+            let StmtKind::Return(term) = &functions[0].body[1].kind
+                else { panic!("最後一個語句應為 return") };
+            let TermKind::MethodCall(receiver, name, args) = &term.kind
+                else { panic!("應保留原私有 MethodCall AST") };
+            assert_eq!(receiver, "receiver");
+            assert_eq!(name, "work");
+            assert_eq!(args.len(), count);
+            assert_eq!(term.start, code.find("receiver.work").unwrap());
+            assert_eq!(term.end, code.find(")\n}").unwrap() + 1);
+        }
+    }
+
+    #[test]
+    fn 缺逗號或未封閉括號仍使用原來私有方法診斷() {
+        for text in ["1 2", "1, 2 3"] {
+            let code = format!("fn main()->int{{\nvar receiver:int = 1\nreturn receiver.work({text})\n}}\n");
+            let error = parse_private(&code).unwrap_err();
+            assert_eq!(&*error.message, "方法位置引數之間需要逗號");
+            assert_eq!(error.kind, crate::DiagnosticKind::Syntax);
+            assert!(error.span.is_some());
+        }
+    }
+}
