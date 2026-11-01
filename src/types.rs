@@ -2,13 +2,14 @@
 //! 不推定 P11 確定初始化、變更權限，也不納入 Optional／struct／Copyable。
 
 use std::collections::HashMap;
+use std::cell::RefCell;
 
 use crate::{Diagnostic, DiagnosticKind};
 use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind, Type};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
-use crate::common_ir::{ResolvedNames, TypedDeclaration};
+use crate::common_ir::{ResolvedNames, TypedDeclaration, VerifiedScalarHir};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TypedValue {
@@ -27,6 +28,7 @@ struct TypeChecker<'a> {
     globals: HashMap<String, TypedDeclaration<Type>>,
     probe_move: bool,
     resolved: Option<&'a ResolvedNames>,
+    verified_hir: RefCell<VerifiedScalarHir>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -59,7 +61,10 @@ impl<'a> TypeChecker<'a> {
         match self.resolved {
             // 只有 P09 來源身分與實際可見的詞彙綁定型別完全相符才能授權。
             Some(facts) => facts.verified_reference(span, lexical)
-                .map(|use_| use_.resolved.ty),
+                .map(|use_| {
+                    self.verified_hir.borrow_mut().record_reference(use_);
+                    use_.resolved.ty
+                }),
             None => Some(lexical.ty),
         }
     }
@@ -155,7 +160,10 @@ impl<'a> TypeChecker<'a> {
                     let declared = self.visible_declaration(name, stmt.start, scopes)
                         .and_then(|binding| match self.resolved {
                             Some(names) => names.verified_assignment(stmt.node_span(), binding)
-                                .map(|use_| use_.resolved.ty),
+                                .map(|use_| {
+                                    self.verified_hir.borrow_mut().record_assignment(use_);
+                                    use_.resolved.ty
+                                }),
                             None => Some(binding.ty),
                         }).ok_or_else(|| self.error(
                         "賦值目標型別不可解析", stmt.start, stmt.end))?;
@@ -202,10 +210,24 @@ pub(crate) fn check_move_probe(file: &File, source: &Source) -> Result<(), Diagn
     check_with_move_probe(file, source, true, None)
 }
 
+/// 正式 P10 通過後才交付 P11 的具型別來源證據。
+pub(crate) fn check_with_names_and_hir(
+    file: &File, source: &Source, names: &ResolvedNames,
+) -> Result<VerifiedScalarHir, Diagnostic> {
+    check_with_hir_internal(file, source, false, Some(names))
+}
+
 fn check_with_move_probe<'a>(
     file: &File, source: &'a Source, probe_move: bool,
     resolved: Option<&'a ResolvedNames>,
 ) -> Result<(), Diagnostic> {
+    check_with_hir_internal(file, source, probe_move, resolved).map(|_| ())
+}
+
+fn check_with_hir_internal<'a>(
+    file: &File, source: &'a Source, probe_move: bool,
+    resolved: Option<&'a ResolvedNames>,
+) -> Result<VerifiedScalarHir, Diagnostic> {
     let mut functions = HashMap::new();
     let mut globals = HashMap::new();
     for item in &file.items {
@@ -215,14 +237,17 @@ fn check_with_move_probe<'a>(
                 TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable)); }
         }
     }
-    let checker = TypeChecker { source, functions, globals, probe_move, resolved };
+    let checker = TypeChecker {
+        source, functions, globals, probe_move, resolved,
+        verified_hir: RefCell::new(VerifiedScalarHir::default()),
+    };
     for item in &file.items {
         match item {
             Item::Binding(b) => checker.initializer(b, &[])?,
             Item::Function(f) => checker.block(&f.body, &mut Vec::new(), f.returns)?,
         }
     }
-    Ok(())
+    Ok(checker.verified_hir.into_inner())
 }
 
 #[cfg(test)]
