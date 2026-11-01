@@ -383,7 +383,7 @@ mod tests {
 
         let no_proof = crate::common_ir::VerifiedScalarHir::default();
         let error = check_with_typed_hir(&ast, &source, &facts, &no_proof).unwrap_err();
-        assert_eq!(&*error.message, "具名來源不存在可見宣告",
+        assert_eq!(&*error.message, "運算式缺少 P10 已驗證的來源位置與型別",
             "未出具 P10 型別 HIR 時，P11 不得由 P09 自行重建合法存取");
         assert_eq!(error.kind, DiagnosticKind::Static);
     }
