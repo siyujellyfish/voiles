@@ -93,9 +93,9 @@ impl OwnershipPass<'_> {
             ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
             ExprKind::ZeroArgCall(_) => Ok(()),
             ExprKind::Group(inner) => self.expression(inner, state),
-            ExprKind::Add(left, right) | ExprKind::Subtract(left, right) => {
-                self.expression(left, state)?;
-                self.expression(right, state)
+            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+                self.expression(&binary.left, state)?;
+                self.expression(&binary.right, state)
             }
             _ => Err(self.diagnostic(
                 "P13 試驗不支援此類資源運算式", expr.start, expr.end
