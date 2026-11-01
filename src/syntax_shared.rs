@@ -158,6 +158,20 @@ pub(crate) fn take_name(tokens: &[Token], cursor: &mut usize) -> Option<String> 
     Some(value.clone())
 }
 
+/// 公私真正共用的具名 AST 原子，返回帶有 UTF-8 原始半開跨度的名稱節點。
+/// 後綴語法由各 Parser 分別解釋，不因辨識名稱而放行借用／移動。
+pub(crate) fn take_spanned_name(
+    tokens: &[Token], cursor: &mut usize,
+) -> Option<crate::common_ir::SpannedNode<String>> {
+    let token = tokens.get(*cursor)?;
+    let TokenKind::Name(name) = &token.kind else { return None };
+    let result = crate::common_ir::SpannedNode {
+        kind: name.clone(), start: token.start, end: token.end,
+    };
+    *cursor += 1;
+    Some(result)
+}
+
 /// R02.9：公開 MVP-A 的純值型別消耗原語，唯一合法集合由
 /// 共通 ScalarType 定義。私有 P13 的 str／struct 型別不由此函式擴張。
 /// 若 token 不屬 int／bool，游標及錯誤位置必須完全不變。
@@ -203,6 +217,21 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 共通具名節點保留中文字元來源位置且錯誤游標不變() {
+        let tokens = [
+            Token { kind: TokenKind::Name("字".into()), start: 0, end: 3 },
+            Token { kind: TokenKind::Keyword("true".into()), start: 4, end: 8 },
+        ];
+        let mut at = 0;
+        let name = take_spanned_name(&tokens, &mut at).unwrap();
+        assert_eq!(name.kind, "字");
+        assert_eq!(name.node_span(), crate::common_ir::NodeSpan::new(0, 3));
+        assert_eq!(at, 1);
+        assert_eq!(take_spanned_name(&tokens, &mut at), None);
+        assert_eq!(at, 1);
+    }
 
     #[test]
     fn 公私共同純值字面值_ast_保留_utf8_位元組跨度與失敗游標() {
