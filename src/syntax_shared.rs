@@ -159,6 +159,24 @@ pub(crate) fn parse_block<P: BlockSyntax>(
     }
 }
 
+/// 公私兩套正式運算式解析器的共同括號解析順序。
+/// 兩個入口都在進入此函式前消耗左括號；失敗診斷及 AST 模式由入口決定。
+pub(crate) trait GroupSyntax {
+    type Expression;
+    fn group_expression(&mut self) -> Result<Self::Expression, crate::Diagnostic>;
+    fn group_right_paren(&mut self) -> Result<usize, crate::Diagnostic>;
+    fn group_result(&mut self, expression: Self::Expression, start: usize, end: usize)
+        -> Self::Expression;
+}
+
+pub(crate) fn parse_group<P: GroupSyntax>(
+    parser: &mut P, start: usize,
+) -> Result<P::Expression, crate::Diagnostic> {
+    let expression = parser.group_expression()?;
+    let end = parser.group_right_paren()?;
+    Ok(P::group_result(parser, expression, start, end))
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
