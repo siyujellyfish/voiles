@@ -97,7 +97,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     ) -> impl Iterator<Item = BorrowKind> + '_ {
         vars.iter().flat_map(|scope| scope.values()).filter_map(move |binding| {
             binding.loan.as_ref().and_then(|loan| {
-                (loan.active && loan.source == source).then_some(loan.kind)
+                (loan.active && loan.fact.source == source).then_some(loan.fact.kind)
             })
         })
     }
@@ -108,7 +108,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         BorrowSafety::validate_active_set(vars.iter()
             .flat_map(|scope| scope.values())
             .filter_map(|binding| binding.loan.as_ref().and_then(|loan| {
-                loan.active.then_some((loan.source, loan.kind))
+                loan.active.then_some((loan.fact.source, loan.fact.kind))
             }))).is_ok()
     }
 
@@ -156,7 +156,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             "HC14：共享／獨占借用與現有別名衝突",
         )?;
         Ok((owner.ty.clone(), LoanBinding {
-            source: owner.declaration_start, kind, active: true,
+            fact: BorrowFact::new(owner.declaration_start, kind), active: true,
         }))
     }
 
@@ -256,7 +256,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 仍會在 Rc::make_mut 複製完整作用域。提前結束不改任何票據語意。
         if !vars.iter().any(|scope| scope.values().any(|binding| {
             binding.loan.as_ref().is_some_and(|loan|
-                loan.active && loan.source != binding.declaration_start)
+                loan.active && loan.fact.source != binding.declaration_start)
         })) {
             return;
         }
@@ -268,7 +268,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             // 但不建立完整 HashMap 副本，避免大量分支中的無效 COW。
             let has_releasable_loan = scope.values().any(|binding|
                 binding.loan.as_ref().is_some_and(|loan|
-                    loan.active && loan.source != binding.declaration_start));
+                    loan.active && loan.fact.source != binding.declaration_start));
             if has_releasable_loan {
             for (name, binding) in Rc::make_mut(scope).iter_mut() {
                 if let Some(loan) = binding.loan.as_mut() {
@@ -287,7 +287,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 函式預設借用參數以其本身宣告身分保存非擁有
                     // 借用票據代理，直到函式作用域真正退出才歸還。
                     // 一般 owner.borrow() 來源不同，仍以最後使用點歸還。
-                    let parameter_scope_loan = loan.source == binding.declaration_start;
+                    let parameter_scope_loan = loan.fact.source == binding.declaration_start;
                     if loan.active && !parameter_scope_loan
                         && !needed_here && !needed_later {
                         loan.active = false;
@@ -739,7 +739,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 if let Some(loan) = &bound.loan {
                     if mode == BorrowKind::ExclusiveWrite
-                        && loan.kind != BorrowKind::ExclusiveWrite {
+                        && loan.fact.kind != BorrowKind::ExclusiveWrite {
                         return Err(self.error("HC14：唯讀借用不可呼叫可寫方法", term));
                     }
                 } else {
@@ -939,9 +939,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         span: Some(self.source.span(statement.start, statement.end)),
                     })?;
                 let original_loan = original.loan.as_ref().map(|loan|
-                    (loan.source, loan.kind, loan.active));
+                    (loan.fact.source, loan.fact.kind, loan.active));
                 let candidate_loan = candidate.loan.as_ref().map(|loan|
-                    (loan.source, loan.kind, loan.active));
+                    (loan.fact.source, loan.fact.kind, loan.active));
                 if candidate.declaration_start != original.declaration_start
                     || candidate.value != original.value
                     || candidate.pending_fields != original.pending_fields
@@ -1222,9 +1222,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
                                 let old_loan = original.loan.as_ref().map(|loan|
-                                    (loan.source, loan.kind, loan.active));
+                                    (loan.fact.source, loan.fact.kind, loan.active));
                                 let new_loan = candidate.loan.as_ref().map(|loan|
-                                    (loan.source, loan.kind, loan.active));
+                                    (loan.fact.source, loan.fact.kind, loan.active));
                                 if candidate.declaration_start != original.declaration_start
                                     || candidate.value != original.value
                                     || candidate.pending_fields != original.pending_fields
@@ -1277,9 +1277,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
                                 let old_loan = original.loan.as_ref().map(|loan|
-                                    (loan.source, loan.kind, loan.active));
+                                    (loan.fact.source, loan.fact.kind, loan.active));
                                 let new_loan = candidate.loan.as_ref().map(|loan|
-                                    (loan.source, loan.kind, loan.active));
+                                    (loan.fact.source, loan.fact.kind, loan.active));
                                 if candidate.declaration_start != original.declaration_start
                                     || candidate.value != original.value
                                     || candidate.pending_fields != original.pending_fields
@@ -1425,10 +1425,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 pending_fields: None,
                 loan: (self.permission(ty) != CopyPermission::Allowed
                     && !Self::parameter_is_consumed(fun, name)).then_some(LoanBinding {
-                        // 只在被呼叫端本地使用代理宣告身份，真正來源
-                        // 的借用票據由呼叫端持有至呼叫結束。
-                        source: DeclarationId(parameter.declaration_start),
-                        kind: BorrowKind::SharedRead, active: true,
+                        // 呼叫端真正 BorrowTicket 仍由其追蹤器維護；
+                        // 被呼叫端的靜態代理只保存相同的來源／權限契約。
+                        fact: BorrowFact::new(
+                            DeclarationId(parameter.declaration_start),
+                            BorrowKind::SharedRead,
+                        ), active: true,
                     }),
             });
         }
