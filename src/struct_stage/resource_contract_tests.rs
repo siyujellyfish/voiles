@@ -33,7 +33,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         use crate::owned_str_runtime::ResourceEvent;
         for literal in ["", "繁體中文", "🐋🪼", "A中B"] {
             let code = format!(
-                "fn main()->int{{\nvar owner:str = \\"{}\\"\nvar target:str = owner.move()\nreturn 0\n}}\n",
+                "fn main()->int{{\nvar owner:str = \"{}\"\nvar target:str = owner.move()\nreturn 0\n}}\n",
                 literal,
             );
             let actual = trace_named_string_move_source(&code)
