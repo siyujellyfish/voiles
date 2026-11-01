@@ -29,6 +29,13 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         assert_ne!(first.start, second.start);
         let source_id = DeclarationId(first.start);
         let target_id = DeclarationId(second.start);
+        assert_eq!(checked.declarations.verified_direct_move(source_id, target_id, "str"),
+            Some(VerifiedMoveEvidence { source: source_id, target: target_id }),
+            "正式資源橋接應取得已驗證的原始轉移身分");
+        assert_eq!(checked.declarations.verified_direct_move(source_id, target_id, "int"),
+            None, "不得把 str 資源轉移假冒 int 值轉移");
+        assert_eq!(checked.declarations.verified_direct_move(target_id, source_id, "str"),
+            None, "轉移證據不能顛倒來源與目標");
         assert!(checked.declarations.has_direct_move(source_id, target_id),
             "已驗證來源直接產生真正具名整筆移動證據");
         assert!(!checked.declarations.has_direct_move(target_id, source_id),

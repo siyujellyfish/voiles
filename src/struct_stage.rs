@@ -158,6 +158,13 @@ include!("struct_stage/resource_trace.rs");
 /// P16 資源橋接只可消耗此成果，不可單獨從未驗證的 AST 假造安全來源。
 /// R03.15：只在完整 Checker 成功後由已解析宣告建立的權威來源身分表。
 /// 此處保證宣告來源、型別與可變權限，不假設動態持有者或資源實例。
+/// 已驗證私有來源的一筆具名整筆轉移；只能由完成 Checker 的事實表取得。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedMoveEvidence {
+    source: DeclarationId,
+    target: DeclarationId,
+}
+
 struct VerifiedDeclarationFacts {
     by_source: BTreeMap<DeclarationId, (String, bool)>,
     /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
@@ -216,6 +223,17 @@ impl VerifiedDeclarationFacts {
             }
         }
         Self { by_source, direct_moves }
+    }
+
+    fn verified_direct_move(
+        &self, source: DeclarationId, target: DeclarationId,
+        ty: &str,
+    ) -> Option<VerifiedMoveEvidence> {
+        let (from_type, _) = self.by_source.get(&source)?;
+        let (to_type, _) = self.by_source.get(&target)?;
+        (source != target && from_type == ty && to_type == ty
+            && self.direct_moves.contains(&(source, target)))
+            .then_some(VerifiedMoveEvidence { source, target })
     }
 
     fn has_direct_move(&self, source: DeclarationId, target: DeclarationId) -> bool {
