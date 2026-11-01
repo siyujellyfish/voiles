@@ -72,6 +72,56 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f04_公私正式_checker_具名讀取及賦值目標的_typed_use_證據逐筆一致() {
+        let code = "fn main()->int{\nvar n:int = 1\nvar alias:int = n\nn = alias\nreturn n\n}\n";
+        assert_eq!(public_check(code), Ok(()));
+        let source = Source::new(code.as_bytes().to_vec());
+        let toks = lexer::scan(&source);
+        let ast = parser::parse(&source, &toks.tokens).unwrap();
+        let facts = names::resolve_with_facts(&ast, &source).unwrap();
+        let public = types::check_with_names_and_hir(&ast, &source, &facts).unwrap();
+        assert_eq!(flow::check_with_typed_hir(&ast, &source, &facts, &public), Ok(()));
+        let private = verified_private_source(code).unwrap();
+        let owner = DeclarationId(code.find("var n:int").unwrap());
+        let alias = DeclarationId(code.find("var alias:int").unwrap());
+        for (fragment, name, declaration) in [
+            ("= n", "n", owner),
+            ("= alias", "alias", alias),
+            ("return n", "n", owner),
+        ] {
+            let at = code.find(fragment).unwrap() + fragment.len() - name.len();
+            let span = crate::common_ir::NodeSpan::new(at, at + name.len());
+            let public_read = public.reference(span)
+                .expect("P10 應交付具名 int 讀取事實");
+            let private_read = private.scalar_hir.reference(span)
+                .expect("私有 Checker 應交付相同來源 TypedUse");
+            assert_eq!(private_read, public_read);
+            assert_eq!(private_read.resolved.declaration, declaration);
+            assert_eq!(private_read.resolved.ty, crate::common_ir::ScalarType::Int);
+        }
+        let target = code.find("n = alias").unwrap();
+        let span = crate::common_ir::NodeSpan::new(target, target + "n = alias".len());
+        let public_write = public.assignment(span)
+            .expect("P10 寫入目標已驗證");
+        let private_write = private.scalar_hir.assignment(span)
+            .expect("私有 Checker 完成真實賦值後才交付目標 HIR");
+        assert_eq!(public_write, private_write);
+        assert_eq!(private_write.resolved.declaration, owner);
+        assert!(private.scalar_hir.assignment(crate::common_ir::NodeSpan::new(
+            target, target + "n = alias".len() + 1)).is_none());
+
+        let moved = "fn main()->int{\nvar original:str = \"資源\"\nvar target:str = original.move()\nreturn 0\n}\n";
+        let checked = verified_private_source(moved).unwrap();
+        let start = moved.find("original.move()").unwrap();
+        let attempted = crate::common_ir::NodeSpan::new(
+            start, start + "original.move()".len());
+        assert!(checked.scalar_hir.reference(attempted).is_none(),
+            "私有非 Copyable 的明確 move 不可冒充公開純值名稱引用");
+        assert!(checked.scalar_hir.expression(attempted).is_none(),
+            "私有 str 資源移交不是 ScalarType 的 int/bool 表達式");
+    }
+
+    #[test]
     fn 共同合法_int64_作用域_分支_必須兩套前端都接受() {
         for source in [
             "fn main()->int{\nreturn 0\n}\n",
