@@ -68,7 +68,10 @@ enum StmtKind {
     Declare { name: String, ty: String, mutable: bool, init: Option<Term> },
     Assign { name: String, value: Term },
     FieldAssign { receiver: String, field: String, value: Term },
-    If { condition: Term, yes: Vec<Stmt>, no: Option<Vec<Stmt>> },
+    If {
+        branch: crate::common_ir::ConditionalBranch<Term, Vec<Stmt>>,
+        no: Option<Vec<Stmt>>,
+    },
     /// P15：只在能證明反向邊的所有權狀態不變時接受的 while 子集。
     While { condition: Term, body: Vec<Stmt> },
     /// D04 右端點不含的整數常值區間；P15 僅建構靜態借用證據。
@@ -179,8 +182,8 @@ impl VerifiedDeclarationFacts {
                             DeclarationId(statement.start), (ty.clone(), *mutable));
                         debug_assert!(replaced.is_none(), "同一來源跨度不應建立兩個宣告");
                     }
-                    StmtKind::If { yes, no, .. } => {
-                        collect(yes, found);
+                    StmtKind::If { branch, no } => {
+                        collect(&branch.body, found);
                         if let Some(otherwise) = no { collect(otherwise, found); }
                     }
                     StmtKind::While { body, .. } => collect(body, found),
