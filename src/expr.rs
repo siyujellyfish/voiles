@@ -259,17 +259,17 @@ mod tests {
 
     #[test]
     fn 共同呼叫核心仍只允許公開零參數且完整保留來源位元組跨度() {
-        let call = parse("水母()");
+        let call = parse("helper()");
         assert_eq!(call.start, 0);
-        assert_eq!(call.end, "水母()".len());
-        assert!(matches!(call.kind, ExprKind::ZeroArgCall(ref name) if name == "水母"));
+        assert_eq!(call.end, "helper()".len());
+        assert!(matches!(call.kind, ExprKind::ZeroArgCall(ref name) if name == "helper"));
         let nested = parse("helper() + 2");
         assert!(matches!(nested.kind, ExprKind::Add(_)));
     }
 
     #[test]
     fn 共同呼叫核心拒絕未核准參數且不吞掉原始診斷位置() {
-        for source_text in ["helper(1)", "helper(", "helper(中)", "helper(1, 2)"] {
+        for source_text in ["helper(1)", "helper(", "helper(value)", "helper(1, 2)"] {
             let source = Source::new(source_text.as_bytes().to_vec());
             let tokens = scan(&source);
             assert!(tokens.diagnostics.is_empty(), "測試必須能完成詞彙解析");
