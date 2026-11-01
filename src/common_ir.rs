@@ -176,6 +176,20 @@ impl VerifiedScalarHir {
     pub(crate) fn assignment(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
         self.assignments.get(&span.start).copied().filter(|entry| entry.span == span)
     }
+
+    /// F11：只讀稽核介面，保留原 HIR 已驗證位置而不交出可寫 map。
+    pub(crate) fn verified_references(&self)
+        -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
+        self.references.values().copied()
+    }
+    pub(crate) fn verified_assignments(&self)
+        -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
+        self.assignments.values().copied()
+    }
+    pub(crate) fn verified_expressions(&self)
+        -> impl Iterator<Item = VerifiedScalarExpression> + '_ {
+        self.expressions.values().copied()
+    }
 }
 
 /// 公開純值 HIR 引用是共同語意引用的 int／bool 專用形式。
