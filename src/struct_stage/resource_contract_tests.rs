@@ -537,9 +537,17 @@ mod p16_6_r03_10_單層布林分支與作用域資源清理 {
         let verified=verified_private_source(src).unwrap();
         let main=verified.functions.iter().find(|f|f.name=="main").unwrap();
         let [outside,branch,_]=main.body.as_slice() else {panic!("須為三語句");};
+        let outer = DeclarationId(outside.start);
+        assert!(verified.declarations.matches(outer,"Holder",true),
+            "外層實際持有者必須由 Checker 驗證型別和權限");
+        assert!(!verified.declarations.matches(outer,"str",true));
         let selected=if with_inner {
             let StmtKind::If {branch:arm,..}=&branch.kind else {panic!("須為 if");};
-            Some((DeclarationId(arm.body[0].start),1))
+            let inner = DeclarationId(arm.body[0].start);
+            assert_ne!(outer,inner,"內外作用域不可沿用同一宣告身分");
+            assert!(verified.declarations.matches(inner,"Holder",true));
+            assert!(!verified.declarations.matches(inner,"Holder",false));
+            Some((inner,1))
         } else {None};
         ScopedResourcePlan::new(DeclarationId(outside.start),1,selected).unwrap()
     }
