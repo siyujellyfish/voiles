@@ -193,6 +193,48 @@ pub(crate) fn parse_return<P: ReturnSyntax>(
     Ok(expression)
 }
 
+/// 公私 var/const 的唯一共同解析與初始化先後順序；型別與來源限制由入口決定。
+pub(crate) struct ParsedDeclaration<T, E> {
+    pub(crate) name: String,
+    pub(crate) ty: T,
+    pub(crate) mutable: bool,
+    pub(crate) initializer: Option<E>,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+pub(crate) trait DeclarationSyntax {
+    type Type;
+    type Expression;
+    fn declaration_start(&self) -> usize;
+    fn begin_declaration(&mut self) -> Result<bool, crate::Diagnostic>;
+    fn declaration_name(&mut self) -> Result<String, crate::Diagnostic>;
+    fn declaration_colon(&mut self) -> Result<(), crate::Diagnostic>;
+    fn declaration_type(&mut self) -> Result<Self::Type, crate::Diagnostic>;
+    fn declaration_has_initializer(&self) -> bool;
+    fn declaration_equals(&mut self);
+    fn declaration_expression(&mut self) -> Result<Self::Expression, crate::Diagnostic>;
+    fn validate_declaration_initializer(
+        &self, mutable: bool, initializer: &Option<Self::Expression>,
+    ) -> Result<(), crate::Diagnostic>;
+    fn declaration_end(&self, initializer: &Option<Self::Expression>) -> usize;
+}
+pub(crate) fn parse_declaration<P: DeclarationSyntax>(
+    parser: &mut P,
+) -> Result<ParsedDeclaration<P::Type, P::Expression>, crate::Diagnostic> {
+    let start = parser.declaration_start();
+    let mutable = parser.begin_declaration()?;
+    let name = parser.declaration_name()?;
+    parser.declaration_colon()?;
+    let ty = parser.declaration_type()?;
+    let initializer = if parser.declaration_has_initializer() {
+        parser.declaration_equals();
+        Some(parser.declaration_expression()?)
+    } else { None };
+    parser.validate_declaration_initializer(mutable, &initializer)?;
+    let end = parser.declaration_end(&initializer);
+    Ok(ParsedDeclaration { name, ty, mutable, initializer, start, end })
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
