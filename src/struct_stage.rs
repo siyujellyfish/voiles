@@ -176,6 +176,8 @@ struct Checker<'a, C> {
     recorded_declarations: RefCell<BTreeMap<DeclarationId, (String, bool)>>,
     /// F11：具名 return .move() 經來源身分、型別、借用與有效期驗證後的證據。
     recorded_named_returns: RefCell<BTreeSet<(DeclarationId, usize)>>,
+    /// 真正完成型別、寫入授權及 RHS 評估後的結構欄位提交證據。
+    recorded_field_writes: RefCell<BTreeSet<(DeclarationId, usize, String)>>,
 }
 
 // P13～P16 的受限靜態安全檢查；下一步再分離型別／資料流責任。
@@ -201,6 +203,13 @@ struct VerifiedReturnEvidence {
     source: DeclarationId,
     return_start: usize,
 }
+/// 具名接收者的欄位提交已經 Checker 驗證；不隱含動態資源釋放順序。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedFieldWriteEvidence {
+    owner: DeclarationId,
+    statement_start: usize,
+    field: String,
+}
 
 /// F12：無 Checker 已驗證轉移事實時不得寫入任何資源安全帳簿。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -215,6 +224,7 @@ struct VerifiedDeclarationFacts {
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
     /// 僅保存 Checker 成功提交的具名整筆返回來源及 return 運算式位置。
     named_returns: BTreeSet<(DeclarationId, usize)>,
+    field_writes: BTreeSet<(DeclarationId, usize, String)>,
 }
 impl VerifiedDeclarationFacts {
     /// F11：本表僅消費 Checker 成功的宣告與直接轉移證據；
@@ -223,8 +233,9 @@ impl VerifiedDeclarationFacts {
         by_source: BTreeMap<DeclarationId, (String, bool)>,
         direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
         named_returns: BTreeSet<(DeclarationId, usize)>,
+        field_writes: BTreeSet<(DeclarationId, usize, String)>,
     ) -> Self {
-        Self { by_source, direct_moves, named_returns }
+        Self { by_source, direct_moves, named_returns, field_writes }
     }
 
     /// 一筆具名返回須由 Checker 在真正成功驗證 `return name.move()`
@@ -236,6 +247,19 @@ impl VerifiedDeclarationFacts {
             .filter(|(actual, _)| actual == ty)?;
         self.named_returns.contains(&(source, return_start))
             .then_some(VerifiedReturnEvidence { source, return_start })
+    }
+
+    /// 結構欄位寫入必須是已簽發的接收者身分、型別及原位置三元事實。
+    fn verified_field_write(
+        &self, owner: DeclarationId, statement_start: usize,
+        ty: &str, field: &str,
+    ) -> Option<VerifiedFieldWriteEvidence> {
+        self.by_source.get(&owner).filter(|(actual, can_write)|
+            actual == ty && *can_write)?;
+        self.field_writes.contains(&(owner, statement_start, field.to_owned()))
+            .then_some(VerifiedFieldWriteEvidence {
+                owner, statement_start, field: field.to_owned(),
+            })
     }
 
     fn verified_direct_move(
@@ -294,13 +318,15 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
+        recorded_field_writes: RefCell::new(BTreeSet::new()),
     };
     checker.all(&functions)?;
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
     let named_returns = checker.recorded_named_returns.into_inner();
+    let field_writes = checker.recorded_field_writes.into_inner();
     let declarations = VerifiedDeclarationFacts::from_checker(
-        by_source, direct_moves, named_returns);
+        by_source, direct_moves, named_returns, field_writes);
     Ok(VerifiedPrivateSource { source, structs, functions, declarations })
 }
 
