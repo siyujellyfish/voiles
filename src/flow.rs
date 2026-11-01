@@ -9,12 +9,12 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
+use crate::common_ir::TypedDeclaration;
 
 #[derive(Debug, Clone, Copy)]
 struct Variable {
-    declaration_start: DeclarationId,
+    declaration: TypedDeclaration<()>,
     initialized: bool,
-    mutable: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -62,7 +62,7 @@ impl Analyzer<'_> {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
                         facts.reference_at(expr.node_span()).map(|use_| use_.resolved.declaration)
-                            == Some(candidate.declaration_start)
+                            == Some(candidate.declaration.declaration)
                     }))
                     .ok_or_else(|| self.err(
                         "具名來源不存在可見宣告", expr.start, expr.end
@@ -95,9 +95,8 @@ impl Analyzer<'_> {
         // 首版局部 var 允許延後初始化，但不能因宣告本身當成已初始化。
         let scope = state.scopes.last_mut().expect("全檔至少有頂層作用域");
         Rc::make_mut(scope).insert(b.name.clone(), Variable {
-            declaration_start: DeclarationId(b.start),
+            declaration: TypedDeclaration::new(DeclarationId(b.start), (), b.mutable),
             initialized: b.initializer.is_some(),
-            mutable: b.mutable,
         });
         Ok(())
     }
@@ -118,12 +117,12 @@ impl Analyzer<'_> {
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
                             facts.assignment_at(statement.node_span()).map(|use_| use_.resolved.declaration)
-                                == Some(candidate.declaration_start)
+                                == Some(candidate.declaration.declaration)
                         }))
                         .ok_or_else(|| self.err(
                             "賦值目標沒有可見宣告", statement.start, statement.end
                         ))?;
-                    if !target.mutable {
+                    if !target.declaration.mutable {
                         return Err(self.err("const 宣告不可再次賦值", statement.start, statement.end));
                     }
                     state.write(name).expect("已確認目標有名稱繫結").initialized = true;
@@ -159,7 +158,7 @@ impl Analyzer<'_> {
                             for (name, var) in Rc::make_mut(outer_scope).iter_mut() {
                                 var.initialized = exits.iter().all(|exit| {
                                     exit.scopes[scope_idx].get(name).is_some_and(|v| {
-                                        v.declaration_start == var.declaration_start && v.initialized
+                                        v.declaration.declaration == var.declaration.declaration && v.initialized
                                     })
                                 });
                             }
@@ -324,7 +323,8 @@ mod tests {
     fn p16_6_r04_分支快照共用作用域並在寫入時隔離() {
         let mut scope = HashMap::new();
         scope.insert("value".to_owned(), Variable {
-            declaration_start: DeclarationId(10), initialized: false, mutable: true,
+            declaration: TypedDeclaration::new(DeclarationId(10), (), true),
+            initialized: false,
         });
         let original = Flow { scopes: vec![Rc::new(scope)], reachable: true };
         let mut changed = original.clone();
@@ -333,7 +333,7 @@ mod tests {
         assert!(!Rc::ptr_eq(&original.scopes[0], &changed.scopes[0]));
         assert!(!original.lookup("value").unwrap().initialized);
         assert!(changed.lookup("value").unwrap().initialized);
-        assert_eq!(changed.lookup("value").unwrap().declaration_start, DeclarationId(10));
+        assert_eq!(changed.lookup("value").unwrap().declaration.declaration, DeclarationId(10));
     }
 
     #[test]

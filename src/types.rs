@@ -8,6 +8,7 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind, Type};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
+use crate::common_ir::{ResolvedNames, TypedDeclaration};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct TypedValue {
@@ -23,9 +24,9 @@ impl TypedValue {
 struct TypeChecker<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
-    globals: HashMap<String, (DeclarationId, Type)>,
+    globals: HashMap<String, TypedDeclaration<Type>>,
     probe_move: bool,
-    resolved: Option<&'a crate::common_ir::ResolvedNames>,
+    resolved: Option<&'a ResolvedNames>,
 }
 
 impl<'a> TypeChecker<'a> {
@@ -44,11 +45,24 @@ impl<'a> TypeChecker<'a> {
 
     /// 型別環境只記錄已在目前詞彙位置合法可見的名稱；
     /// 可用性與名稱重複已由 P09 優先驗證。
-    fn variable_type(&self, name: &str, pos: usize,
-        scopes: &[HashMap<String, Type>]) -> Option<Type> {
+    fn visible_declaration(&self, name: &str, pos: usize,
+        scopes: &[HashMap<String, TypedDeclaration<Type>>])
+        -> Option<TypedDeclaration<Type>> {
         crate::common_ir::lookup_lexical(scopes.iter(), name).copied()
-            .or_else(|| self.globals.get(name)
-                .and_then(|(declaration, ty)| (declaration.0 < pos).then_some(*ty)))
+            .or_else(|| self.globals.get(name).copied()
+                .filter(|binding| binding.declaration.0 < pos))
+    }
+
+    fn resolved_type(&self, span: crate::common_ir::NodeSpan, name: &str,
+        scopes: &[HashMap<String, TypedDeclaration<Type>>]) -> Option<Type> {
+        let lexical = self.visible_declaration(name, span.start, scopes)?;
+        match self.resolved {
+            // 只有 P09 來源身分與實際可見的詞彙綁定型別完全相符才能授權。
+            Some(facts) => facts.reference_at(span)
+                .filter(|use_| lexical.matches_use(use_.resolved))
+                .map(|use_| use_.resolved.ty),
+            None => Some(lexical.ty),
+        }
     }
 
     fn integer(&self, literal: &str, expr: &Expr) -> Result<i64, Diagnostic> {
@@ -63,7 +77,7 @@ impl<'a> TypeChecker<'a> {
     }
 
     fn expression(&self, expr: &Expr,
-        scopes: &[HashMap<String, Type>]) -> Result<TypedValue, Diagnostic> {
+        scopes: &[HashMap<String, TypedDeclaration<Type>>]) -> Result<TypedValue, Diagnostic> {
         match &expr.kind {
             ExprKind::IntLiteral(text) => Ok(TypedValue {
                 ty: Type::Int,
@@ -71,12 +85,8 @@ impl<'a> TypeChecker<'a> {
             }),
             ExprKind::BoolLiteral(_) => Ok(TypedValue::new(Type::Bool)),
             ExprKind::Name(name) => {
-                let ty = match self.resolved {
-                    // 正式 check_file：P10 直接使用 P09 的已驗證引用身分與宣告型別。
-                    Some(facts) => facts.reference_at(expr.node_span()).map(|use_| use_.resolved.ty),
-                    // 獨立 P10、已核准內部探針仍沿用原有測試介面。
-                    None => self.variable_type(name, expr.start, scopes),
-                }.ok_or_else(|| self.error(
+                let ty = self.resolved_type(expr.node_span(), name, scopes)
+                    .ok_or_else(|| self.error(
                     "無法解析具名來源型別", expr.start, expr.end))?;
                 Ok(TypedValue::new(ty))
             }
@@ -119,7 +129,8 @@ impl<'a> TypeChecker<'a> {
         }
     }
 
-    fn initializer(&self, binding: &Binding, scopes: &[HashMap<String, Type>])
+    fn initializer(&self, binding: &Binding,
+        scopes: &[HashMap<String, TypedDeclaration<Type>>])
         -> Result<(), Diagnostic> {
         if let Some(ref expr) = binding.initializer {
             let found = self.expression(expr, scopes)?;
@@ -128,22 +139,27 @@ impl<'a> TypeChecker<'a> {
         Ok(())
     }
 
-    fn block(&self, block: &Block, scopes: &mut Vec<HashMap<String, Type>>, result: Type)
+    fn block(&self, block: &Block,
+        scopes: &mut Vec<HashMap<String, TypedDeclaration<Type>>>, result: Type)
         -> Result<(), Diagnostic> {
         scopes.push(HashMap::new());
         for stmt in &block.statements {
             match &stmt.kind {
                 StmtKind::Binding(b) => {
                     self.initializer(b, scopes)?;
-                    scopes.last_mut().unwrap().insert(b.name.clone(), b.ty);
+                    scopes.last_mut().unwrap().insert(b.name.clone(),
+                        TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable));
                 }
                 StmtKind::Assignment { name, value } => {
                     // 正式 P09 已綁定賦值目標的宣告身分；不得在 P10 按同名
                     // 字串自行挑選另一個遮蔽宣告。
-                    let declared = match self.resolved {
-                        Some(names) => names.assignment_at(stmt.node_span()).map(|use_| use_.resolved.ty),
-                        None => self.variable_type(name, stmt.start, scopes),
-                    }.ok_or_else(|| self.error(
+                    let declared = self.visible_declaration(name, stmt.start, scopes)
+                        .and_then(|binding| match self.resolved {
+                            Some(names) => names.assignment_at(stmt.node_span())
+                                .filter(|use_| binding.matches_use(use_.resolved))
+                                .map(|use_| use_.resolved.ty),
+                            None => Some(binding.ty),
+                        }).ok_or_else(|| self.error(
                         "賦值目標型別不可解析", stmt.start, stmt.end))?;
                     let actual = self.expression(value, scopes)?;
                     self.require(actual.ty, declared, value, "賦值右值必須與宣告型別一致")?;
@@ -190,14 +206,15 @@ pub(crate) fn check_move_probe(file: &File, source: &Source) -> Result<(), Diagn
 
 fn check_with_move_probe<'a>(
     file: &File, source: &'a Source, probe_move: bool,
-    resolved: Option<&'a crate::common_ir::ResolvedNames>,
+    resolved: Option<&'a ResolvedNames>,
 ) -> Result<(), Diagnostic> {
     let mut functions = HashMap::new();
     let mut globals = HashMap::new();
     for item in &file.items {
         match item {
             Item::Function(f) => { functions.insert(f.name.clone(), f.returns); }
-            Item::Binding(b) => { globals.insert(b.name.clone(), (DeclarationId(b.start), b.ty)); }
+            Item::Binding(b) => { globals.insert(b.name.clone(),
+                TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable)); }
         }
     }
     let checker = TypeChecker { source, functions, globals, probe_move, resolved };
@@ -290,6 +307,38 @@ mod tests {
         ] {
             assert_eq!(inspect(code).unwrap_err().kind, DiagnosticKind::Static);
         }
+    }
+
+    #[test]
+    fn f04_篡改相同型別身分或宣告型別皆不得繞過真正詞彙綁定() {
+        let code = "fn main()->int{\nvar n:int = 1\nif(true){\nvar n:int = 2\nn = 3\nreturn n\n}\nreturn n\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let original = names::resolve_with_facts(&ast, &source).unwrap();
+        let outer = DeclarationId(code.find("var n:int = 1").unwrap());
+        let inner = DeclarationId(code.find("var n:int = 2").unwrap());
+        let write = code.find("n = 3").unwrap();
+        let read = code.find("return n").unwrap() + "return ".len();
+        assert_eq!(original.references.get(&read), Some(&inner));
+        assert_eq!(original.assignments.get(&write), Some(&inner));
+        assert_eq!(check_with_names(&ast, &source, &original), Ok(()));
+
+        let mut changed = names::resolve_with_facts(&ast, &source).unwrap();
+        changed.references.insert(read, outer);
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "無法解析具名來源型別",
+            "型別相同但宣告位置不同，不可在 P10 偷渡非可見持有者");
+        changed.references.insert(read, inner);
+        changed.assignments.insert(write, outer);
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析");
+
+        changed.assignments.insert(write, inner);
+        changed.declarations.insert(inner, Type::Bool);
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析",
+            "篡改 P09 型別事實不能改變正式 Parser 宣告的 int 身分");
     }
 
     #[test]
