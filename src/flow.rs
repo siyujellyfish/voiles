@@ -61,11 +61,8 @@ impl Analyzer<'_> {
             ExprKind::Name(name) => {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
-                        facts.reference_at(expr.node_span()).is_some_and(|use_| {
-                            facts.declaration(candidate.declaration.declaration)
-                                == Some(candidate.declaration)
-                                && candidate.declaration.matches_use(use_.resolved)
-                        })
+                        facts.verified_reference(expr.node_span(),
+                            candidate.declaration).is_some()
                     }))
                     .ok_or_else(|| self.err(
                         "具名來源不存在可見宣告", expr.start, expr.end
@@ -119,11 +116,8 @@ impl Analyzer<'_> {
                     self.read(value, state)?;
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
-                            facts.assignment_at(statement.node_span()).is_some_and(|use_| {
-                                facts.declaration(candidate.declaration.declaration)
-                                    == Some(candidate.declaration)
-                                    && candidate.declaration.matches_use(use_.resolved)
-                            })
+                            facts.verified_assignment(statement.node_span(),
+                                candidate.declaration).is_some()
                         }))
                         .ok_or_else(|| self.err(
                             "賦值目標沒有可見宣告", statement.start, statement.end
