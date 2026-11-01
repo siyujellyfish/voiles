@@ -9,7 +9,7 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
-use crate::common_ir::{TypedDeclaration, ScalarType};
+use crate::common_ir::{TypedDeclaration, ScalarType, VerifiedScalarHir};
 
 #[derive(Debug, Clone, Copy)]
 struct Variable {
@@ -45,6 +45,7 @@ struct Analyzer<'a> {
     source: &'a Source,
     /// 正式 P09 已完成的來源身分證據；獨立 P11 測試仍可使用原入口。
     resolved: Option<&'a crate::common_ir::ResolvedNames>,
+    typed: Option<&'a VerifiedScalarHir>,
 }
 
 impl Analyzer<'_> {
@@ -62,7 +63,10 @@ impl Analyzer<'_> {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
                         facts.verified_reference(expr.node_span(),
-                            candidate.declaration).is_some()
+                            candidate.declaration).is_some_and(|reference| {
+                            self.typed.is_none_or(|hir|
+                                hir.reference(expr.node_span()) == Some(reference))
+                        })
                     }))
                     .ok_or_else(|| self.err(
                         "具名來源不存在可見宣告", expr.start, expr.end
@@ -117,7 +121,10 @@ impl Analyzer<'_> {
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
                             facts.verified_assignment(statement.node_span(),
-                                candidate.declaration).is_some()
+                                candidate.declaration).is_some_and(|assignment| {
+                                self.typed.is_none_or(|hir|
+                                    hir.assignment(statement.node_span()) == Some(assignment))
+                            })
                         }))
                         .ok_or_else(|| self.err(
                             "賦值目標沒有可見宣告", statement.start, statement.end
@@ -175,20 +182,31 @@ impl Analyzer<'_> {
 /// 須在 P07 解析、P09 名稱及 P10 基本型別成功後才呼叫。
 /// 不具備 P12 的完整函式／控制流程驗收。
 pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
-    check_with_names_internal(file, source, None)
+    check_with_names_internal(file, source, None, None)
 }
 
 /// 正式 P11 靜態流程檢查消耗 P09 的引用及賦值目標來源身分證據。
 pub(crate) fn check_with_names(
     file: &File, source: &Source, names: &crate::common_ir::ResolvedNames,
 ) -> Result<(), Diagnostic> {
-    check_with_names_internal(file, source, Some(names))
+    check_with_names_internal(file, source, Some(names), None)
+}
+
+/// 正式 P11 消費 P10 成功型別檢查後產生的 HIR；
+/// 不允許依 P09 原始表重新推算缺失的 P10 來源證據。
+pub(crate) fn check_with_typed_hir(
+    file: &File, source: &Source,
+    names: &crate::common_ir::ResolvedNames, hir: &VerifiedScalarHir,
+) -> Result<(), Diagnostic> {
+    check_with_names_internal(file, source, Some(names), Some(hir))
 }
 
 fn check_with_names_internal<'a>(
-    file: &File, source: &'a Source, resolved: Option<&'a crate::common_ir::ResolvedNames>,
+    file: &File, source: &'a Source,
+    resolved: Option<&'a crate::common_ir::ResolvedNames>,
+    typed: Option<&'a VerifiedScalarHir>,
 ) -> Result<(), Diagnostic> {
-    let analyzer = Analyzer { source, resolved };
+    let analyzer = Analyzer { source, resolved, typed };
     let mut globals = Flow {
         scopes: vec![Rc::new(HashMap::new())],
         reachable: true,
