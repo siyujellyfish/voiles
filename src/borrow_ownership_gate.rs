@@ -30,11 +30,20 @@ impl BorrowOwnershipGate {
         Self { values: BTreeMap::new(), loans: BorrowSafety::new() }
     }
 
+    pub(crate) fn check_declare(&self, id: DeclarationId) -> Result<(), GateError> {
+        if self.values.contains_key(&id) { Err(GateError::DuplicateDestination) } else { Ok(()) }
+    }
+
     pub(crate) fn declare(&mut self, id: DeclarationId, value: ValueSlot)
         -> Result<(), GateError> {
-        if self.values.contains_key(&id) { return Err(GateError::DuplicateDestination); }
-        self.values.insert(id, value);
+        self.check_declare(id)?;
+        self.commit_declare_checked(id, value);
         Ok(())
+    }
+
+    pub(crate) fn commit_declare_checked(&mut self, id: DeclarationId, value: ValueSlot) {
+        debug_assert!(!self.values.contains_key(&id));
+        self.values.insert(id, value);
     }
 
     pub(crate) fn borrow(&mut self, id: DeclarationId, kind: BorrowKind)
@@ -67,9 +76,16 @@ impl BorrowOwnershipGate {
     pub(crate) fn copy_into(&mut self, from: DeclarationId, to: DeclarationId)
         -> Result<(), GateError> {
         self.check_copy_into(from, to)?;
-        let copied = self.direct(from)?.duplicate().map_err(GateError::Value)?;
-        self.values.insert(to, copied);
+        self.commit_copy_checked(from, to);
         Ok(())
+    }
+
+    /// 僅能在同一可變交易中完成雙側預檢後提交；提交不會再回傳錯誤。
+    pub(crate) fn commit_copy_checked(&mut self, from: DeclarationId, to: DeclarationId) {
+        let copied = self.values.get(&from).copied()
+            .expect("已驗證複製來源").duplicate().expect("已驗證複製資格");
+        debug_assert!(!self.values.contains_key(&to));
+        self.values.insert(to, copied);
     }
 
     pub(crate) fn check_move_into(&self, from: DeclarationId, to: DeclarationId)
@@ -82,10 +98,16 @@ impl BorrowOwnershipGate {
     pub(crate) fn move_into(&mut self, from: DeclarationId, to: DeclarationId)
         -> Result<(), GateError> {
         self.check_move_into(from, to)?;
-        let moved = self.values.get_mut(&from).expect("已確認合法來源")
-            .move_whole().map_err(GateError::Value)?;
-        self.values.insert(to, moved);
+        self.commit_move_checked(from, to);
         Ok(())
+    }
+
+    /// 僅能在同一可變交易中完成雙側預檢後提交；來源移動無額外可失敗分支。
+    pub(crate) fn commit_move_checked(&mut self, from: DeclarationId, to: DeclarationId) {
+        let moved = self.values.get_mut(&from).expect("已驗證移動來源")
+            .move_whole().expect("已驗證來源可讀");
+        debug_assert!(!self.values.contains_key(&to));
+        self.values.insert(to, moved);
     }
 
     /// 僅供 P14/P16 內部交易使用；清理前拒絕仍受借用的來源。
@@ -93,8 +115,14 @@ impl BorrowOwnershipGate {
     pub(crate) fn finish_owner(&mut self, owner: DeclarationId)
         -> Result<(), GateError> {
         self.direct(owner)?;
-        self.values.remove(&owner);
+        self.commit_finish_owner_checked(owner);
         Ok(())
+    }
+
+    /// 只能於所有權與資源責任兩張表完成雙側預檢後使用。
+    pub(crate) fn commit_finish_owner_checked(&mut self, owner: DeclarationId) {
+        let removed = self.values.remove(&owner);
+        debug_assert!(removed.is_some(), "清理前必須驗證來源仍存在");
     }
 
     pub(crate) fn reinitialize(&mut self, id: DeclarationId) -> Result<(), GateError> {

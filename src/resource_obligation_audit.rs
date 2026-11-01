@@ -39,13 +39,26 @@ pub(crate) struct ResourceObligationAudit {
 impl ResourceObligationAudit {
     pub(crate) fn new() -> Self { Self::default() }
 
+    pub(crate) fn check_create_binding(&self, id: DeclarationId)
+        -> Result<(), ResourceAuditError> {
+        if self.values.contains_key(&id) { Err(ResourceAuditError::DuplicateBinding) }
+        else { Ok(()) }
+    }
+
     pub(crate) fn create_binding(&mut self, id: DeclarationId, permission: CopyPermission)
         -> Result<(), ResourceAuditError> {
-        if self.values.contains_key(&id) { return Err(ResourceAuditError::DuplicateBinding); }
+        self.check_create_binding(id)?;
+        self.commit_create_binding_checked(id, permission);
+        Ok(())
+    }
+
+    pub(crate) fn commit_create_binding_checked(
+        &mut self, id: DeclarationId, permission: CopyPermission,
+    ) {
+        debug_assert!(!self.values.contains_key(&id));
         self.values.insert(id, BindingRecord {
             permission, resources: BTreeSet::new(),
         });
-        Ok(())
     }
 
     /// 將新資源責任綁在已建立的所有者。已釋放的 ID 也不可重複建立，
@@ -74,9 +87,15 @@ impl ResourceObligationAudit {
     pub(crate) fn move_into(&mut self, from: DeclarationId, to: DeclarationId)
         -> Result<(), ResourceAuditError> {
         self.check_move_into(from, to)?;
-        let record = self.values.remove(&from).expect("已驗證來源");
-        self.values.insert(to, record);
+        self.commit_move_checked(from, to);
         Ok(())
+    }
+
+    /// 兩張表均已預檢的提交期：不再執行可回傳 Err 的查找或驗證。
+    pub(crate) fn commit_move_checked(&mut self, from: DeclarationId, to: DeclarationId) {
+        let record = self.values.remove(&from).expect("已驗證來源");
+        debug_assert!(!self.values.contains_key(&to));
+        self.values.insert(to, record);
     }
 
     /// Copyable 值若含抽象資源責任，仍不做任何自選深／淺複製；
@@ -99,11 +118,17 @@ impl ResourceObligationAudit {
     pub(crate) fn copy_into(&mut self, from: DeclarationId, to: DeclarationId)
         -> Result<(), ResourceAuditError> {
         self.check_copy_into(from, to)?;
+        self.commit_copy_checked(to);
+        Ok(())
+    }
+
+    /// 兩張表均已預檢的空資源責任複製提交。
+    pub(crate) fn commit_copy_checked(&mut self, to: DeclarationId) {
+        debug_assert!(!self.values.contains_key(&to));
         self.values.insert(to, BindingRecord {
             permission: CopyPermission::Allowed,
             resources: BTreeSet::new(),
         });
-        Ok(())
     }
 
     /// 只記錄由已授權清理事件證明完成的責任，不執行真實析構。
@@ -122,17 +147,21 @@ impl ResourceObligationAudit {
     pub(crate) fn release_batch(&mut self, ids: &[DeclarationId])
         -> Result<usize, ResourceAuditError> {
         self.check_release_batch(ids)?;
+        Ok(self.commit_release_batch_checked(ids))
+    }
+
+    /// 清理的所有持有者已完整預檢，按原有事件責任表一次提交。
+    pub(crate) fn commit_release_batch_checked(&mut self, ids: &[DeclarationId]) -> usize {
         let mut count = 0;
         for id in ids {
             let record = self.values.remove(id).expect("已預檢成功");
             for resource in record.resources {
-                // 建立時只有一個持有者；不應出現第二次移交或重複釋放。
                 debug_assert!(!self.released.contains(&resource));
                 self.released.insert(resource);
                 count += 1;
             }
         }
-        Ok(count)
+        count
     }
 
     /// 只釋放仍屬於指定宣告的單一 UTF-8 資源。

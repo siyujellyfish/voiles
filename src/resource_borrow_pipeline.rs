@@ -33,11 +33,11 @@ impl SafetyPipeline {
 
     pub(crate) fn declare(&mut self, id: DeclarationId, permission: CopyPermission)
         -> Result<(), PipelineError> {
-        // 經此內部封裝，兩層共享相同宣告身分，建立動作在無資源時完成。
-        self.ownership.declare(id, ValueSlot::initialized(permission))
-            .map_err(PipelineError::Ownership)?;
-        self.resources.create_binding(id, permission)
-            .map_err(PipelineError::Resource)?;
+        // 宣告同樣是雙側交易：不容許資源側重複時仍留下值側的假宣告。
+        self.ownership.check_declare(id).map_err(PipelineError::Ownership)?;
+        self.resources.check_create_binding(id).map_err(PipelineError::Resource)?;
+        self.ownership.commit_declare_checked(id, ValueSlot::initialized(permission));
+        self.resources.commit_create_binding_checked(id, permission);
         Ok(())
     }
 
@@ -62,8 +62,10 @@ impl SafetyPipeline {
         -> Result<(), PipelineError> {
         self.ownership.check_move_into(from, to).map_err(PipelineError::Ownership)?;
         self.resources.check_move_into(from, to).map_err(PipelineError::Resource)?;
-        self.ownership.move_into(from, to).map_err(PipelineError::Ownership)?;
-        self.resources.move_into(from, to).map_err(PipelineError::Resource)?;
+        // 兩張表都通過不可變預檢後，提交期不再有任何可回傳 Err 的操作。
+        // &mut self 獨占期間不存在其它觀察者可以插入狀態變化。
+        self.ownership.commit_move_checked(from, to);
+        self.resources.commit_move_checked(from, to);
         Ok(())
     }
 
@@ -71,8 +73,8 @@ impl SafetyPipeline {
         -> Result<(), PipelineError> {
         self.ownership.check_copy_into(from, to).map_err(PipelineError::Ownership)?;
         self.resources.check_copy_into(from, to).map_err(PipelineError::Resource)?;
-        self.ownership.copy_into(from, to).map_err(PipelineError::Ownership)?;
-        self.resources.copy_into(from, to).map_err(PipelineError::Resource)?;
+        self.ownership.commit_copy_checked(from, to);
+        self.resources.commit_copy_checked(to);
         Ok(())
     }
 
@@ -82,8 +84,8 @@ impl SafetyPipeline {
         // 同時檢查 P16 責任表確實有對應所有者。
         self.ownership.read(owner).map_err(PipelineError::Ownership)?;
         self.resources.check_release_batch(&[owner]).map_err(PipelineError::Resource)?;
-        self.ownership.finish_owner(owner).map_err(PipelineError::Ownership)?;
-        self.resources.release_batch(&[owner]).map_err(PipelineError::Resource)
+        self.ownership.commit_finish_owner_checked(owner);
+        Ok(self.resources.commit_release_batch_checked(&[owner]))
     }
 
     /// 真實欄位覆寫或 RHS 失敗後，只清理已由執行期確認釋放的資源。
@@ -116,6 +118,59 @@ mod tests {
     use super::*;
     use crate::borrow_safety::BorrowSafetyError;
     use crate::ownership_model::{CopyPermission::{Allowed, Forbidden, Undecided}, ModelError};
+
+    #[test]
+    fn 原子宣告_責任帳簿重複身分時所有權不得提前宣告() {
+        let mut p = SafetyPipeline::new();
+        let source = DeclarationId(899);
+        p.resources.create_binding(source, CopyPermission::Forbidden).unwrap();
+        assert_eq!(p.declare(source, CopyPermission::Forbidden),
+            Err(PipelineError::Resource(ResourceAuditError::DuplicateBinding)));
+        assert_eq!(p.read(source),
+            Err(PipelineError::Ownership(GateError::MissingSource)));
+        assert_eq!(p.outstanding(), 0);
+    }
+
+    #[test]
+    fn 原子移交_資源帳簿缺失時不能先移走所有權() {
+        let mut p = SafetyPipeline::new();
+        let source = DeclarationId(900);
+        let target = DeclarationId(901);
+        p.declare(source, CopyPermission::Forbidden).unwrap();
+        // 故意破壞兩張表的一致性以覆蓋真正的第二層失敗分支。
+        p.resources.release_batch(&[source]).unwrap();
+        assert_eq!(p.move_into(source, target),
+            Err(PipelineError::Resource(ResourceAuditError::MissingBinding)));
+        assert!(p.read(source).is_ok(), "第二層失敗時所有權不可提前移走");
+        assert_eq!(p.read(target),
+            Err(PipelineError::Ownership(GateError::MissingSource)));
+    }
+
+    #[test]
+    fn 原子複製_資源表目標衝突時不得產生所有權目標() {
+        let mut p = SafetyPipeline::new();
+        let source = DeclarationId(902);
+        let target = DeclarationId(903);
+        p.declare(source, CopyPermission::Allowed).unwrap();
+        p.resources.create_binding(target, CopyPermission::Allowed).unwrap();
+        assert_eq!(p.copy_into(source, target),
+            Err(PipelineError::Resource(ResourceAuditError::DuplicateBinding)));
+        assert!(p.read(source).is_ok());
+        assert_eq!(p.read(target),
+            Err(PipelineError::Ownership(GateError::MissingSource)));
+        assert_eq!(p.outstanding(), 0);
+    }
+
+    #[test]
+    fn 原子清理_資源責任缺失時不可提前結束來源所有權() {
+        let mut p = SafetyPipeline::new();
+        let source = DeclarationId(904);
+        p.declare(source, CopyPermission::Forbidden).unwrap();
+        p.resources.release_batch(&[source]).unwrap();
+        assert_eq!(p.record_cleanup(source),
+            Err(PipelineError::Resource(ResourceAuditError::MissingBinding)));
+        assert!(p.read(source).is_ok(), "預檢拒絕清理應保留原持有者");
+    }
 
     #[test]
     fn 整筆非_copyable_移交後僅新持有者可以提交清理責任() {
