@@ -23,6 +23,7 @@ pub(crate) enum BorrowSafetyError {
     SourceIsBorrowed,
     InvalidRelease,
     TooManySharedLoans,
+    SnapshotMismatch,
 }
 
 /// 共通不可變借用事實：來源宣告身分與 HC14-A 共享／獨占權限。
@@ -105,6 +106,36 @@ impl BorrowSafety {
             }
         }
         Ok(())
+    }
+
+    /// F06：嚴格核對靜態借用快照與已實際簽發的票據集合。
+    /// 以宣告身分、借用種類及重數比較，不重建或簽發票據；
+    /// 分支推測產生的借用事實不得在此冒充實際有效的序號。
+    pub(crate) fn verify_static_snapshot(
+        &self, facts: impl IntoIterator<Item = BorrowFact>,
+    ) -> Result<(), BorrowSafetyError> {
+        let mut expected = BTreeMap::<DeclarationId, (usize, usize)>::new();
+        for fact in facts {
+            let entry = expected.entry(fact.source).or_default();
+            let count = match fact.kind {
+                BorrowKind::SharedRead => &mut entry.0,
+                BorrowKind::ExclusiveWrite => &mut entry.1,
+            };
+            *count = count.checked_add(1).ok_or(BorrowSafetyError::TooManySharedLoans)?;
+        }
+        let mut actual = BTreeMap::<DeclarationId, (usize, usize)>::new();
+        for (&source, loans) in &self.active {
+            let mut counts = (0_usize, 0_usize);
+            for kind in loans.values() {
+                match kind {
+                    BorrowKind::SharedRead => counts.0 += 1,
+                    BorrowKind::ExclusiveWrite => counts.1 += 1,
+                }
+            }
+            actual.insert(source, counts);
+        }
+        if expected == actual { Ok(()) }
+        else { Err(BorrowSafetyError::SnapshotMismatch) }
     }
 
     pub(crate) fn acquire(&mut self, declaration: DeclarationId, kind: BorrowKind)
@@ -194,6 +225,36 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn f06_靜態快照須與真實票據的來源權限及共享重數完全相等() {
+        let mut tracker = BorrowSafety::new();
+        let outer = DeclarationId(17);
+        let shadow = DeclarationId(31);
+        assert_eq!(tracker.verify_static_snapshot([]), Ok(()));
+        let one = tracker.acquire(outer, BorrowKind::SharedRead).unwrap();
+        let two = tracker.acquire(outer, BorrowKind::SharedRead).unwrap();
+        let three = tracker.acquire(shadow, BorrowKind::ExclusiveWrite).unwrap();
+        let accurate = [one.fact(), two.fact(), three.fact()];
+        assert_eq!(tracker.verify_static_snapshot(accurate), Ok(()));
+        for incorrect in [
+            vec![one.fact(), three.fact()],
+            vec![one.fact(), one.fact(), one.fact(), three.fact()],
+            vec![one.fact(), two.fact(), BorrowFact::new(outer, BorrowKind::ExclusiveWrite)],
+            vec![one.fact(), two.fact(), BorrowFact::new(DeclarationId(30), BorrowKind::ExclusiveWrite)],
+        ] {
+            assert_eq!(tracker.verify_static_snapshot(incorrect),
+                Err(BorrowSafetyError::SnapshotMismatch));
+            assert_eq!(tracker.check_direct_access(outer),
+                Err(BorrowSafetyError::SourceIsBorrowed));
+            assert_eq!(tracker.check_direct_access(shadow),
+                Err(BorrowSafetyError::SourceIsBorrowed));
+        }
+        tracker.finish_scope(&[one, two, three]).unwrap();
+        assert_eq!(tracker.verify_static_snapshot([]), Ok(()));
+        assert_eq!(tracker.verify_static_snapshot([one.fact()]),
+            Err(BorrowSafetyError::SnapshotMismatch));
+    }
 
     #[test]
     fn 真實票據與靜態借用事實共用同一來源身分及權限型別() {
