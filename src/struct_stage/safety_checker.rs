@@ -1177,7 +1177,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 另一個未證明的持有者／別名狀態。嵌套 if 各路
                     // 徑在轉移點個別查核，因此不會把 continue 偷當 return。
                     self.check_loop_exit_stability(vars, snapshot, statement)?;
-                    return Ok(FlowState::LoopTransfer);
+                    return Ok(match &statement.kind {
+                        StmtKind::Break => FlowState::Break,
+                        StmtKind::Continue => FlowState::Continue,
+                        _ => unreachable!("只可能為已核准的 break／continue"),
+                    });
                 }
                 StmtKind::ForRange { iterator, iterator_start,
                     lower, upper, body: loop_body } => {
@@ -1219,7 +1223,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         // 若入口狀態經轉移驗證保持穩定，後繼仍須檢查。
                         match can_repeat {
                             FlowState::Returned => return Ok(FlowState::Returned),
-                            FlowState::LoopTransfer => *vars = snapshot,
+                            FlowState::Break | FlowState::Continue
+                                | FlowState::LoopTransfer => *vars = snapshot,
                             FlowState::Fallthrough => {
                                 // 此三態回傳只記錄「可繼續」的分支狀態。
                                 // 若同一輪也存在 break／continue，不能把
@@ -1343,6 +1348,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Ok(if true_flow == FlowState::Returned
                             && false_flow == FlowState::Returned {
                             FlowState::Returned
+                        } else if true_flow == FlowState::Break
+                            && false_flow == FlowState::Break {
+                            FlowState::Break
+                        } else if true_flow == FlowState::Continue
+                            && false_flow == FlowState::Continue {
+                            FlowState::Continue
                         } else { FlowState::LoopTransfer });
                     }
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
