@@ -33,11 +33,11 @@ impl SafetyPipeline {
 
     pub(crate) fn declare(&mut self, id: DeclarationId, permission: CopyPermission)
         -> Result<(), PipelineError> {
-        // 經此內部封裝，兩層共享相同宣告身分，建立動作在無資源時完成。
-        self.ownership.declare(id, ValueSlot::initialized(permission))
-            .map_err(PipelineError::Ownership)?;
-        self.resources.create_binding(id, permission)
-            .map_err(PipelineError::Resource)?;
+        // 宣告同樣是雙側交易：不容許資源側重複時仍留下值側的假宣告。
+        self.ownership.check_declare(id).map_err(PipelineError::Ownership)?;
+        self.resources.check_create_binding(id).map_err(PipelineError::Resource)?;
+        self.ownership.commit_declare_checked(id, ValueSlot::initialized(permission));
+        self.resources.commit_create_binding_checked(id, permission);
         Ok(())
     }
 
@@ -118,6 +118,18 @@ mod tests {
     use super::*;
     use crate::borrow_safety::BorrowSafetyError;
     use crate::ownership_model::{CopyPermission::{Allowed, Forbidden, Undecided}, ModelError};
+
+    #[test]
+    fn 原子宣告_責任帳簿重複身分時所有權不得提前宣告() {
+        let mut p = SafetyPipeline::new();
+        let source = DeclarationId(899);
+        p.resources.create_binding(source, CopyPermission::Forbidden).unwrap();
+        assert_eq!(p.declare(source, CopyPermission::Forbidden),
+            Err(PipelineError::Resource(ResourceAuditError::DuplicateBinding)));
+        assert_eq!(p.read(source),
+            Err(PipelineError::Ownership(GateError::MissingSource)));
+        assert_eq!(p.outstanding(), 0);
+    }
 
     #[test]
     fn 原子移交_資源帳簿缺失時不能先移走所有權() {
