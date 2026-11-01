@@ -252,6 +252,20 @@ pub(crate) fn parse_assignment<P: AssignmentSyntax>(
     Ok(expression)
 }
 
+/// 公私正式函式呼叫共用已消耗左括號之後的引數與右括號解析順序。
+pub(crate) trait CallSyntax {
+    type Arguments;
+    fn call_arguments(&mut self) -> Result<Self::Arguments, crate::Diagnostic>;
+    fn call_right_paren(&mut self) -> Result<usize, crate::Diagnostic>;
+}
+pub(crate) fn parse_call<P: CallSyntax>(
+    parser: &mut P,
+) -> Result<(P::Arguments, usize), crate::Diagnostic> {
+    let args = parser.call_arguments()?;
+    let end = parser.call_right_paren()?;
+    Ok((args, end))
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
