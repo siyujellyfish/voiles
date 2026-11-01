@@ -143,8 +143,12 @@ impl Parser<'_> {
                 expression.end = self.tokens[self.cursor - 1].end;
                 return Ok(expression);
             }
-            TokenKind::Name(s) => {
-                let end = self.tok().end; self.cursor += 1;
+            TokenKind::Name(_) => {
+                let name = crate::syntax_shared::take_spanned_name(
+                    self.tokens, &mut self.cursor)
+                    .expect("已預檢具名節點");
+                let s = name.kind;
+                let end = name.end;
                 if self.symbol('(') {
                     self.cursor += 1;
                     // 只有 name = value 才是結構具名欄位建立式；
