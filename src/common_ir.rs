@@ -272,6 +272,35 @@ fn map_optional<T, U>(
 }
 
 #[cfg(test)]
+mod f04_正式具位置引用權威回歸 {
+    use super::*;
+
+    #[test]
+    fn 已解析來源型別必須隨真正節點跨度同行傳遞() {
+        let owner = DeclarationId(5);
+        let shadow = DeclarationId(20);
+        let mut facts = ResolvedNames::default();
+        facts.declarations.insert(owner, ScalarType::Int);
+        facts.declarations.insert(shadow, ScalarType::Bool);
+        facts.references.insert(50, owner);
+        facts.assignments.insert(71, shadow);
+        let use_span = NodeSpan::new(50, 56);
+        let write_span = NodeSpan::new(71, 77);
+        let reference = facts.reference_at(use_span).unwrap();
+        let assignment = facts.assignment_at(write_span).unwrap();
+        assert_eq!(reference.span, use_span);
+        assert_eq!(reference.resolved, ResolvedUse::new(owner, ScalarType::Int));
+        assert_eq!(assignment.span, write_span);
+        assert_eq!(assignment.resolved, ResolvedUse::new(shadow, ScalarType::Bool));
+        assert_eq!(facts.reference_at(NodeSpan::new(49, 56)), None);
+        assert_eq!(facts.assignment_at(NodeSpan::new(70, 77)), None);
+        // 兩個宣告即使名稱相同也不能以其中一個身分推定另一個的能力。
+        facts.references.remove(&50);
+        assert_eq!(facts.reference_at(use_span), None);
+    }
+}
+
+#[cfg(test)]
 mod f04_共通詞彙查找回歸 {
     use super::lookup_lexical;
     use std::collections::HashMap;
