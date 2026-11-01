@@ -41,7 +41,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.error(&format!("{context}：{reason}，不能隱含複製"), term)
     }
     fn lookup<'b>(vars: &'b Scopes, name: &str) -> Option<&'b Binding> {
-        vars.iter().rev().find_map(|scope| scope.get(name))
+        crate::common_ir::lookup_lexical(vars.iter().map(|scope| scope.as_ref()), name)
     }
     fn lookup_mut<'b>(vars: &'b mut Scopes, name: &str) -> Option<&'b mut Binding> {
         for scope in vars.iter_mut().rev() {
