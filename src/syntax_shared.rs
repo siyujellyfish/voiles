@@ -123,6 +123,42 @@ pub(crate) fn parse_function_decl<P: FunctionSyntax>(
     })
 }
 
+/// 兩套正式 Parser 的區塊解析結果，保留原始來源起訖位置。
+pub(crate) struct ParsedBlock<S> {
+    pub(crate) statements: Vec<S>,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+/// 公開／私有只負責自身診斷、分句與具體語句，區塊走訪流程由共通核心負責。
+pub(crate) trait BlockSyntax {
+    type Statement;
+    fn begin_block(&mut self) -> Result<usize, crate::Diagnostic>;
+    fn block_at_end(&self) -> bool;
+    fn block_at_close(&self) -> bool;
+    fn block_missing_close(&self) -> crate::Diagnostic;
+    fn parse_block_statement(&mut self) -> Result<Self::Statement, crate::Diagnostic>;
+    fn finish_block_statement(&mut self) -> Result<(), crate::Diagnostic>;
+    fn finish_block(&mut self, statement_count: usize)
+        -> Result<usize, crate::Diagnostic>;
+}
+
+pub(crate) fn parse_block<P: BlockSyntax>(
+    parser: &mut P,
+) -> Result<ParsedBlock<P::Statement>, crate::Diagnostic> {
+    let start = parser.begin_block()?;
+    let mut statements = Vec::new();
+    loop {
+        if parser.block_at_end() { return Err(parser.block_missing_close()); }
+        if parser.block_at_close() {
+            let end = parser.finish_block(statements.len())?;
+            return Ok(ParsedBlock { statements, start, end });
+        }
+        statements.push(parser.parse_block_statement()?);
+        parser.finish_block_statement()?;
+    }
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
