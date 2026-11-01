@@ -49,6 +49,38 @@ pub(crate) fn skip_newlines(tokens: &[Token], cursor: &mut usize) {
 
 /// R02.12：公開運算式與私有結構解析器共用唯一 bool 常值判讀。
 /// 不將普通 Name、其它保留字或大小寫變體當成布林常值。
+/// 共同純值字面值 AST；正式公私 Parser 直接建構此節點後保留各自語意節點種類。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ScalarLiteral {
+    Integer(String),
+    Boolean(bool),
+}
+
+/// 不消耗 token 的共同字面值判讀，保留 UTF-8 原始位元組跨度。
+/// 私有 Parser 在實際消耗之前仍可執行已核准的 i64 溢位拒絕。
+pub(crate) fn peek_scalar_literal(
+    tokens: &[Token], cursor: usize,
+) -> Option<crate::common_ir::SpannedNode<ScalarLiteral>> {
+    let token = tokens.get(cursor)?;
+    let kind = match &token.kind {
+        TokenKind::Integer(text) => ScalarLiteral::Integer(text.clone()),
+        TokenKind::Keyword(word) => ScalarLiteral::Boolean(boolean_keyword(word)?),
+        _ => return None,
+    };
+    Some(crate::common_ir::SpannedNode {
+        kind, start: token.start, end: token.end,
+    })
+}
+
+/// 已核准可以消耗的字面值直接由相同共同 AST 生成器建構。
+pub(crate) fn take_scalar_literal(
+    tokens: &[Token], cursor: &mut usize,
+) -> Option<crate::common_ir::SpannedNode<ScalarLiteral>> {
+    let node = peek_scalar_literal(tokens, *cursor)?;
+    *cursor += 1;
+    Some(node)
+}
+
 pub(crate) fn boolean_keyword(word: &str) -> Option<bool> {
     match word {
         "true" => Some(true),
@@ -171,6 +203,28 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
 mod tests {
     use super::*;
     use crate::{lexer, source::Source};
+
+    #[test]
+    fn 公私共同純值字面值_ast_保留_utf8_位元組跨度與失敗游標() {
+        let code = "中文字 true 0xFF";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source).tokens;
+        let boolean_pos = tokens.iter().position(|t| matches!(
+            &t.kind, TokenKind::Keyword(word) if word == "true")).unwrap();
+        let mut cursor = boolean_pos;
+        let boolean = take_scalar_literal(&tokens, &mut cursor).unwrap();
+        assert_eq!(boolean.kind, ScalarLiteral::Boolean(true));
+        assert_eq!((boolean.start, boolean.end),
+            (code.find("true").unwrap(), code.find("true").unwrap() + 4));
+        let number_pos = tokens.iter().position(|t| matches!(
+            t.kind, TokenKind::Integer(_))).unwrap();
+        let number = peek_scalar_literal(&tokens, number_pos).unwrap();
+        assert_eq!(number.kind, ScalarLiteral::Integer("0xFF".into()));
+        assert_eq!(number.start, code.find("0xFF").unwrap());
+        let mut failed = tokens.len();
+        assert_eq!(take_scalar_literal(&tokens, &mut failed), None);
+        assert_eq!(failed, tokens.len());
+    }
 
     #[test]
     fn 關鍵字只能精確消耗且失敗保留游標() {
