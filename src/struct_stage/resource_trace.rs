@@ -416,7 +416,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
             _=>None,
         }
     }
-    let VerifiedPrivateSource { source: _, structs, functions, .. } =
+    let VerifiedPrivateSource { source: _, structs, functions, declarations } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：缺少 main"))?;
@@ -444,6 +444,25 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
         },
         _=>return Err(reject("P16：第二語句必須建立同型別結構持有者")),
     };
+    let source_id = DeclarationId(declare.start);
+    let target_id = DeclarationId(transfer.start);
+    // 多個純值欄位的複製仍由真正 Checker 的 Copyable 與型別
+    // 安全結果決定，不能假造一筆非 Copyable 資源移交事件。
+    let source_mutability = match &declare.kind {
+        StmtKind::Declare { mutable, .. } => *mutable,
+        _ => unreachable!("已驗證具名建構"),
+    };
+    let target_mutability = match &transfer.kind {
+        StmtKind::Declare { mutable, .. } => *mutable,
+        _ => unreachable!("已驗證具名接收"),
+    };
+    if !declarations.matches(source_id, ty, source_mutability)
+        || !declarations.matches(target_id, ty, target_mutability) {
+        return Err(reject("P16：混合結構來源與目標不是 Checker 已驗證型別及宣告身分"));
+    }
+    if moved && declarations.verified_direct_move(source_id, target_id, ty).is_none() {
+        return Err(reject("P16：混合結構整筆移交缺少 Checker 已驗證來源證據"));
+    }
     let definition=structs.get(ty)
         .ok_or_else(||reject("P16：混合型別結構不存在"))?;
     let mut fields=Vec::new();

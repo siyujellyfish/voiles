@@ -460,8 +460,25 @@ mod p16_6_r03_9_混合純值與資源責任帳簿實際來源 {
         let checked=verified_private_source(src).expect("真實來源須先經私有安全檢查");
         let main=checked.functions.iter().find(|f|f.name=="main").unwrap();
         let [declare,assign,_]=main.body.as_slice() else { panic!("限制三語句"); };
-        MixedResourcePlan::new(
-            DeclarationId(declare.start),DeclarationId(assign.start),str_count).unwrap()
+        let origin = DeclarationId(declare.start);
+        let destination = DeclarationId(assign.start);
+        let kind = if str_count == 0 { "Plain" } else { "Mixed" };
+        assert!(checked.declarations.matches(origin, kind, true));
+        assert!(checked.declarations.matches(destination, kind, true));
+        if str_count > 0 {
+            assert_eq!(checked.declarations.verified_direct_move(
+                origin, destination, kind,
+            ), Some(VerifiedMoveEvidence { source: origin, target: destination }));
+            assert!(checked.declarations.verified_direct_move(
+                origin, destination, "str").is_none(),
+                "資源 str 欄位不得冒充 Mixed 的整筆移動型別");
+            assert!(checked.declarations.verified_direct_move(
+                destination, origin, kind).is_none());
+        } else {
+            assert!(checked.declarations.verified_direct_move(origin,destination,kind).is_none(),
+                "Copyable 直接讀取不允許製造非 Copyable 整筆移動證據");
+        }
+        MixedResourcePlan::new(origin,destination,str_count).unwrap()
     }
 
     #[test]
