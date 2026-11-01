@@ -363,22 +363,15 @@ impl Parser<'_> {
                 if !self.keyword("var") && !self.keyword("const") {
                     return Err(self.syntax("結構僅接受 var、const 欄位及 fn 方法"));
                 }
-                let immutable = self.keyword("const");
-                self.cursor += 1;
-                let field = self.name()?;
-                if !names.insert(field.clone()) {
-                    return Err(self.syntax("同一結構不可重複欄位名稱"));
-                }
-                self.take(':', "結構欄位必須標註型別")?;
-                let ty = self.name()?;
-                let default = if self.symbol('=') {
-                    self.cursor += 1;
-                    Some(self.term()?)
-                } else { None };
-                if immutable && default.is_none() {
-                    return Err(self.syntax("const 結構欄位必須具有宣告時預設值"));
-                }
-                fields.push(Field { name: field, ty, immutable, default });
+                let parsed = crate::syntax_shared::parse_declaration(
+                    &mut StructFieldDeclaration {
+                        parser: self, declared_names: &mut names,
+                    },
+                )?;
+                fields.push(Field {
+                    name: parsed.name, ty: parsed.ty,
+                    immutable: !parsed.mutable, default: parsed.initializer,
+                });
             }
             self.end_statement()?;
             self.lines();
@@ -420,6 +413,54 @@ impl Parser<'_> {
     }
 }
 
+
+/// 結構欄位也使用公私 var／const 正式共同宣告解析核心。
+/// 欄位缺預設值、重複名稱及型別標註有獨立歷史診斷；
+/// 使用輕量 adapter 避免將語句宣告的診斷／安全權限錯套至欄位。
+struct StructFieldDeclaration<'p, 'src> {
+    parser: &'p mut Parser<'src>,
+    declared_names: &'p mut HashSet<String>,
+}
+impl crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_> {
+    type Type = String;
+    type Expression = Term;
+
+    fn declaration_start(&self) -> usize { self.parser.tok().start }
+    fn begin_declaration(&mut self) -> Result<bool, Diagnostic> {
+        let mutable = self.parser.keyword("var");
+        // 入口已確認 var／const；不放寬 share 或未核准欄位形式。
+        if !mutable && !self.parser.keyword("const") {
+            return Err(self.parser.syntax("結構僅接受 var、const 欄位及 fn 方法"));
+        }
+        self.parser.cursor += 1;
+        Ok(mutable)
+    }
+    fn declaration_name(&mut self) -> Result<String, Diagnostic> {
+        let name = self.parser.name()?;
+        // 保留原行為：名稱消耗後、型別及初始化解析之前就檢查重複。
+        if !self.declared_names.insert(name.clone()) {
+            return Err(self.parser.syntax("同一結構不可重複欄位名稱"));
+        }
+        Ok(name)
+    }
+    fn declaration_colon(&mut self) -> Result<(), Diagnostic> {
+        self.parser.take(':', "結構欄位必須標註型別")
+    }
+    fn declaration_type(&mut self) -> Result<String, Diagnostic> { self.parser.name() }
+    fn declaration_has_initializer(&self) -> bool { self.parser.symbol('=') }
+    fn declaration_equals(&mut self) { self.parser.cursor += 1; }
+    fn declaration_expression(&mut self) -> Result<Term, Diagnostic> { self.parser.term() }
+    fn validate_declaration_initializer(
+        &self, mutable: bool, initializer: &Option<Term>,
+    ) -> Result<(), Diagnostic> {
+        if !mutable && initializer.is_none() {
+            Err(self.parser.syntax("const 結構欄位必須具有宣告時預設值"))
+        } else { Ok(()) }
+    }
+    fn declaration_end(&self, _: &Option<Term>) -> usize {
+        self.parser.tokens[self.parser.cursor - 1].end
+    }
+}
 
 /// 私有安全子集使用共同區塊走訪核心，語句分隔由原 statement 消耗。
 impl crate::syntax_shared::BlockSyntax for Parser<'_> {
