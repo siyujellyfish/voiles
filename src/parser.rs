@@ -248,19 +248,15 @@ impl<'a> Parser<'a> {
     }
 
     fn function(&mut self) -> Result<Function, Diagnostic> {
-        let start = self.expect_keyword("fn", "缺少 fn")?;
-        let name = self.name()?;
-        self.expect_symbol('(', "首版函式宣告必須包含空參數圓括號")?;
-        self.expect_symbol(')', "首版函式不得有參數")?;
-        crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
-            .ok_or_else(|| self.err("首版函式必須標註 -> int 或 -> bool"))?;
-        let returns = self.ty()?;
-        let body = self.block()?;
-        if !matches!(body.statements.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
+        let parsed = crate::syntax_shared::parse_function_decl(self)?;
+        // P07 保留原獨立判定及原錯誤游標，不能由共用簽章放寬公開規則。
+        if !matches!(parsed.body.statements.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
             return Err(self.err("函式最外層最後一條語句必須為明確 return"));
         }
-        let end = body.end;
-        Ok(Function {name, returns, body, start, end})
+        Ok(Function {
+            name: parsed.name, returns: parsed.result_ty, body: parsed.body,
+            start: parsed.start, end: parsed.end,
+        })
     }
 
     fn file(mut self) -> Result<File, Diagnostic> {
@@ -312,6 +308,31 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
     }
     fn next_is_if(&self) -> bool { self.keyword("if") }
     fn last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
+}
+
+impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
+    type Params = ();
+    type ResultType = Type;
+    type Body = Block;
+
+    fn begin_function(&mut self) -> Result<usize, Diagnostic> {
+        self.expect_keyword("fn", "缺少 fn")
+    }
+    fn function_name(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn function_left_paren(&mut self) -> Result<(), Diagnostic> {
+        self.expect_symbol('(', "首版函式宣告必須包含空參數圓括號").map(|_| ())
+    }
+    fn function_params(&mut self) -> Result<(), Diagnostic> { Ok(()) }
+    fn function_right_paren(&mut self) -> Result<(), Diagnostic> {
+        self.expect_symbol(')', "首版函式不得有參數").map(|_| ())
+    }
+    fn function_return_arrow(&mut self) -> Result<(), Diagnostic> {
+        crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
+            .map(|_| ()).ok_or_else(|| self.err("首版函式必須標註 -> int 或 -> bool"))
+    }
+    fn function_result_type(&mut self) -> Result<Type, Diagnostic> { self.ty() }
+    fn function_body(&mut self) -> Result<Block, Diagnostic> { self.block() }
+    fn function_last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
 }
 
 pub(crate) fn parse(source: &Source, tokens: &[Token]) -> Result<File, Diagnostic> {
