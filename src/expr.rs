@@ -147,8 +147,7 @@ impl<'a> ExprParser<'a> {
             crate::syntax_shared::take_spanned_name(self.tokens, &mut self.cursor) {
             let kind = if self.symbol('(') {
                 self.next();
-                let end = self.expect_symbol(')',
-                    "首版零引數函式呼叫必須為空引數列表")?;
+                let (_, end) = crate::syntax_shared::parse_call(self)?;
                 return Ok(Expr {
                     kind: ExprKind::ZeroArgCall(name.kind),
                     start: name.start, end,
@@ -191,6 +190,14 @@ impl<'a> ExprParser<'a> {
             end: value.end,
             kind: ExprKind::FirstIndexWrite(Box::new(target), Box::new(value)),
         })
+    }
+}
+
+impl crate::syntax_shared::CallSyntax for ExprParser<'_> {
+    type Arguments = ();
+    fn call_arguments(&mut self) -> Result<(), Diagnostic> { Ok(()) }
+    fn call_right_paren(&mut self) -> Result<usize, Diagnostic> {
+        self.expect_symbol(')', "首版零引數函式呼叫必須為空引數列表")
     }
 }
 

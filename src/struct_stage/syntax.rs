@@ -175,15 +175,7 @@ impl Parser<'_> {
                         let end = self.tok().end; self.cursor += 1;
                         (TermKind::Construct(s, args), end)
                     } else {
-                        let mut args = Vec::new();
-                        while !self.symbol(')') {
-                            args.push(self.term()?);
-                            if self.symbol(',') { self.cursor += 1; }
-                            else if !self.symbol(')') {
-                                return Err(self.syntax("函式位置引數之間需要逗號"));
-                            }
-                        }
-                        let end = self.tok().end; self.cursor += 1;
+                        let (args, end) = crate::syntax_shared::parse_call(self)?;
                         (TermKind::Call(s, args), end)
                     }
                 } else if self.symbol('.') {
@@ -453,6 +445,26 @@ impl crate::syntax_shared::BlockSyntax for Parser<'_> {
 }
 
 /// 已核准的私有括號運算式沿用原節點，並由共同核心擴展來源跨度。
+impl crate::syntax_shared::CallSyntax for Parser<'_> {
+    type Arguments = Vec<Term>;
+    fn call_arguments(&mut self) -> Result<Vec<Term>, Diagnostic> {
+        let mut args = Vec::new();
+        while !self.symbol(')') {
+            args.push(self.term()?);
+            if self.symbol(',') { self.cursor += 1; }
+            else if !self.symbol(')') {
+                return Err(self.syntax("函式位置引數之間需要逗號"));
+            }
+        }
+        Ok(args)
+    }
+    fn call_right_paren(&mut self) -> Result<usize, Diagnostic> {
+        let end = self.tok().end;
+        self.cursor += 1;
+        Ok(end)
+    }
+}
+
 impl crate::syntax_shared::GroupSyntax for Parser<'_> {
     type Expression = Term;
     fn group_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }
