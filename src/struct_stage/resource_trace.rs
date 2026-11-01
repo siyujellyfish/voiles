@@ -295,7 +295,7 @@ fn trace_persistent_struct_field_write_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, .. } =
+    let VerifiedPrivateSource { source: _, structs, functions, declarations } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
@@ -321,6 +321,11 @@ fn trace_persistent_struct_field_write_source(
                 .ok_or_else(||reject("P16：欄位覆寫只支援未轉義的獨立 str 常值"))?),
         _=>return Err(reject("P16：來源須有針對同一結構的欄位賦值")),
     };
+    // 只以 Checker 在真正完成欄位 RHS 型別、借用及可變權限驗證後
+    // 提交的來源／寫入位置／欄位證據授權此一資源橋接。
+    declarations.verified_field_write(
+        DeclarationId(declaration.start), assignment.start, ty, field,
+    ).ok_or_else(||reject("P16：缺少 Checker 已驗證欄位寫入身分與位置證據"))?;
     let definition=structs.get(ty)
         .ok_or_else(||reject("P16：結構型別不存在"))?;
     let fields=definition.fields.iter().map(|member| {
