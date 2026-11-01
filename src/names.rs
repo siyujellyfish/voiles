@@ -7,6 +7,7 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind, Type};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
+use crate::common_ir::TypedDeclaration;
 
 // 與 P13 安全檢查、共用 AST 及 P16 資源責任表採同一宣告身分型別。
 // 只改資料表示，不擴張 P09 的名稱可見性／前向參照規則。
@@ -14,7 +15,7 @@ use crate::ownership_ledger::DeclarationId;
 struct Resolver<'a> {
     source: &'a Source,
     functions: HashMap<String, Type>,
-    globals: HashMap<String, DeclarationId>,
+    globals: HashMap<String, TypedDeclaration<Type>>,
     facts: crate::common_ir::ResolvedNames,
 }
 
@@ -30,20 +31,22 @@ impl<'a> Resolver<'a> {
     /// 查找實際宣告身分，而非只回傳同名字串是否存在。
     /// 函式前向參照由獨立函式表處理；一般頂層值仍遵守 AW04。
     fn binding_for_reference(&self, name: &str, pos: usize,
-        scopes: &[HashMap<String, DeclarationId>]) -> Option<DeclarationId> {
-        if let Some(id) = crate::common_ir::lookup_lexical(scopes.iter(), name) {
-            return Some(*id);
+        scopes: &[HashMap<String, TypedDeclaration<Type>>])
+        -> Option<TypedDeclaration<Type>> {
+        if let Some(binding) = crate::common_ir::lookup_lexical(scopes.iter(), name) {
+            return Some(*binding);
         }
-        self.globals.get(name).copied().filter(|id| id.0 < pos)
+        self.globals.get(name).copied()
+            .filter(|binding| binding.declaration.0 < pos)
     }
 
-    fn check_expr(&mut self, e: &Expr, scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
+    fn check_expr(&mut self, e: &Expr, scopes: &[HashMap<String, TypedDeclaration<Type>>]) -> Result<(), Diagnostic> {
         match &e.kind {
             ExprKind::Name(name) => {
                 let declaration = self.binding_for_reference(name, e.start, scopes)
                     .ok_or_else(|| self.error(
                         "找不到已宣告且可讀取的具名變數", e.start, e.end))?;
-                self.facts.references.insert(e.start, declaration);
+                self.facts.references.insert(e.start, declaration.declaration);
                 Ok(())
             }
             ExprKind::ZeroArgCall(name) => {
@@ -69,7 +72,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn initializer(&mut self, b: &Binding,
-        scopes: &[HashMap<String, DeclarationId>]) -> Result<(), Diagnostic> {
+        scopes: &[HashMap<String, TypedDeclaration<Type>>]) -> Result<(), Diagnostic> {
         if let Some(value) = &b.initializer {
             self.check_expr(value, scopes)?;
         }
@@ -77,7 +80,7 @@ impl<'a> Resolver<'a> {
     }
 
     fn block(&mut self, block: &Block,
-        scopes: &mut Vec<HashMap<String, DeclarationId>>) -> Result<(), Diagnostic> {
+        scopes: &mut Vec<HashMap<String, TypedDeclaration<Type>>>) -> Result<(), Diagnostic> {
         scopes.push(HashMap::new());
         for statement in &block.statements {
             match &statement.kind {
@@ -89,14 +92,15 @@ impl<'a> Resolver<'a> {
                     // 不因同名宣告預設自己能讀取尚未建立的變數。
                     self.initializer(b, scopes)?;
                     let id = DeclarationId(b.start);
-                    self.facts.declarations.insert(id, crate::common_ir::TypedDeclaration::new(id, b.ty, b.mutable));
-                    scopes.last_mut().unwrap().insert(b.name.clone(), id);
+                    let declaration = TypedDeclaration::new(id, b.ty, b.mutable);
+                    self.facts.declarations.insert(id, declaration);
+                    scopes.last_mut().unwrap().insert(b.name.clone(), declaration);
                 }
                 StmtKind::Assignment { name, value } => {
                     let declaration = self.binding_for_reference(name, statement.start, scopes)
                         .ok_or_else(|| self.error(
                             "賦值目標尚未宣告", statement.start, statement.end))?;
-                    self.facts.assignments.insert(statement.start, declaration);
+                    self.facts.assignments.insert(statement.start, declaration.declaration);
                     self.check_expr(value, scopes)?;
                 }
                 StmtKind::Return(expr) => self.check_expr(expr, scopes)?,
@@ -140,14 +144,16 @@ pub(crate) fn resolve_with_facts(
                 }
             }
             Item::Binding(b) => {
-                if globals.insert(b.name.clone(), DeclarationId(b.start)).is_some() {
+                let declaration = TypedDeclaration::new(
+                    DeclarationId(b.start), b.ty, b.mutable);
+                if globals.insert(b.name.clone(), declaration).is_some() {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
                         message: "頂層作用域重複宣告變數".into(),
                         span: Some(source.span(b.start,b.end)),
                     });
                 }
-                facts.declarations.insert(DeclarationId(b.start), crate::common_ir::TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable));
+                facts.declarations.insert(declaration.declaration, declaration);
             }
         }
     }
@@ -171,7 +177,7 @@ pub(crate) fn resolve_with_facts(
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve, DeclarationId, Resolver};
+    use super::{resolve, DeclarationId, Resolver, TypedDeclaration};
     use std::collections::HashMap;
     use crate::{lexer::scan, parser::{parse, Item, StmtKind}, source::Source, DiagnosticKind};
 
@@ -269,10 +275,12 @@ mod tests {
             facts: crate::common_ir::ResolvedNames::default(),
         };
         let mut scopes = vec![HashMap::new()];
-        scopes[0].insert(outer.name.clone(), DeclarationId(outer.start));
+        scopes[0].insert(outer.name.clone(),
+            TypedDeclaration::new(DeclarationId(outer.start), outer.ty, outer.mutable));
         let outer_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
         scopes.push(HashMap::new());
-        scopes[1].insert(inner.name.clone(), DeclarationId(inner.start));
+        scopes[1].insert(inner.name.clone(),
+            TypedDeclaration::new(DeclarationId(inner.start), inner.ty, inner.mutable));
         let inner_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
         assert_ne!(outer_id, inner_id, "H06／AH04 遮蔽不能覆蓋來源身分");
         // 與 R02 共通 AST、P13/P16 的安全資源帳簿共用 DeclarationId，
@@ -284,10 +292,10 @@ mod tests {
             &shared.functions[0].body[1] else { panic!("共用 AST 缺少 if"); };
         let [crate::common_ir::ScalarStmt::Declare { declaration: shared_inner, .. }] =
             yes.as_slice() else { panic!("共用 AST 缺少內層同名宣告"); };
-        assert_eq!(&outer_id, shared_outer);
-        assert_eq!(&inner_id, shared_inner);
+        assert_eq!(&outer_id.declaration, shared_outer);
+        assert_eq!(&inner_id.declaration, shared_inner);
 
-        assert_eq!(inner_id.0, inner.start);
+        assert_eq!(inner_id.declaration.0, inner.start);
         scopes.pop();
         assert_eq!(
             resolver.binding_for_reference("n", function.end, &scopes),
