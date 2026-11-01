@@ -14,7 +14,7 @@ mod tests {
                 value: ValueSlot::initialized(Allowed),
                 pending_fields: None,
                 loan: Some(LoanBinding {
-                    source: DeclarationId(source), kind, active: true,
+                    fact: BorrowFact::new(DeclarationId(source), kind), active: true,
                 }),
             }
         }
