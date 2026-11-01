@@ -2629,7 +2629,8 @@ mod f07_全後繼詞彙使用身分計畫 {
             "只讀取分支內同名新宣告不能延長外層借用票據");
         let inner = DeclarationId(code.rfind("var alias:int").unwrap());
         assert_ne!(inner, alias);
-        assert!(used.contains(&inner));
+        assert!(!used.contains(&inner),
+            "後繼掃描只追蹤進入時仍存活的詞彙借用；新宣告不屬原票據");
         assert!(inspect(code).is_ok(),
             "內層遮蔽的最後使用點之後，原來源可直接使用");
     }
@@ -2641,8 +2642,8 @@ mod f07_全後繼詞彙使用身分計畫 {
         let inner = DeclarationId(code.rfind("var alias:int").unwrap());
         assert!(used.contains(&alias),
             "內層宣告右值先使用外層已驗證借用身分");
-        assert!(used.contains(&inner),
-            "內層宣告完成後使用必須解析到新身分");
+        assert!(!used.contains(&inner),
+            "新宣告後的使用不應延長掃描入口的舊借用票據");
     }
 
     #[test]
@@ -2665,7 +2666,8 @@ mod f07_全後繼詞彙使用身分計畫 {
         let mut used = BTreeSet::new();
         Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
             &body, &mut visible, &mut used);
-        assert!(used.contains(&iterator));
+        assert!(!used.contains(&iterator),
+            "for 新迭代實例不是入口既有的借用身分");
         assert!(!used.contains(&outer),
             "迴圈迭代器不得依相同名稱誤延長外層借用票據");
         assert_eq!(visible["alias"], outer,
