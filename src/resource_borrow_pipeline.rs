@@ -5,7 +5,7 @@
 #![allow(dead_code)]
 
 use crate::borrow_ownership_gate::{BorrowOwnershipGate, GateError};
-use crate::borrow_safety::{BorrowKind, BorrowTicket};
+use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowTicket};
 use crate::ownership_ledger::DeclarationId;
 use crate::ownership_model::{CopyPermission, ValueSlot};
 use crate::resource_obligation_audit::{ResourceAuditError, ResourceObligationAudit};
@@ -54,6 +54,23 @@ impl SafetyPipeline {
         // 否則兩表分歧時不得簽發可被其他管線誤用的票據。
         self.resources.check_release_batch(&[id]).map_err(PipelineError::Resource)?;
         self.ownership.borrow(id, kind).map_err(PipelineError::Ownership)
+    }
+
+    /// F06：將已檢查靜態借用事實對照真正票據追蹤器；
+    /// 只讀驗證，不會因不同分支的推測事實建立或釋放票據。
+    pub(crate) fn verify_static_borrows(&self, facts: &[BorrowFact])
+        -> Result<(), PipelineError> {
+        self.ownership.verify_static_borrows(facts.iter().copied())
+            .map_err(PipelineError::Ownership)
+    }
+
+    /// 有明確靜態快照時先核對，再按既有原子批次釋放操作歸還。
+    /// 此入口不推定借用最後使用點，也不能接受偽造靜態證據。
+    pub(crate) fn finish_method_with_snapshot(
+        &mut self, tickets: &[BorrowTicket], facts: &[BorrowFact],
+    ) -> Result<(), PipelineError> {
+        self.verify_static_borrows(facts)?;
+        self.finish_method(tickets)
     }
 
     pub(crate) fn finish_method(&mut self, tickets: &[BorrowTicket])
@@ -121,6 +138,34 @@ mod tests {
     use super::*;
     use crate::borrow_safety::BorrowSafetyError;
     use crate::ownership_model::{CopyPermission::{Allowed, Forbidden, Undecided}, ModelError};
+
+    #[test]
+    fn f06_票據與靜態快照不一致不得歸還或解鎖任何資源() {
+        let mut pipeline = SafetyPipeline::new();
+        let owner = DeclarationId(411);
+        let different = DeclarationId(412);
+        pipeline.declare(owner, CopyPermission::Forbidden).unwrap();
+        pipeline.declare(different, CopyPermission::Forbidden).unwrap();
+        pipeline.register_resource(owner, 6001).unwrap();
+        let one = pipeline.borrow(owner, BorrowKind::SharedRead).unwrap();
+        let two = pipeline.borrow(owner, BorrowKind::SharedRead).unwrap();
+        let wrong_source = BorrowFact::new(different, BorrowKind::SharedRead);
+        let mismatch = PipelineError::Ownership(
+            GateError::Borrow(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(pipeline.finish_method_with_snapshot(&[one, two], &[one.fact(), wrong_source]),
+            Err(mismatch));
+        assert_eq!(pipeline.read(owner), Err(PipelineError::Ownership(
+            GateError::Borrow(BorrowSafetyError::SourceIsBorrowed))));
+        assert_eq!(pipeline.outstanding(), 1);
+        assert_eq!(pipeline.verify_static_borrows(&[one.fact(), two.fact()]), Ok(()));
+        pipeline.finish_method_with_snapshot(&[one, two], &[one.fact(), two.fact()])
+            .unwrap();
+        assert!(pipeline.read(owner).is_ok());
+        assert_eq!(pipeline.record_cleanup(owner), Ok(1));
+        assert_eq!(pipeline.record_cleanup(different), Ok(0));
+        assert_eq!(pipeline.verify_static_borrows(&[]), Ok(()));
+        pipeline.audit_finished().unwrap();
+    }
 
     #[test]
     fn 真實借用票據須先有相同宣告來源的資源責任表() {
