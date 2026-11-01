@@ -26,7 +26,9 @@ struct Flow {
 
 impl Flow {
     fn lookup(&self, name: &str) -> Option<Variable> {
-        self.scopes.iter().rev().find_map(|scope| scope.get(name).copied())
+        crate::common_ir::lookup_lexical(
+            self.scopes.iter().map(|scope| scope.as_ref()), name,
+        ).copied()
     }
 
     fn write(&mut self, name: &str) -> Option<&mut Variable> {
