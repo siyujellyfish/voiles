@@ -117,7 +117,8 @@ pub fn check_file(path: &Path) -> CheckResult {
                             Ok(names) => {
                                 if let Err(error) = types::check_with_names(&ast, &source, &names) {
                                     diagnostics.push(error);
-                                } else if let Err(error) = flow::check(&ast, &source) {
+                                } else if let Err(error) =
+                                    flow::check_with_names(&ast, &source, &names) {
                                     diagnostics.push(error);
                                 } else if let Err(error) = functions::check(&ast, &source) {
                                     diagnostics.push(error);
