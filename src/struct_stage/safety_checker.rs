@@ -249,6 +249,24 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// F10：只確認「執行此語句就不會繼續執行同一序列」的確定出口。
+    /// 只接受直線 return／break／continue 或有 else 且兩側均必定退出；
+    /// while／for 可能零次執行，不憑循環形式猜測終止。
+    /// 這是 CFG 可達性下界，不等同完整路徑／反向邊驗證。
+    fn future_stmt_must_exit(statement: &Stmt) -> bool {
+        match &statement.kind {
+            StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => true,
+            StmtKind::If { branch, no: Some(otherwise) } =>
+                Self::future_block_must_exit(&branch.body)
+                    && Self::future_block_must_exit(otherwise),
+            _ => false,
+        }
+    }
+
+    fn future_block_must_exit(body: &[Stmt]) -> bool {
+        body.iter().any(Self::future_stmt_must_exit)
+    }
+
     fn scan_future_block_uses(
         body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
         used: &mut BTreeSet<DeclarationId>,
@@ -299,8 +317,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     Self::scan_future_term_uses(term, visible, used),
                 StmtKind::Break | StmtKind::Continue => {}
             }
-            // CFG 可達性尚未完成：即使出現 return／break 也繼續
-            // 保守掃描後繼，寧可延長借用，不可憑未證明的分支提前釋放。
+            // 確定離開當前序列時，後續語句沒有任何可達邊。
+            // 未能證明必定退出的分支／迴圈仍保守掃描全部後繼。
+            if Self::future_stmt_must_exit(statement) {
+                break;
+            }
         }
     }
 

@@ -2321,3 +2321,104 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         assert!(error.message.contains("借用"));
     }
 }
+
+#[cfg(test)]
+mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
+    use super::*;
+
+    fn read(name: &str, start: usize) -> Stmt {
+        Stmt {
+            start, end: start + name.len() + 8,
+            kind: StmtKind::Return(Term {
+                kind: TermKind::Name(name.to_owned()),
+                start: start + 7, end: start + 7 + name.len(),
+            }),
+        }
+    }
+
+    fn stmt(kind: StmtKind, start: usize) -> Stmt {
+        Stmt { kind, start, end: start + 1 }
+    }
+
+    fn used(body: &[Stmt]) -> BTreeSet<DeclarationId> {
+        let mut visible = HashMap::from([
+            ("alias".to_owned(), DeclarationId(10)),
+            ("first".to_owned(), DeclarationId(20)),
+            ("second".to_owned(), DeclarationId(30)),
+        ]);
+        let mut uses = BTreeSet::new();
+        Checker::<fn(&str) -> CopyPermission>::scan_future_block_uses(
+            body, &mut visible, &mut uses);
+        uses
+    }
+
+    #[test]
+    fn 直線_return_必然離開序列_後續借用名字不可延長舊票據() {
+        let uses = used(&[read("first", 100), read("alias", 200)]);
+        assert!(uses.contains(&DeclarationId(20)));
+        assert!(!uses.contains(&DeclarationId(10)));
+        assert!(Checker::<fn(&str) -> CopyPermission>::future_block_must_exit(
+            &[read("first", 100)]));
+    }
+
+    #[test]
+    fn if_兩側均確定返回_分支後面的名字沒有可達_use_def() {
+        let both = stmt(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(
+                Term { kind: TermKind::Literal("bool"), start: 11, end: 15 },
+                vec![read("first", 30)]),
+            no: Some(vec![read("second", 40)]),
+        }, 10);
+        let uses = used(&[both.clone(), read("alias", 80)]);
+        assert!(uses.contains(&DeclarationId(20)));
+        assert!(uses.contains(&DeclarationId(30)));
+        assert!(!uses.contains(&DeclarationId(10)));
+        assert!(Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(&both));
+    }
+
+    #[test]
+    fn 單側返回或沒有_else_不能證明後續不可達() {
+        let condition = Term {
+            kind: TermKind::Literal("bool"), start: 10, end: 14,
+        };
+        for alternative in [
+            None,
+            Some(vec![stmt(StmtKind::Assign {
+                name: "second".to_owned(),
+                value: Term { kind: TermKind::Literal("int"), start: 20, end: 21 },
+            }, 19)]),
+        ] {
+            let guarded = stmt(StmtKind::If {
+                branch: crate::common_ir::ConditionalBranch::new(
+                    condition.clone(), vec![read("first", 40)]),
+                no: alternative,
+            }, 9);
+            assert!(!Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
+                &guarded));
+            assert!(used(&[guarded, read("alias", 90)])
+                .contains(&DeclarationId(10)));
+        }
+    }
+
+    #[test]
+    fn 迴圈_break_continue_只停止本體_迴圈外的後繼仍有效() {
+        for exit in [StmtKind::Break, StmtKind::Continue] {
+            let loop_body = vec![
+                stmt(exit, 70),
+                read("alias", 90),
+            ];
+            let while_statement = stmt(StmtKind::While {
+                condition: Term { kind: TermKind::Literal("bool"), start: 50, end: 54 },
+                body: loop_body,
+            }, 45);
+            assert!(!Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
+                &while_statement));
+            assert!(!used(&[while_statement.clone()])
+                .contains(&DeclarationId(10)),
+                "迴圈本體已退出後不可再取用該路徑的借用");
+            assert!(used(&[while_statement, read("alias", 120)])
+                .contains(&DeclarationId(10)),
+                "迴圈可能結束，外部後繼仍要保留借用");
+        }
+    }
+}
