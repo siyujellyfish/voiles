@@ -74,9 +74,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 .is_some_and(|t| Self::term_moves_name(t, name)),
             StmtKind::Assign { value, .. } | StmtKind::FieldAssign { value, .. }
                 | StmtKind::Return(value) => Self::term_moves_name(value, name),
-            StmtKind::If {condition, yes, no} =>
-                Self::term_moves_name(condition, name)
-                    || Self::statements_move_name(yes, name)
+            StmtKind::If { branch, no } =>
+                Self::term_moves_name(&branch.condition, name)
+                    || Self::statements_move_name(&branch.body, name)
                     || no.as_ref().is_some_and(|b| Self::statements_move_name(b, name)),
             StmtKind::While {condition, body} =>
                 Self::term_moves_name(condition, name)
@@ -188,9 +188,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 target == name || Self::term_mentions(value, name),
             StmtKind::FieldAssign { receiver, value, .. } =>
                 receiver == name || Self::term_mentions(value, name),
-            StmtKind::If { condition, yes, no } =>
-                Self::term_mentions(condition, name)
-                || yes.iter().any(|stmt| Self::statement_mentions(stmt, name))
+            StmtKind::If { branch, no } =>
+                Self::term_mentions(&branch.condition, name)
+                || branch.body.iter().any(|stmt| Self::statement_mentions(stmt, name))
                 || no.as_ref().is_some_and(|body|
                     body.iter().any(|stmt| Self::statement_mentions(stmt, name))),
             StmtKind::While { condition, body } =>
@@ -217,7 +217,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     if declared == name { hidden = true; }
                 }
-                StmtKind::If { condition, yes, no } => {
+                StmtKind::If { branch, no } => {
+                    let condition = &branch.condition;
+                    let yes = &branch.body;
                     if !hidden && (Self::term_mentions(condition, name)
                         || Self::scope_mentions_binding(yes, name, false)
                         || no.as_ref().is_some_and(|other|
@@ -487,7 +489,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 後續同一條路徑已不可達，不得把它當作額外借用操作。
                     return Ok(writes);
                 }
-                StmtKind::If { condition, yes, no } => {
+                StmtKind::If { branch, no } => {
+                    let condition = &branch.condition;
+                    let yes = &branch.body;
                     self.method_bool_condition(owner, method, condition)?;
                     let yes_writes = self.method_writes(owner, method, yes)?;
                     let no_writes = if let Some(otherwise) = no {
@@ -924,7 +928,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn has_current_loop_transfer(body: &[Stmt]) -> bool {
         body.iter().any(|stmt| match &stmt.kind {
             StmtKind::Break | StmtKind::Continue => true,
-            StmtKind::If { yes, no, .. } => Self::has_current_loop_transfer(yes)
+            StmtKind::If { branch, no } => Self::has_current_loop_transfer(&branch.body)
                 || no.as_ref().is_some_and(|other| Self::has_current_loop_transfer(other)),
             StmtKind::ForRange { .. } | StmtKind::While { .. } => false,
             _ => false,
@@ -1300,7 +1304,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // while 可執行零次，因此後續只使用入口快照；
                     // 任何可回返狀態已確認與此快照一致。
                 }
-                StmtKind::If { condition, yes, no } => {
+                StmtKind::If { branch, no } => {
+                    let condition = &branch.condition;
+                    let yes = &branch.body;
                     let (actual, ready) = self.evaluate(condition, vars)?;
                     if actual != "bool" || !ready {
                         return Err(self.error("if 條件必須是已初始化 bool", condition));
@@ -1483,7 +1489,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     | StmtKind::FieldAssign { value, .. } => {
                     self.reject_method_term(value)?;
                 }
-                StmtKind::If { condition, yes, no } => {
+                StmtKind::If { branch, no } => {
+                    let condition = &branch.condition;
+                    let yes = &branch.body;
                     self.reject_method_term(condition)?;
                     self.reject_method_statements(yes)?;
                     if let Some(otherwise) = no {

@@ -37,6 +37,19 @@ impl<K> SpannedNode<K> {
 }
 
 
+/// 兩條正式 Parser、型別與安全 Checker 共用的條件分支節點。
+/// 保留各模式的條件與區塊型別；不把私有能力加入公開文法。
+#[derive(Debug, Clone)]
+pub(crate) struct ConditionalBranch<E, B> {
+    pub(crate) condition: E,
+    pub(crate) body: B,
+}
+impl<E, B> ConditionalBranch<E, B> {
+    pub(crate) fn new(condition: E, body: B) -> Self {
+        Self { condition, body }
+    }
+}
+
 /// 公開／私有正式加減 AST 共用同一具型別二元節點。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ArithmeticNode<N> {
@@ -188,10 +201,10 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
                 if branches.is_empty() { return None; }
                 let mut tail = map_optional(otherwise.as_ref(),
                     |block| public_statements(&block.statements))?;
-                for (condition, yes) in branches.iter().rev() {
+                for arm in branches.iter().rev() {
                     tail = Some(vec![ScalarStmt::If {
-                        condition: public_expression(condition)?,
-                        yes: public_statements(&yes.statements)?,
+                        condition: public_expression(&arm.condition)?,
+                        yes: public_statements(&arm.body.statements)?,
                         no: tail,
                     }]);
                 }

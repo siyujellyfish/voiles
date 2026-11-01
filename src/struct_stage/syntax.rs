@@ -279,7 +279,9 @@ impl Parser<'_> {
             self.cursor = saved;
             None
         };
-        Ok(StmtKind::If { condition, yes, no })
+        Ok(StmtKind::If {
+            branch: crate::common_ir::ConditionalBranch::new(condition, yes), no,
+        })
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {

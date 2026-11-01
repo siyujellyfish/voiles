@@ -101,9 +101,9 @@ impl<'a> Resolver<'a> {
                 }
                 StmtKind::Return(expr) => self.check_expr(expr, scopes)?,
                 StmtKind::IfChain { branches, otherwise } => {
-                    for (condition, branch) in branches {
-                        self.check_expr(condition, scopes)?;
-                        self.block(branch, scopes)?;
+                    for branch in branches {
+                        self.check_expr(&branch.condition, scopes)?;
+                        self.block(&branch.body, scopes)?;
                     }
                     if let Some(branch) = otherwise {
                         self.block(branch, scopes)?;
@@ -259,7 +259,7 @@ mod tests {
             else { panic!("缺少外層名稱"); };
         let StmtKind::IfChain { branches, .. } = &function.body.statements[1].kind
             else { panic!("缺少內層分支"); };
-        let StmtKind::Binding(inner) = &branches[0].1.statements[0].kind
+        let StmtKind::Binding(inner) = &branches[0].body.statements[0].kind
             else { panic!("缺少內層遮蔽宣告"); };
 
         let resolver = Resolver {

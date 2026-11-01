@@ -133,11 +133,11 @@ impl Analyzer<'_> {
                 StmtKind::IfChain { branches, otherwise } => {
                     let entry = state.clone();
                     let mut exits = Vec::new();
-                    for (condition, body) in branches {
+                    for arm in branches {
                         // 所有一般 bool 條件的具名來源都要先初始化。
-                        self.read(condition, &entry)?;
+                        self.read(&arm.condition, &entry)?;
                         let mut branch = entry.clone();
-                        self.block(body, &mut branch)?;
+                        self.block(&arm.body, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
                     }
                     if let Some(body) = otherwise {

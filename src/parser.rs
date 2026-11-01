@@ -61,7 +61,7 @@ pub(crate) enum StmtKind {
     Binding(Binding),
     Assignment { name: String, value: Expr },
     IfChain {
-        branches: Vec<(Expr, Block)>,
+        branches: Vec<crate::common_ir::ConditionalBranch<Expr, Block>>,
         otherwise: Option<Block>,
     },
     Return(Expr),
@@ -213,7 +213,7 @@ impl<'a> Parser<'a> {
         let condition = self.condition()?;
         let block = self.block()?;
         let mut end = block.end;
-        let mut branches = vec![(condition, block)];
+        let mut branches = vec![crate::common_ir::ConditionalBranch::new(condition, block)];
         let mut otherwise = None;
         loop {
             // 可容許 else 銜接前方 } 或在換行後出現；
@@ -230,7 +230,7 @@ impl<'a> Parser<'a> {
                 let cond = self.condition()?;
                 let body = self.block()?;
                 end = body.end;
-                branches.push((cond, body));
+                branches.push(crate::common_ir::ConditionalBranch::new(cond, body));
             } else {
                 let body = self.block()?;
                 end = body.end;

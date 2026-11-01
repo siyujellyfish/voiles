@@ -73,9 +73,9 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let main = checked.functions.iter().find(|f| f.name == "main").unwrap();
         let from = DeclarationId(create.body[0].start);
         let to = DeclarationId(main.body[0].start);
-        let StmtKind::If { yes, .. } = &main.body[1].kind
+        let StmtKind::If { branch, .. } = &main.body[1].kind
             else { panic!("必須有分支遮蔽") };
-        let shadow = DeclarationId(yes[0].start);
+        let shadow = DeclarationId(branch.body[0].start);
         assert!(checked.declarations.matches(from, "str", true));
         assert!(checked.declarations.matches(to, "str", true));
         assert!(checked.declarations.matches(shadow, "int", true));
@@ -379,8 +379,8 @@ mod p16_6_r03_10_單層布林分支與作用域資源清理 {
         let main=verified.functions.iter().find(|f|f.name=="main").unwrap();
         let [outside,branch,_]=main.body.as_slice() else {panic!("須為三語句");};
         let selected=if with_inner {
-            let StmtKind::If {yes,..}=&branch.kind else {panic!("須為 if");};
-            Some((DeclarationId(yes[0].start),1))
+            let StmtKind::If {branch:arm,..}=&branch.kind else {panic!("須為 if");};
+            Some((DeclarationId(arm.body[0].start),1))
         } else {None};
         ScopedResourcePlan::new(DeclarationId(outside.start),1,selected).unwrap()
     }
