@@ -320,8 +320,7 @@ impl Parser<'_> {
             let body = self.body()?;
             StmtKind::While { condition, body }
         } else if self.keyword("return") {
-            self.cursor += 1;
-            StmtKind::Return(self.term()?)
+            StmtKind::Return(crate::syntax_shared::parse_return(self)?)
         } else if self.keyword("break") {
             self.cursor += 1;
             StmtKind::Break
@@ -479,6 +478,17 @@ impl crate::syntax_shared::GroupSyntax for Parser<'_> {
 
 /// 正式私有受限 Parser 與公開 Parser 實作同一條 if/else-if 核心文法。
 /// 條件、區塊、診斷與允許的所有權行為仍完全由本入口負責。
+impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
+    type Expression = Term;
+    fn begin_return(&mut self) -> Result<(), Diagnostic> {
+        if !self.keyword("return") { return Err(self.syntax("缺少 return")); }
+        self.cursor += 1;
+        Ok(())
+    }
+    fn return_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }
+    fn validate_return(&self, _expression: &Term) -> Result<(), Diagnostic> { Ok(()) }
+}
+
 impl crate::syntax_shared::IfSyntax for Parser<'_> {
     type Condition = Term;
     type Body = Vec<Stmt>;

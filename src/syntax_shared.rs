@@ -177,6 +177,22 @@ pub(crate) fn parse_group<P: GroupSyntax>(
     Ok(P::group_result(parser, expression, start, end))
 }
 
+/// 公私 return 由同一正式核心依序消耗關鍵字、解析運算式、檢查模式權限。
+pub(crate) trait ReturnSyntax {
+    type Expression;
+    fn begin_return(&mut self) -> Result<(), crate::Diagnostic>;
+    fn return_expression(&mut self) -> Result<Self::Expression, crate::Diagnostic>;
+    fn validate_return(&self, expression: &Self::Expression) -> Result<(), crate::Diagnostic>;
+}
+pub(crate) fn parse_return<P: ReturnSyntax>(
+    parser: &mut P,
+) -> Result<P::Expression, crate::Diagnostic> {
+    parser.begin_return()?;
+    let expression = parser.return_expression()?;
+    parser.validate_return(&expression)?;
+    Ok(expression)
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }

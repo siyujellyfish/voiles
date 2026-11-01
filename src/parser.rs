@@ -209,11 +209,7 @@ impl<'a> Parser<'a> {
         } else if self.keyword("if") {
             self.if_chain()?
         } else if self.keyword("return") {
-            self.next();
-            let value = self.expression()?;
-            if !self.first_version_return(&value) {
-                return Err(self.err("首版 return 不接受此運算式來源"));
-            }
+            let value = crate::syntax_shared::parse_return(self)?;
             let end = value.end;
             (StmtKind::Return(value), end)
         } else if matches!(self.current().map(|t| &t.kind), Some(TokenKind::Name(_))) {
@@ -264,6 +260,18 @@ impl<'a> Parser<'a> {
             return Err(self.err("來源檔案至少需要合法頂層宣告"));
         }
         Ok(File { items, start: 0, end: self.source.bytes.len() })
+    }
+}
+
+impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
+    type Expression = Expr;
+    fn begin_return(&mut self) -> Result<(), Diagnostic> {
+        self.expect_keyword("return", "缺少 return").map(|_| ())
+    }
+    fn return_expression(&mut self) -> Result<Expr, Diagnostic> { self.expression() }
+    fn validate_return(&self, expression: &Expr) -> Result<(), Diagnostic> {
+        if self.first_version_return(expression) { Ok(()) }
+        else { Err(self.err("首版 return 不接受此運算式來源")) }
     }
 }
 
