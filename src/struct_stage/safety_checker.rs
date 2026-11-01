@@ -1202,8 +1202,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != expected_return || !ready {
                         return Err(self.error("函式回傳型別不一致或來源未初始化", term));
                     }
-                    if let Some(source) = moved_from {
-                        self.recorded_named_returns.borrow_mut().insert((source, term.start));
+                    // 靜態分支／迴圈的 return 可能可達，但不能假裝已執行。
+                    // F12 專用直線資源橋接只接受沒有後繼分支與反向邊的
+                    // Checker 返回證據；不能從任意分支推論唯一執行期事件。
+                    if continuation.is_empty() && loop_entry.is_none() {
+                        if let Some(source) = moved_from {
+                            self.recorded_named_returns.borrow_mut()
+                                .insert((source, term.start));
+                        }
                     }
                     return Ok(FlowState::Returned);
                 }
