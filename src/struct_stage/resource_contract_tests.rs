@@ -8,6 +8,45 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     use crate::owned_str_runtime::ResourceEvent;
 
     #[test]
+    fn f11_完整_checker_hir_必須與真實宣告型別及_const_var_權限逐筆相符() {
+        use crate::common_ir::{NodeSpan, ResolvedUse, ScalarType, TypedUse, VerifiedScalarHir};
+        let code = "fn main()->int{\nvar n:int = 1\nconst label:int = 2\nvar alias:int = n\nn = alias\nreturn n\n}\n";
+        let checked = verified_private_source(code).expect("合法來源應交付完整 Checker HIR");
+        let facts = &checked.declarations;
+        assert!(facts.scalar_hir_is_consistent(&checked.scalar_hir, code.len()));
+        let owner = DeclarationId(code.find("var n:int").unwrap());
+        let constant = DeclarationId(code.find("const label:int").unwrap());
+        let span = NodeSpan::new(
+            code.find("return n").unwrap() + "return ".len(),
+            code.find("return n").unwrap() + "return n".len(),
+        );
+        let mut hir = VerifiedScalarHir::default();
+        hir.record_reference(TypedUse::new(span, ResolvedUse::new(
+            owner, ScalarType::Int)));
+        assert!(facts.scalar_hir_is_consistent(&hir, code.len()));
+        let mut wrong_source = VerifiedScalarHir::default();
+        wrong_source.record_reference(TypedUse::new(span, ResolvedUse::new(
+            DeclarationId(code.len() + 20), ScalarType::Int)));
+        assert!(!facts.scalar_hir_is_consistent(&wrong_source, code.len()),
+            "沒有 Checker 真實宣告的身分不可進入安全計畫");
+        let mut wrong_type = VerifiedScalarHir::default();
+        wrong_type.record_reference(TypedUse::new(span, ResolvedUse::new(
+            owner, ScalarType::Bool)));
+        assert!(!facts.scalar_hir_is_consistent(&wrong_type, code.len()),
+            "不能將來源 int 偷換為 bool");
+        let mut immutable_write = VerifiedScalarHir::default();
+        immutable_write.record_assignment(TypedUse::new(span, ResolvedUse::new(
+            constant, ScalarType::Int)));
+        assert!(!facts.scalar_hir_is_consistent(&immutable_write, code.len()),
+            "const 不能產生合法的 var 賦值型別 HIR");
+        let mut out_of_bounds = VerifiedScalarHir::default();
+        out_of_bounds.record_expression(NodeSpan::new(code.len() + 1, code.len() + 3),
+            ScalarType::Int);
+        assert!(!facts.scalar_hir_is_consistent(&out_of_bounds, code.len()),
+            "未經原始 UTF-8 範圍驗證的位置不可冒充型別證據");
+    }
+
+    #[test]
     fn f11_資源安全證據必須在型別來源和欄位權限上完全閉合() {
         let code = "struct Holder{\nvar title:str = \"舊\"\nconst id:str = \"固定\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新\"\nvar transferred:Holder = owner.move()\nreturn 0\n}\n";
         let checked = verified_private_source(code).expect("合法結構整筆資源來源");
