@@ -128,6 +128,26 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             .map_err(|_| self.error(diagnostic, term))
     }
 
+    /// F04/F08：正式私有詞彙 Binding 與 Checker 成功登記的 HIR
+    /// 必須對同一個 DeclarationId、型別、var/const 權限達成一致，
+    /// 才能以 TypedUse 對借用或擁有權執行後續安全判斷。
+    fn checked_binding_use<'b>(&self, binding: &'b Binding, term: &Term)
+        -> Result<crate::common_ir::TypedUse<&'b str>, Diagnostic> {
+        let use_at = binding.semantic_use_at(term.node_span());
+        let valid = self.recorded_declarations.borrow()
+            .get(&use_at.resolved.declaration)
+            .is_some_and(|decl| decl.owns(use_at.resolved.declaration)
+                && decl.ty == use_at.resolved.ty
+                && decl.mutable == binding.mutable);
+        if !valid {
+            return Err(self.error(
+                "P16：詞彙持有者與 Checker 具型別宣告身分或變更權限不一致",
+                term,
+            ));
+        }
+        Ok(use_at)
+    }
+
     fn check_direct(&self, vars: &Scopes, name: &str, term: &Term)
         -> Result<(), Diagnostic> {
         let owner = Self::lookup(vars, name)
@@ -135,7 +155,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 與抽象 BorrowTicket 使用同一個 HC14-A 直接存取規則；
         // 別名自身仍遵守現有 evaluate／loan 權限與最後使用點證明。
         if owner.loan.is_none() {
-            let reference = owner.semantic_use_at(term.node_span());
+            let reference = self.checked_binding_use(owner, term)?;
             Self::active_loan_snapshot(vars).validate_direct(reference.resolved.declaration)
                 .map_err(|_| self.error(
                     "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
@@ -155,7 +175,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             return Err(self.error("VA14-01：借用變數的 var／const 權限必須跟隨來源", term));
         }
         let kind = if mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
-        let reference = owner.semantic_use_at(term.node_span());
+        let reference = self.checked_binding_use(owner, term)?;
         self.check_borrow_conflicts(
             vars, reference.resolved.declaration, kind, term,
             "HC14：共享／獨占借用與現有別名衝突",
@@ -635,7 +655,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // 非擁有借用僅能對已核准 Copyable 值產生獨立複本，
                 // 不得以一般名稱使用把 str 借用轉成新資源擁有者。
                 binding.value.duplicate().map_err(|err| self.model_error(err, term))?;
-                Ok((binding.ty.clone(), true))
+                let reference = self.checked_binding_use(binding, term)?;
+                Ok((reference.resolved.ty.to_owned(), true))
             }
             TermKind::Borrow(_) => Err(self.error(
                 "VA14／VA15：.borrow() 僅可直接綁定到合法 var／const；回傳與逃逸保守拒絕",
@@ -650,8 +671,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 if binding.loan.is_some() {
                     return Err(self.error("VA14-01：借用別名不是所有者，不能 .move()", term));
                 }
+                // 必須在移動改變來源狀態之前固定已解析型別及宣告。
+                let declaration = self.checked_binding_use(binding, term)?;
                 binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
-                Ok((binding.ty.clone(), true))
+                Ok((declaration.resolved.ty.to_owned(), true))
             }
             TermKind::FieldRead(owner, name) => {
                 if owner == "self" {
