@@ -21,6 +21,30 @@ fn 公開正式檢查(原始: &str) -> Result<(), Diagnostic> {
 }
 
 #[test]
+fn f00_既存_p01_四十九個來源檔皆直接由公開正式檢查入口鎖定結果() {
+    use crate::{check_file, CheckStatus};
+    use std::path::Path;
+
+    // 目前儲存庫可核對的原始 fixture：正 01～19、反 01～30。
+    // 「P01 原 50 項」的剩餘一項尚待精確索引；不能冒充已凍結第 50 項。
+    for number in 1..=19 {
+        let path = format!("tests/fixtures/voiles/P01-正{number:02}.voil");
+        let result = check_file(Path::new(&path));
+        assert!(result.io_error.is_none(), "{path} 不得在 IO 階段失敗");
+        assert_eq!(result.status, CheckStatus::Passed, "{path} 必須通過：{:?}",
+            result.diagnostics);
+        assert!(result.diagnostics.is_empty(), "{path} 不得殘留診斷");
+    }
+    for number in 1..=30 {
+        let path = format!("tests/fixtures/voiles/P01-反{number:02}.voil");
+        let result = check_file(Path::new(&path));
+        assert!(result.io_error.is_none(), "{path} 不得在 IO 階段失敗");
+        assert_eq!(result.status, CheckStatus::Failed, "{path} 不得誤通過");
+        assert!(!result.diagnostics.is_empty(), "{path} 須有正式拒絕診斷");
+    }
+}
+
+#[test]
 fn 公私共有的整數與分支語法仍經兩條正式檢查路徑接受() {
     for code in [
         "fn main()->int{\nvar n:int = 1\nreturn n\n}\n",
