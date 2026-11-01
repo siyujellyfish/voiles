@@ -98,14 +98,25 @@ impl SafetyPipeline {
         Ok(())
     }
 
+    /// F09：同一交易中的所有持有者都通過借用／有效所有權及資源責任預檢，
+    /// 才允許以同一組 DeclarationId 提交兩張表，杜絕部分釋放。
+    /// 僅記錄外部已確認的清理事件，不推定執行期析構順序。
+    pub(crate) fn record_cleanup_batch(&mut self, owners: &[DeclarationId])
+        -> Result<usize, PipelineError> {
+        // 必須預先拒絕重複目標，否則所有權表第二次提交會部分成功。
+        self.resources.check_release_batch(owners).map_err(PipelineError::Resource)?;
+        for &owner in owners {
+            self.ownership.read(owner).map_err(PipelineError::Ownership)?;
+        }
+        for &owner in owners {
+            self.ownership.commit_finish_owner_checked(owner);
+        }
+        Ok(self.resources.commit_release_batch_checked(owners))
+    }
+
     pub(crate) fn record_cleanup(&mut self, owner: DeclarationId)
         -> Result<usize, PipelineError> {
-        // 在紀錄抽象清理前，先確認沒有活躍借用及無效來源，
-        // 同時檢查 P16 責任表確實有對應所有者。
-        self.ownership.read(owner).map_err(PipelineError::Ownership)?;
-        self.resources.check_release_batch(&[owner]).map_err(PipelineError::Resource)?;
-        self.ownership.commit_finish_owner_checked(owner);
-        Ok(self.resources.commit_release_batch_checked(&[owner]))
+        self.record_cleanup_batch(&[owner])
     }
 
     /// 真實欄位覆寫或 RHS 失敗後，只清理已由執行期確認釋放的資源。
