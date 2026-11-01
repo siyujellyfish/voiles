@@ -22,7 +22,7 @@ fn trace_string_struct_source(
         }
         Some(content)
     }
-    let VerifiedPrivateSource { source: _, structs, functions: funcs, .. } =
+    let VerifiedPrivateSource { source: _, structs, functions: funcs, declarations } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
@@ -36,12 +36,19 @@ fn trace_string_struct_source(
     }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：返回及控制流程尚未接通資源追蹤"));
     }
-    let (ty, args) = match &declaration.kind {
+    let (ty, mutable, args) = match &declaration.kind {
         StmtKind::Declare {
-            name, ty, init: Some(Term {kind: TermKind::Construct(owner, args), ..}), ..
-        } if name == variable && ty == owner => (ty.as_str(), args),
+            name, ty, mutable, init: Some(Term {
+                kind: TermKind::Construct(owner, args), ..
+            }),
+        } if name == variable && ty == owner => (ty.as_str(), *mutable, args),
         _ => return Err(unsupported("P16：不存在單次具名字串結構建立式")),
     };
+    // 這條最早的 P16 來源橋接也必須消費 Checker 實際完成的
+    // 宣告來源身分與已驗證可變權限，而非只憑 Parser 的建構式形狀。
+    if !declarations.matches(DeclarationId(declaration.start), ty, mutable) {
+        return Err(unsupported("P16：具名結構建立缺少 Checker 已驗證持有者身分及型別"));
+    }
     let definition = structs.get(ty)
         .ok_or_else(|| unsupported("P16：結構型別不存在"))?;
     let mut fields = Vec::new();
