@@ -204,7 +204,7 @@ fn trace_string_return_source(
         }
         Some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, .. } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, declarations } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
@@ -234,10 +234,16 @@ fn trace_string_return_source(
         [local @ Stmt {kind: StmtKind::Declare {
             name, ty, init: Some(value), ..
         }, ..}, Stmt {kind: StmtKind::Return(Term {
-            kind: TermKind::Move(returned_name), ..
+            kind: TermKind::Move(returned_name), start: return_start, ..
         }), ..}] if ty == "str" && name == returned_name => {
-            let proof = NamedResourceReturn::new(
-                DeclarationId(local.start), DeclarationId(declaration.start))
+            let from = DeclarationId(local.start);
+            let to = DeclarationId(declaration.start);
+            let verified = declarations.verified_named_return(from, *return_start, "str")
+                .ok_or_else(|| unsupported("P16：缺少 Checker 已驗證具名 str 返回來源證據"))?;
+            if !declarations.matches(to, "str", true) {
+                return Err(unsupported("P16：呼叫端接收者不是 Checker 已驗證的 str 來源"));
+            }
+            let proof = NamedResourceReturn::new(verified.source, to)
                 .map_err(|_| unsupported("P16：具名返回來源及接收者不可有相同宣告身分"))?;
             (plain_literal(text, value), Some(proof))
         }
@@ -696,7 +702,7 @@ fn trace_persistent_struct_return_source(
         (!raw.contains('\\') && !raw.contains('\n')
             && !raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, .. } =
+    let VerifiedPrivateSource { source: _, structs, functions, declarations } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function| function.name=="main")
         .ok_or_else(||unsupported("P16：缺少有效 main"))?;
@@ -734,8 +740,22 @@ fn trace_persistent_struct_return_source(
     }) if text.get(*start..*end)==Some("0")) {
         return Err(unsupported("P16：main 的其他返回路徑尚未接通"));
     }
-    let plan=WholeStructResourcePlan::new(
-        DeclarationId(declaration.start), DeclarationId(receive.start))
+    let moved = match &return_final.kind {
+        StmtKind::Return(term) => term,
+        _ => unreachable!("上方已驗證 return .move() 形狀"),
+    };
+    let target_mutable = match &receive.kind {
+        StmtKind::Declare { mutable, .. } => *mutable,
+        _ => unreachable!("上方已驗證接收宣告"),
+    };
+    let from = DeclarationId(declaration.start);
+    let to = DeclarationId(receive.start);
+    let checked_return = declarations.verified_named_return(from, moved.start, ty)
+        .ok_or_else(||unsupported("P16：缺少 Checker 已驗證整筆結構返回證據"))?;
+    if !declarations.matches(to, ty, target_mutable) {
+        return Err(unsupported("P16：整筆結構接收者不是 Checker 已驗證的來源"));
+    }
+    let plan=WholeStructResourcePlan::new(checked_return.source, to)
         .map_err(|_|unsupported("P16：跨函式整筆結構返回的來源及目的宣告身分不可重疊"))?;
     let definition=structs.get(ty)
         .ok_or_else(||unsupported("P16：結構類別不存在"))?;

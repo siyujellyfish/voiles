@@ -17,7 +17,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let main = &parsed[0];
         let origin = DeclarationId(main.body[0].start);
         let target = DeclarationId(main.body[1].start);
-        let no_checker_proof = VerifiedDeclarationFacts::from_checker(BTreeMap::new(), BTreeSet::new());
+        let no_checker_proof = VerifiedDeclarationFacts::from_checker(BTreeMap::new(), BTreeSet::new(), BTreeSet::new());
         assert!(!no_checker_proof.has_direct_move(origin, target),
             "光有具名 move AST 不能自動獲得資源移交證據");
         assert_eq!(no_checker_proof.verified_direct_move(origin, target, "str"), None);
@@ -193,6 +193,21 @@ mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
         let main = verified.functions.iter().find(|f| f.name == "main").unwrap();
         let source_id = DeclarationId(provider.body[0].start);
         let target_id = DeclarationId(main.body[0].start);
+        let StmtKind::Return(return_term) = &provider.body[1].kind
+            else { panic!("此橋接只接受真正的具名 return move") };
+        assert_eq!(verified.declarations.verified_named_return(
+            source_id, return_term.start, "str",
+        ), Some(VerifiedReturnEvidence { source: source_id, return_start: return_term.start }));
+        assert_eq!(verified.declarations.verified_named_return(
+            source_id, return_term.start, "int",
+        ), None, "型別不同不得冒充返回移交");
+        assert_eq!(verified.declarations.verified_named_return(
+            target_id, return_term.start, "str",
+        ), None, "不能用呼叫端接收者冒充被呼叫端返回來源");
+        let no_proof = VerifiedDeclarationFacts::from_checker(
+            verified.declarations.by_source.clone(), BTreeSet::new(), BTreeSet::new());
+        assert!(no_proof.verified_named_return(source_id, return_term.start, "str").is_none(),
+            "只有 AST 與宣告型別、卻沒有 Checker 回傳證據不可建立資源橋接");
         assert_ne!(source_id, target_id);
         assert_eq!(&src[source_id.0..source_id.0 + 3], "var");
         assert_eq!(&src[target_id.0..target_id.0 + 3], "var");
@@ -240,7 +255,7 @@ mod p16_6_r03_4_結構整筆移交與失敗回滾資源責任 {
         assert!(verified.declarations.verified_direct_move(target_id, source_id, "Message").is_none(),
             "不得顛倒所有權移交方向");
         assert!(VerifiedDeclarationFacts::from_checker(
-            BTreeMap::new(), BTreeSet::new(),
+            BTreeMap::new(), BTreeSet::new(), BTreeSet::new(),
         ).verified_direct_move(source_id, target_id, "Message").is_none(),
             "沒有 Checker 完整證據時 AST 看似合法也不能驅動資源計畫");
         let plan = WholeStructResourcePlan::new(source_id, target_id).unwrap();
@@ -294,6 +309,15 @@ mod p16_6_r03_5_跨函式結構返回多資源責任 {
         let provider = verified.functions.iter().find(|f| f.name == "provide").unwrap();
         let caller = verified.functions.iter().find(|f| f.name == "main").unwrap();
         assert_ne!(provider.body[0].start, caller.body[0].start);
+        let source = DeclarationId(provider.body[0].start);
+        let StmtKind::Return(return_term) = &provider.body[1].kind
+            else { panic!("須有完整 Checker 已驗證整筆 return") };
+        assert_eq!(verified.declarations.verified_named_return(
+            source, return_term.start, "Bundle"),
+            Some(VerifiedReturnEvidence { source, return_start: return_term.start }));
+        assert!(verified.declarations.verified_named_return(
+            source, return_term.start, "str").is_none(),
+            "不能把整筆 Bundle 轉移冒充單一 str 資源");
         WholeStructResourcePlan::new(
             DeclarationId(provider.body[0].start),
             DeclarationId(caller.body[0].start)).unwrap()

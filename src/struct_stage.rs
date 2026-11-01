@@ -174,6 +174,8 @@ struct Checker<'a, C> {
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, (String, bool)>>,
+    /// F11：具名 return .move() 經來源身分、型別、借用與有效期驗證後的證據。
+    recorded_named_returns: RefCell<BTreeSet<(DeclarationId, usize)>>,
 }
 
 // P13～P16 的受限靜態安全檢查；下一步再分離型別／資料流責任。
@@ -194,6 +196,12 @@ struct VerifiedMoveEvidence {
     target: DeclarationId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedReturnEvidence {
+    source: DeclarationId,
+    return_start: usize,
+}
+
 /// F12：無 Checker 已驗證轉移事實時不得寫入任何資源安全帳簿。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum VerifiedMoveError {
@@ -205,6 +213,8 @@ struct VerifiedDeclarationFacts {
     by_source: BTreeMap<DeclarationId, (String, bool)>,
     /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
+    /// 僅保存 Checker 成功提交的具名整筆返回來源及 return 運算式位置。
+    named_returns: BTreeSet<(DeclarationId, usize)>,
 }
 impl VerifiedDeclarationFacts {
     /// F11：本表僅消費 Checker 成功的宣告與直接轉移證據；
@@ -212,8 +222,20 @@ impl VerifiedDeclarationFacts {
     fn from_checker(
         by_source: BTreeMap<DeclarationId, (String, bool)>,
         direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
+        named_returns: BTreeSet<(DeclarationId, usize)>,
     ) -> Self {
-        Self { by_source, direct_moves }
+        Self { by_source, direct_moves, named_returns }
+    }
+
+    /// 一筆具名返回須由 Checker 在真正成功驗證 `return name.move()`
+    /// 後按來源 DeclarationId 及原始運算式位置直接簽出證據。
+    fn verified_named_return(
+        &self, source: DeclarationId, return_start: usize, ty: &str,
+    ) -> Option<VerifiedReturnEvidence> {
+        self.by_source.get(&source)
+            .filter(|(actual, _)| actual == ty)?;
+        self.named_returns.contains(&(source, return_start))
+            .then_some(VerifiedReturnEvidence { source, return_start })
     }
 
     fn verified_direct_move(
@@ -271,11 +293,14 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         function_index, ability,
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
+        recorded_named_returns: RefCell::new(BTreeSet::new()),
     };
     checker.all(&functions)?;
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
-    let declarations = VerifiedDeclarationFacts::from_checker(by_source, direct_moves);
+    let named_returns = checker.recorded_named_returns.into_inner();
+    let declarations = VerifiedDeclarationFacts::from_checker(
+        by_source, direct_moves, named_returns);
     Ok(VerifiedPrivateSource { source, structs, functions, declarations })
 }
 
