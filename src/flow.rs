@@ -403,7 +403,9 @@ mod tests {
         assert_eq!(hir.expression(span("true")).unwrap().ty, ScalarType::Bool);
         assert_eq!(hir.expression(span("n + helper()")).unwrap().ty, ScalarType::Int);
         assert_eq!(hir.expression(span("(n + helper())")).unwrap().ty, ScalarType::Int);
-        assert_eq!(hir.expression(span("helper()")).unwrap().ty, ScalarType::Int);
+        let called_at = code.rfind("helper()").unwrap();
+        assert_eq!(hir.expression(crate::common_ir::NodeSpan::new(
+            called_at, called_at + "helper()".len())).unwrap().ty, ScalarType::Int);
         assert_eq!(check_with_typed_hir(&ast, &source, &facts, &hir), Ok(()));
 
         // P10 沒有交付任何運算式型別的 HIR，即使全檔只使用 int
