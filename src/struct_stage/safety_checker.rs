@@ -1012,6 +1012,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             message: "宣告使用不存在的型別".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
+                    // 直線函式本體的真實解析身分須在 RHS move 令來源失效前取得。
+                    // 巢狀 if／for／while 一律不得記成「已執行」的直線資源移交。
+                    let direct_move_source = if continuation.is_empty() && loop_entry.is_none() {
+                        match init.as_ref().map(|expr| &expr.kind) {
+                            Some(TermKind::Move(name)) =>
+                                Self::lookup(vars, name).map(|binding| binding.declaration_start),
+                            _ => None,
+                        }
+                    } else { None };
                     let mut loan = None;
                     let initialized = if let Some(expr) = init {
                         let (actual, ready) = if let TermKind::Borrow(source) = &expr.kind {
@@ -1052,6 +1061,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         declaration_start: DeclarationId(statement.start), ty: ty.clone(),
                         mutable: *mutable, value: slot, pending_fields, loan
                     });
+                    // 僅成功完成 RHS 型別、借用與所有權驗證且寫入目標之後，
+                    // 才允許 Checker 輸出此具名整筆轉移證據。
+                    if let Some(source) = direct_move_source {
+                        self.recorded_direct_moves.borrow_mut()
+                            .insert((source, DeclarationId(statement.start)));
+                    }
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
                     // VA16-03-A：已核准的 str 獨立常值可以先取得唯一新資源，
