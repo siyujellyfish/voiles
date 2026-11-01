@@ -39,13 +39,26 @@ pub(crate) struct ResourceObligationAudit {
 impl ResourceObligationAudit {
     pub(crate) fn new() -> Self { Self::default() }
 
+    pub(crate) fn check_create_binding(&self, id: DeclarationId)
+        -> Result<(), ResourceAuditError> {
+        if self.values.contains_key(&id) { Err(ResourceAuditError::DuplicateBinding) }
+        else { Ok(()) }
+    }
+
     pub(crate) fn create_binding(&mut self, id: DeclarationId, permission: CopyPermission)
         -> Result<(), ResourceAuditError> {
-        if self.values.contains_key(&id) { return Err(ResourceAuditError::DuplicateBinding); }
+        self.check_create_binding(id)?;
+        self.commit_create_binding_checked(id, permission);
+        Ok(())
+    }
+
+    pub(crate) fn commit_create_binding_checked(
+        &mut self, id: DeclarationId, permission: CopyPermission,
+    ) {
+        debug_assert!(!self.values.contains_key(&id));
         self.values.insert(id, BindingRecord {
             permission, resources: BTreeSet::new(),
         });
-        Ok(())
     }
 
     /// 將新資源責任綁在已建立的所有者。已釋放的 ID 也不可重複建立，
