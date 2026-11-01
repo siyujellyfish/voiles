@@ -186,6 +186,24 @@ mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
     use crate::verified_resource_ir::NamedResourceReturn;
 
     #[test]
+    fn f11_分支中可達但未確定執行的_return_move_不得簽發直線資源證據() {
+        let code = "fn provide(flag:bool)->str{\nvar payload:str = \"繁體中文\"\nif(flag){\nreturn payload.move()\n}\nreturn \"fallback\"\n}\nfn main()->int{\nreturn 0\n}\n";
+        let checked = verified_private_source(code)
+            .expect("靜態可達分支具名 return move 是合法來源");
+        let provider = checked.functions.iter().find(|f| f.name == "provide").unwrap();
+        let original = DeclarationId(provider.body[0].start);
+        let StmtKind::If { branch, .. } = &provider.body[1].kind
+            else { panic!("必須是已驗證 if 分支") };
+        let StmtKind::Return(value) = &branch.body[0].kind
+            else { panic!("必須是分支內具名 return move") };
+        assert_eq!(checked.declarations.verified_named_return(
+            original, value.start, "str",
+        ), None, "靜態可能執行不能冒充已執行的直線 P16 資源返回");
+        assert!(checked.declarations.matches(original, "str", true),
+            "不得因禁止資源橋接證據而錯誤否決合法靜態來源");
+    }
+
+    #[test]
     fn 真實具名函式返回依來源及接收宣告身分核對同一資源() {
         let src = "fn create()->str{\nvar payload:str = \"繁體中文🪼\"\nreturn payload.move()\n}\nfn main()->int{\nvar received:str = create()\nreturn 0\n}\n";
         let verified = verified_private_source(src).unwrap();
