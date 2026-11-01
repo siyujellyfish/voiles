@@ -2258,6 +2258,9 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         assert!(!mentions(&[read("alias")], Some(DeclarationId(30))));
         assert!(mentions(&[read("alias")], old));
         assert!(!mentions(&[read("alias")], None));
+        // for 反向邊重新執行同一個 AST 宣告，不能把下一次
+        // 詞法來源相同但動態借用票據不同的別名當成當前別名。
+        assert!(!mentions(&[declare("alias", 10, None), read("alias")], old));
     }
 
     #[test]
