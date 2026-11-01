@@ -19,6 +19,14 @@ pub(crate) fn take_keyword(tokens: &[Token], cursor: &mut usize, word: &str) -> 
     Some(token.start)
 }
 
+/// 公私正式函式簽章共用的 Arrow 消耗：失敗不推進游標。
+pub(crate) fn take_return_arrow(tokens: &[Token], cursor: &mut usize) -> Option<usize> {
+    let token = tokens.get(*cursor)?;
+    if !matches!(token.kind, TokenKind::Arrow) { return None; }
+    *cursor += 1;
+    Some(token.end)
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
@@ -328,6 +336,23 @@ mod tests {
             |_, _, _, span| span,
         ).unwrap();
         assert_eq!(tree, NodeSpan::new(2, 22));
+    }
+
+    #[test]
+    fn 回傳箭號只精確消耗_arrow_且保留原位元組結尾() {
+        let source = Source::new("fn main()->int{}".as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        let tokens = &scan.tokens;
+        let position = tokens.iter().position(|token|
+            matches!(token.kind, TokenKind::Arrow)).unwrap();
+        let mut cursor = position;
+        assert_eq!(take_return_arrow(tokens, &mut cursor), Some(tokens[position].end));
+        assert_eq!(cursor, position + 1);
+        assert_eq!(take_return_arrow(tokens, &mut cursor), None);
+        assert_eq!(cursor, position + 1);
+        let mut beyond = tokens.len();
+        assert_eq!(take_return_arrow(tokens, &mut beyond), None);
+        assert_eq!(beyond, tokens.len());
     }
 
     #[test]
