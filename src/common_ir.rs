@@ -170,6 +170,30 @@ impl ResolvedNames {
         self.assignment(span.start).map(|resolved| TypedUse::new(span, resolved))
     }
 
+    /// R02 F04：唯一 P09→P10／P11 型別化來源安全授權入口。
+    /// 一次核對原始位置、宣告表鍵、身分、型別與 var/const 權限。
+    /// 這只表示靜態來源一致，不代表借用或資源操作已獲授權。
+    fn verified_use(&self, span: NodeSpan, visible: TypedDeclaration<ScalarType>,
+        assignment: bool) -> Option<TypedUse<ScalarType>> {
+        let use_at = if assignment {
+            self.assignment_at(span)?
+        } else {
+            self.reference_at(span)?
+        };
+        (self.declaration(visible.declaration) == Some(visible)
+            && visible.matches_use(use_at.resolved)).then_some(use_at)
+    }
+
+    pub(crate) fn verified_reference(&self, span: NodeSpan,
+        visible: TypedDeclaration<ScalarType>) -> Option<TypedUse<ScalarType>> {
+        self.verified_use(span, visible, false)
+    }
+
+    pub(crate) fn verified_assignment(&self, span: NodeSpan,
+        visible: TypedDeclaration<ScalarType>) -> Option<TypedUse<ScalarType>> {
+        self.verified_use(span, visible, true)
+    }
+
     pub(crate) fn reference_type(&self, start: usize) -> Option<ScalarType> {
         self.reference(start).map(|value| value.ty)
     }
@@ -302,6 +326,43 @@ fn map_optional<T, U>(
     match source {
         Some(value) => Some(Some(project(value)?)),
         None => Some(None),
+    }
+}
+
+#[cfg(test)]
+mod f04_公私共同語意的正式已解析存取權威 {
+    use super::*;
+
+    #[test]
+    fn 同時驗證來源位置身分型別及可變權限_不能跨讀寫用途使用() {
+        let owner = DeclarationId(100);
+        let other = DeclarationId(200);
+        let span_read = NodeSpan::new(310, 317);
+        let span_write = NodeSpan::new(410, 420);
+        let fact = TypedDeclaration::new(owner, ScalarType::Int, true);
+        let mut names = ResolvedNames::default();
+        names.declarations.insert(owner, fact);
+        names.declarations.insert(other,
+            TypedDeclaration::new(other, ScalarType::Int, false));
+        names.references.insert(span_read.start, owner);
+        names.assignments.insert(span_write.start, owner);
+        assert_eq!(names.verified_reference(span_read, fact),
+            Some(fact.use_at(span_read)));
+        assert_eq!(names.verified_assignment(span_write, fact),
+            Some(fact.use_at(span_write)));
+        assert_eq!(names.verified_assignment(span_read, fact), None);
+        assert_eq!(names.verified_reference(span_write, fact), None);
+        assert_eq!(names.verified_reference(NodeSpan::new(311, 317), fact), None);
+        assert_eq!(names.verified_reference(span_read,
+            TypedDeclaration::new(other, ScalarType::Int, false)), None);
+        assert_eq!(names.verified_reference(span_read,
+            TypedDeclaration::new(owner, ScalarType::Bool, true)), None);
+        assert_eq!(names.verified_reference(span_read,
+            TypedDeclaration::new(owner, ScalarType::Int, false)), None);
+        names.declarations.insert(owner,
+            TypedDeclaration::new(other, ScalarType::Int, true));
+        assert_eq!(names.verified_reference(span_read, fact), None);
+        assert_eq!(names.verified_assignment(span_write, fact), None);
     }
 }
 
