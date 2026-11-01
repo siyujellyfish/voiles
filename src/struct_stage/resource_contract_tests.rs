@@ -383,15 +383,15 @@ mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
             _ => unreachable!("測試上方已核對欄位賦值"),
         };
         assert_eq!(verified.declarations.verified_field_write(
-            owner, write.start, "Message", field_name,
+            owner, write.start, "Holder", field_name,
         ), Some(VerifiedFieldWriteEvidence {
             owner, statement_start: write.start, field: field_name.to_owned(),
         }));
         for (source, at, ty, member) in [
             (owner, write.start, "str", field_name),
-            (owner, write.start, "Message", "id"),
-            (owner, write.start + 1, "Message", field_name),
-            (DeclarationId(write.start), write.start, "Message", field_name),
+            (owner, write.start, "Holder", "id"),
+            (owner, write.start + 1, "Holder", field_name),
+            (DeclarationId(write.start), write.start, "Holder", field_name),
         ] {
             assert!(verified.declarations.verified_field_write(
                 source, at, ty, member,
@@ -401,7 +401,7 @@ mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
             verified.declarations.by_source.clone(), BTreeSet::new(),
             BTreeSet::new(), BTreeSet::new(),
         );
-        assert!(no_proof.verified_field_write(owner, write.start, "Message", field_name)
+        assert!(no_proof.verified_field_write(owner, write.start, "Holder", field_name)
             .is_none(), "AST 形狀及型別表不能冒充 Checker 真正提交證據");
         let plan = FieldOverwritePlan::new(owner, 2, Some(0)).unwrap();
         let (updated, success) = trace_persistent_struct_field_write_source(SOURCE, false).unwrap();
