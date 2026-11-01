@@ -115,13 +115,16 @@ pub fn check_file(path: &Path) -> CheckResult {
                         match names::resolve_with_facts(&ast, &source) {
                             Err(error) => diagnostics.push(error),
                             Ok(names) => {
-                                if let Err(error) = types::check_with_names(&ast, &source, &names) {
-                                    diagnostics.push(error);
-                                } else if let Err(error) =
-                                    flow::check_with_names(&ast, &source, &names) {
-                                    diagnostics.push(error);
-                                } else if let Err(error) = functions::check(&ast, &source) {
-                                    diagnostics.push(error);
+                                match types::check_with_names_and_hir(&ast, &source, &names) {
+                                    Err(error) => diagnostics.push(error),
+                                    Ok(typed) => {
+                                        if let Err(error) =
+                                            flow::check_with_typed_hir(&ast, &source, &names, &typed) {
+                                            diagnostics.push(error);
+                                        } else if let Err(error) = functions::check(&ast, &source) {
+                                            diagnostics.push(error);
+                                        }
+                                    }
                                 }
                             }
                         }
