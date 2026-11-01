@@ -141,23 +141,28 @@ impl<'a> ExprParser<'a> {
             };
             return Ok(Expr { kind, start: literal.start, end: literal.end });
         }
+        // 一般具名原子亦由同一共通 AST 位置產生器建立。
+        if let Some(name) =
+            crate::syntax_shared::take_spanned_name(self.tokens, &mut self.cursor) {
+            let kind = if self.symbol('(') {
+                self.next();
+                let end = self.expect_symbol(')',
+                    "首版零引數函式呼叫必須為空引數列表")?;
+                return Ok(Expr {
+                    kind: ExprKind::ZeroArgCall(name.kind),
+                    start: name.start, end,
+                });
+            } else {
+                ExprKind::Name(name.kind)
+            };
+            return Ok(Expr { kind, start: name.start, end: name.end });
+        }
         let token = self.next().ok_or_else(|| self.error("缺少運算式"))?;
         let start = token.start;
         let end = token.end;
         match &token.kind {
             TokenKind::Decimal(text) => Ok(Expr { kind: ExprKind::DecimalLiteral(text.clone()), start, end }),
             TokenKind::StringLiteral(text) => Ok(Expr { kind: ExprKind::StringLiteral(text.clone()), start, end }),
-            TokenKind::Name(name) => {
-                if self.symbol('(') {
-                    self.next();
-                    let end = self.expect_symbol(')', "首版零引數函式呼叫必須為空引數列表")?;
-                    Ok(Expr {
-                        kind: ExprKind::ZeroArgCall(name.clone()), start, end,
-                    })
-                } else {
-                    Ok(Expr { kind: ExprKind::Name(name.clone()), start, end })
-                }
-            }
             TokenKind::Symbol('(') => {
                 let nested = self.expression()?;
                 let end = self.expect_symbol(')', "算術分組缺少右圓括號")?;
