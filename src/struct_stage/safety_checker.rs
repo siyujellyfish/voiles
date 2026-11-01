@@ -210,7 +210,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 不把動態迭代實例誤認為同一個靜態票據。
     fn record_named_future_use(
         visible: &HashMap<String, DeclarationId>,
-        used: &mut HashSet<DeclarationId>, name: &str,
+        used: &mut BTreeSet<DeclarationId>, name: &str,
     ) {
         if let Some(id) = visible.get(name) {
             used.insert(*id);
@@ -219,7 +219,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn scan_future_term_uses(
         term: &Term, visible: &HashMap<String, DeclarationId>,
-        used: &mut HashSet<DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>,
     ) {
         match &term.kind {
             TermKind::Name(name) | TermKind::Move(name) | TermKind::Borrow(name)
@@ -251,7 +251,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn scan_future_block_uses(
         body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
-        used: &mut HashSet<DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>,
     ) {
         for statement in body {
             match &statement.kind {
@@ -319,13 +319,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         })) {
             return;
         }
-        let mut needed_here = HashSet::new();
+        let mut needed_here = BTreeSet::new();
         Self::scan_future_block_uses(rest,
             &mut Self::visible_future_sources(vars, vars.len() - 1),
             &mut needed_here);
-        let needed_later: Vec<(usize, HashSet<DeclarationId>)> =
+        let needed_later: Vec<(usize, BTreeSet<DeclarationId>)> =
             continuation.iter().map(|(depth, following)| {
-                let mut used = HashSet::new();
+                let mut used = BTreeSet::new();
                 Self::scan_future_block_uses(following,
                     &mut Self::visible_future_sources(vars, *depth),
                     &mut used);
