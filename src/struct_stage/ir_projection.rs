@@ -14,11 +14,11 @@ fn private_scalar_expression(term: &Term, text: &str)
             }
         ),
         TermKind::Name(name) => ScalarExpr::Name(name.clone()),
-        TermKind::BinaryInt { left, operator, right }
-            if matches!(operator, '+' | '-') => ScalarExpr::Binary {
-            left: Box::new(private_scalar_expression(left, text)?),
-            op: *operator,
-            right: Box::new(private_scalar_expression(right, text)?),
+        TermKind::BinaryInt(binary)
+            if matches!(binary.operator, '+' | '-') => ScalarExpr::Binary {
+            left: Box::new(private_scalar_expression(&binary.left, text)?),
+            op: binary.operator,
+            right: Box::new(private_scalar_expression(&binary.right, text)?),
         },
         // 既有私有 Parser 以 Construct(name, []) 表示 name() 的
         // 無位置引數形式，須先確定沒有同名結構才可投影一般函式呼叫。
