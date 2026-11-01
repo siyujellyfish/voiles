@@ -540,7 +540,7 @@ fn trace_scope_struct_source(
         return Err(reject("P16：外層必須以直接 return 0 結束"));
     }
     let (cond,yes,no)=match &branch.kind {
-        StmtKind::If{condition,yes,no}=>(condition,yes,no),
+        StmtKind::If{branch,no}=>(&branch.condition,&branch.body,no),
         _=>return Err(reject("P16：須有一個可靜態確定的 if 分支")),
     };
     let condition=if matches!(&cond.kind,TermKind::Literal("bool")) {
