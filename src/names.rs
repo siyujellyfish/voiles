@@ -216,6 +216,35 @@ mod tests {
     }
 
     #[test]
+    fn f04_公開_p09_詞彙查找直接產生完整已驗證具型別來源() {
+        let code = "var top:int = 1\nfn main()->int{\nvar item:int = 1\nif(true){\nconst item:bool = false\nif(item){\nreturn top\n}\n}\nreturn item\n}\n";
+        let src = Source::new(code.as_bytes().to_vec());
+        let tokens = scan(&src);
+        let ast = parse(&src, &tokens.tokens).unwrap();
+        let facts = super::resolve_with_facts(&ast, &src).unwrap();
+        let global = DeclarationId(code.find("var top:int").unwrap());
+        let outer = DeclarationId(code.find("var item:int").unwrap());
+        let inner = DeclarationId(code.find("const item:bool").unwrap());
+        let typed_global = facts.declaration(global).unwrap();
+        let typed_outer = facts.declaration(outer).unwrap();
+        let typed_inner = facts.declaration(inner).unwrap();
+        assert_eq!(typed_global.ty, crate::common_ir::ScalarType::Int);
+        assert_eq!(typed_outer.ty, crate::common_ir::ScalarType::Int);
+        assert_eq!(typed_inner.ty, crate::common_ir::ScalarType::Bool);
+        assert!(typed_global.mutable);
+        assert!(typed_outer.mutable);
+        assert!(!typed_inner.mutable);
+        let nested = code.find("if(item)").unwrap() + "if(".len();
+        let outside = code.rfind("return item").unwrap() + "return ".len();
+        let global_use = code.find("return top").unwrap() + "return ".len();
+        assert_eq!(facts.reference(nested).unwrap().declaration, inner);
+        assert_eq!(facts.reference(outside).unwrap().declaration, outer);
+        assert_eq!(facts.reference(global_use).unwrap().declaration, global);
+        assert!(typed_inner.matches_use(facts.reference(nested).unwrap()));
+        assert!(!typed_outer.matches_use(facts.reference(nested).unwrap()));
+    }
+
+    #[test]
     fn 函式前向與相互遞迴不因宣告順序被誤拒絕() {
         let text="fn first()->int{\nreturn second()\n}\nfn second()->int{\nreturn first()\n}\nfn main()->int{\nreturn first()\n}\n";
         assert!(resolve_text(text).is_ok());
