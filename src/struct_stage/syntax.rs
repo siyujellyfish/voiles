@@ -137,11 +137,7 @@ impl Parser<'_> {
             }
             TokenKind::Symbol('(') => {
                 self.cursor += 1;
-                let mut expression = self.term()?;
-                self.take(')', "括號運算式缺少右括號")?;
-                expression.start = start;
-                expression.end = self.tokens[self.cursor - 1].end;
-                return Ok(expression);
+                return crate::syntax_shared::parse_group(self, start);
             }
             TokenKind::Name(_) => {
                 let name = crate::syntax_shared::take_spanned_name(
@@ -463,6 +459,21 @@ impl crate::syntax_shared::BlockSyntax for Parser<'_> {
             return Err(self.syntax("此階段函式必須具有明確 return"));
         }
         Ok(self.tokens[self.cursor - 1].end)
+    }
+}
+
+/// 已核准的私有括號運算式沿用原節點，並由共同核心擴展來源跨度。
+impl crate::syntax_shared::GroupSyntax for Parser<'_> {
+    type Expression = Term;
+    fn group_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }
+    fn group_right_paren(&mut self) -> Result<usize, Diagnostic> {
+        self.take(')', "括號運算式缺少右括號")?;
+        Ok(self.tokens[self.cursor - 1].end)
+    }
+    fn group_result(&mut self, mut expression: Term, start: usize, end: usize) -> Term {
+        expression.start = start;
+        expression.end = end;
+        expression
     }
 }
 
