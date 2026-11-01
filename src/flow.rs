@@ -350,6 +350,31 @@ mod tests {
     }
 
     #[test]
+    fn f04_正式_p10_成功產生的_hir_必須逐一被_p11_消費() {
+        let code = "fn main()->int{\nvar n:int = 1\nn = n + 2\nreturn n\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let lexical = lexer::scan(&source);
+        let ast = parser::parse(&source, &lexical.tokens).unwrap();
+        let facts = names::resolve_with_facts(&ast, &source).unwrap();
+        let typed = types::check_with_names_and_hir(&ast, &source, &facts).unwrap();
+        let write = code.find("n = n").unwrap();
+        let read = write + "n = ".len();
+        let returning = code.find("return n").unwrap() + "return ".len();
+        assert!(typed.assignment(crate::common_ir::NodeSpan::new(
+            write, write + "n = n + 2".len())).is_some());
+        assert!(typed.reference(crate::common_ir::NodeSpan::new(read, read + 1)).is_some());
+        assert!(typed.reference(crate::common_ir::NodeSpan::new(
+            returning, returning + 1)).is_some());
+        assert_eq!(check_with_typed_hir(&ast, &source, &facts, &typed), Ok(()));
+
+        let no_proof = crate::common_ir::VerifiedScalarHir::default();
+        let error = check_with_typed_hir(&ast, &source, &facts, &no_proof).unwrap_err();
+        assert_eq!(&*error.message, "具名來源不存在可見宣告",
+            "未出具 P10 型別 HIR 時，P11 不得由 P09 自行重建合法存取");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+    }
+
+    #[test]
     fn 首版十九個正例均滿足變數讀前初始化與_const_不再寫入() {
         for i in 1..=19 {
             let path = format!("tests/fixtures/voiles/P01-正{i:02}.voil");
