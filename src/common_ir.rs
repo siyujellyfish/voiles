@@ -134,6 +134,33 @@ impl<T> TypedUse<T> {
     }
 }
 
+/// F04：P10 成功完成型別檢查後才可交付 P11 的正式具型別讀寫 HIR。
+/// 只保存原始來源跨度及 P09 已解析並在 P10 驗證的宣告身分與型別。
+/// 不表示任何私有借用／移動資源已獲准。
+#[derive(Debug, Default)]
+pub(crate) struct VerifiedScalarHir {
+    references: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
+    assignments: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
+}
+impl VerifiedScalarHir {
+    pub(crate) fn record_reference(&mut self, use_at: TypedUse<ScalarType>) {
+        let previous = self.references.insert(use_at.span.start, use_at);
+        debug_assert!(previous.is_none_or(|old| old == use_at),
+            "同一個來源讀取位置不能有兩個相衝突的具型別身份");
+    }
+    pub(crate) fn record_assignment(&mut self, use_at: TypedUse<ScalarType>) {
+        let previous = self.assignments.insert(use_at.span.start, use_at);
+        debug_assert!(previous.is_none_or(|old| old == use_at),
+            "同一個賦值來源位置不能有兩個相衝突的目標身份");
+    }
+    pub(crate) fn reference(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.references.get(&span.start).copied().filter(|entry| entry.span == span)
+    }
+    pub(crate) fn assignment(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.assignments.get(&span.start).copied().filter(|entry| entry.span == span)
+    }
+}
+
 /// 公開純值 HIR 引用是共同語意引用的 int／bool 專用形式。
 pub(crate) type ResolvedScalarUse = ResolvedUse<ScalarType>;
 
@@ -326,6 +353,27 @@ fn map_optional<T, U>(
     match source {
         Some(value) => Some(Some(project(value)?)),
         None => Some(None),
+    }
+}
+
+#[cfg(test)]
+mod f04_正式_p10_交付給_p11_的具型別存取證據 {
+    use super::*;
+    #[test]
+    fn 讀取與賦值分開記錄完整來源跨度及宣告且不得混淆() {
+        let a = TypedDeclaration::new(DeclarationId(4), ScalarType::Int, true);
+        let read = NodeSpan::new(50, 56);
+        let write = NodeSpan::new(80, 87);
+        let mut hir = VerifiedScalarHir::default();
+        hir.record_reference(a.use_at(read));
+        hir.record_assignment(a.use_at(write));
+        assert_eq!(hir.reference(read), Some(a.use_at(read)));
+        assert_eq!(hir.assignment(write), Some(a.use_at(write)));
+        assert_eq!(hir.reference(write), None);
+        assert_eq!(hir.assignment(read), None);
+        assert_eq!(hir.reference(NodeSpan::new(50, 57)), None,
+            "相同起點不同結束位置不能冒充經型別檢查的來源");
+        assert_eq!(hir.assignment(NodeSpan::new(80, 88)), None);
     }
 }
 
