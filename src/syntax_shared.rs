@@ -80,6 +80,49 @@ pub(crate) fn parse_if_chain<P: IfSyntax>(
     }
 }
 
+/// 正式函式簽章及本體的共同產物；各入口仍保留專屬參數、回傳型別與 body AST。
+pub(crate) struct ParsedFunction<P, R, B> {
+    pub(crate) name: String,
+    pub(crate) params: P,
+    pub(crate) result_ty: R,
+    pub(crate) body: B,
+    pub(crate) start: usize,
+    pub(crate) end: usize,
+}
+
+/// 唯一正式函式宣告組構順序：fn→名稱→(參數)→回傳箭號→型別→本體。
+pub(crate) trait FunctionSyntax {
+    type Params;
+    type ResultType;
+    type Body;
+    fn begin_function(&mut self) -> Result<usize, crate::Diagnostic>;
+    fn function_name(&mut self) -> Result<String, crate::Diagnostic>;
+    fn function_left_paren(&mut self) -> Result<(), crate::Diagnostic>;
+    fn function_params(&mut self) -> Result<Self::Params, crate::Diagnostic>;
+    fn function_right_paren(&mut self) -> Result<(), crate::Diagnostic>;
+    fn function_return_arrow(&mut self) -> Result<(), crate::Diagnostic>;
+    fn function_result_type(&mut self) -> Result<Self::ResultType, crate::Diagnostic>;
+    fn function_body(&mut self) -> Result<Self::Body, crate::Diagnostic>;
+    fn function_last_end(&self) -> usize;
+}
+
+pub(crate) fn parse_function_decl<P: FunctionSyntax>(
+    parser: &mut P,
+) -> Result<ParsedFunction<P::Params, P::ResultType, P::Body>, crate::Diagnostic> {
+    let start = parser.begin_function()?;
+    let name = parser.function_name()?;
+    parser.function_left_paren()?;
+    let params = parser.function_params()?;
+    parser.function_right_paren()?;
+    parser.function_return_arrow()?;
+    let result_ty = parser.function_result_type()?;
+    let body = parser.function_body()?;
+    Ok(ParsedFunction {
+        name, params, result_ty, body,
+        start, end: parser.function_last_end(),
+    })
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }
