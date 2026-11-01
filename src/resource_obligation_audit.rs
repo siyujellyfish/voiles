@@ -182,12 +182,20 @@ impl ResourceObligationAudit {
         &mut self, owner: DeclarationId, resource: u64,
     ) -> Result<(), ResourceAuditError> {
         self.check_release_resource(owner, resource)?;
+        self.commit_release_resource_checked(owner, resource);
+        Ok(())
+    }
+
+    /// 完整驗證單項清理持有者及資源 ID 後提交；不可重新回傳 Err。
+    /// 供原資源帳簿及 P16 安全管線唯一交易入口共同使用。
+    pub(crate) fn commit_release_resource_checked(
+        &mut self, owner: DeclarationId, resource: u64,
+    ) {
         let record = self.values.get_mut(&owner).expect("已預檢持有者");
         let removed = record.resources.remove(&resource);
-        debug_assert!(removed);
+        debug_assert!(removed, "資源清理不得重複提交");
         let first = self.released.insert(resource);
-        debug_assert!(first);
-        Ok(())
+        debug_assert!(first, "真正資源只能清理一次");
     }
 
     pub(crate) fn outstanding_count(&self) -> usize {
