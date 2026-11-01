@@ -254,7 +254,7 @@ impl VerifiedDeclarationFacts {
     /// 不得把沒有宣告來源或型別不同的分支推測事件當成安全計畫。
     fn evidence_is_consistent(&self, structs: &HashMap<String, StructDecl>) -> bool {
         self.by_source.iter().all(|(id, fact)| fact.owns(*id))
-        &&         self.direct_moves.iter().all(|(source, target)| {
+        && self.direct_moves.iter().all(|(source, target)| {
             source != target
                 && self.by_source.get(source).zip(self.by_source.get(target))
                     .is_some_and(|(from, to)| from.declaration == *source
@@ -277,8 +277,7 @@ impl VerifiedDeclarationFacts {
     fn verified_named_return(
         &self, source: DeclarationId, return_start: usize, ty: &str,
     ) -> Option<VerifiedReturnEvidence> {
-        self.by_source.get(&source)
-            .filter(|fact| fact.owns(source) && fact.ty == ty)?;
+        self.typed_declaration(source).filter(|fact| fact.ty == ty)?;
         self.named_returns.contains(&(source, return_start))
             .then_some(VerifiedReturnEvidence { source, return_start })
     }
@@ -288,8 +287,8 @@ impl VerifiedDeclarationFacts {
         &self, owner: DeclarationId, statement_start: usize,
         ty: &str, field: &str,
     ) -> Option<VerifiedFieldWriteEvidence> {
-        self.by_source.get(&owner).filter(|fact|
-            fact.owns(owner) && fact.ty == ty && fact.mutable)?;
+        self.typed_declaration(owner).filter(|fact|
+            fact.ty == ty && fact.mutable)?;
         self.field_writes.contains(&(owner, statement_start, field.to_owned()))
             .then_some(VerifiedFieldWriteEvidence {
                 owner, statement_start, field: field.to_owned(),
@@ -300,10 +299,9 @@ impl VerifiedDeclarationFacts {
         &self, source: DeclarationId, target: DeclarationId,
         ty: &str,
     ) -> Option<VerifiedMoveEvidence> {
-        let from = self.by_source.get(&source)?;
-        let to = self.by_source.get(&target)?;
-        (source != target && from.owns(source) && to.owns(target)
-            && from.ty == ty && to.ty == ty
+        let from = self.typed_declaration(source)?;
+        let to = self.typed_declaration(target)?;
+        (source != target && from.ty == ty && to.ty == ty
             && self.direct_moves.contains(&(source, target)))
             .then_some(VerifiedMoveEvidence { source, target })
     }
@@ -325,8 +323,8 @@ impl VerifiedDeclarationFacts {
     }
 
     fn matches(&self, source: DeclarationId, ty: &str, mutable: bool) -> bool {
-        self.by_source.get(&source)
-            .is_some_and(|fact| fact.owns(source) && fact.ty == ty && fact.mutable == mutable)
+        self.typed_declaration(source)
+            .is_some_and(|fact| fact.ty == ty && fact.mutable == mutable)
     }
 }
 
