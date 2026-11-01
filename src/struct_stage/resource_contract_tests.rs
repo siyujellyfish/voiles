@@ -100,7 +100,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     }
 
     #[test]
-    fn f12_驗證證據存在但資源管線另一側拒絕時仍不得部分提交() {
+    fn f12_驗證證據存在但目標已占用時不容許部分移交() {
         let source_text = "fn main()->int{\nvar from:str = \"數據\"\nvar to:str = from.move()\nreturn 0\n}\n";
         let checked = verified_private_source(source_text).unwrap();
         let main = checked.functions.iter().find(|fun| fun.name == "main").unwrap();
@@ -109,18 +109,23 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let mut pipeline = SafetyPipeline::new();
         pipeline.declare(source, CopyPermission::Forbidden).unwrap();
         pipeline.register_resource(source, 7001).unwrap();
-        // 讓安全管線的資源側欠缺責任資料，但 Checker 已有真實證據；
-        // 這不應授權所有權側先執行 move。
-        pipeline.declare(DeclarationId(88_888), CopyPermission::Allowed).unwrap();
+        // Checker 具備真實的移交證據，但目標在安全帳簿已被占用，
+        // 雙側交易仍須預檢拒絕，不能先讓來源失效。
+        pipeline.declare(target, CopyPermission::Allowed).unwrap();
         assert_eq!(checked.declarations.apply_verified_direct_move(
             &mut pipeline, source, target, "bool",
         ), Err(VerifiedMoveError::MissingEvidence));
-        assert_eq!(pipeline.outstanding(), 1);
-        assert!(pipeline.read(source).is_ok());
         assert_eq!(checked.declarations.apply_verified_direct_move(
             &mut pipeline, source, target, "str",
-        ), Ok(()));
-        assert_eq!(pipeline.record_cleanup_batch(&[target, DeclarationId(88_888)]), Ok(1));
+        ), Err(VerifiedMoveError::Pipeline(
+            crate::resource_borrow_pipeline::PipelineError::Ownership(
+                crate::borrow_ownership_gate::GateError::DuplicateDestination,
+            ),
+        )));
+        assert_eq!(pipeline.outstanding(), 1);
+        assert!(pipeline.read(source).is_ok());
+        assert!(pipeline.read(target).is_ok());
+        assert_eq!(pipeline.record_cleanup_batch(&[source, target]), Ok(1));
         assert!(pipeline.audit_finished().is_ok());
     }
 
