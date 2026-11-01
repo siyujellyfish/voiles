@@ -130,9 +130,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 與抽象 BorrowTicket 使用同一個 HC14-A 直接存取規則；
         // 別名自身仍遵守現有 evaluate／loan 權限與最後使用點證明。
         if owner.loan.is_none() {
-            let reference = owner.semantic_use();
+            let reference = owner.semantic_use_at(term.node_span());
             let has_active_loan =
-                Self::active_loan_kinds(vars, reference.declaration).next().is_some();
+                Self::active_loan_kinds(vars, reference.resolved.declaration).next().is_some();
             BorrowSafety::validate_direct_access(has_active_loan)
                 .map_err(|_| self.error(
                     "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
@@ -152,13 +152,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             return Err(self.error("VA14-01：借用變數的 var／const 權限必須跟隨來源", term));
         }
         let kind = if mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
-        let reference = owner.semantic_use();
+        let reference = owner.semantic_use_at(term.node_span());
         self.check_borrow_conflicts(
-            vars, reference.declaration, kind, term,
+            vars, reference.resolved.declaration, kind, term,
             "HC14：共享／獨占借用與現有別名衝突",
         )?;
-        Ok((reference.ty.to_string(), LoanBinding {
-            fact: BorrowFact::new(reference.declaration, kind), active: true,
+        Ok((reference.resolved.ty.to_string(), LoanBinding {
+            fact: BorrowFact::new(reference.resolved.declaration, kind), active: true,
         }))
     }
 
