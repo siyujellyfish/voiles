@@ -273,19 +273,11 @@ impl Parser<'_> {
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.tok().start;
         let kind = if self.keyword("var") || self.keyword("const") {
-            let mutable = self.keyword("var");
-            self.cursor += 1;
-            let name = self.name()?;
-            self.take(':', "宣告必須有型別註記")?;
-            let ty = self.name()?;
-            let init = if self.symbol('=') {
-                self.cursor += 1;
-                Some(self.term()?)
-            } else { None };
-            if !mutable && init.is_none() {
-                return Err(self.syntax("const 宣告必須立即初始化"));
+            let parsed = crate::syntax_shared::parse_declaration(self)?;
+            StmtKind::Declare {
+                name: parsed.name, ty: parsed.ty, mutable: parsed.mutable,
+                init: parsed.initializer,
             }
-            StmtKind::Declare { name, ty, mutable, init }
         } else if self.keyword("if") {
             self.if_statement_kind()?
         } else if self.keyword("for") {
@@ -478,6 +470,38 @@ impl crate::syntax_shared::GroupSyntax for Parser<'_> {
 
 /// 正式私有受限 Parser 與公開 Parser 實作同一條 if/else-if 核心文法。
 /// 條件、區塊、診斷與允許的所有權行為仍完全由本入口負責。
+impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
+    type Type = String;
+    type Expression = Term;
+    fn declaration_start(&self) -> usize { self.tok().start }
+    fn begin_declaration(&mut self) -> Result<bool, Diagnostic> {
+        let mutable = self.keyword("var");
+        if !mutable && !self.keyword("const") {
+            return Err(self.syntax("此階段不接受的宣告"));
+        }
+        self.cursor += 1;
+        Ok(mutable)
+    }
+    fn declaration_name(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn declaration_colon(&mut self) -> Result<(), Diagnostic> {
+        self.take(':', "宣告必須有型別註記")
+    }
+    fn declaration_type(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn declaration_has_initializer(&self) -> bool { self.symbol('=') }
+    fn declaration_equals(&mut self) { self.cursor += 1; }
+    fn declaration_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }
+    fn validate_declaration_initializer(
+        &self, mutable: bool, initializer: &Option<Term>,
+    ) -> Result<(), Diagnostic> {
+        if !mutable && initializer.is_none() {
+            Err(self.syntax("const 宣告必須立即初始化"))
+        } else { Ok(()) }
+    }
+    fn declaration_end(&self, _initializer: &Option<Term>) -> usize {
+        self.tokens[self.cursor - 1].end
+    }
+}
+
 impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
     type Expression = Term;
     fn begin_return(&mut self) -> Result<(), Diagnostic> {
