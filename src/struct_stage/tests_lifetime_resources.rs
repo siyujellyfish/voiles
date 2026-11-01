@@ -2092,7 +2092,8 @@ mod p16_6_r04_不必要作用域複製防回歸 {
             source.insert(format!("value_{index}"), binding(index + 100, None));
         }
         source.insert("parameter".to_owned(), binding(20, Some(LoanBinding {
-            source: DeclarationId(20), kind: BorrowKind::SharedRead, active: true,
+            fact: BorrowFact::new(DeclarationId(20), BorrowKind::SharedRead),
+            active: true,
         })));
         let original = Rc::new(source);
         let mut vars: Scopes = vec![original.clone()];
@@ -2106,7 +2107,8 @@ mod p16_6_r04_不必要作用域複製防回歸 {
     fn 真正來源借用仍在最後使用點歸還且不污染快照() {
         let mut source = HashMap::new();
         source.insert("alias".to_owned(), binding(40, Some(LoanBinding {
-            source: DeclarationId(10), kind: BorrowKind::ExclusiveWrite, active: true,
+            fact: BorrowFact::new(DeclarationId(10), BorrowKind::ExclusiveWrite),
+            active: true,
         })));
         let original = Rc::new(source);
         let mut vars: Scopes = vec![original.clone()];
@@ -2137,7 +2139,7 @@ mod p16_6_r03_7_私有借用來源強型別身分 {
             value: ValueSlot::initialized(CopyPermission::Forbidden),
             pending_fields: None,
             loan: Some(LoanBinding {
-                source: original, kind: BorrowKind::SharedRead, active: true
+                fact: BorrowFact::new(original, BorrowKind::SharedRead), active: true,
             }),
         };
         let overshadow = Binding {
