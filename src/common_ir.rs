@@ -46,6 +46,20 @@ pub(crate) fn lookup_lexical<'a, V: 'a>(
     scopes.rev().find_map(|scope| scope.get(name))
 }
 
+/// P09 已完成的詞彙名稱解析證據，供正式 P10 型別檢查直接消耗。
+/// 名稱引用以實際原始位元組起點綁定 DeclarationId，絕不依同名字串猜測遮蔽。
+#[derive(Debug, Default)]
+pub(crate) struct ResolvedNames {
+    pub(crate) references: std::collections::BTreeMap<usize, DeclarationId>,
+    pub(crate) declarations: std::collections::BTreeMap<DeclarationId, ScalarType>,
+}
+impl ResolvedNames {
+    pub(crate) fn reference_type(&self, start: usize) -> Option<ScalarType> {
+        let id = self.references.get(&start)?;
+        self.declarations.get(id).copied()
+    }
+}
+
 /// R02.5：只允許公開 MVP-A 與已核准 P13 交集的具體純值型別。
 /// 其他型別（含非 Copyable str、struct、容器）不可用任意字串冒充。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
