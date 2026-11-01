@@ -58,9 +58,7 @@ impl<'a> TypeChecker<'a> {
         let lexical = self.visible_declaration(name, span.start, scopes)?;
         match self.resolved {
             // 只有 P09 來源身分與實際可見的詞彙綁定型別完全相符才能授權。
-            Some(facts) => facts.reference_at(span)
-                .filter(|use_| facts.declaration(lexical.declaration) == Some(lexical)
-                    && lexical.matches_use(use_.resolved))
+            Some(facts) => facts.verified_reference(span, lexical)
                 .map(|use_| use_.resolved.ty),
             None => Some(lexical.ty),
         }
@@ -156,9 +154,7 @@ impl<'a> TypeChecker<'a> {
                     // 字串自行挑選另一個遮蔽宣告。
                     let declared = self.visible_declaration(name, stmt.start, scopes)
                         .and_then(|binding| match self.resolved {
-                            Some(names) => names.assignment_at(stmt.node_span())
-                                .filter(|use_| names.declaration(binding.declaration) == Some(binding)
-                                    && binding.matches_use(use_.resolved))
+                            Some(names) => names.verified_assignment(stmt.node_span(), binding)
                                 .map(|use_| use_.resolved.ty),
                             None => Some(binding.ty),
                         }).ok_or_else(|| self.error(
