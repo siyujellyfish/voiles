@@ -235,6 +235,23 @@ pub(crate) fn parse_declaration<P: DeclarationSyntax>(
     Ok(ParsedDeclaration { name, ty, mutable, initializer, start, end })
 }
 
+/// 公私已核准具名整筆賦值尾段的共同解析核心。
+/// 名稱在進入前已解析；欄位賦值由私有入口獨立保留。
+pub(crate) trait AssignmentSyntax {
+    type Expression;
+    fn assignment_equals(&mut self) -> Result<(), crate::Diagnostic>;
+    fn assignment_expression(&mut self) -> Result<Self::Expression, crate::Diagnostic>;
+    fn validate_assignment(&self, expression: &Self::Expression) -> Result<(), crate::Diagnostic>;
+}
+pub(crate) fn parse_assignment<P: AssignmentSyntax>(
+    parser: &mut P,
+) -> Result<P::Expression, crate::Diagnostic> {
+    parser.assignment_equals()?;
+    let expression = parser.assignment_expression()?;
+    parser.validate_assignment(&expression)?;
+    Ok(expression)
+}
+
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
     matches!(tokens.get(cursor).map(|t| &t.kind), Some(TokenKind::Newline))
 }

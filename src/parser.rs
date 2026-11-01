@@ -196,11 +196,7 @@ impl<'a> Parser<'a> {
             (StmtKind::Return(value), end)
         } else if matches!(self.current().map(|t| &t.kind), Some(TokenKind::Name(_))) {
             let name = self.name()?;
-            self.expect_symbol('=', "首版具名語句必須為 var 賦值")?;
-            let value = self.expression()?;
-            if !self.is_initial_value(&value) {
-                return Err(self.err("首版 var 賦值只接受同型別常值或合法具名變數"));
-            }
+            let value = crate::syntax_shared::parse_assignment(self)?;
             let end = value.end;
             (StmtKind::Assignment {name, value}, end)
         } else {
@@ -283,6 +279,18 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
     fn declaration_end(&self, initializer: &Option<Expr>) -> usize {
         initializer.as_ref().map(|value| value.end)
             .unwrap_or_else(|| self.tokens[self.cursor - 1].end)
+    }
+}
+
+impl crate::syntax_shared::AssignmentSyntax for Parser<'_> {
+    type Expression = Expr;
+    fn assignment_equals(&mut self) -> Result<(), Diagnostic> {
+        self.expect_symbol('=', "首版具名語句必須為 var 賦值").map(|_| ())
+    }
+    fn assignment_expression(&mut self) -> Result<Expr, Diagnostic> { self.expression() }
+    fn validate_assignment(&self, expression: &Expr) -> Result<(), Diagnostic> {
+        if self.is_initial_value(expression) { Ok(()) }
+        else { Err(self.err("首版 var 賦值只接受同型別常值或合法具名變數")) }
     }
 }
 
