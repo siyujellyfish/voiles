@@ -1086,6 +1086,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     self.check_direct(vars, receiver, value)?;
                     let owner = Self::lookup(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入找不到合法接收者", value))?;
+                    let field_owner_id = owner.declaration_start;
                     if owner.loan.as_ref().is_some_and(|loan| !loan.active) {
                         return Err(self.error("P15：借用別名已不再有效", value));
                     }
@@ -1136,6 +1137,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                     } else {
                         owner.value.read().map_err(|err| self.model_error(err, value))?;
+                    }
+                    // 只在真正完整提交欄位寫入後紀錄。若同一詞彙位置位於
+                    // 不確定分支／迴圈，不冒充一個已執行的直線欄位資源事件。
+                    if continuation.is_empty() && loop_entry.is_none() {
+                        self.recorded_field_writes.borrow_mut().insert((
+                            field_owner_id, statement.start, field.clone(),
+                        ));
                     }
                 }
                 StmtKind::Assign { name, value } => {
