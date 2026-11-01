@@ -59,7 +59,8 @@ impl<'a> TypeChecker<'a> {
         match self.resolved {
             // 只有 P09 來源身分與實際可見的詞彙綁定型別完全相符才能授權。
             Some(facts) => facts.reference_at(span)
-                .filter(|use_| lexical.matches_use(use_.resolved))
+                .filter(|use_| facts.declaration(lexical.declaration) == Some(lexical)
+                    && lexical.matches_use(use_.resolved))
                 .map(|use_| use_.resolved.ty),
             None => Some(lexical.ty),
         }
@@ -156,7 +157,8 @@ impl<'a> TypeChecker<'a> {
                     let declared = self.visible_declaration(name, stmt.start, scopes)
                         .and_then(|binding| match self.resolved {
                             Some(names) => names.assignment_at(stmt.node_span())
-                                .filter(|use_| binding.matches_use(use_.resolved))
+                                .filter(|use_| names.declaration(binding.declaration) == Some(binding)
+                                    && binding.matches_use(use_.resolved))
                                 .map(|use_| use_.resolved.ty),
                             None => Some(binding.ty),
                         }).ok_or_else(|| self.error(
@@ -335,10 +337,21 @@ mod tests {
             "賦值目標型別不可解析");
 
         changed.assignments.insert(write, inner);
-        changed.declarations.insert(inner, Type::Bool);
+        changed.declarations.insert(inner,
+            TypedDeclaration::new(inner, Type::Bool, true));
         assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
             "賦值目標型別不可解析",
             "篡改 P09 型別事實不能改變正式 Parser 宣告的 int 身分");
+        changed.declarations.insert(inner,
+            TypedDeclaration::new(inner, Type::Int, false));
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析",
+            "P09 var/const 權限被偽造時，P10 不得視為同一個 TypedDeclaration");
+        changed.declarations.insert(inner,
+            TypedDeclaration::new(outer, Type::Int, true));
+        assert_eq!(&*check_with_names(&ast, &source, &changed).unwrap_err().message,
+            "賦值目標型別不可解析",
+            "P09 宣告表鍵與宣告值的 DeclarationId 不能不一致");
     }
 
     #[test]

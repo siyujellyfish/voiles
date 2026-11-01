@@ -80,7 +80,7 @@ pub(crate) struct ResolvedNames {
     pub(crate) references: std::collections::BTreeMap<usize, DeclarationId>,
     /// 賦值語句原始位元組起點對應的目標宣告身分。
     pub(crate) assignments: std::collections::BTreeMap<usize, DeclarationId>,
-    pub(crate) declarations: std::collections::BTreeMap<DeclarationId, ScalarType>,
+    pub(crate) declarations: std::collections::BTreeMap<DeclarationId, TypedDeclaration<ScalarType>>,
 }
 /// 兩條正式 Checker 都使用的已解析宣告身分與型別資料形狀。
 /// P09 的資料須經名稱解析產生；私有路徑的型別還須經 P13 安全檢查。
@@ -141,8 +141,16 @@ impl ResolvedNames {
     fn use_for(&self, starts: &std::collections::BTreeMap<usize, DeclarationId>,
         start: usize) -> Option<ResolvedScalarUse> {
         let declaration = *starts.get(&start)?;
-        let ty = *self.declarations.get(&declaration)?;
+        let ty = self.declaration(declaration)?.ty;
         Some(ResolvedUse::new(declaration, ty))
+    }
+
+    /// P09 已解析宣告的唯一具型別來源；P10、P11 檢查實際詞彙綁定
+    /// 是否與這筆已驗證事實完全相同（含 const/var 權限）。
+    pub(crate) fn declaration(&self, id: DeclarationId)
+        -> Option<TypedDeclaration<ScalarType>> {
+        let fact = *self.declarations.get(&id)?;
+        fact.owns(id).then_some(fact)
     }
 
     pub(crate) fn reference(&self, start: usize) -> Option<ResolvedScalarUse> {
@@ -327,8 +335,8 @@ mod f04_正式具位置引用權威回歸 {
         let owner = DeclarationId(5);
         let shadow = DeclarationId(20);
         let mut facts = ResolvedNames::default();
-        facts.declarations.insert(owner, ScalarType::Int);
-        facts.declarations.insert(shadow, ScalarType::Bool);
+        facts.declarations.insert(owner, TypedDeclaration::new(owner, ScalarType::Int, true));
+        facts.declarations.insert(shadow, TypedDeclaration::new(shadow, ScalarType::Bool, false));
         facts.references.insert(50, owner);
         facts.assignments.insert(71, shadow);
         let use_span = NodeSpan::new(50, 56);
