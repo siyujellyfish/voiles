@@ -278,14 +278,22 @@ impl VerifiedDeclarationFacts {
     /// 宣告／var-const 權威完全一致；只讀交叉稽核，不從 AST 猜測
     /// 動態資源實例、所有權或尚未核准的完整 CFG。
     fn scalar_hir_is_consistent(
-        &self, hir: &crate::common_ir::VerifiedScalarHir, source_len: usize,
+        &self, hir: &crate::common_ir::VerifiedScalarHir, text: &str,
     ) -> bool {
+        // 位元組邊界落在 UTF-8 多位元組字元中間即使仍 < len
+        // 也不是合法的來源節點，不能簽成可供資源事件消費的 HIR。
         let valid_span = |span: crate::common_ir::NodeSpan| {
-            span.start < span.end && span.end <= source_len
+            span.start < span.end && span.end <= text.len()
+                && text.is_char_boundary(span.start)
+                && text.is_char_boundary(span.end)
         };
         hir.verified_expressions().all(|expr| valid_span(expr.span))
             && hir.verified_references().all(|entry| {
                 valid_span(entry.span)
+                    // 每筆具名 read 都必須有同跨度同型別的真正
+                    // Checker 運算式事實，不能自行拼造額外的引用。
+                    && hir.expression(entry.span)
+                        .is_some_and(|expr| expr.ty == entry.resolved.ty)
                     && self.typed_declaration(entry.resolved.declaration)
                         .is_some_and(|decl| decl.declaration.0 <= entry.span.start
                             && crate::common_ir::ScalarType::from_name(decl.ty)
@@ -395,7 +403,7 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         by_source, direct_moves, named_returns, field_writes);
     // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
     if !declarations.evidence_is_consistent(&structs)
-        || !declarations.scalar_hir_is_consistent(&scalar_hir, text.len()) {
+        || !declarations.scalar_hir_is_consistent(&scalar_hir, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
             message: "P16：Checker 安全證據與宣告、型別 HIR 或資源權限不一致".into(),
