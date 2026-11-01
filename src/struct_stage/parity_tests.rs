@@ -122,6 +122,44 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f05_全部已核准純值交集_公私_checker_完整_hir_節點逐一相等() {
+        // 不只抽查個別來源位置；以正式 P10 / 私有 Checker 各自已
+        // 完整檢查的 HIR 逐筆比對，缺少任何一筆亦不得通過 F05。
+        for code in [
+            "fn main()->int{\nreturn 0\n}\n",
+            "fn main()->int{\nvar value:int = 1\nreturn value\n}\n",
+            "fn main()->int{\nconst value:int = 0x2a\nreturn value\n}\n",
+            "fn main()->int{\nconst value:int = 0b101\nreturn value\n}\n",
+            "fn main()->int{\nvar n:int = 0\nif(true){\nn = 2\n}else{\nn = 3\n}\nreturn n\n}\n",
+            "fn main()->int{\nvar n:int = 1\nvar alias:int = n\nn = alias\nreturn n\n}\n",
+        ] {
+            assert_eq!(public_check(code), Ok(()), "正式公開來源不合法：{code}");
+            let source = Source::new(code.as_bytes().to_vec());
+            let tokens = lexer::scan(&source);
+            let file = parser::parse(&source, &tokens.tokens).unwrap();
+            let facts = names::resolve_with_facts(&file, &source).unwrap();
+            let public = types::check_with_names_and_hir(&file, &source, &facts).unwrap();
+            assert_eq!(flow::check_with_typed_hir(&file, &source, &facts, &public),
+                Ok(()));
+            let private = verified_private_source(code).expect(
+                "合法純值交集不可因私有安全模型而意外拒絕");
+
+            let pub_refs: Vec<_> = public.verified_references().collect();
+            let priv_refs: Vec<_> = private.scalar_hir.verified_references().collect();
+            assert_eq!(pub_refs, priv_refs, "公私所有具名讀取 HIR 不一致：{code}");
+            let pub_assigns: Vec<_> = public.verified_assignments().collect();
+            let priv_assigns: Vec<_> = private.scalar_hir.verified_assignments().collect();
+            assert_eq!(pub_assigns, priv_assigns,
+                "公私全部賦值目標 HIR 不一致：{code}");
+            let pub_expressions: Vec<_> = public.verified_expressions().collect();
+            let priv_expressions: Vec<_> =
+                private.scalar_hir.verified_expressions().collect();
+            assert_eq!(pub_expressions, priv_expressions,
+                "公私全部運算式跨度與型別 HIR 不一致：{code}");
+        }
+    }
+
+    #[test]
     fn 共同合法_int64_作用域_分支_必須兩套前端都接受() {
         for source in [
             "fn main()->int{\nreturn 0\n}\n",
