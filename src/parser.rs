@@ -176,26 +176,10 @@ impl<'a> Parser<'a> {
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
-        let start = self.current().ok_or_else(|| self.err("缺少語句區塊"))?.start;
-        self.expect_symbol('{', "語句區塊必須使用左大括號")?;
-        self.skip_newlines();
-        let mut statements = Vec::new();
-        loop {
-            if self.at_end() {
-                return Err(self.err("語句區塊缺少右大括號"));
-            }
-            if self.symbol('}') {
-                if statements.is_empty() {
-                    return Err(self.err("語句區塊至少必須有一條語句"));
-                }
-                let end = self.next().unwrap().end;
-                return Ok(Block { statements, start, end });
-            }
-            statements.push(self.statement()?);
-            if !crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
-                return Err(self.err("語句之間必須以換行分隔"));
-            }
-        }
+        let parsed = crate::syntax_shared::parse_block(self)?;
+        Ok(Block {
+            statements: parsed.statements, start: parsed.start, end: parsed.end,
+        })
     }
 
     fn condition(&mut self) -> Result<Expr, Diagnostic> {
@@ -333,6 +317,35 @@ impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
     fn function_result_type(&mut self) -> Result<Type, Diagnostic> { self.ty() }
     fn function_body(&mut self) -> Result<Block, Diagnostic> { self.block() }
     fn function_last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
+}
+
+impl crate::syntax_shared::BlockSyntax for Parser<'_> {
+    type Statement = Stmt;
+    fn begin_block(&mut self) -> Result<usize, Diagnostic> {
+        let start = self.current().ok_or_else(|| self.err("缺少語句區塊"))?.start;
+        self.expect_symbol('{', "語句區塊必須使用左大括號")?;
+        self.skip_newlines();
+        Ok(start)
+    }
+    fn block_at_end(&self) -> bool { self.at_end() }
+    fn block_at_close(&self) -> bool { self.symbol('}') }
+    fn block_missing_close(&self) -> Diagnostic { self.err("語句區塊缺少右大括號") }
+    fn parse_block_statement(&mut self) -> Result<Stmt, Diagnostic> {
+        self.statement()
+    }
+    fn finish_block_statement(&mut self) -> Result<(), Diagnostic> {
+        if crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
+            Ok(())
+        } else {
+            Err(self.err("語句之間必須以換行分隔"))
+        }
+    }
+    fn finish_block(&mut self, count: usize) -> Result<usize, Diagnostic> {
+        if count == 0 {
+            return Err(self.err("語句區塊至少必須有一條語句"));
+        }
+        Ok(self.next().expect("已確定有關閉大括號").end)
+    }
 }
 
 pub(crate) fn parse(source: &Source, tokens: &[Token]) -> Result<File, Diagnostic> {

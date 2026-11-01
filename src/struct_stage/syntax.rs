@@ -351,18 +351,7 @@ impl Parser<'_> {
         Ok(Stmt { kind, start, end })
     }
     fn body(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
-        self.take('{', "函式需要左大括號")?;
-        self.lines();
-        let mut body = Vec::new();
-        while !self.symbol('}') {
-            if self.eof() { return Err(self.syntax("函式缺少右大括號")); }
-            body.push(self.statement()?);
-        }
-        self.cursor += 1;
-        if body.is_empty() {
-            return Err(self.syntax("此階段函式必須具有明確 return"));
-        }
-        Ok(body)
+        Ok(crate::syntax_shared::parse_block(self)?.statements)
     }
     fn function(&mut self) -> Result<Function, Diagnostic> {
         let parsed = crate::syntax_shared::parse_function_decl(self)?;
@@ -453,6 +442,29 @@ impl Parser<'_> {
     }
 }
 
+
+/// 私有安全子集使用共同區塊走訪核心，語句分隔由原 statement 消耗。
+impl crate::syntax_shared::BlockSyntax for Parser<'_> {
+    type Statement = Stmt;
+    fn begin_block(&mut self) -> Result<usize, Diagnostic> {
+        let start = self.tok().start;
+        self.take('{', "函式需要左大括號")?;
+        self.lines();
+        Ok(start)
+    }
+    fn block_at_end(&self) -> bool { self.eof() }
+    fn block_at_close(&self) -> bool { self.symbol('}') }
+    fn block_missing_close(&self) -> Diagnostic { self.syntax("函式缺少右大括號") }
+    fn parse_block_statement(&mut self) -> Result<Stmt, Diagnostic> { self.statement() }
+    fn finish_block_statement(&mut self) -> Result<(), Diagnostic> { Ok(()) }
+    fn finish_block(&mut self, count: usize) -> Result<usize, Diagnostic> {
+        self.cursor += 1;
+        if count == 0 {
+            return Err(self.syntax("此階段函式必須具有明確 return"));
+        }
+        Ok(self.tokens[self.cursor - 1].end)
+    }
+}
 
 /// 正式私有受限 Parser 與公開 Parser 實作同一條 if/else-if 核心文法。
 /// 條件、區塊、診斷與允許的所有權行為仍完全由本入口負責。
