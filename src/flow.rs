@@ -323,7 +323,8 @@ mod tests {
     fn p16_6_r04_分支快照共用作用域並在寫入時隔離() {
         let mut scope = HashMap::new();
         scope.insert("value".to_owned(), Variable {
-            declaration_start: DeclarationId(10), initialized: false, mutable: true,
+            declaration: TypedDeclaration::new(DeclarationId(10), (), true),
+            initialized: false,
         });
         let original = Flow { scopes: vec![Rc::new(scope)], reachable: true };
         let mut changed = original.clone();
@@ -332,7 +333,7 @@ mod tests {
         assert!(!Rc::ptr_eq(&original.scopes[0], &changed.scopes[0]));
         assert!(!original.lookup("value").unwrap().initialized);
         assert!(changed.lookup("value").unwrap().initialized);
-        assert_eq!(changed.lookup("value").unwrap().declaration_start, DeclarationId(10));
+        assert_eq!(changed.lookup("value").unwrap().declaration.declaration, DeclarationId(10));
     }
 
     #[test]
