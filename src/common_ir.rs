@@ -148,17 +148,17 @@ pub(crate) struct VerifiedScalarExpression {
 pub(crate) struct VerifiedScalarHir {
     references: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
     assignments: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
-    expressions: std::collections::BTreeMap<usize, VerifiedScalarExpression>,
+    expressions: std::collections::BTreeMap<(usize, usize), VerifiedScalarExpression>,
 }
 impl VerifiedScalarHir {
     pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
         let fact = VerifiedScalarExpression { span, ty };
-        let previous = self.expressions.insert(span.start, fact);
+        let previous = self.expressions.insert((span.start, span.end), fact);
         debug_assert!(previous.is_none_or(|old| old == fact),
             "同一個來源位置不能有兩種衝突的運算式型別");
     }
     pub(crate) fn expression(&self, span: NodeSpan) -> Option<VerifiedScalarExpression> {
-        self.expressions.get(&span.start).copied().filter(|fact| fact.span == span)
+        self.expressions.get(&(span.start, span.end)).copied()
     }
     pub(crate) fn record_reference(&mut self, use_at: TypedUse<ScalarType>) {
         let previous = self.references.insert(use_at.span.start, use_at);
