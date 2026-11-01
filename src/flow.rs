@@ -61,7 +61,7 @@ impl Analyzer<'_> {
             ExprKind::Name(name) => {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
-                        facts.reference(expr.start).map(|use_| use_.declaration)
+                        facts.reference_at(expr.node_span()).map(|use_| use_.resolved.declaration)
                             == Some(candidate.declaration_start)
                     }))
                     .ok_or_else(|| self.err(
@@ -117,7 +117,7 @@ impl Analyzer<'_> {
                     self.read(value, state)?;
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
-                            facts.assignment(statement.start).map(|use_| use_.declaration)
+                            facts.assignment_at(statement.node_span()).map(|use_| use_.resolved.declaration)
                                 == Some(candidate.declaration_start)
                         }))
                         .ok_or_else(|| self.err(
