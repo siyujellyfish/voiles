@@ -266,6 +266,60 @@ mod tests {
     }
 
     #[test]
+    fn f04_正式_p11_必須以_型別加宣告身分_驗證_read_與_assign() {
+        let code = "fn main()->int{\nvar value:int = 1\nif(true){\nvar value:int = 2\nvalue = 3\nreturn value\n}\nreturn value\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let mut facts = names::resolve_with_facts(&ast, &source).unwrap();
+        let outer = DeclarationId(code.find("var value:int = 1").unwrap());
+        let inner = DeclarationId(code.find("var value:int = 2").unwrap());
+        let assignment = code.find("value = 3").unwrap();
+        let read = code.find("return value").unwrap() + "return ".len();
+        assert_eq!(facts.assignments.get(&assignment), Some(&inner));
+        assert_eq!(facts.references.get(&read), Some(&inner));
+        assert_eq!(check_with_names(&ast, &source, &facts), Ok(()));
+
+        facts.declarations.insert(inner, ScalarType::Bool);
+        let err = check_with_names(&ast, &source, &facts).unwrap_err();
+        assert_eq!(&*err.message, "賦值目標沒有可見宣告",
+            "P11 不能在身份正確時忽視 P09 型別事實遭篡改");
+        facts.declarations.insert(inner, ScalarType::Int);
+        facts.assignments.insert(assignment, outer);
+        let err = check_with_names(&ast, &source, &facts).unwrap_err();
+        assert_eq!(&*err.message, "賦值目標沒有可見宣告");
+        facts.assignments.insert(assignment, inner);
+        facts.declarations.insert(inner, ScalarType::Bool);
+        facts.assignments.remove(&assignment);
+        let err = check_with_names(&ast, &source, &facts).unwrap_err();
+        assert_eq!(&*err.message, "賦值目標沒有可見宣告");
+        facts.assignments.insert(assignment, inner);
+        facts.declarations.insert(inner, ScalarType::Int);
+        facts.references.insert(read, outer);
+        let err = check_with_names(&ast, &source, &facts).unwrap_err();
+        assert_eq!(&*err.message, "具名來源不存在可見宣告");
+        facts.references.insert(read, inner);
+        assert_eq!(check_with_names(&ast, &source, &facts), Ok(()));
+    }
+
+    #[test]
+    fn f04_流程合流不得繼承同名同來源但不同型別的偽造狀態() {
+        let a = TypedDeclaration::new(DeclarationId(100), ScalarType::Int, true);
+        let b = TypedDeclaration::new(DeclarationId(100), ScalarType::Bool, true);
+        let mut outer = HashMap::new();
+        outer.insert("item".to_owned(), Variable {
+            declaration: a, initialized: false,
+        });
+        let mut exit = HashMap::new();
+        exit.insert("item".to_owned(), Variable {
+            declaration: b, initialized: true,
+        });
+        assert_ne!(outer["item"].declaration, exit["item"].declaration);
+        assert!(!exit["item"].declaration.matches_use(a.use_at(
+            crate::common_ir::NodeSpan::new(200, 204)).resolved));
+    }
+
+    #[test]
     fn 首版十九個正例均滿足變數讀前初始化與_const_不再寫入() {
         for i in 1..=19 {
             let path = format!("tests/fixtures/voiles/P01-正{i:02}.voil");
