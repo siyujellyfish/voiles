@@ -175,7 +175,7 @@ struct Checker<'a, C> {
     /// F11 前置：真實 Checker 成功評估並完成宣告後記錄的直線具名移交。
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
-    recorded_declarations: RefCell<BTreeMap<DeclarationId, (String, bool)>>,
+    recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
     /// F11：具名 return .move() 經來源身分、型別、借用與有效期驗證後的證據。
     recorded_named_returns: RefCell<BTreeSet<(DeclarationId, usize)>>,
     /// 真正完成型別、寫入授權及 RHS 評估後的結構欄位提交證據。
@@ -221,7 +221,7 @@ enum VerifiedMoveError {
 }
 
 struct VerifiedDeclarationFacts {
-    by_source: BTreeMap<DeclarationId, (String, bool)>,
+    by_source: BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>,
     /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
     /// 僅保存 Checker 成功提交的具名整筆返回來源及 return 運算式位置。
@@ -232,7 +232,7 @@ impl VerifiedDeclarationFacts {
     /// F11：本表僅消費 Checker 成功的宣告與直接轉移證據；
     /// 不能再從 AST 或名稱文字自行重建安全事實。
     fn from_checker(
-        by_source: BTreeMap<DeclarationId, (String, bool)>,
+        by_source: BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>,
         direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
         named_returns: BTreeSet<(DeclarationId, usize)>,
         field_writes: BTreeSet<(DeclarationId, usize, String)>,
@@ -240,21 +240,33 @@ impl VerifiedDeclarationFacts {
         Self { by_source, direct_moves, named_returns, field_writes }
     }
 
+    /// 公私雙 Checker 共用的完整宣告 HIR。避免驗證資源證據時
+    /// 再將 (型別, var/const) 裝成另一個沒有 DeclarationId 的狀態模型。
+    fn typed_declaration(&self, source: DeclarationId)
+        -> Option<crate::common_ir::TypedDeclaration<&str>> {
+        let fact = self.by_source.get(&source)?;
+        fact.owns(source).then(|| crate::common_ir::TypedDeclaration::new(
+            source, fact.ty.as_str(), fact.mutable,
+        ))
+    }
+
     /// F11：Checker 證據只有在全表互相吻合時才可交給 P16 資源橋接。
     /// 不得把沒有宣告來源或型別不同的分支推測事件當成安全計畫。
     fn evidence_is_consistent(&self, structs: &HashMap<String, StructDecl>) -> bool {
-        self.direct_moves.iter().all(|(source, target)| {
+        self.by_source.iter().all(|(id, fact)| fact.owns(*id))
+        &&         self.direct_moves.iter().all(|(source, target)| {
             source != target
                 && self.by_source.get(source).zip(self.by_source.get(target))
-                    .is_some_and(|((from_ty, _), (to_ty, _))| from_ty == to_ty)
+                    .is_some_and(|(from, to)| from.declaration == *source
+                        && to.declaration == *target && from.ty == to.ty)
         })
         && self.named_returns.iter().all(|(source, return_start)| {
             self.by_source.contains_key(source) && *return_start >= source.0
         })
         && self.field_writes.iter().all(|(source, statement_start, field)| {
-            self.by_source.get(source).is_some_and(|(ty, can_write)| {
-                *can_write && *statement_start >= source.0
-                    && structs.get(ty).and_then(|definition| definition.field(field))
+            self.by_source.get(source).is_some_and(|fact| {
+                fact.declaration == *source && fact.mutable && *statement_start >= source.0
+                    && structs.get(&fact.ty).and_then(|definition| definition.field(field))
                         .is_some_and(|member| !member.immutable)
             })
         })
@@ -266,7 +278,7 @@ impl VerifiedDeclarationFacts {
         &self, source: DeclarationId, return_start: usize, ty: &str,
     ) -> Option<VerifiedReturnEvidence> {
         self.by_source.get(&source)
-            .filter(|(actual, _)| actual == ty)?;
+            .filter(|fact| fact.owns(source) && fact.ty == ty)?;
         self.named_returns.contains(&(source, return_start))
             .then_some(VerifiedReturnEvidence { source, return_start })
     }
@@ -276,8 +288,8 @@ impl VerifiedDeclarationFacts {
         &self, owner: DeclarationId, statement_start: usize,
         ty: &str, field: &str,
     ) -> Option<VerifiedFieldWriteEvidence> {
-        self.by_source.get(&owner).filter(|(actual, can_write)|
-            actual == ty && *can_write)?;
+        self.by_source.get(&owner).filter(|fact|
+            fact.owns(owner) && fact.ty == ty && fact.mutable)?;
         self.field_writes.contains(&(owner, statement_start, field.to_owned()))
             .then_some(VerifiedFieldWriteEvidence {
                 owner, statement_start, field: field.to_owned(),
@@ -288,9 +300,10 @@ impl VerifiedDeclarationFacts {
         &self, source: DeclarationId, target: DeclarationId,
         ty: &str,
     ) -> Option<VerifiedMoveEvidence> {
-        let (from_type, _) = self.by_source.get(&source)?;
-        let (to_type, _) = self.by_source.get(&target)?;
-        (source != target && from_type == ty && to_type == ty
+        let from = self.by_source.get(&source)?;
+        let to = self.by_source.get(&target)?;
+        (source != target && from.owns(source) && to.owns(target)
+            && from.ty == ty && to.ty == ty
             && self.direct_moves.contains(&(source, target)))
             .then_some(VerifiedMoveEvidence { source, target })
     }
@@ -313,7 +326,7 @@ impl VerifiedDeclarationFacts {
 
     fn matches(&self, source: DeclarationId, ty: &str, mutable: bool) -> bool {
         self.by_source.get(&source)
-            .is_some_and(|(actual, can_write)| actual == ty && *can_write == mutable)
+            .is_some_and(|fact| fact.owns(source) && fact.ty == ty && fact.mutable == mutable)
     }
 }
 
