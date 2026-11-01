@@ -102,6 +102,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         })
     }
 
+    /// 合流後不許把不同可達分支的活躍借用狀態組成 HC14 不合法組合。
+    /// 此處是對既有 LoanBinding 的保守驗證，尚未取代實際 BorrowTicket 身分表。
+    fn active_loan_state_is_consistent(vars: &Scopes) -> bool {
+        BorrowSafety::validate_active_set(vars.iter()
+            .flat_map(|scope| scope.values())
+            .filter_map(|binding| binding.loan.as_ref().and_then(|loan| {
+                loan.active.then_some((loan.source, loan.kind))
+            }))).is_ok()
+    }
+
     /// R03.12：宣告時直接借用、方法預設借用及一般函式預設借用
     /// 一律透過相同的 DeclarationId／活躍借用快照／HC14 衝突規則。
     /// 診斷內容仍由三種已核准的呼叫情境各自指定。
@@ -1376,6 +1386,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 loan.active = true_active || false_active;
                             }
                         }
+                    }
+                    // 對各可達分支的借用活性聯集重新套用同一 HC14 衝突規則。
+                    if !Self::active_loan_state_is_consistent(vars) {
+                        return Err(self.error(
+                            "HC14：分支合流後共享／獨占借用狀態無法一致證明", condition));
                     }
                 }
             }

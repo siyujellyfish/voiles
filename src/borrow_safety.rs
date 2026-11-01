@@ -69,11 +69,31 @@ impl BorrowSafety {
         if conflicts { Err(BorrowSafetyError::BorrowConflict) } else { Ok(()) }
     }
 
+    /// 驗證已建立的活躍借用快照；適用於分支合流的保守聯集。
+    /// 不重新簽發 BorrowTicket，也不以同名文字合併不同來源。
+    pub(crate) fn validate_active_set(
+        loans: impl IntoIterator<Item = (DeclarationId, BorrowKind)>,
+    ) -> Result<(), BorrowSafetyError> {
+        let mut active = BTreeMap::<DeclarationId, (bool, bool)>::new();
+        for (source, kind) in loans {
+            let state = active.entry(source).or_default();
+            let existing = state.0.then_some(BorrowKind::SharedRead).into_iter()
+                .chain(state.1.then_some(BorrowKind::ExclusiveWrite));
+            Self::validate_new_borrow(existing, kind)?;
+            match kind {
+                BorrowKind::SharedRead => state.0 = true,
+                BorrowKind::ExclusiveWrite => state.1 = true,
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn acquire(&mut self, declaration: DeclarationId, kind: BorrowKind)
         -> Result<BorrowTicket, BorrowSafetyError> {
-        let existing: Vec<BorrowKind> = self.active.get(&declaration)
-            .map(|loans| loans.values().copied().collect()).unwrap_or_default();
-        Self::validate_new_borrow(existing.iter().copied(), kind)?;
+        // 直接對票據表惰性遍歷，不因每次借用而配置新的 Vec。
+        let existing = self.active.get(&declaration).into_iter()
+            .flat_map(|loans| loans.values().copied());
+        Self::validate_new_borrow(existing, kind)?;
         let serial = self.next_serial;
         self.next_serial = self.next_serial
             .checked_add(1).ok_or(BorrowSafetyError::TooManySharedLoans)?;
@@ -145,6 +165,27 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 分支合流活躍借用快照以來源身分檢查共享及獨占一致性() {
+        let a = DeclarationId(90);
+        let b = DeclarationId(91);
+        for allowed in [
+            vec![(a, BorrowKind::SharedRead), (a, BorrowKind::SharedRead)],
+            vec![(a, BorrowKind::ExclusiveWrite), (b, BorrowKind::SharedRead)],
+            vec![(a, BorrowKind::SharedRead), (b, BorrowKind::ExclusiveWrite)],
+        ] {
+            assert_eq!(BorrowSafety::validate_active_set(allowed), Ok(()));
+        }
+        for forbidden in [
+            vec![(a, BorrowKind::SharedRead), (a, BorrowKind::ExclusiveWrite)],
+            vec![(a, BorrowKind::ExclusiveWrite), (a, BorrowKind::SharedRead)],
+            vec![(a, BorrowKind::ExclusiveWrite), (a, BorrowKind::ExclusiveWrite)],
+        ] {
+            assert_eq!(BorrowSafety::validate_active_set(forbidden),
+                Err(BorrowSafetyError::BorrowConflict));
+        }
+    }
 
     #[test]
     fn 靜態來源活躍旗標與真正票據的直接存取規則必須相同() {
