@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
+use std::cell::RefCell;
 use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{self, Token, TokenKind};
 use crate::ownership_model::{CopyPermission, ModelError, ValueSlot, ValueState};
@@ -169,6 +170,8 @@ struct Checker<'a, C> {
     functions: &'a [Function],
     function_index: HashMap<String, usize>,
     ability: C,
+    /// F11 前置：真實 Checker 成功評估並完成宣告後記錄的直線具名移交。
+    recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
 }
 
 // P13～P16 的受限靜態安全檢查；下一步再分離型別／資料流責任。
@@ -195,7 +198,7 @@ struct VerifiedDeclarationFacts {
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
 }
 impl VerifiedDeclarationFacts {
-    fn from_checked(functions: &[Function]) -> Self {
+    fn from_checked(functions: &[Function], direct_moves: BTreeSet<(DeclarationId, DeclarationId)>) -> Self {
         fn collect(body: &[Stmt], found: &mut BTreeMap<DeclarationId, (String, bool)>) {
             for statement in body {
                 match &statement.kind {
@@ -228,24 +231,8 @@ impl VerifiedDeclarationFacts {
             }
             collect(&function.body, &mut by_source);
         }
-        // 直線語句以既有 Checker 通過的 AST 宣告來源解析具名移動；
-        // 不記錄分支或迴圈的「可能移動」，以免偽造未執行的資源事件。
-        let mut direct_moves = BTreeSet::new();
-        for function in functions {
-            let mut names: HashMap<&str, DeclarationId> = function.params.iter()
-                .map(|parameter| (parameter.name.as_str(),
-                    DeclarationId(parameter.declaration_start))).collect();
-            for statement in &function.body {
-                if let StmtKind::Declare { name, init, .. } = &statement.kind {
-                    if let Some(Term { kind: TermKind::Move(from), .. }) = init {
-                        if let Some(&source) = names.get(from.as_str()) {
-                            direct_moves.insert((source, DeclarationId(statement.start)));
-                        }
-                    }
-                    names.insert(name.as_str(), DeclarationId(statement.start));
-                }
-            }
-        }
+        // 真正直線具名移動證據已由 Checker 在成功執行型別／所有權驗證
+        // 並將目標 Binding 提交後記錄；本層不可再次按 AST 名稱推測來源。
         Self { by_source, direct_moves }
     }
 
@@ -287,11 +274,14 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
     let function_index = functions.iter().enumerate()
         .map(|(i, f)| (f.name.clone(), i)).collect();
-    Checker {
+    let checker = Checker {
         source: &source, structs: &structs, functions: &functions,
         function_index, ability,
-    }.all(&functions)?;
-    let declarations = VerifiedDeclarationFacts::from_checked(&functions);
+        recorded_direct_moves: RefCell::new(BTreeSet::new()),
+    };
+    checker.all(&functions)?;
+    let direct_moves = checker.recorded_direct_moves.into_inner();
+    let declarations = VerifiedDeclarationFacts::from_checked(&functions, direct_moves);
     Ok(VerifiedPrivateSource { source, structs, functions, declarations })
 }
 

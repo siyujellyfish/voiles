@@ -8,6 +8,27 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     use crate::owned_str_runtime::ResourceEvent;
 
     #[test]
+    fn f11_沒有_checker_成功轉移證據即使_ast_寫有_move_也不得授權資源橋接() {
+        let code = "fn main()->int{\nvar owner:str = \"資源\"\nvar target:str = owner.move()\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let (_, parsed) = Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }
+            .file().expect("先單獨解析合法的私有語法");
+        let main = &parsed[0];
+        let origin = DeclarationId(main.body[0].start);
+        let target = DeclarationId(main.body[1].start);
+        let no_checker_proof = VerifiedDeclarationFacts::from_checked(&parsed, BTreeSet::new());
+        assert!(!no_checker_proof.has_direct_move(origin, target),
+            "光有具名 move AST 不能自動獲得資源移交證據");
+        assert_eq!(no_checker_proof.verified_direct_move(origin, target, "str"), None);
+
+        let checked = verified_private_source(code).expect("必須通過真正私有 Checker");
+        assert_eq!(checked.declarations.verified_direct_move(origin, target, "str"),
+            Some(VerifiedMoveEvidence { source: origin, target }));
+        assert_eq!(checked.declarations.verified_direct_move(target, origin, "str"), None);
+    }
+
+    #[test]
     fn 來源起點與真實緩衝區事件都對應唯一資源持有者() {
         let code = "fn main()->int{\nvar owner:str = \"繁體中文 🌊\"\nvar target:str = owner.move()\nreturn 0\n}\n";
         let checked = verified_private_source(code).expect("先經真正來源安全驗證");
