@@ -13,7 +13,7 @@ mod tests {
                 source: &source, structs: &structs, functions: &functions,
                 function_index: HashMap::new(),
                 ability: crate::ownership_policy::approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())
             };
             let cond = Term { kind: TermKind::Literal("bool"), start: 0, end: 4 };
             let mk = |kind| Stmt { kind, start: 0, end: 4 };
@@ -512,7 +512,7 @@ mod automatic_self_borrow_tests {
         let methods = &structs["Counter"].methods;
         let checker = Checker {source: &source, structs: &structs, functions: &[],
             function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())};
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())};
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
             BorrowKind::SharedRead);
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "set").unwrap()).unwrap(),
@@ -576,7 +576,7 @@ mod conditional_self_inference_tests {
         let (types, _) = Parser {source: &source, tokens: &scanned.tokens, cursor: 0}.file().unwrap();
         let checker = Checker {source: &source, structs: &types, functions: &[],
             function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())};
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())};
         let method = &types["Counter"].methods[0];
         assert_eq!(checker.check_method("Counter", method).unwrap(), BorrowKind::ExclusiveWrite);
     }
@@ -950,7 +950,7 @@ mod float_copyable_approved_tests {
         let checker = Checker {
             source: &source, structs: &structs, functions: &[],
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())
         };
         assert_eq!(checker.permission("FloatBox"), CopyPermission::Allowed);
         assert_eq!(checker.permission("NestedFloat"), CopyPermission::Allowed);
@@ -993,7 +993,7 @@ mod float_copyable_method_tests {
         let checker = Checker {
             source: &source, structs: &types, functions: &[],
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())
         };
         assert_eq!(
             checker.check_method("FloatHolder", &types["FloatHolder"].methods[0]).unwrap(),
@@ -1012,7 +1012,7 @@ mod float_copyable_method_tests {
         let checker = Checker {
             source: &source, structs: &types, functions: &[],
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())
         };
         assert_eq!(
             checker.check_method("FloatPair", &types["FloatPair"].methods[0]).unwrap(),
@@ -2244,7 +2244,7 @@ mod p13_1_copyable_完整能力分類 {
         let checker = Checker {
             source: &source, structs: &structs, functions: &functions,
             function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())
         };
         checker.permission(ty)
     }
@@ -2295,7 +2295,7 @@ mod p13_1_正式來源閉包 {
         Checker {
             source: &source, structs: &structs, functions: &functions,
             function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: approved_leaf_copy_permission,
-            recorded_direct_moves: RefCell::new(BTreeSet::new())
+            recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new())
         }.permission(ty)
     }
 
