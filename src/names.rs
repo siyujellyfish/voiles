@@ -30,8 +30,8 @@ impl<'a> Resolver<'a> {
     /// 函式前向參照由獨立函式表處理；一般頂層值仍遵守 AW04。
     fn binding_for_reference(&self, name: &str, pos: usize,
         scopes: &[HashMap<String, DeclarationId>]) -> Option<DeclarationId> {
-        for scope in scopes.iter().rev() {
-            if let Some(id) = scope.get(name) { return Some(*id); }
+        if let Some(id) = crate::common_ir::lookup_lexical(scopes.iter(), name) {
+            return Some(*id);
         }
         self.globals.get(name).copied().filter(|id| id.0 < pos)
     }
