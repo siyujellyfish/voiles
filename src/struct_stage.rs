@@ -172,6 +172,8 @@ struct Checker<'a, C> {
     ability: C,
     /// F11 前置：真實 Checker 成功評估並完成宣告後記錄的直線具名移交。
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
+    /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
+    recorded_declarations: RefCell<BTreeMap<DeclarationId, (String, bool)>>,
 }
 
 // P13～P16 的受限靜態安全檢查；下一步再分離型別／資料流責任。
@@ -198,41 +200,12 @@ struct VerifiedDeclarationFacts {
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
 }
 impl VerifiedDeclarationFacts {
-    fn from_checked(functions: &[Function], direct_moves: BTreeSet<(DeclarationId, DeclarationId)>) -> Self {
-        fn collect(body: &[Stmt], found: &mut BTreeMap<DeclarationId, (String, bool)>) {
-            for statement in body {
-                match &statement.kind {
-                    StmtKind::Declare { ty, mutable, .. } => {
-                        let replaced = found.insert(
-                            DeclarationId(statement.start), (ty.clone(), *mutable));
-                        debug_assert!(replaced.is_none(), "同一來源跨度不應建立兩個宣告");
-                    }
-                    StmtKind::If { branch, no } => {
-                        collect(&branch.body, found);
-                        if let Some(otherwise) = no { collect(otherwise, found); }
-                    }
-                    StmtKind::While { body, .. } => collect(body, found),
-                    StmtKind::ForRange { iterator_start, body, .. } => {
-                        let replaced = found.insert(
-                            DeclarationId(*iterator_start), ("int".into(), false));
-                        debug_assert!(replaced.is_none(), "迴圈位置須為獨立宣告");
-                        collect(body, found);
-                    }
-                    _ => {}
-                }
-            }
-        }
-        let mut by_source = BTreeMap::new();
-        for function in functions {
-            for param in &function.params {
-                let replaced = by_source.insert(
-                    DeclarationId(param.declaration_start), (param.ty.clone(), false));
-                debug_assert!(replaced.is_none(), "參數來源須唯一");
-            }
-            collect(&function.body, &mut by_source);
-        }
-        // 真正直線具名移動證據已由 Checker 在成功執行型別／所有權驗證
-        // 並將目標 Binding 提交後記錄；本層不可再次按 AST 名稱推測來源。
+    /// F11：本表僅消費 Checker 成功的宣告與直接轉移證據；
+    /// 不能再從 AST 或名稱文字自行重建安全事實。
+    fn from_checker(
+        by_source: BTreeMap<DeclarationId, (String, bool)>,
+        direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
+    ) -> Self {
         Self { by_source, direct_moves }
     }
 
@@ -278,10 +251,12 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         source: &source, structs: &structs, functions: &functions,
         function_index, ability,
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
+        recorded_declarations: RefCell::new(BTreeMap::new()),
     };
     checker.all(&functions)?;
+    let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
-    let declarations = VerifiedDeclarationFacts::from_checked(&functions, direct_moves);
+    let declarations = VerifiedDeclarationFacts::from_checker(by_source, direct_moves);
     Ok(VerifiedPrivateSource { source, structs, functions, declarations })
 }
 
