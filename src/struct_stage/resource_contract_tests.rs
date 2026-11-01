@@ -378,6 +378,31 @@ mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
         let [declare, write, _] = main.body.as_slice() else { panic!("只接受受限三語句"); };
         assert!(matches!(write.kind, StmtKind::FieldAssign { .. }));
         let owner = DeclarationId(declare.start);
+        let field_name = match &write.kind {
+            StmtKind::FieldAssign { field, .. } => field.as_str(),
+            _ => unreachable!("測試上方已核對欄位賦值"),
+        };
+        assert_eq!(verified.declarations.verified_field_write(
+            owner, write.start, "Message", field_name,
+        ), Some(VerifiedFieldWriteEvidence {
+            owner, statement_start: write.start, field: field_name.to_owned(),
+        }));
+        for (source, at, ty, member) in [
+            (owner, write.start, "str", field_name),
+            (owner, write.start, "Message", "id"),
+            (owner, write.start + 1, "Message", field_name),
+            (DeclarationId(write.start), write.start, "Message", field_name),
+        ] {
+            assert!(verified.declarations.verified_field_write(
+                source, at, ty, member,
+            ).is_none(), "錯誤身分、型別、欄位或來源位置不得取得資源寫入證據");
+        }
+        let no_proof = VerifiedDeclarationFacts::from_checker(
+            verified.declarations.by_source.clone(), BTreeSet::new(),
+            BTreeSet::new(), BTreeSet::new(),
+        );
+        assert!(no_proof.verified_field_write(owner, write.start, "Message", field_name)
+            .is_none(), "AST 形狀及型別表不能冒充 Checker 真正提交證據");
         let plan = FieldOverwritePlan::new(owner, 2, Some(0)).unwrap();
         let (updated, success) = trace_persistent_struct_field_write_source(SOURCE, false).unwrap();
         assert_eq!(updated, "新值🪼");
