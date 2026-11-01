@@ -53,7 +53,10 @@ impl<'a> Resolver<'a> {
                     Err(self.error("找不到合法的無參數函式宣告", e.start, e.end))
                 }
             }
-            ExprKind::Add(a,b) | ExprKind::Subtract(a,b) |
+            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+                self.check_expr(&binary.left, scopes)?;
+                self.check_expr(&binary.right, scopes)
+            }
             ExprKind::IndexAccess(a,b) | ExprKind::FirstIndexWrite(a,b) => {
                 self.check_expr(a,scopes)?;
                 self.check_expr(b,scopes)
