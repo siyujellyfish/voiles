@@ -853,6 +853,32 @@ fn trace_named_string_move_source(
     // 都要由同一已驗證來源的 DeclarationId 審核成功後才能回傳。
     transfer.verify_actual_events(&events)
         .map_err(|_| unsupported("P16：字串事件與靜態所有權／資源責任無法一致證明"))?;
+    // F12：不能僅在測試外圍額外模擬抽象帳簿。真正跑完 UTF-8
+    // OwnedStrRuntime 的已核准直線橋接，還必須以相同 Checker 已驗證
+    // DeclarationId 及真實資源事件核對兩張所有權／責任帳簿。
+    use crate::owned_str_runtime::ResourceEvent;
+    use crate::resource_borrow_pipeline::SafetyPipeline;
+    let [ResourceEvent::Created(created), ResourceEvent::Moved(moved),
+         ResourceEvent::Released(released)] = events.as_slice() else {
+        return Err(unsupported("P16：實際 UTF-8 資源事件序列不完整"));
+    };
+    if created != moved || created != released {
+        return Err(unsupported("P16：資源建立、移交和釋放不是同一實例"));
+    }
+    let mut pipeline = SafetyPipeline::new();
+    pipeline.declare(evidence.source, CopyPermission::Forbidden)
+        .map_err(|_| unsupported("P16：來源擁有權責任建立失敗"))?;
+    pipeline.register_resource(evidence.source, *created)
+        .map_err(|_| unsupported("P16：資源建立責任未能登記"))?;
+    declarations.apply_verified_direct_move(
+        &mut pipeline, evidence.source, evidence.target, "str")
+        .map_err(|_| unsupported("P16：Checker 已驗證移交與資源安全交易不一致"))?;
+    if pipeline.record_cleanup(evidence.target)
+        .map_err(|_| unsupported("P16：最終資源責任不可安全清理"))? != 1 {
+        return Err(unsupported("P16：已移交持有者須恰好清理一個真實字串資源"));
+    }
+    pipeline.audit_finished()
+        .map_err(|_| unsupported("P16：真實 UTF-8 資源清理後仍有未結責任"))?;
     Ok(events)
 }
 
