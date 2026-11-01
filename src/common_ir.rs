@@ -82,19 +82,28 @@ pub(crate) struct ResolvedNames {
     pub(crate) assignments: std::collections::BTreeMap<usize, DeclarationId>,
     pub(crate) declarations: std::collections::BTreeMap<DeclarationId, ScalarType>,
 }
-/// 一次名稱解析已證明的帶型別宣告來源身分；無法從任意字串自行建構。
+/// 兩條正式 Checker 都使用的已解析宣告身分與型別資料形狀。
+/// P09 的資料須經名稱解析產生；私有路徑的型別還須經 P13 安全檢查。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct ResolvedScalarUse {
+pub(crate) struct ResolvedUse<T> {
     pub(crate) declaration: DeclarationId,
-    pub(crate) ty: ScalarType,
+    pub(crate) ty: T,
 }
+impl<T> ResolvedUse<T> {
+    pub(crate) fn new(declaration: DeclarationId, ty: T) -> Self {
+        Self { declaration, ty }
+    }
+}
+
+/// 公開純值 HIR 引用是共同語意引用的 int／bool 專用形式。
+pub(crate) type ResolvedScalarUse = ResolvedUse<ScalarType>;
 
 impl ResolvedNames {
     fn use_for(&self, starts: &std::collections::BTreeMap<usize, DeclarationId>,
         start: usize) -> Option<ResolvedScalarUse> {
         let declaration = *starts.get(&start)?;
         let ty = *self.declarations.get(&declaration)?;
-        Some(ResolvedScalarUse { declaration, ty })
+        Some(ResolvedUse::new(declaration, ty))
     }
 
     pub(crate) fn reference(&self, start: usize) -> Option<ResolvedScalarUse> {
