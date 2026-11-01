@@ -51,6 +51,14 @@ mod tests {
             pending_fields: None, loan: None,
         };
         let span = crate::common_ir::NodeSpan::new(420, 429);
+        let declared = private.semantic_declaration();
+        assert_eq!(declared.declaration, DeclarationId(420));
+        assert_eq!(declared.ty, "str");
+        assert!(declared.mutable);
+        assert!(declared.matches_use(private.semantic_use_at(span).resolved));
+        assert!(!declared.matches_use(crate::common_ir::ResolvedUse::new(
+            DeclarationId(421), "str")),
+            "相同型別不同原始宣告不等同真實持有者");
         let typed = private.semantic_use_at(span);
         assert_eq!(typed.span, span);
         assert_eq!(typed.resolved.declaration, DeclarationId(420));
