@@ -144,6 +144,28 @@ mod tests {
     use crate::ownership_model::CopyPermission::{Allowed, Forbidden, Undecided};
 
     #[test]
+    fn 借用票據批次預檢失敗不提前解鎖兩個所有者() {
+        let mut gate = BorrowOwnershipGate::new();
+        let left = DeclarationId(501);
+        let right = DeclarationId(502);
+        for source in [left, right] {
+            gate.declare(source, ValueSlot::initialized(Forbidden)).unwrap();
+        }
+        let left_ticket = gate.borrow(left, BorrowKind::SharedRead).unwrap();
+        let right_ticket = gate.borrow(right, BorrowKind::SharedRead).unwrap();
+        assert_eq!(gate.finish_method_scope(&[left_ticket, left_ticket, right_ticket]),
+            Err(GateError::Borrow(BorrowSafetyError::InvalidRelease)));
+        for source in [left, right] {
+            assert_eq!(gate.read(source),
+                Err(GateError::Borrow(BorrowSafetyError::SourceIsBorrowed)));
+        }
+        gate.finish_method_scope(&[left_ticket, right_ticket]).unwrap();
+        for source in [left, right] {
+            assert!(gate.read(source).is_ok());
+        }
+    }
+
+    #[test]
     fn p14_共享借用可並存_原來源直接讀取與複製仍封鎖() {
         let mut gate = BorrowOwnershipGate::new();
         let source = DeclarationId(11);

@@ -130,9 +130,19 @@ impl BorrowSafety {
         if loans.get(&ticket.serial) != Some(&ticket.kind) {
             return Err(BorrowSafetyError::InvalidRelease);
         }
-        loans.remove(&ticket.serial);
-        if loans.is_empty() { self.active.remove(&ticket.declaration); }
+        self.commit_release_checked(ticket);
         Ok(())
+    }
+
+    /// 一張票據通過追蹤器、來源、序號及借用種類預檢後的不可失敗提交。
+    /// 僅供 BorrowSafety 已驗證的單張釋放及整批釋放使用。
+    fn commit_release_checked(&mut self, ticket: BorrowTicket) {
+        let loans = self.active.get_mut(&ticket.declaration)
+            .expect("已驗證借用來源仍存在");
+        debug_assert_eq!(loans.get(&ticket.serial), Some(&ticket.kind));
+        let previous = loans.remove(&ticket.serial);
+        debug_assert_eq!(previous, Some(ticket.kind));
+        if loans.is_empty() { self.active.remove(&ticket.declaration); }
     }
 
     /// 方法／函式作用域出口依已核准歸還點明確釋放。
@@ -156,7 +166,7 @@ impl BorrowSafety {
         }
         for ticket in tickets.iter().rev() {
             // 上方預檢完成後，同一批次不會重複票據，故以下不應失敗。
-            self.release(*ticket)?;
+            self.commit_release_checked(*ticket);
         }
         Ok(())
     }
