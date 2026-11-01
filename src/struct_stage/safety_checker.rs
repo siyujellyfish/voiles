@@ -4,9 +4,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
     }
     fn record_declaration(&self, id: DeclarationId, ty: &str, mutable: bool) {
+        let fact = (ty.to_owned(), mutable);
         let replaced = self.recorded_declarations.borrow_mut()
-            .insert(id, (ty.to_owned(), mutable));
-        debug_assert!(replaced.is_none(), "一個已驗證來源位置只可建立單一宣告");
+            .insert(id, fact.clone());
+        // 同一 AST 宣告若因靜態可達路徑分析再次造訪，可重用相同證據；
+        // 但絕不能以相同原始位元組起點宣稱不同型別或寫入權限。
+        debug_assert!(replaced.is_none_or(|previous| previous == fact),
+            "同一來源身分在不同可達路徑不得擁有衝突的型別或可變權限");
     }
     fn error(&self, text: &str, term: &Term) -> Diagnostic {
         Diagnostic {
