@@ -96,9 +96,9 @@ impl Parser<'_> {
             |term| term.node_span(),
             |left, operator, right, span| Term {
                 start: span.start, end: span.end,
-                kind: TermKind::BinaryInt {
-                    left: Box::new(left), operator, right: Box::new(right),
-                },
+                kind: TermKind::BinaryInt(
+                    crate::common_ir::ArithmeticNode::new(left, operator, right),
+                ),
             },
         )
     }

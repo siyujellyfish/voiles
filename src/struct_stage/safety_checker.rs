@@ -62,8 +62,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 args.iter().any(|(_, t)| Self::term_moves_name(t, name)),
             TermKind::Call(_, args) | TermKind::MethodCall(_, _, args) =>
                 args.iter().any(|t| Self::term_moves_name(t, name)),
-            TermKind::BinaryInt {left, right, ..} =>
-                Self::term_moves_name(left, name) || Self::term_moves_name(right, name),
+            TermKind::BinaryInt(binary) =>
+                Self::term_moves_name(&binary.left, name) || Self::term_moves_name(&binary.right, name),
             _ => false,
         }
     }
@@ -174,8 +174,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
             TermKind::Call(_, arguments) =>
                 arguments.iter().any(|value| Self::term_mentions(value, name)),
-            TermKind::BinaryInt { left, right, .. } =>
-                Self::term_mentions(left, name) || Self::term_mentions(right, name),
+            TermKind::BinaryInt(binary) =>
+                Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
             TermKind::Literal(_) => false,
         }
     }
@@ -375,7 +375,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok(function.result_ty.clone())
             }
-            TermKind::BinaryInt { left, operator, right } => {
+            TermKind::BinaryInt(binary) => {
+                let left = &binary.left;
+                let right = &binary.right;
+                let operator = &binary.operator;
                 let left_ty = self.method_pure_value_type(owner, method, left)?;
                 if left_ty != "int" {
                     return Err(self.error("方法整數加減左運算元必須為 int", left));
@@ -538,9 +541,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         match &term.kind {
             TermKind::Literal(_) | TermKind::Name(_) | TermKind::Move(_)
                 | TermKind::FieldRead(_, _) => true,
-            TermKind::BinaryInt { left, right, .. } =>
-                Self::method_argument_safe_before_borrow(left)
-                    && Self::method_argument_safe_before_borrow(right),
+            TermKind::BinaryInt(binary) =>
+                Self::method_argument_safe_before_borrow(&binary.left)
+                    && Self::method_argument_safe_before_borrow(&binary.right),
             _ => false,
         }
     }
@@ -573,9 +576,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn while_condition_nonconsuming(term: &Term) -> bool {
         match &term.kind {
             TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
-            TermKind::BinaryInt { left, right, .. } =>
-                Self::while_condition_nonconsuming(left)
-                    && Self::while_condition_nonconsuming(right),
+            TermKind::BinaryInt(binary) =>
+                Self::while_condition_nonconsuming(&binary.left)
+                    && Self::while_condition_nonconsuming(&binary.right),
             _ => false,
         }
     }
@@ -584,7 +587,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
-            TermKind::BinaryInt { left, operator, right } => {
+            TermKind::BinaryInt(binary) => {
+                let left = &binary.left;
+                let right = &binary.right;
+                let operator = &binary.operator;
                 // 順序由 P01 左結合決定，不得跳過內層 .move() 狀態更新。
                 let (left_ty, left_ready) = self.evaluate(left, vars)?;
                 if left_ty != "int" || !left_ready {
@@ -1459,9 +1465,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for value in args { self.reject_method_term(value)?; }
                 Ok(())
             }
-            TermKind::BinaryInt { left, right, .. } => {
-                self.reject_method_term(left)?;
-                self.reject_method_term(right)
+            TermKind::BinaryInt(binary) => {
+                self.reject_method_term(&binary.left)?;
+                self.reject_method_term(&binary.right)
             }
             _ => Ok(()),
         }
@@ -1558,9 +1564,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     self.check_default_term(value, active, checked)?;
                 }
             }
-            TermKind::BinaryInt { left, right, .. } => {
-                self.check_default_term(left, active, checked)?;
-                self.check_default_term(right, active, checked)?;
+            TermKind::BinaryInt(binary) => {
+                self.check_default_term(&binary.left, active, checked)?;
+                self.check_default_term(&binary.right, active, checked)?;
             }
             _ => {}
         }

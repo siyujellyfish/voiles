@@ -92,14 +92,14 @@ impl<'a> TypeChecker<'a> {
             ExprKind::ZeroArgMethod(inner, method) if self.probe_move
                 && method == "move" && matches!(inner.kind, ExprKind::Name(_)) =>
                 self.expression(inner, scopes),
-            ExprKind::Add(left, right) | ExprKind::Subtract(left, right) => {
-                let lhs = self.expression(left, scopes)?;
-                let rhs = self.expression(right, scopes)?;
-                self.require(lhs.ty, Type::Int, left, "整數加減左運算元必須為 int")?;
-                self.require(rhs.ty, Type::Int, right, "整數加減右運算元必須為 int")?;
+            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+                let lhs = self.expression(&binary.left, scopes)?;
+                let rhs = self.expression(&binary.right, scopes)?;
+                self.require(lhs.ty, Type::Int, &binary.left, "整數加減左運算元必須為 int")?;
+                self.require(rhs.ty, Type::Int, &binary.right, "整數加減右運算元必須為 int")?;
                 let known = match (lhs.integer, rhs.integer) {
                     (Some(a), Some(b)) => {
-                        let sum = if matches!(&expr.kind, ExprKind::Add(_, _)) {
+                        let sum = if binary.operator == '+' {
                             a.checked_add(b)
                         } else {
                             a.checked_sub(b)

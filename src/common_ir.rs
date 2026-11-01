@@ -37,6 +37,20 @@ impl<K> SpannedNode<K> {
 }
 
 
+/// 公開／私有正式加減 AST 共用同一具型別二元節點。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ArithmeticNode<N> {
+    pub(crate) left: Box<N>,
+    pub(crate) operator: char,
+    pub(crate) right: Box<N>,
+}
+impl<N> ArithmeticNode<N> {
+    pub(crate) fn new(left: N, operator: char, right: N) -> Self {
+        debug_assert!(matches!(operator, '+' | '-'), "此階段只核准加減");
+        Self { left: Box::new(left), operator, right: Box::new(right) }
+    }
+}
+
 /// 兩條正式 Checker 共用的詞彙遮蔽查找：由最內層往最外層，
 /// 只決定可見的當前名稱，不改變兩個入口各自的前向參照或型別規則。
 pub(crate) fn lookup_lexical<'a, V: 'a>(
@@ -142,16 +156,12 @@ fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
             ScalarExpr::Int(crate::syntax_shared::integer_i64(raw).ok()?),
         PublicExprKind::BoolLiteral(value) => ScalarExpr::Bool(*value),
         PublicExprKind::Name(value) => ScalarExpr::Name(value.clone()),
-        PublicExprKind::Add(left, right) => ScalarExpr::Binary {
-            left: Box::new(public_expression(left)?),
-            op: '+',
-            right: Box::new(public_expression(right)?),
-        },
-        PublicExprKind::Subtract(left, right) => ScalarExpr::Binary {
-            left: Box::new(public_expression(left)?),
-            op: '-',
-            right: Box::new(public_expression(right)?),
-        },
+        PublicExprKind::Add(binary) | PublicExprKind::Subtract(binary) =>
+            ScalarExpr::Binary {
+                left: Box::new(public_expression(&binary.left)?),
+                op: binary.operator,
+                right: Box::new(public_expression(&binary.right)?),
+            },
         PublicExprKind::Group(inner) => return public_expression(inner),
         PublicExprKind::ZeroArgCall(name) => ScalarExpr::CallZero(name.clone()),
         _ => return None,

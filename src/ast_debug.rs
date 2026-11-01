@@ -28,8 +28,8 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
         ExprKind::StringLiteral(_) => "StringLiteral",
         ExprKind::Name(_) => "NameRef",
         ExprKind::ZeroArgCall(_) => "ZeroArgCall",
-        ExprKind::Add(_, _) => "Add",
-        ExprKind::Subtract(_, _) => "Subtract",
+        ExprKind::Add(_) => "Add",
+        ExprKind::Subtract(_) => "Subtract",
         ExprKind::Group(_) => "ArithmeticGroup",
         ExprKind::IndexAccess(_, _) => "IndexAccess",
         ExprKind::ZeroArgMethod(_, _) => "ZeroArgMethod",
@@ -37,7 +37,10 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
     };
     record(out, source, name, expr.start, expr.end);
     match &expr.kind {
-        ExprKind::Add(a,b) | ExprKind::Subtract(a,b) |
+        ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+            expression(out, source, &binary.left);
+            expression(out, source, &binary.right);
+        }
         ExprKind::IndexAccess(a,b) | ExprKind::FirstIndexWrite(a,b) => {
             expression(out, source, a);
             expression(out, source, b);
