@@ -32,7 +32,8 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             facts.by_source.clone(), facts.direct_moves.clone(),
             facts.named_returns.clone(), facts.field_writes.clone(),
         );
-        forged.by_source.insert(target, ("str".to_owned(), true));
+        forged.by_source.insert(target,
+            crate::common_ir::TypedDeclaration::new(target, "str".to_owned(), true));
         assert!(!forged.evidence_is_consistent(&checked.structs),
             "型別錯置的移交即使存在 Checker AST 也不能產生有效計畫");
 
@@ -51,6 +52,25 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         forged.by_source.remove(&owner);
         assert!(!forged.evidence_is_consistent(&checked.structs),
             "任何資源證據都不可引用不存在的來源身分");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.by_source.insert(target,
+            crate::common_ir::TypedDeclaration::new(owner, "Holder".to_owned(), true));
+        assert!(!forged.evidence_is_consistent(&checked.structs),
+            "typed HIR 宣告表鍵與實際宣告位置不同必須拒絕");
+        assert!(forged.typed_declaration(target).is_none(),
+            "不能把來源身分竄改的宣告交給資源橋接");
+        assert!(forged.verified_direct_move(owner, target, "Holder").is_none());
+
+        let actual = facts.typed_declaration(owner).unwrap();
+        assert_eq!(actual.declaration, owner);
+        assert_eq!(actual.ty, "Holder");
+        assert!(actual.mutable);
+        assert_eq!(actual,
+            crate::common_ir::TypedDeclaration::new(owner, "Holder", true));
     }
 
     #[test]
