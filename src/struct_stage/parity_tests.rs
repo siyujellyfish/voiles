@@ -62,7 +62,10 @@ mod p16_6_r02_公開私有前端交集契約 {
         let pub_decl = names.declaration(declaration).unwrap();
         let priv_decl = private.declarations.typed_declaration(declaration).unwrap();
         assert_eq!(pub_decl.declaration, priv_decl.declaration);
-        assert_eq!(pub_decl.ty.as_name(), priv_decl.ty);
+        assert_eq!(match pub_decl.ty {
+            crate::common_ir::ScalarType::Int => "int",
+            crate::common_ir::ScalarType::Bool => "bool",
+        }, priv_decl.ty);
         assert_eq!(pub_decl.mutable, priv_decl.mutable);
         assert!(public_check(&code.replace("if(true)", "if(1)")).is_err());
         assert!(verified_private_source(&code.replace("if(true)", "if(1)")).is_err());
