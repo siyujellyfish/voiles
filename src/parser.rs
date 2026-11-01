@@ -142,8 +142,8 @@ impl<'a> Parser<'a> {
             ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
             ExprKind::Name(_) | ExprKind::ZeroArgCall(_) => true,
             ExprKind::Group(x) => self.first_version_return(x),
-            ExprKind::Add(l,r) | ExprKind::Subtract(l,r) =>
-                self.first_version_return(l) && self.first_version_return(r),
+            ExprKind::Add(binary) | ExprKind::Subtract(binary) =>
+                self.first_version_return(&binary.left) && self.first_version_return(&binary.right),
             ExprKind::ZeroArgMethod(inner, method) => self.allow_probe_move
                 && method == "move" && matches!(inner.kind, ExprKind::Name(_)),
             _ => false,
