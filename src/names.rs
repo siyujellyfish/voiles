@@ -89,7 +89,7 @@ impl<'a> Resolver<'a> {
                     // 不因同名宣告預設自己能讀取尚未建立的變數。
                     self.initializer(b, scopes)?;
                     let id = DeclarationId(b.start);
-                    self.facts.declarations.insert(id, b.ty);
+                    self.facts.declarations.insert(id, crate::common_ir::TypedDeclaration::new(id, b.ty, b.mutable));
                     scopes.last_mut().unwrap().insert(b.name.clone(), id);
                 }
                 StmtKind::Assignment { name, value } => {
@@ -147,7 +147,7 @@ pub(crate) fn resolve_with_facts(
                         span: Some(source.span(b.start,b.end)),
                     });
                 }
-                facts.declarations.insert(DeclarationId(b.start), b.ty);
+                facts.declarations.insert(DeclarationId(b.start), crate::common_ir::TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable));
             }
         }
     }
