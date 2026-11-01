@@ -29,6 +29,24 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     }
 
     #[test]
+    fn f12_已核准多種_utf8_真實執行期事件必須通過_checker_和雙帳簿責任稽核() {
+        use crate::owned_str_runtime::ResourceEvent;
+        for literal in ["", "繁體中文", "🐋🪼", "A中B"] {
+            let code = format!(
+                "fn main()->int{{\nvar owner:str = \"{}\"\nvar target:str = owner.move()\nreturn 0\n}}\n",
+                literal,
+            );
+            let actual = trace_named_string_move_source(&code)
+                .expect("實際 OwnedStrRuntime 的合法 UTF-8 單次移交必須驗完安全與責任");
+            let [ResourceEvent::Created(created), ResourceEvent::Moved(moved),
+                ResourceEvent::Released(released)] = actual.as_slice()
+                else { panic!("只允許真正單次建立、整筆移交、一次釋放") };
+            assert_eq!(created, moved);
+            assert_eq!(moved, released);
+        }
+    }
+
+    #[test]
     fn 來源起點與真實緩衝區事件都對應唯一資源持有者() {
         let code = "fn main()->int{\nvar owner:str = \"繁體中文 🌊\"\nvar target:str = owner.move()\nreturn 0\n}\n";
         let checked = verified_private_source(code).expect("先經真正來源安全驗證");
