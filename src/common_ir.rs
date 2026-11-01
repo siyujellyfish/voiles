@@ -95,6 +95,32 @@ impl<T> ResolvedUse<T> {
     }
 }
 
+/// F04：雙 Checker 實際詞彙環境共用的具型別宣告身分與 var／const 權限。
+/// P10 以 ScalarType 具體化，P11 僅需要身分及可變權限可用單位型別；
+/// P13～P16 的非 Copyable 型別保留私有的 &str 名稱而不擴張公開文法。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TypedDeclaration<T> {
+    pub(crate) declaration: DeclarationId,
+    pub(crate) ty: T,
+    pub(crate) mutable: bool,
+}
+impl<T> TypedDeclaration<T> {
+    pub(crate) fn new(declaration: DeclarationId, ty: T, mutable: bool) -> Self {
+        Self { declaration, ty, mutable }
+    }
+    pub(crate) fn owns(&self, declaration: DeclarationId) -> bool {
+        self.declaration == declaration
+    }
+}
+impl<T: Copy + PartialEq> TypedDeclaration<T> {
+    pub(crate) fn matches_use(&self, resolved: ResolvedUse<T>) -> bool {
+        self.owns(resolved.declaration) && self.ty == resolved.ty
+    }
+    pub(crate) fn use_at(&self, span: NodeSpan) -> TypedUse<T> {
+        TypedUse::new(span, ResolvedUse::new(self.declaration, self.ty))
+    }
+}
+
 /// F04：正式型別化引用的來源半開跨度與已解析宣告必須同行傳遞。
 /// 不以名稱文字重新推測擁有者；具體型別能力仍由不同模式的 Checker 驗證。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -268,6 +294,27 @@ fn map_optional<T, U>(
     match source {
         Some(value) => Some(Some(project(value)?)),
         None => Some(None),
+    }
+}
+
+#[cfg(test)]
+mod f04_詞彙宣告與已解析引用身分一致性 {
+    use super::*;
+
+    #[test]
+    fn 真正詞彙宣告同時核對來源型別及寫入權限() {
+        let a = TypedDeclaration::new(DeclarationId(12), ScalarType::Int, true);
+        let shadow = TypedDeclaration::new(DeclarationId(30), ScalarType::Int, false);
+        let span = NodeSpan::new(80, 86);
+        let typed = a.use_at(span);
+        assert_eq!(typed.span, span);
+        assert!(a.owns(DeclarationId(12)));
+        assert!(a.matches_use(typed.resolved));
+        assert!(!shadow.matches_use(typed.resolved), "同名同型別也不等於同一宣告");
+        assert!(!a.matches_use(ResolvedUse::new(DeclarationId(12), ScalarType::Bool)),
+            "不能透過捏造已解析型別改變詞彙綁定");
+        assert!(a.mutable);
+        assert!(!shadow.mutable);
     }
 }
 
