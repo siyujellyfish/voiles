@@ -140,8 +140,13 @@ impl<'a> TypeChecker<'a> {
                     scopes.last_mut().unwrap().insert(b.name.clone(), b.ty);
                 }
                 StmtKind::Assignment { name, value } => {
-                    let declared = self.variable_type(name, stmt.start, scopes)
-                        .ok_or_else(|| self.error("賦值目標型別不可解析", stmt.start, stmt.end))?;
+                    // 正式 P09 已綁定賦值目標的宣告身分；不得在 P10 按同名
+                    // 字串自行挑選另一個遮蔽宣告。
+                    let declared = match self.resolved {
+                        Some(names) => names.assignment_type(stmt.start),
+                        None => self.variable_type(name, stmt.start, scopes),
+                    }.ok_or_else(|| self.error(
+                        "賦值目標型別不可解析", stmt.start, stmt.end))?;
                     let actual = self.expression(value, scopes)?;
                     self.require(actual.ty, declared, value, "賦值右值必須與宣告型別一致")?;
                     // const 再賦值與 var 初始化路徑由 P11 驗證。
@@ -287,6 +292,24 @@ mod tests {
         ] {
             assert_eq!(inspect(code).unwrap_err().kind, DiagnosticKind::Static);
         }
+    }
+
+    #[test]
+    fn 正式_p10_賦值目標型別直接由_p09_已解析身分提供() {
+        let code = "fn main()->int{\nvar item:int = 1\nif(true){\nvar item:bool = false\nitem = true\n}\nitem = 3\nreturn item\n}\n";
+        let source = source::Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let ast = parser::parse(&source, &lexed.tokens).unwrap();
+        let mut facts = names::resolve_with_facts(&ast, &source).unwrap();
+        let inner = code.find("item = true").unwrap();
+        let outer = code.find("item = 3").unwrap();
+        assert_eq!(facts.assignment_type(inner), Some(Type::Bool));
+        assert_eq!(facts.assignment_type(outer), Some(Type::Int));
+        assert!(check_with_names(&ast, &source, &facts).is_ok());
+        // 篡改後不退回依名稱猜測；對已驗證來源事實採缺失即拒絕。
+        facts.assignments.remove(&inner);
+        let err = check_with_names(&ast, &source, &facts).unwrap_err();
+        assert_eq!(err.message.as_ref(), "賦值目標型別不可解析");
     }
 
     #[test]

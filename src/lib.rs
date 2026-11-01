@@ -146,6 +146,9 @@ pub fn check_file(path: &Path) -> CheckResult {
 }
 
 #[cfg(test)]
+mod p16_r02_r03_baseline;
+
+#[cfg(test)]
 mod p13_private_boundary_tests {
     use super::*;
 

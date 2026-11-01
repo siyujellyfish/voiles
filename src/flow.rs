@@ -59,7 +59,8 @@ impl Analyzer<'_> {
             ExprKind::Name(name) => {
                 let var = state.lookup(name)
                     .filter(|candidate| self.resolved.is_none_or(|facts| {
-                        facts.references.get(&expr.start) == Some(&candidate.declaration_start)
+                        facts.reference(expr.start).map(|use_| use_.declaration)
+                            == Some(candidate.declaration_start)
                     }))
                     .ok_or_else(|| self.err(
                         "具名來源不存在可見宣告", expr.start, expr.end
@@ -111,8 +112,8 @@ impl Analyzer<'_> {
                     self.read(value, state)?;
                     let target = state.lookup(name)
                         .filter(|candidate| self.resolved.is_none_or(|facts| {
-                            facts.assignments.get(&statement.start)
-                                == Some(&candidate.declaration_start)
+                            facts.assignment(statement.start).map(|use_| use_.declaration)
+                                == Some(candidate.declaration_start)
                         }))
                         .ok_or_else(|| self.err(
                             "賦值目標沒有可見宣告", statement.start, statement.end
