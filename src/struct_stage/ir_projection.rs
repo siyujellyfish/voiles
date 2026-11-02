@@ -27,8 +27,8 @@ fn private_scalar_expression(term: &Term, text: &str)
         },
         // 既有私有 Parser 以 Construct(name, []) 表示 name() 的
         // 無位置引數形式，須先確定沒有同名結構才可投影一般函式呼叫。
-        TermKind::Call(name, args) if args.is_empty() =>
-            ScalarExpr::CallZero(name.clone()),
+        TermKind::Call(call) if call.arguments.is_empty() =>
+            ScalarExpr::CallZero(call.name.clone()),
         TermKind::Construct(name, args) if args.is_empty() =>
             ScalarExpr::CallZero(name.clone()),
         _ => return None,
