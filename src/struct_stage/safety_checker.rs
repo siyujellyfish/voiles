@@ -817,7 +817,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // 必須在移動改變來源狀態之前固定已解析型別及宣告。
                 let verified_type = self.checked_binding_use(binding, term)?
                     .resolved.ty.to_owned();
-                binding.value.move_whole().map_err(|err| self.model_error(err, term))?;
+                binding.move_whole().map_err(|err| self.model_error(err, term))?;
                 Ok((verified_type, true))
             }
             TermKind::FieldRead(owner, name) => {
@@ -1301,17 +1301,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let owner = Self::lookup_mut(vars, receiver)
                         .ok_or_else(|| self.error("欄位寫入接收者已失效", value))?;
                     if first_init {
-                        if owner.value.state() != ValueState::Uninitialized
-                            || !owner.pending_fields.as_ref()
-                                .is_some_and(|pending| pending.contains(field)) {
+                        if !owner.commit_first_field(field) {
                             return Err(self.error("欄位初始化來源身分已失效", value));
-                        }
-                        let pending = owner.pending_fields.as_mut()
-                            .expect("首次初始化必須有待完成欄位證明");
-                        pending.remove(field);
-                        if pending.is_empty() {
-                            owner.pending_fields = None;
-                            owner.value.mark_reinitialized();
                         }
                     } else {
                         owner.value.read().map_err(|err| self.model_error(err, value))?;
@@ -1367,8 +1358,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error("賦值型別錯誤或來源尚未完成初始化", value));
                     }
                     let destination = Self::lookup_mut(vars, name).expect("已確認來源");
-                    destination.value.mark_reinitialized();
-                    destination.pending_fields = None;
+                    destination.commit_rebind();
                     // 只在 RHS 型別、初始化與真正寫入全部成功後簽發
                     // P10 同一種類的 typed assignment 證據；不為非純值
                     // str/struct 資源覆寫假造 ScalarType 型別授權。

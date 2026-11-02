@@ -2906,3 +2906,56 @@ mod p16_6_r03_f08_f10_單一作用域安全狀態契約 {
         assert!(!original.same_safety_state(&no_loan));
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_f08_f09_綁定轉移原子契約 {
+    use super::*;
+
+    fn incomplete() -> Binding {
+        Binding {
+            declaration_start: DeclarationId(650),
+            ty: "Box".to_owned(),
+            mutable: true,
+            value: ValueSlot::uninitialized(CopyPermission::Forbidden),
+            pending_fields: Some(HashSet::from([
+                "first".to_owned(), "second".to_owned(),
+            ])),
+            loan: None,
+        }
+    }
+
+    #[test]
+    fn 部分初始化逐欄提交_最後一欄才變成可讀取() {
+        let mut value = incomplete();
+        let original = value.clone();
+        assert!(!value.commit_first_field("unknown"));
+        assert!(value.same_safety_state(&original),
+            "未宣告欄位不得部分提交");
+        assert!(value.commit_first_field("first"));
+        assert_eq!(value.value.state(), ValueState::Uninitialized);
+        assert_eq!(value.pending_fields,
+            Some(HashSet::from(["second".to_owned()])));
+        assert!(!value.commit_first_field("first"));
+        assert!(value.commit_first_field("second"));
+        assert_eq!(value.value.state(), ValueState::Available);
+        assert!(value.pending_fields.is_none());
+        assert!(!value.commit_first_field("first"));
+    }
+
+    #[test]
+    fn 移動拒絕不修改未初始化欄位_合法移動與重新綁定不可殘留局部責任() {
+        let mut partial = incomplete();
+        let before = partial.clone();
+        assert_eq!(partial.move_whole(), Err(ModelError::UninitializedRead));
+        assert!(partial.same_safety_state(&before));
+        partial.commit_rebind();
+        assert!(partial.pending_fields.is_none());
+        assert!(partial.move_whole().is_ok());
+        assert_eq!(partial.value.state(), ValueState::Moved);
+        assert!(partial.pending_fields.is_none());
+        assert_eq!(partial.move_whole(), Err(ModelError::MovedRead));
+        partial.commit_rebind();
+        assert_eq!(partial.value.state(), ValueState::Available);
+        assert!(partial.pending_fields.is_none());
+    }
+}
