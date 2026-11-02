@@ -265,13 +265,16 @@ impl Parser<'_> {
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.tok().start;
-        let kind = if self.keyword("var") || self.keyword("const") {
+        let head = crate::syntax_shared::statement_head(
+            self.tokens, self.cursor, crate::common_ir::FrontendMode::PrivateVerified,
+        );
+        let kind = if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare {
                 name: parsed.name, ty: parsed.ty, mutable: parsed.mutable,
                 init: parsed.initializer,
             }
-        } else if self.keyword("if") {
+        } else if head == Some(crate::syntax_shared::StatementHead::Conditional) {
             self.if_statement_kind()?
         } else if self.keyword("for") {
             self.cursor += 1;
@@ -304,7 +307,7 @@ impl Parser<'_> {
             self.take(')', "while 條件需要右括號")?;
             let body = self.body()?;
             StmtKind::While { condition, body }
-        } else if self.keyword("return") {
+        } else if head == Some(crate::syntax_shared::StatementHead::Return) {
             StmtKind::Return(crate::syntax_shared::parse_return(self)?)
         } else if self.keyword("break") {
             self.cursor += 1;
@@ -312,18 +315,19 @@ impl Parser<'_> {
         } else if self.keyword("continue") {
             self.cursor += 1;
             StmtKind::Continue
-        } else {
+        } else if matches!(
+            self.tokens.get(self.cursor + 1).map(|token| &token.kind),
+            Some(TokenKind::Symbol('.'))
+        ) {
             let name = self.name()?;
-            if self.symbol('.') {
-                self.cursor += 1;
-                let field = self.name()?;
-                self.take('=', "欄位賦值需要等號")?;
-                let value = self.term()?;
-                StmtKind::FieldAssign { receiver: name, field, value }
-            } else {
-                let value = crate::syntax_shared::parse_assignment(self)?;
-                StmtKind::Assign { name, value }
-            }
+            self.cursor += 1;
+            let field = self.name()?;
+            self.take('=', "欄位賦值需要等號")?;
+            let value = self.term()?;
+            StmtKind::FieldAssign { receiver: name, field, value }
+        } else {
+            let parsed = crate::syntax_shared::parse_named_assignment(self)?;
+            StmtKind::Assign { name: parsed.name, value: parsed.expression }
         };
         let end = self.tokens[self.cursor - 1].end;
         self.end_statement()?;
@@ -575,6 +579,10 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
     fn declaration_end(&self, _initializer: &Option<Term>) -> usize {
         self.tokens[self.cursor - 1].end
     }
+}
+
+impl crate::syntax_shared::NamedAssignmentSyntax for Parser<'_> {
+    fn named_assignment_name(&mut self) -> Result<String, Diagnostic> { self.name() }
 }
 
 impl crate::syntax_shared::AssignmentSyntax for Parser<'_> {
