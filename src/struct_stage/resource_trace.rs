@@ -619,9 +619,11 @@ fn trace_scope_struct_source(
     // *確實執行* 的作用域所取得 str 數量；未走到的 else 不得建帳。
     let count_planned=|stmt:&Stmt,stop:Option<&str>|->Result<usize,Diagnostic> {
         let (ty,args)=match &stmt.kind {
-            StmtKind::Declare {ty,init:Some(Term {
-                kind:TermKind::Construct(ctor,args),..
-            }),..} if ty==ctor => (ty.as_str(),args),
+            StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+                Some(Term {kind:TermKind::Construct(ctor,args),..})
+                    if &declaration.ty==ctor => (declaration.ty.as_str(),args),
+                _=>return Err(reject("P16：單層分支僅證明已核准結構建立")),
+            },
             _=>return Err(reject("P16：單層分支僅證明已核准結構建立")),
         };
         let def=structs.get(ty)
@@ -656,9 +658,12 @@ fn trace_scope_struct_source(
         stmt:&Stmt,fail_after:Option<&str>|
         ->Result<Result<(),StructRuntimeError>,Diagnostic> {
         let (name,ty,mutable,args)=match &stmt.kind {
-            StmtKind::Declare{name,ty,mutable,
-                init:Some(Term{kind:TermKind::Construct(ctor,args),..}),
-            } if ty==ctor=>(name.as_str(),ty.as_str(),*mutable,args),
+            StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+                Some(Term{kind:TermKind::Construct(ctor,args),..})
+                    if &declaration.ty==ctor =>
+                    (declaration.name.as_str(),declaration.ty.as_str(),declaration.mutable,args),
+                _=>return Err(reject("P16：區塊橋接僅執行明確結構建立")),
+            },
             _=>return Err(reject("P16：區塊橋接僅執行明確結構建立")),
         };
         if !declarations.matches(DeclarationId(stmt.start), ty, mutable) {
@@ -768,10 +773,12 @@ fn trace_persistent_struct_return_source(
         return Err(unsupported("P16：被呼叫函式僅接受一次建立與一次整筆返回"));
     };
     let (local,ty,named_args)=match &declaration.kind {
-        StmtKind::Declare {
-            name,ty,init:Some(Term {kind:TermKind::Construct(actual,args),..}), ..
-        } if ty==actual && ty==&callee.result_ty =>
-            (name.as_str(),ty.as_str(),args),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term {kind:TermKind::Construct(actual,args),..})
+                if &declaration.ty==actual && declaration.ty==callee.result_ty =>
+                (declaration.name.as_str(),declaration.ty.as_str(),args),
+            _=>return Err(unsupported("P16：被呼叫端須先建立具名結構持有者")),
+        },
         _=>return Err(unsupported("P16：被呼叫端須先建立具名結構持有者")),
     };
     if !matches!(&return_final.kind,StmtKind::Return(Term {
@@ -782,12 +789,11 @@ fn trace_persistent_struct_return_source(
     let [receive,main_return]=main.body.as_slice() else {
         return Err(unsupported("P16：main 須單次接收結構後直接返回"));
     };
-    if !matches!(&receive.kind,StmtKind::Declare {
-        name,ty:destination_type,init:Some(Term {
-            kind:TermKind::Construct(called,args),..
-        }),..
-    } if name==receiver && destination_type==ty
-        && called==provider && args.is_empty()) {
+    if !matches!(&receive.kind,StmtKind::Declare(declaration)
+        if declaration.name==receiver && declaration.ty==ty
+            && matches!(declaration.initializer.as_ref(),
+                Some(Term{kind:TermKind::Construct(called,args),..})
+                    if called==provider && args.is_empty())) {
         return Err(unsupported("P16：main 須以新結構宣告接收無參數函式結果"));
     }
     if !matches!(&main_return.kind,StmtKind::Return(Term {
@@ -888,17 +894,21 @@ fn trace_named_string_move_source(
         return Err(unsupported("P16：尚未證明此返回或其他控制流程的資源事件"));
     }
     let (owner, mutable, literal) = match &first.kind {
-        StmtKind::Declare {
-            name, ty, mutable, init: Some(literal),
-        } if ty == "str" && matches!(&literal.kind, TermKind::Literal("str")) =>
-            (name.as_str(), *mutable, literal),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(literal) if declaration.ty == "str"
+                && matches!(&literal.kind, TermKind::Literal("str")) =>
+                (declaration.name.as_str(),declaration.mutable,literal),
+            _=>return Err(unsupported("P16：第一個來源必須是獨立 str 常值持有者")),
+        },
         _ => return Err(unsupported("P16：第一個來源必須是獨立 str 常值持有者")),
     };
     let (target, from) = match &second.kind {
-        StmtKind::Declare {
-            name, ty, mutable: true,
-            init: Some(Term {kind: TermKind::Move(from), ..}),
-        } if ty == "str" => (name.as_str(), from.as_str()),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term {kind:TermKind::Move(from),..})
+                if declaration.ty=="str" && declaration.mutable =>
+                (declaration.name.as_str(),from.as_str()),
+            _=>return Err(unsupported("P16：第二個來源僅接受 var str 整筆移動")),
+        },
         _ => return Err(unsupported("P16：第二個來源僅接受 var str 整筆移動")),
     };
     if from != owner {
