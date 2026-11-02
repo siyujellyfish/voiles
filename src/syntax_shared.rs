@@ -270,6 +270,7 @@ pub(crate) fn statement_head(
 /// F03：公私皆必須透過本共同建構器依序讀取賦值名稱／=／RHS。
 /// 保留原 Name 與型別／初始化的專屬診斷。私有欄位賦值
 /// 仍先由 P13 確認 . 後綴並轉入原有欄位寫入規則。
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedNamedAssignment<E> {
     pub(crate) name: String,
     pub(crate) expression: E,

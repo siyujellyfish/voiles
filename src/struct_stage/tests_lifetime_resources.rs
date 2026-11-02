@@ -2441,10 +2441,10 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
         };
         for alternative in [
             None,
-            Some(vec![stmt(StmtKind::Assign {
+            Some(vec![stmt(StmtKind::Assign(crate::syntax_shared::ParsedNamedAssignment {
                 name: "second".to_owned(),
-                value: Term { kind: TermKind::Literal("int"), start: 20, end: 21 },
-            }, 19)]),
+                expression: Term { kind: TermKind::Literal("int"), start: 20, end: 21 },
+            }), 19)]),
         ] {
             let guarded = stmt(StmtKind::If {
                 branch: crate::common_ir::ConditionalBranch::new(

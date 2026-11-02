@@ -121,7 +121,9 @@ impl Analyzer<'_> {
             }
             match &statement.kind {
                 StmtKind::Binding(b) => self.bind(b, state)?,
-                StmtKind::Assignment { name, value } => {
+                StmtKind::Assignment(assignment) => {
+                    let name = &assignment.name;
+                    let value = &assignment.expression;
                     // 先依 AY02 驗證來源讀取，再處理目標初始化狀態。
                     self.read(value, state)?;
                     let target = state.lookup(name)

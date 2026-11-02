@@ -55,7 +55,7 @@ pub(crate) type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 #[derive(Debug, Clone)]
 pub(crate) enum StmtKind {
     Binding(Binding),
-    Assignment { name: String, value: Expr },
+    Assignment(crate::syntax_shared::ParsedNamedAssignment<Expr>),
     IfChain {
         branches: Vec<crate::common_ir::ConditionalBranch<Expr, Block>>,
         otherwise: Option<Block>,
@@ -192,7 +192,7 @@ impl<'a> Parser<'a> {
         } else if head == Some(crate::syntax_shared::StatementHead::Named) {
             let parsed = crate::syntax_shared::parse_named_assignment(self)?;
             let end = parsed.expression.end;
-            (StmtKind::Assignment { name: parsed.name, value: parsed.expression }, end)
+            (StmtKind::Assignment(parsed), end)
         } else {
             return Err(self.err("首版不接受的語句或未核准語法"));
         };

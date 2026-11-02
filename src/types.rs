@@ -159,7 +159,9 @@ impl<'a> TypeChecker<'a> {
                     scopes.last_mut().unwrap().insert(b.name.clone(),
                         TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable));
                 }
-                StmtKind::Assignment { name, value } => {
+                StmtKind::Assignment(assignment) => {
+                    let name = &assignment.name;
+                    let value = &assignment.expression;
                     // 正式 P09 已綁定賦值目標的宣告身分；不得在 P10 按同名
                     // 字串自行挑選另一個遮蔽宣告。
                     let declared = self.visible_declaration(name, stmt.start, scopes)
