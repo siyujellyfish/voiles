@@ -343,6 +343,11 @@ pub(crate) enum ScalarLiteral {
     Integer(String),
     Boolean(bool),
 }
+impl ScalarLiteral {
+    pub(crate) fn type_name(&self) -> &'static str {
+        match self { Self::Integer(_) => "int", Self::Boolean(_) => "bool" }
+    }
+}
 
 /// 不消耗 token 的共同字面值判讀，保留 UTF-8 原始位元組跨度。
 /// 私有 Parser 在實際消耗之前仍可執行已核准的 i64 溢位拒絕。

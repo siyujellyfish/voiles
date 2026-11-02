@@ -5,6 +5,11 @@ fn private_scalar_expression(term: &Term, text: &str)
     -> Option<crate::common_ir::ScalarExpr> {
     use crate::common_ir::ScalarExpr;
     match &term.kind {
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =>
+            ScalarExpr::Int(crate::syntax_shared::integer_i64(raw).ok()?),
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) =>
+            ScalarExpr::Bool(*value),
+        // 僅供既有測試手動建構的 AST；正式 Parser 皆使用 Scalar。
         TermKind::Literal("int") => ScalarExpr::Int(
             crate::syntax_shared::integer_i64(text.get(term.start..term.end)?).ok()?
         ),
