@@ -33,6 +33,12 @@ pub(crate) struct ParsedIfArm<E, B> {
     pub(crate) start: usize,
     pub(crate) branch: crate::common_ir::ConditionalBranch<E, B>,
 }
+/// 公私 Checker 只讀取共同分支的 condition/body，不自行改寫；
+/// 同時保留真正解析器產生的 if/else-if 每一分支原始來源 start。
+impl<E,B> std::ops::Deref for ParsedIfArm<E,B> {
+    type Target = crate::common_ir::ConditionalBranch<E,B>;
+    fn deref(&self) -> &Self::Target { &self.branch }
+}
 
 /// 不依賴任何特定 Parser 的完整已核准 if/else-if 鏈。
 #[derive(Debug, Clone)]
