@@ -352,7 +352,8 @@ mod r02_f03_公私正式函式_ast_同一泛型權威 {
         }.file().unwrap();
         assert!(structs.is_empty());
         let [main] = functions.as_slice() else {panic!("必須恰有一個函式");};
-        let _: &crate::syntax_shared::ParsedFunction<Vec<Parameter>, String, Vec<Stmt>> = main;
+        let _: &crate::syntax_shared::ParsedFunction<
+            Vec<Parameter>,String,crate::syntax_shared::ParsedBlock<Stmt>> = main;
         assert_eq!(main.name, "main");
         assert!(main.params.is_empty());
         assert_eq!(main.result_ty, "int");
