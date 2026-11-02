@@ -469,7 +469,7 @@ pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
         let Item::Function(fun) = item else { return None };
         Some(ScalarFunction {
             name: fun.name.clone(),
-            result_ty: fun.returns,
+            result_ty: fun.result_ty,
             body: public_statements(&fun.body.statements)?,
         })
     }).collect::<Option<Vec<_>>>()?;
