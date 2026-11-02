@@ -146,10 +146,11 @@ impl Analyzer<'_> {
                     self.read(value, state)?;
                     state.reachable = false;
                 }
-                StmtKind::IfChain { branches, otherwise } => {
+                StmtKind::IfChain(chain) => {
                     let entry = state.clone();
                     let mut exits = Vec::new();
-                    for arm in branches {
+                    for arm in &chain.arms {
+                        let arm = &arm.branch;
                         // 所有一般 bool 條件的具名來源都要先初始化。
                         self.read(&arm.condition, &entry)?;
                         if self.typed.is_some_and(|hir|
@@ -164,7 +165,7 @@ impl Analyzer<'_> {
                         self.block(&arm.body, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
                     }
-                    if let Some(body) = otherwise {
+                    if let Some(body) = &chain.otherwise {
                         let mut branch = entry.clone();
                         self.block(body, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
