@@ -106,8 +106,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         body.iter().any(|stmt| match &stmt.kind {
             StmtKind::Declare { init, .. } => init.as_ref()
                 .is_some_and(|t| Self::term_moves_name(t, name)),
-            StmtKind::Assign { value, .. } | StmtKind::FieldAssign { value, .. }
-                | StmtKind::Return(value) => Self::term_moves_name(value, name),
+            StmtKind::Assign(assignment) => Self::term_moves_name(&assignment.expression, name),
+            StmtKind::FieldAssign { value, .. } | StmtKind::Return(value) =>
+                Self::term_moves_name(value, name),
             StmtKind::If { branch, no } =>
                 Self::term_moves_name(&branch.condition, name)
                     || Self::statements_move_name(&branch.body, name)
@@ -354,7 +355,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 別名都是另一個實例；後續名稱不再代表舊票據。
                     visible.remove(name);
                 }
-                StmtKind::Assign { name, value } => {
+                StmtKind::Assign(assignment) => {
+                    let name = &assignment.name;
+                    let value = &assignment.expression;
                     Self::record_named_future_use(visible, used, name);
                     Self::scan_future_term_uses(value, visible, used);
                 }
@@ -1317,7 +1320,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         ));
                     }
                 }
-                StmtKind::Assign { name, value } => {
+                StmtKind::Assign(assignment) => {
+                    let name = &assignment.name;
+                    let value = &assignment.expression;
                     self.check_direct(vars, name, value)?;
                     let expected = Self::lookup(vars, name).ok_or_else(|| self.error(
                         "無法賦值給尚未宣告的名稱", value))?;
@@ -1729,8 +1734,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::Declare { init, .. } => {
                     if let Some(value) = init { self.reject_method_term(value)?; }
                 }
-                StmtKind::Assign { value, .. } | StmtKind::Return(value)
-                    | StmtKind::FieldAssign { value, .. } => {
+                StmtKind::Assign(assignment) => {
+                    self.reject_method_term(&assignment.expression)?;
+                }
+                StmtKind::Return(value) | StmtKind::FieldAssign { value, .. } => {
                     self.reject_method_term(value)?;
                 }
                 StmtKind::If { branch, no } => {
