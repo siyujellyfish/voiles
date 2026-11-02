@@ -115,7 +115,7 @@ struct Parser<'a> {
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
     active: bool,
@@ -135,6 +135,19 @@ struct Binding {
 }
 
 impl Binding {
+    /// F08／F10：所有 CFG 反向邊、break／continue 出口及單次 for
+    /// 分支合流都必須使用同一份來源安全狀態相等契約。除了原有
+    /// ValueSlot、待初始化欄位和借用有效期，也要驗證真正宣告
+    /// 身分、型別及 var/const 權限；不得讓局部比較產生不同權威。
+    fn same_safety_state(&self, other: &Self) -> bool {
+        self.declaration_start == other.declaration_start
+            && self.ty == other.ty
+            && self.mutable == other.mutable
+            && self.value == other.value
+            && self.pending_fields == other.pending_fields
+            && self.loan == other.loan
+    }
+
     /// 正式私有 Checker 的詞彙已解析宣告及受限型別，與 P09→P10/P11
     /// 共用同一 HIR 引用契約；實際所有權安全仍以本綁定的 ValueSlot/loan 為準。
     fn semantic_declaration(&self) -> crate::common_ir::TypedDeclaration<&str> {
