@@ -201,6 +201,69 @@ pub(crate) struct VerifiedScalarArithmetic {
     pub(crate) operator: char,
 }
 
+/// F04：以真正 Lexer 記號證明兩個已驗證運算元之間恰有一個
+/// 加減運算子。原本的 `contains` 會把註解內符號、額外記號
+/// 或多個運算子誤當成可交付的 Checker 證據。
+/// 換行及註解不產生運算子；是否允許換行仍由正式 Parser 裁決。
+fn source_has_verified_additive_operator(
+    source: &str, left: NodeSpan, right: NodeSpan, operator: char,
+) -> bool {
+    let Some(between) = source.get(left.end..right.start) else {
+        return false;
+    };
+    let lexed = crate::lexer::scan(
+        &crate::source::Source::new(between.as_bytes().to_vec())
+    );
+    if !lexed.diagnostics.is_empty() {
+        return false;
+    }
+    let mut meaningful = lexed.tokens.iter().filter(|token| !matches!(
+        &token.kind,
+        crate::lexer::TokenKind::Newline | crate::lexer::TokenKind::End
+    ));
+    matches!(
+        meaningful.next().map(|token| &token.kind),
+        Some(crate::lexer::TokenKind::Symbol(found)) if *found == operator
+    ) && meaningful.next().is_none()
+}
+
+/// 公私正式解析器的括號運算式可把原本的加減節點
+/// 來源跨度擴成整組括號；不能要求父節點一定恰好等於左右
+/// 運算元端點，但擴大的部分只能是對稱、正確配對的括號。
+fn source_has_verified_group_wrapper(
+    source: &str, parent: NodeSpan, left: NodeSpan, right: NodeSpan,
+) -> bool {
+    if parent.start == left.start && parent.end == right.end {
+        return true;
+    }
+    let Some(prefix) = source.get(parent.start..left.start) else {
+        return false;
+    };
+    let Some(suffix) = source.get(right.end..parent.end) else {
+        return false;
+    };
+    fn delimiter_count(text: &str, delimiter: char) -> Option<usize> {
+        let lexed = crate::lexer::scan(
+            &crate::source::Source::new(text.as_bytes().to_vec())
+        );
+        if !lexed.diagnostics.is_empty() {
+            return None;
+        }
+        let mut count = 0;
+        for token in lexed.tokens {
+            match token.kind {
+                crate::lexer::TokenKind::Symbol(ch) if ch == delimiter => count += 1,
+                crate::lexer::TokenKind::Newline | crate::lexer::TokenKind::End => (),
+                _ => return None,
+            }
+        }
+        Some(count)
+    }
+    let Some(opens) = delimiter_count(prefix, '(') else { return false };
+    let Some(closes) = delimiter_count(suffix, ')') else { return false };
+    opens > 0 && opens == closes
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedScalarHir {
     /// F01／F04：讀取與賦值由同一筆 NodeIdentity 索引表管理，
@@ -235,12 +298,14 @@ impl VerifiedScalarHir {
                 NodeIdentity::checked(fact.span, NodeRole::Expression, source).is_some()
                     && NodeIdentity::checked(fact.left, NodeRole::Expression, source).is_some()
                     && NodeIdentity::checked(fact.right, NodeRole::Expression, source).is_some()
-                    && fact.span.start <= fact.left.start
                     && fact.left.end <= fact.right.start
-                    && fact.right.end <= fact.span.end
+                    && source_has_verified_group_wrapper(
+                        source, fact.span, fact.left, fact.right,
+                    )
                     && matches!(fact.operator, '+' | '-')
-                    && source.get(fact.left.end..fact.right.start)
-                        .is_some_and(|between| between.contains(fact.operator))
+                    && source_has_verified_additive_operator(
+                        source, fact.left, fact.right, fact.operator,
+                    )
                     && [fact.span, fact.left, fact.right].into_iter().all(|span|
                         self.expression(span).is_some_and(|entry| entry.ty == ScalarType::Int))
             })
@@ -873,6 +938,90 @@ mod r02_f04_公私算術_hir_跨度操作與不可篡改契約 {
         missing.record_expression(span,ScalarType::Int);
         missing.record_arithmetic(VerifiedScalarArithmetic {span,left,right,operator:'+'});
         assert!(!missing.source_spans_are_valid(src));
+    }
+}
+
+#[cfg(test)]
+mod r02_f04_算術來源必須是唯一真實詞彙記號 {
+    use super::*;
+
+    fn proof(source: &str, left: NodeSpan, right: NodeSpan, operator: char) -> bool {
+        let parent = NodeSpan::new(left.start, right.end);
+        let mut hir = VerifiedScalarHir::default();
+        for span in [left, right, parent] {
+            hir.record_expression(span, ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span: parent, left, right, operator,
+        });
+        hir.source_spans_are_valid(source)
+    }
+
+    #[test]
+    fn 不得把多個運算子或額外數值誤認成單一加減() {
+        assert!(!proof(
+            "4 + - 5", NodeSpan::new(0, 1), NodeSpan::new(6, 7), '+',
+        ));
+        assert!(!proof(
+            "4 + 2 + 5", NodeSpan::new(0, 1), NodeSpan::new(8, 9), '+',
+        ));
+        assert!(!proof(
+            "4 123 + 5", NodeSpan::new(0, 1), NodeSpan::new(8, 9), '+',
+        ));
+    }
+
+    #[test]
+    fn 註解內的假運算符不得偽造_真實運算子仍可驗證() {
+        let text = "4 \"\"\"註解 + 記號\"\"\" - 5";
+        let right = NodeSpan::new(text.len() - 1, text.len());
+        let left = NodeSpan::new(0, 1);
+        assert!(!proof(text, left, right, '+'));
+        assert!(proof(text, left, right, '-'));
+    }
+
+    #[test]
+    fn 正式括號內換行與空白仍保留原有合法運算子() {
+        let text = "(4\n + 5)";
+        assert!(proof(text, NodeSpan::new(1, 2), NodeSpan::new(6, 7), '+'));
+    }
+
+    #[test]
+    fn 正式公私括號運算式可以延伸整個父節點_但必須成對() {
+        let code = "((4 + 5))";
+        let left = NodeSpan::new(2, 3);
+        let right = NodeSpan::new(6, 7);
+        let parent = NodeSpan::new(0, code.len());
+        let mut hir = VerifiedScalarHir::default();
+        for span in [left, right, parent] {
+            hir.record_expression(span, ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span: parent, left, right, operator: '+',
+        });
+        assert!(hir.source_spans_are_valid(code));
+        let fake = "((4 + 5) + 0)";
+        assert!(!source_has_verified_group_wrapper(
+            fake, NodeSpan::new(0, fake.len()), left, right,
+        ));
+        assert!(!source_has_verified_group_wrapper(
+            "(4 + 5))", NodeSpan::new(0, 8),
+            NodeSpan::new(1, 2), NodeSpan::new(5, 6),
+        ));
+    }
+
+    #[test]
+    fn 不可用更大父節點跨度偽裝原本的左右運算子() {
+        let text = "0 + 4 - 5";
+        let left = NodeSpan::new(4, 5);
+        let right = NodeSpan::new(8, 9);
+        let mut hir = VerifiedScalarHir::default();
+        for span in [left, right, NodeSpan::new(0, 9)] {
+            hir.record_expression(span, ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span: NodeSpan::new(0, 9), left, right, operator: '-',
+        });
+        assert!(!hir.source_spans_are_valid(text));
     }
 }
 
