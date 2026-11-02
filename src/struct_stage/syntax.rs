@@ -105,20 +105,21 @@ impl Parser<'_> {
 
     fn atom(&mut self) -> Result<Term, Diagnostic> {
         let start = self.tok().start;
+        // 與公開 ExprParser 共用真正節點產生及游標提交核心。
+        // 私有 i64 必須仍在解析期拒絕；保留此前使用的繁體中文語法診斷。
+        let invalid_integer = self.syntax("整數字面值無效或超出有號 64 位元範圍");
         let (kind, mut end) = if let Some(literal) =
-            crate::syntax_shared::peek_scalar_literal(self.tokens, self.cursor) {
-            let kind = match &literal.kind {
-                crate::syntax_shared::ScalarLiteral::Integer(text) => {
-                    if !Self::valid_integer(text) {
-                        return Err(self.syntax("整數字面值無效或超出有號 64 位元範圍"));
+            crate::syntax_shared::parse_scalar_atom(
+                self.tokens, &mut self.cursor, |atom| match atom {
+                    crate::syntax_shared::ScalarLiteral::Integer(text) => {
+                        if !Self::valid_integer(&text) { return Err(invalid_integer); }
+                        Ok(TermKind::Literal("int"))
                     }
-                    TermKind::Literal("int")
-                }
-                crate::syntax_shared::ScalarLiteral::Boolean(_) => TermKind::Literal("bool"),
-            };
-            // 完成私有安全驗證才消耗；保留非法 i64 的原始診斷 token。
-            self.cursor += 1;
-            (kind, literal.end)
+                    crate::syntax_shared::ScalarLiteral::Boolean(_) =>
+                        Ok(TermKind::Literal("bool")),
+                },
+            )? {
+            (literal.kind, literal.end)
         } else {
         match self.tok().kind.clone() {
             TokenKind::Decimal(ref text) => {
