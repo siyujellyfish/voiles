@@ -2276,7 +2276,7 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
             initializer: init, start, end: start + 1,
         }), start)
     }
-    fn read(name: &str) -> Stmt { stmt(StmtKind::Return(term(name)), 200) }
+    fn read(name: &str) -> Stmt { stmt(StmtKind::Return(crate::syntax_shared::ParsedReturn::new(term(name))), 200) }
     fn mentions(body: &[Stmt], visible: Option<DeclarationId>) -> bool {
         let mut initial = HashMap::new();
         if let Some(declaration) = visible {
@@ -2388,10 +2388,10 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
     fn read(name: &str, start: usize) -> Stmt {
         Stmt {
             start, end: start + name.len() + 8,
-            kind: StmtKind::Return(Term {
+            kind: StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
                 kind: TermKind::Name(name.to_owned()),
                 start: start + 7, end: start + 7 + name.len(),
-            }),
+            } }),
         }
     }
 
@@ -2491,9 +2491,9 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
     }
     fn result_statement(flow: FlowState, at: usize) -> Stmt {
         let kind = match flow {
-            FlowState::Returned => StmtKind::Return(Term {
+            FlowState::Returned => StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
                 kind: TermKind::Literal("int"), start: at, end: at + 1,
-            }),
+            } }),
             FlowState::Break => StmtKind::Break,
             FlowState::Continue => StmtKind::Continue,
             _ => panic!("只比較實際明確退出類別"),
