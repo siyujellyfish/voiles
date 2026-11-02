@@ -59,7 +59,7 @@ fn stmt(out: &mut Vec<NodeLocation>, source: &Source, s: &Stmt) {
     let name = match &s.kind {
         StmtKind::Binding(_) => "LocalBinding",
         StmtKind::Assignment(_) => "Assignment",
-        StmtKind::IfChain { .. } => "IfChain",
+        StmtKind::IfChain(_) => "IfChain",
         StmtKind::Return(_) => "Return",
     };
     record(out,source,name,s.start,s.end);
@@ -70,12 +70,12 @@ fn stmt(out: &mut Vec<NodeLocation>, source: &Source, s: &Stmt) {
         }
         StmtKind::Assignment(assignment) => expression(out,source,&assignment.expression),
         StmtKind::Return(value) => expression(out,source,value),
-        StmtKind::IfChain { branches, otherwise } => {
-            for arm in branches {
-                expression(out,source,&arm.condition);
-                block(out,source,&arm.body);
+        StmtKind::IfChain(chain) => {
+            for arm in &chain.arms {
+                expression(out,source,&arm.branch.condition);
+                block(out,source,&arm.branch.body);
             }
-            if let Some(body)=otherwise { block(out,source,body); }
+            if let Some(body)=&chain.otherwise { block(out,source,body); }
         }
     }
 }
