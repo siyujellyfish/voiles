@@ -37,11 +37,12 @@ fn trace_string_struct_source(
         return Err(unsupported("P16：返回及控制流程尚未接通資源追蹤"));
     }
     let (ty, mutable, args) = match &declaration.kind {
-        StmtKind::Declare {
-            name, ty, mutable, init: Some(Term {
-                kind: TermKind::Construct(owner, args), ..
-            }),
-        } if name == variable && ty == owner => (ty.as_str(), *mutable, args),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term { kind: TermKind::Construct(owner, args), .. })
+                if declaration.name == variable && &declaration.ty == owner =>
+                (declaration.ty.as_str(), declaration.mutable, args),
+            _ => return Err(unsupported("P16：不存在單次具名字串結構建立式")),
+        },
         _ => return Err(unsupported("P16：不存在單次具名字串結構建立式")),
     };
     // 這條最早的 P16 來源橋接也必須消費 Checker 實際完成的
@@ -121,16 +122,21 @@ fn trace_persistent_struct_move_source(
         return Err(reject("P16：非直接 return 0 的控制流程尚無資源執行證明"));
     }
     let (owner, struct_name, named_args)=match &declare.kind {
-        StmtKind::Declare {
-            name, ty, init:Some(Term {kind:TermKind::Construct(actual,args), ..}),
-            ..
-        } if ty==actual => (name.as_str(),ty.as_str(),args),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term {kind:TermKind::Construct(actual,args), ..})
+                if &declaration.ty==actual =>
+                (declaration.name.as_str(),declaration.ty.as_str(),args),
+            _=>return Err(reject("P16：第一語句須建立具名 str 欄位結構")),
+        },
         _=>return Err(reject("P16：第一語句須建立具名 str 欄位結構")),
     };
     let target=match &transfer.kind {
-        StmtKind::Declare {
-            name, ty, init:Some(Term {kind:TermKind::Move(source),..}), ..
-        } if ty==struct_name && source==owner => name.as_str(),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term {kind:TermKind::Move(source),..})
+                if declaration.ty==struct_name && source==owner =>
+                declaration.name.as_str(),
+            _=>return Err(reject("P16：第二語句須將剛建立的整個結構 .move() 至新持有者")),
+        },
         _=>return Err(reject("P16：第二語句須將剛建立的整個結構 .move() 至新持有者")),
     };
     // 先消費 Checker 真正通過所有權、借用及完整初始化證明後交付的
@@ -221,10 +227,11 @@ fn trace_string_return_source(
     let [declaration, final_return] = main.body.as_slice() else {
         return Err(unsupported("P16：呼叫端僅接受單次資源接收及直接返回"));
     };
-    let valid_receiver = matches!(&declaration.kind, StmtKind::Declare {
-        name, ty, mutable: true,
-        init: Some(Term {kind: TermKind::Construct(name_called, args), ..}),
-    } if name == receiver && ty == "str" && name_called == provider && args.is_empty());
+    let valid_receiver = matches!(&declaration.kind, StmtKind::Declare(declaration)
+        if declaration.name == receiver && declaration.ty == "str" && declaration.mutable
+            && matches!(declaration.initializer.as_ref(),
+                Some(Term {kind:TermKind::Construct(name_called,args),..})
+                    if name_called == provider && args.is_empty()));
     if !valid_receiver {
         return Err(unsupported("P16：呼叫端須以 var str 接收單次函式返回"));
     }
@@ -238,11 +245,14 @@ fn trace_string_return_source(
     let (content, named_return) = match called.body.as_slice() {
         [Stmt {kind: StmtKind::Return(term), ..}] =>
             (plain_literal(text, term), None),
-        [local @ Stmt {kind: StmtKind::Declare {
-            name, ty, init: Some(value), ..
-        }, ..}, Stmt {kind: StmtKind::Return(Term {
+        [local @ Stmt {kind: StmtKind::Declare(declaration), ..},
+         Stmt {kind: StmtKind::Return(Term {
             kind: TermKind::Move(returned_name), start: return_start, ..
-        }), ..}] if ty == "str" && name == returned_name => {
+        }), ..}] if declaration.ty == "str"
+            && declaration.name.as_str() == returned_name.as_str()
+            && declaration.initializer.is_some() => {
+            let value = declaration.initializer.as_ref()
+                .expect("已預檢具名返回有初始值");
             let from = DeclarationId(local.start);
             let to = DeclarationId(declaration.start);
             let verified = declarations.verified_named_return(from, *return_start, "str")
@@ -315,11 +325,12 @@ fn trace_persistent_struct_field_write_source(
         return Err(reject("P16：欄位資源清理僅證明直接 return 0"));
     }
     let (owner,ty,mutable,args)=match &declaration.kind {
-        StmtKind::Declare {
-            name,ty,mutable,init:Some(Term {
-                kind:TermKind::Construct(ctor,args),..
-            }),
-        } if ty==ctor =>(name.as_str(),ty.as_str(),*mutable,args),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term {kind:TermKind::Construct(ctor,args),..})
+                if &declaration.ty==ctor =>
+                (declaration.name.as_str(),declaration.ty.as_str(),declaration.mutable,args),
+            _=>return Err(reject("P16：來源須先宣告具名字串結構")),
+        },
         _=>return Err(reject("P16：來源須先宣告具名字串結構")),
     };
     let (field,new_value)=match &assignment.kind {
@@ -436,19 +447,23 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
         return Err(reject("P16：尚未證明非直接返回的清理順序"));
     }
     let (owner,ty,args)=match &declare.kind {
-        StmtKind::Declare {
-            name,ty,init:Some(Term {kind:TermKind::Construct(ctor,args),..}),..
-        } if ty==ctor=>(name.as_str(),ty.as_str(),args),
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
+            Some(Term {kind:TermKind::Construct(ctor,args),..})
+                if &declaration.ty==ctor =>
+                (declaration.name.as_str(),declaration.ty.as_str(),args),
+            _=>return Err(reject("P16：必須先建構混合結構")),
+        },
         _=>return Err(reject("P16：必須先建構混合結構")),
     };
     let (target,moved)=match &transfer.kind {
-        StmtKind::Declare {
-            name,ty:target_ty,init:Some(term),..
-        } if target_ty==ty=>match &term.kind {
-            TermKind::Move(source) if source==owner=>(name.as_str(),true),
-            TermKind::Name(source) if source==owner=>(name.as_str(),false),
-            _=>return Err(reject("P16：只支援整體結構來源的已核准複製或 .move()")),
-        },
+        StmtKind::Declare(declaration) if declaration.ty==ty =>
+            match declaration.initializer.as_ref().map(|term| &term.kind) {
+                Some(TermKind::Move(source)) if source==owner =>
+                    (declaration.name.as_str(),true),
+                Some(TermKind::Name(source)) if source==owner =>
+                    (declaration.name.as_str(),false),
+                _=>return Err(reject("P16：只支援整體結構來源的已核准複製或 .move()")),
+            },
         _=>return Err(reject("P16：第二語句必須建立同型別結構持有者")),
     };
     let source_id = DeclarationId(declare.start);
@@ -456,11 +471,11 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     // 多個純值欄位的複製仍由真正 Checker 的 Copyable 與型別
     // 安全結果決定，不能假造一筆非 Copyable 資源移交事件。
     let source_mutability = match &declare.kind {
-        StmtKind::Declare { mutable, .. } => *mutable,
+        StmtKind::Declare(declaration) => declaration.mutable,
         _ => unreachable!("已驗證具名建構"),
     };
     let target_mutability = match &transfer.kind {
-        StmtKind::Declare { mutable, .. } => *mutable,
+        StmtKind::Declare(declaration) => declaration.mutable,
         _ => unreachable!("已驗證具名接收"),
     };
     if !declarations.matches(source_id, ty, source_mutability)
@@ -785,7 +800,7 @@ fn trace_persistent_struct_return_source(
         _ => unreachable!("上方已驗證 return .move() 形狀"),
     };
     let target_mutable = match &receive.kind {
-        StmtKind::Declare { mutable, .. } => *mutable,
+        StmtKind::Declare(declaration) => declaration.mutable,
         _ => unreachable!("上方已驗證接收宣告"),
     };
     let from = DeclarationId(declaration.start);
