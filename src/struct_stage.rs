@@ -135,6 +135,37 @@ struct Binding {
 }
 
 impl Binding {
+    /// F08／F09：整筆 move 只能委託 ValueSlot 的合法狀態轉移。
+    /// 未完整建立的結構體不可移走；失敗不得修改 pending_fields
+    /// 或清除借用來源事實。此處只管理靜態詞彙綁定，不創造動態資源。
+    fn move_whole(&mut self) -> Result<(), ModelError> {
+        self.value.move_whole()?;
+        Ok(())
+    }
+
+    /// F09：已經在 Checker 預檢 RHS、目標 var 與資源覆寫限制後
+    /// 進行唯一的重新綁定提交；值恢復與局部欄位責任清除不可分離。
+    fn commit_rebind(&mut self) {
+        self.value.mark_reinitialized();
+        self.pending_fields = None;
+    }
+
+    /// F08／F09：欄位首次初始化只能移除既存的待完成欄位。
+    /// 先完整唯讀驗證再更動；最後一欄才讓整筆 ValueSlot 可讀。
+    /// 未經核准欄位／重複初始化必須維持原狀，不能半提交。
+    fn commit_first_field(&mut self, field: &str) -> bool {
+        if self.value.state() != ValueState::Uninitialized
+            || !self.pending_fields.as_ref()
+                .is_some_and(|pending| pending.contains(field)) {
+            return false;
+        }
+        let pending = self.pending_fields.as_mut()
+            .expect("已完成待初始化欄位預檢");
+        pending.remove(field);
+        if pending.is_empty() { self.commit_rebind(); }
+        true
+    }
+
     /// F08／F10：所有 CFG 反向邊、break／continue 出口及單次 for
     /// 分支合流都必須使用同一份來源安全狀態相等契約。除了原有
     /// ValueSlot、待初始化欄位和借用有效期，也要驗證真正宣告
