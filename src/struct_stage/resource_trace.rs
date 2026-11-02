@@ -22,7 +22,7 @@ fn trace_string_struct_source(
         }
         Some(content)
     }
-    let VerifiedPrivateSource { source: _, structs, functions: funcs, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
@@ -108,7 +108,7 @@ fn trace_persistent_struct_move_source(
         (!value.contains('\\') && !value.contains('\n')
             && !value.contains('\r')).then_some(value)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
@@ -211,7 +211,7 @@ fn trace_string_return_source(
         }
         Some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
@@ -302,7 +302,7 @@ fn trace_persistent_struct_field_write_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
@@ -423,7 +423,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
             _=>None,
         }
     }
-    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：缺少 main"))?;
@@ -568,7 +568,7 @@ fn trace_scope_struct_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
@@ -742,7 +742,7 @@ fn trace_persistent_struct_return_source(
         (!raw.contains('\\') && !raw.contains('\n')
             && !raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function| function.name=="main")
         .ok_or_else(||unsupported("P16：缺少有效 main"))?;
@@ -860,7 +860,7 @@ fn trace_named_string_move_source(
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, declarations, scalar_hir: _ } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _ } } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;
