@@ -118,12 +118,9 @@ impl Parser<'_> {
         let (kind, mut end) = if let Some(literal) =
             crate::syntax_shared::parse_scalar_atom(
                 self.tokens, &mut self.cursor, |atom| match atom {
-                    crate::syntax_shared::ScalarLiteral::Integer(text) => {
-                        if !Self::valid_integer(&text) { return Err(invalid_integer); }
-                        Ok(TermKind::Literal("int"))
-                    }
-                    crate::syntax_shared::ScalarLiteral::Boolean(_) =>
-                        Ok(TermKind::Literal("bool")),
+                    crate::syntax_shared::ScalarLiteral::Integer(ref text)
+                        if !Self::valid_integer(text) => Err(invalid_integer),
+                    atom => Ok(TermKind::Scalar(atom)),
                 },
             )? {
             (literal.kind, literal.end)
