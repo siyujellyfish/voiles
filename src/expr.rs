@@ -11,7 +11,7 @@ pub(crate) enum ExprKind {
     DecimalLiteral(String),
     StringLiteral(String),
     Name(String),
-    ZeroArgCall(String),
+    ZeroArgCall(crate::syntax_shared::ParsedNamedCall<()>),
     Add(crate::common_ir::ArithmeticNode<Expr>),
     Subtract(crate::common_ir::ArithmeticNode<Expr>),
     Group(Box<Expr>),
@@ -154,9 +154,10 @@ impl<'a> ExprParser<'a> {
             crate::syntax_shared::take_spanned_name(self.tokens, &mut self.cursor) {
             let kind = if self.symbol('(') {
                 self.next();
-                let (_, end) = crate::syntax_shared::parse_call(self)?;
+                let (call, end) =
+                    crate::syntax_shared::parse_named_call(self, name.kind)?;
                 return Ok(Expr {
-                    kind: ExprKind::ZeroArgCall(name.kind),
+                    kind: ExprKind::ZeroArgCall(call),
                     start: name.start, end,
                 });
             } else {
@@ -259,7 +260,7 @@ mod tests {
     fn 已核准零引數函式結果可作加法運算元() {
         let e = parse("helper() + 2");
         match e.kind {
-            ExprKind::Add(binary) => assert!(matches!(binary.left.kind, ExprKind::ZeroArgCall(ref n) if n=="helper")),
+            ExprKind::Add(binary) => assert!(matches!(binary.left.kind, ExprKind::ZeroArgCall(ref n) if n.name=="helper")),
             _ => panic!("缺少合法函式運算元"),
         }
     }
@@ -269,7 +270,7 @@ mod tests {
         let call = parse("helper()");
         assert_eq!(call.start, 0);
         assert_eq!(call.end, "helper()".len());
-        assert!(matches!(call.kind, ExprKind::ZeroArgCall(ref name) if name == "helper"));
+        assert!(matches!(call.kind, ExprKind::ZeroArgCall(ref call) if call.name == "helper"));
         let nested = parse("helper() + 2");
         assert!(matches!(nested.kind, ExprKind::Add(_)));
     }
@@ -336,5 +337,22 @@ mod tests {
         let lexer = scan(&source);
         let mut p = ExprParser::new(&source, &lexer.tokens, 0);
         assert!(p.expression().is_err());
+    }
+}
+
+#[cfg(test)]
+mod r02_f02_公私共同正式函式呼叫_ast_模型 {
+    use super::*;
+    #[test]
+    fn 公開呼叫直接保存真正共同解析器的空引數節點() {
+        let source = Source::new("helper()".as_bytes().to_vec());
+        let scanned = crate::lexer::scan(&source);
+        let mut parser = ExprParser::new(&source, &scanned.tokens, 0);
+        let expr = parser.expression().unwrap();
+        let ExprKind::ZeroArgCall(call) = &expr.kind else {panic!("呼叫 AST 不合法");};
+        let _: &crate::syntax_shared::ParsedNamedCall<()> = call;
+        assert_eq!(call.name, "helper");
+        assert_eq!(call.arguments, ());
+        assert_eq!((expr.start,expr.end),(0,8));
     }
 }

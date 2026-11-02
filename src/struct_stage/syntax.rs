@@ -180,8 +180,8 @@ impl Parser<'_> {
                         let end = self.tok().end; self.cursor += 1;
                         (TermKind::Construct(s, args), end)
                     } else {
-                        let (args, end) = crate::syntax_shared::parse_call(self)?;
-                        (TermKind::Call(s, args), end)
+                        let (call, end) = crate::syntax_shared::parse_named_call(self, s)?;
+                        (TermKind::Call(call), end)
                     }
                 } else if self.symbol('.') {
                     self.cursor += 1;

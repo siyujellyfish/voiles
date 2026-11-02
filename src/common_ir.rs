@@ -420,7 +420,7 @@ fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
                 right: Box::new(public_expression(&binary.right)?),
             },
         PublicExprKind::Group(inner) => return public_expression(inner),
-        PublicExprKind::ZeroArgCall(name) => ScalarExpr::CallZero(name.clone()),
+        PublicExprKind::ZeroArgCall(call) => ScalarExpr::CallZero(call.name.clone()),
         _ => return None,
     };
     Some(result)

@@ -49,8 +49,8 @@ impl<'a> Resolver<'a> {
                 self.facts.references.insert(e.start, declaration.declaration);
                 Ok(())
             }
-            ExprKind::ZeroArgCall(name) => {
-                if self.functions.contains_key(name) {
+            ExprKind::ZeroArgCall(call) => {
+                if self.functions.contains_key(&call.name) {
                     Ok(())
                 } else {
                     Err(self.error("找不到合法的無參數函式宣告", e.start, e.end))
