@@ -194,6 +194,7 @@ pub(crate) fn parse_return<P: ReturnSyntax>(
 }
 
 /// 公私 var/const 的唯一共同解析與初始化先後順序；型別與來源限制由入口決定。
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedDeclaration<T, E> {
     pub(crate) name: String,
     pub(crate) ty: T,
