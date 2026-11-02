@@ -469,13 +469,30 @@ impl VerifiedDeclarationFacts {
     }
 }
 
+/// F11：正式內部 Checker 唯一交付的**已驗證靜態安全計畫**。
+/// 以同一封閉物件承載來源身分／所有權移交／欄位寫入／真實呼叫借用
+/// 與 Typed HIR，供 P16 已核准受限橋接消耗；不是動態 ResourceId 或
+/// 一般 CFG 執行器，也不得由橋接自行用 AST 推斷持有者。
+struct VerifiedSafetyPlan {
+    declarations: VerifiedDeclarationFacts,
+    scalar_hir: crate::common_ir::VerifiedScalarHir,
+}
+
+impl VerifiedSafetyPlan {
+    /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
+    /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
+    fn is_consistent(&self, structs: &HashMap<String, StructDecl>, text: &str) -> bool {
+        self.declarations.evidence_is_consistent(structs, text)
+            && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
+    }
+}
+
 struct VerifiedPrivateSource {
     source: Source,
     structs: HashMap<String, StructDecl>,
     functions: Vec<Function>,
-    declarations: VerifiedDeclarationFacts,
-    /// 僅在整份私有 Checker 全部成功後交付的公私共同純值 HIR。
-    scalar_hir: crate::common_ir::VerifiedScalarHir,
+    /// 與真正通過驗證的完整原始來源一起封裝，不能獨立從 AST 重建。
+    plan: VerifiedSafetyPlan,
 }
 
 fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
@@ -527,16 +544,17 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
     // 只由真正 Checker 在每次已驗證的呼叫出口交付來源事實，
     // 不從任何 AST 呼叫外形或模擬資源事件逆向重建。
     declarations.call_borrows = checker.recorded_call_borrows.into_inner();
-    // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
-    if !declarations.evidence_is_consistent(&structs, text)
-        || !declarations.scalar_hir_is_consistent(&scalar_hir, text) {
+    // 雙帳簿與 P16 來源橋接只能拿到整份通過同一交叉驗證的計畫。
+    // 真正 Checker 的資訊由此單一所有權移入，不能傳遞獨立可換的兩本表。
+    let plan = VerifiedSafetyPlan { declarations, scalar_hir };
+    if !plan.is_consistent(&structs, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
             message: "P16：Checker 安全證據與宣告、型別 HIR 或資源權限不一致".into(),
             span: None,
         });
     }
-    Ok(VerifiedPrivateSource { source, structs, functions, declarations, scalar_hir })
+    Ok(VerifiedPrivateSource { source, structs, functions, plan })
 }
 
 #[cfg(test)]
