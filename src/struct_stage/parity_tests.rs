@@ -489,3 +489,44 @@ mod r02_f03_私有真正_if_分支直接保存共同來源身分 {
             "保持原 P13 巢狀 if 安全合流及資源證明");
     }
 }
+
+#[cfg(test)]
+mod r02_f02_真正公私_scalar_literal_ast_同一節點種類 {
+    use super::*;
+    use crate::{expr,parser};
+    #[test]
+    fn 公私真正_int_bool_ast_直接持有同一_scalar_literal_無第二次組樹() {
+        let code="fn main()->int{\nvar n:int = 0x2a\nif(true){\nreturn n\n}\nreturn 0\n}\n";
+        let source=Source::new(code.as_bytes().to_vec());
+        let tokens=lexer::scan(&source);
+        let public=parser::parse(&source,&tokens.tokens).unwrap();
+        let private=verified_private_source(code).unwrap();
+        let parser::Item::Function(pubfun)=&public.items[0]
+            else {panic!("公開函式應存在");};
+        let parser::StmtKind::Binding(pubdecl)=&pubfun.body[0].kind
+            else {panic!("公開 int 宣告必須由共同 AST 構成");};
+        let pubinit=pubdecl.initializer.as_ref().unwrap();
+        let StmtKind::Declare(privdecl)=&private.functions[0].body[0].kind
+            else {panic!("私有 int 宣告必須由共同 AST 構成");};
+        let privinit=privdecl.initializer.as_ref().unwrap();
+        let expr::ExprKind::Scalar(pubatom)=&pubinit.kind
+            else {panic!("公開 Parser 不能再建第二套 int 節點");};
+        let TermKind::Scalar(privatom)=&privinit.kind
+            else {panic!("私有 Parser 應直接產生共同 ScalarLiteral");};
+        assert_eq!(pubatom,privatom);
+        assert_eq!(pubinit.node_span(),privinit.node_span());
+        let parser::StmtKind::IfChain(chain)=&pubfun.body[1].kind
+            else {panic!("公開 if 必須由共同解析器構成");};
+        let TermKind::Scalar(private_bool)=&
+            (match &private.functions[0].body[1].kind {
+                StmtKind::If {branch,..} => &branch.condition,
+                _=>panic!("私有 if 必須由共同解析器構成")
+            }).kind else {panic!("私有 bool 應為 Scalar");};
+        let expr::ExprKind::Scalar(public_bool)=&chain.arms[0].branch.condition.kind
+            else {panic!("公開 bool 應為 Scalar");};
+        assert_eq!(public_bool,private_bool);
+        assert!(matches!(public_bool,crate::syntax_shared::ScalarLiteral::Boolean(true)));
+        assert!(crate::common_ir::NodeIdentity::checked(
+            pubinit.node_span(),crate::common_ir::NodeRole::Expression,code).is_some());
+    }
+}

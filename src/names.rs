@@ -66,7 +66,7 @@ impl<'a> Resolver<'a> {
             }
             ExprKind::Group(a) | ExprKind::ZeroArgMethod(a,_) =>
                 self.check_expr(a,scopes),
-            ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
+            ExprKind::Scalar(_) |
             ExprKind::DecimalLiteral(_) | ExprKind::StringLiteral(_) => Ok(()),
         }
     }

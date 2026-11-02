@@ -83,11 +83,13 @@ impl<'a> TypeChecker<'a> {
     fn expression(&self, expr: &Expr,
         scopes: &[HashMap<String, TypedDeclaration<Type>>]) -> Result<TypedValue, Diagnostic> {
         let value = match &expr.kind {
-            ExprKind::IntLiteral(text) => Ok(TypedValue {
-                ty: Type::Int,
-                integer: Some(self.integer(text, expr)?),
-            }),
-            ExprKind::BoolLiteral(_) => Ok(TypedValue::new(Type::Bool)),
+            ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(text)) =>
+                Ok(TypedValue {
+                    ty: Type::Int,
+                    integer: Some(self.integer(text, expr)?),
+                }),
+            ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(_)) =>
+                Ok(TypedValue::new(Type::Bool)),
             ExprKind::Name(name) => {
                 let ty = self.resolved_type(expr.node_span(), name, scopes)
                     .ok_or_else(|| self.error(

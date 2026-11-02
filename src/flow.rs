@@ -91,7 +91,7 @@ impl Analyzer<'_> {
                 self.read(a, state)?;
                 self.read(b, state)?;
             }
-            ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
+            ExprKind::Scalar(_) |
             ExprKind::ZeroArgCall(_) | ExprKind::DecimalLiteral(_) |
             ExprKind::StringLiteral(_) => {}
         }

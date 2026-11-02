@@ -22,8 +22,8 @@ fn record(out: &mut Vec<NodeLocation>, source: &Source,
 
 fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
     let name = match &expr.kind {
-        ExprKind::IntLiteral(_) => "IntLiteral",
-        ExprKind::BoolLiteral(_) => "BoolLiteral",
+        ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)) => "IntLiteral",
+        ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(_)) => "BoolLiteral",
         ExprKind::DecimalLiteral(_) => "DecimalLiteral",
         ExprKind::StringLiteral(_) => "StringLiteral",
         ExprKind::Name(_) => "NameRef",

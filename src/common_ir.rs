@@ -457,9 +457,10 @@ pub(crate) struct SharedAst {
 #[cfg(test)]
 fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
     let result = match &expr.kind {
-        PublicExprKind::IntLiteral(raw) =>
+        PublicExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =>
             ScalarExpr::Int(crate::syntax_shared::integer_i64(raw).ok()?),
-        PublicExprKind::BoolLiteral(value) => ScalarExpr::Bool(*value),
+        PublicExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) =>
+            ScalarExpr::Bool(*value),
         PublicExprKind::Name(value) => ScalarExpr::Name(value.clone()),
         PublicExprKind::Add(binary) | PublicExprKind::Subtract(binary) =>
             ScalarExpr::Binary {

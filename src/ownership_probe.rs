@@ -90,7 +90,7 @@ impl OwnershipPass<'_> {
                 binding.slot.move_whole().map_err(|e| self.model_error(e, expr))?;
                 Ok(())
             }
-            ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
+            ExprKind::Scalar(_) |
             ExprKind::ZeroArgCall(_) => Ok(()),
             ExprKind::Group(inner) => self.expression(inner, state),
             ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
