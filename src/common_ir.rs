@@ -422,6 +422,14 @@ pub(crate) fn arithmetic_operand_is_ready(
     initialized && ty == Some(ScalarType::Int)
 }
 
+/// F04：公開 P10／P11 與私有 P13 if／while／方法 if 單一純值條件裁決。
+/// 不得藉此開放 MVP-A while，亦不將私有 str／資源轉成 Copyable bool。
+pub(crate) fn boolean_condition_is_ready(
+    ty: Option<ScalarType>, initialized: bool,
+) -> bool {
+    initialized && ty == Some(ScalarType::Bool)
+}
+
 // parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
