@@ -77,7 +77,7 @@ enum StmtKind {
     /// D04 右端點不含的整數常值區間；P15 僅建構靜態借用證據。
     ForRange { iterator: String, iterator_start: usize,
         lower: String, upper: String, body: Vec<Stmt> },
-    Return(Term),
+    Return(crate::syntax_shared::ParsedReturn<Term>),
     /// 既有 for／while 的最內層控制轉移；無迴圈時必須拒絕。
     Break,
     Continue,

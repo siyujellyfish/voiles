@@ -31,9 +31,9 @@ fn trace_string_struct_source(
     let [declaration, trailing_return] = main.body.as_slice() else {
         return Err(unsupported("P16：來源追蹤只接受單次宣告接直接返回"));
     };
-    if !matches!(&trailing_return.kind, StmtKind::Return(Term {
+    if !matches!(&trailing_return.kind, StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)), start, end,
-    }) if text.get(*start..*end) == Some("0")) {
+    } }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：返回及控制流程尚未接通資源追蹤"));
     }
     let (ty, mutable, args) = match &declaration.kind {
@@ -116,9 +116,9 @@ fn trace_persistent_struct_move_source(
     let [declare, transfer, last]=main.body.as_slice() else {
         return Err(reject("P16：整筆結構來源只接受建構、移動、返回三語句"));
     };
-    if !matches!(&last.kind, StmtKind::Return(Term {
+    if !matches!(&last.kind, StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)), start, end,
-    }) if text.get(*start..*end)==Some("0")) {
+    } }) if text.get(*start..*end)==Some("0")) {
         return Err(reject("P16：非直接 return 0 的控制流程尚無資源執行證明"));
     }
     let (owner, struct_name, named_args)=match &declare.kind {
@@ -235,9 +235,9 @@ fn trace_string_return_source(
     if !valid_receiver {
         return Err(unsupported("P16：呼叫端須以 var str 接收單次函式返回"));
     }
-    if !matches!(&final_return.kind, StmtKind::Return(Term {
+    if !matches!(&final_return.kind, StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)), start, end,
-    }) if text.get(*start..*end) == Some("0")) {
+    } }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：呼叫端其他返回路徑尚未接通執行期"));
     }
     // 已驗證具名來源以真正宣告起點識別返回前後的唯一持有者。
@@ -246,9 +246,9 @@ fn trace_string_return_source(
         [Stmt {kind: StmtKind::Return(term), ..}] =>
             (plain_literal(text, term), None),
         [local @ Stmt {kind: StmtKind::Declare(local_declaration), ..},
-         Stmt {kind: StmtKind::Return(Term {
+         Stmt {kind: StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
             kind: TermKind::Move(returned_name), start: return_start, ..
-        }), ..}] if local_declaration.ty == "str"
+        } }), ..}] if local_declaration.ty == "str"
             && local_declaration.name.as_str() == returned_name.as_str()
             && local_declaration.initializer.is_some() => {
             let value = local_declaration.initializer.as_ref()
@@ -319,9 +319,9 @@ fn trace_persistent_struct_field_write_source(
     let [declaration,assignment,last]=main.body.as_slice() else {
         return Err(reject("P16：僅支援一次結構建構、欄位賦值與直接返回"));
     };
-    if !matches!(&last.kind,StmtKind::Return(Term {
+    if !matches!(&last.kind,StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind:TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)),start,end,
-    }) if text.get(*start..*end)==Some("0")) {
+    } }) if text.get(*start..*end)==Some("0")) {
         return Err(reject("P16：欄位資源清理僅證明直接 return 0"));
     }
     let (owner,ty,mutable,args)=match &declaration.kind {
@@ -441,9 +441,9 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     let [declare,transfer,end]=main.body.as_slice() else {
         return Err(reject("P16：混合結構執行路徑僅支援建構、整筆複製／移動、返回"));
     };
-    if !matches!(&end.kind,StmtKind::Return(Term {
+    if !matches!(&end.kind,StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind:TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)),start,end,
-    }) if text.get(*start..*end)==Some("0")) {
+    } }) if text.get(*start..*end)==Some("0")) {
         return Err(reject("P16：尚未證明非直接返回的清理順序"));
     }
     let (owner,ty,args)=match &declare.kind {
@@ -781,9 +781,9 @@ fn trace_persistent_struct_return_source(
         },
         _=>return Err(unsupported("P16：被呼叫端須先建立具名結構持有者")),
     };
-    if !matches!(&return_final.kind,StmtKind::Return(Term {
+    if !matches!(&return_final.kind,StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind:TermKind::Move(name),..
-    }) if name==local) {
+    } }) if name==local) {
         return Err(unsupported("P16：被呼叫端必須以具名整筆 .move() 返回結構"));
     }
     let [receive,main_return]=main.body.as_slice() else {
@@ -796,9 +796,9 @@ fn trace_persistent_struct_return_source(
                     if called==provider && args.is_empty())) {
         return Err(unsupported("P16：main 須以新結構宣告接收無參數函式結果"));
     }
-    if !matches!(&main_return.kind,StmtKind::Return(Term {
+    if !matches!(&main_return.kind,StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind:TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)),start,end,
-    }) if text.get(*start..*end)==Some("0")) {
+    } }) if text.get(*start..*end)==Some("0")) {
         return Err(unsupported("P16：main 的其他返回路徑尚未接通"));
     }
     let moved = match &return_final.kind {
@@ -888,9 +888,9 @@ fn trace_named_string_move_source(
     let [first, second, trailing_return] = main.body.as_slice() else {
         return Err(unsupported("P16：具名字串移動只接受連續建立、移動、返回"));
     };
-    if !matches!(&trailing_return.kind, StmtKind::Return(Term {
+    if !matches!(&trailing_return.kind, StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {
         kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)), start, end,
-    }) if text.get(*start..*end) == Some("0")) {
+    } }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：尚未證明此返回或其他控制流程的資源事件"));
     }
     let (owner, mutable, literal) = match &first.kind {

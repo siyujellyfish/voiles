@@ -195,6 +195,20 @@ pub(crate) fn parse_group<P: GroupSyntax>(
     Ok(P::group_result(parser, expression, start, end))
 }
 
+/// 公私正式返回 AST：保存共同 return 核心直接建構的唯一
+/// 運算式節點；公私語意差異與資源移交仍在原核准 Checker 驗證。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedReturn<E> {
+    pub(crate) expression: E,
+}
+impl<E> ParsedReturn<E> {
+    pub(crate) fn new(expression: E) -> Self { Self { expression } }
+}
+impl<E> std::ops::Deref for ParsedReturn<E> {
+    type Target = E;
+    fn deref(&self) -> &E { &self.expression }
+}
+
 /// 公私 return 由同一正式核心依序消耗關鍵字、解析運算式、檢查模式權限。
 pub(crate) trait ReturnSyntax {
     type Expression;
@@ -204,11 +218,11 @@ pub(crate) trait ReturnSyntax {
 }
 pub(crate) fn parse_return<P: ReturnSyntax>(
     parser: &mut P,
-) -> Result<P::Expression, crate::Diagnostic> {
+) -> Result<ParsedReturn<P::Expression>, crate::Diagnostic> {
     parser.begin_return()?;
     let expression = parser.return_expression()?;
     parser.validate_return(&expression)?;
-    Ok(expression)
+    Ok(ParsedReturn::new(expression))
 }
 
 /// 公私 var/const 的唯一共同解析與初始化先後順序；型別與來源限制由入口決定。

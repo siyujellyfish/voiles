@@ -109,8 +109,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             StmtKind::Declare(declaration) => declaration.initializer.as_ref()
                 .is_some_and(|t| Self::term_moves_name(t, name)),
             StmtKind::Assign(assignment) => Self::term_moves_name(&assignment.expression, name),
-            StmtKind::FieldAssign { value, .. } | StmtKind::Return(value) =>
+            StmtKind::FieldAssign { value, .. } =>
                 Self::term_moves_name(value, name),
+            StmtKind::Return(value) =>
+                Self::term_moves_name(&value.expression, name),
             StmtKind::If { branch, no } =>
                 Self::term_moves_name(&branch.condition, name)
                     || Self::statements_move_name(&branch.body, name)
@@ -1550,7 +1552,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 下一次條件檢查及迭代本體都屬未來可達路徑，
                     // 不能在本次迭代提早歸還還會被引用的外層別名。
                     let condition_read = Stmt {
-                        kind: StmtKind::Return(condition.clone()),
+                        kind: StmtKind::Return(
+                            crate::syntax_shared::ParsedReturn::new(condition.clone())),
                         start: condition.start,
                         end: condition.end,
                     };
@@ -1774,7 +1777,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::Assign(assignment) => {
                     self.reject_method_term(&assignment.expression)?;
                 }
-                StmtKind::Return(value) | StmtKind::FieldAssign { value, .. } => {
+                StmtKind::Return(value) => {
+                    self.reject_method_term(&value.expression)?;
+                }
+                StmtKind::FieldAssign { value, .. } => {
                     self.reject_method_term(value)?;
                 }
                 StmtKind::If { branch, no } => {
