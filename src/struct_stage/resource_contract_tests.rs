@@ -384,12 +384,11 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             panic!("只接受已驗證三個語句的直線結構");
         };
         let (source_name, target_name) = match (&first.kind, &second.kind) {
-            (
-                StmtKind::Declare { name: source_name, .. },
-                StmtKind::Declare { name: target_name, init: Some(Term {
-                    kind: TermKind::Move(moved), ..
-                }), .. },
-            ) if source_name == moved => (source_name, target_name),
+            (StmtKind::Declare(source), StmtKind::Declare(target))
+                if matches!(target.initializer.as_ref(),
+                    Some(Term {kind:TermKind::Move(moved),..})
+                        if &source.name == moved) =>
+                (&source.name, &target.name),
             _ => panic!("未取得真正來源中的具名整筆資源移交"),
         };
         assert_eq!(source_name, "owner");
