@@ -155,16 +155,17 @@ impl OwnershipPass<'_> {
                     self.expression(expr, state)?;
                     state.reachable = false;
                 }
-                StmtKind::IfChain { branches, otherwise } => {
+                StmtKind::IfChain(chain) => {
                     let entry = state.clone();
                     let mut exits = Vec::new();
-                    for arm in branches {
+                    for arm in &chain.arms {
+                        let arm = &arm.branch;
                         let mut branch = entry.clone();
                         self.expression(&arm.condition, &mut branch)?;
                         self.block(&arm.body, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
                     }
-                    if let Some(other) = otherwise {
+                    if let Some(other) = &chain.otherwise {
                         let mut branch = entry.clone();
                         self.block(other, &mut branch)?;
                         if branch.reachable { exits.push(branch); }
