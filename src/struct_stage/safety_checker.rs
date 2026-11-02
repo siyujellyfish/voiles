@@ -254,7 +254,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
-            TermKind::Literal(_) => false,
+            TermKind::Scalar(_) | TermKind::Literal(_) => false,
         }
     }
 
@@ -298,7 +298,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_future_term_uses(&binary.left, visible, used);
                 Self::scan_future_term_uses(&binary.right, visible, used);
             }
-            TermKind::Literal(_) => {}
+            TermKind::Scalar(_) | TermKind::Literal(_) => {}
         }
     }
 
@@ -467,6 +467,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn method_pure_value_type(&self, owner: &str, method: &Function, term: &Term)
         -> Result<String, Diagnostic> {
         match &term.kind {
+            TermKind::Scalar(atom) => Ok(atom.type_name().to_owned()),
             TermKind::Literal(ty) => Ok((*ty).to_string()),
             TermKind::Name(name) if name == "self" =>
                 Err(self.error("S15：方法不可回傳整個 self，涉及其他借用與消耗", term)),
@@ -698,7 +699,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 再查核接收者仍有效。仍禁止未完成的再借用／巢狀呼叫資源副作用。
     fn method_argument_safe_before_borrow(term: &Term) -> bool {
         match &term.kind {
-            TermKind::Literal(_) | TermKind::Name(_) | TermKind::Move(_)
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_) | TermKind::Move(_)
                 | TermKind::FieldRead(_, _) => true,
             TermKind::BinaryInt(binary) =>
                 Self::method_argument_safe_before_borrow(&binary.left)
@@ -734,7 +735,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn while_condition_nonconsuming(term: &Term) -> bool {
         match &term.kind {
-            TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
             TermKind::BinaryInt(binary) =>
                 Self::while_condition_nonconsuming(&binary.left)
                     && Self::while_condition_nonconsuming(&binary.right),
@@ -759,6 +760,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn evaluate_inner(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
+            TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
             TermKind::BinaryInt(binary) => {
                 let left = &binary.left;
