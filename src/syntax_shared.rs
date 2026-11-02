@@ -81,6 +81,7 @@ pub(crate) fn parse_if_chain<P: IfSyntax>(
 }
 
 /// 正式函式簽章及本體的共同產物；各入口仍保留專屬參數、回傳型別與 body AST。
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedFunction<P, R, B> {
     pub(crate) name: String,
     pub(crate) params: P,
@@ -124,6 +125,7 @@ pub(crate) fn parse_function_decl<P: FunctionSyntax>(
 }
 
 /// 兩套正式 Parser 的區塊解析結果，保留原始來源起訖位置。
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedBlock<S> {
     pub(crate) statements: Vec<S>,
     pub(crate) start: usize,
