@@ -94,8 +94,8 @@ impl<'a> TypeChecker<'a> {
                     "無法解析具名來源型別", expr.start, expr.end))?;
                 Ok(TypedValue::new(ty))
             }
-            ExprKind::ZeroArgCall(name) => {
-                let ty = *self.functions.get(name)
+            ExprKind::ZeroArgCall(call) => {
+                let ty = *self.functions.get(&call.name)
                     .ok_or_else(|| self.error("無法解析無參數函式結果型別", expr.start, expr.end))?;
                 // 不試算遞迴／函式回傳的靜態值。
                 Ok(TypedValue::new(ty))
