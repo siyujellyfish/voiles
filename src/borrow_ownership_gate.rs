@@ -143,6 +143,15 @@ impl BorrowOwnershipGate {
         -> Result<(), GateError> {
         self.loans.finish_scope(tickets).map_err(GateError::Borrow)
     }
+
+    /// F06／F09：同一 tracker 同時查核已解析借用集合與**完整**
+    /// 歸還票據批次，避免上層分開查快照後只釋放部分票據。
+    pub(crate) fn finish_method_scope_verified(
+        &mut self, tickets: &[BorrowTicket], facts: &[BorrowFact],
+    ) -> Result<(), GateError> {
+        self.loans.finish_scope_verified(tickets, facts)
+            .map_err(GateError::Borrow)
+    }
 }
 
 #[cfg(test)]
