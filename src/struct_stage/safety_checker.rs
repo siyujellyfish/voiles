@@ -547,11 +547,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let right = &binary.right;
                 let operator = &binary.operator;
                 let left_ty = self.method_pure_value_type(owner, method, left)?;
-                if left_ty != "int" {
+                // 方法專用安全 Checker 和一般 Checker 使用 F04 同一份
+                // 已核准 int/初始化判定，方法 Copyable/self/逃逸規則仍
+                // 已先由 method_pure_value_type 獨立完成。
+                if !crate::common_ir::arithmetic_operand_is_ready(
+                    crate::common_ir::ScalarType::from_name(&left_ty), true,
+                ) {
                     return Err(self.error("方法整數加減左運算元必須為 int", left));
                 }
                 let right_ty = self.method_pure_value_type(owner, method, right)?;
-                if right_ty != "int" {
+                if !crate::common_ir::arithmetic_operand_is_ready(
+                    crate::common_ir::ScalarType::from_name(&right_ty), true,
+                ) {
                     return Err(self.error("方法整數加減右運算元必須為 int", right));
                 }
                 debug_assert!(*operator == '+' || *operator == '-');
