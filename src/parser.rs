@@ -116,14 +116,14 @@ impl<'a> Parser<'a> {
     }
     fn is_initial_value(&self, expr: &Expr) -> bool {
         matches!(expr.kind,
-            ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) | ExprKind::Name(_)
+            ExprKind::Scalar(_) | ExprKind::Name(_)
         ) || (self.allow_probe_move && matches!(&expr.kind,
             ExprKind::ZeroArgMethod(inner, method)
                 if method == "move" && matches!(inner.kind, ExprKind::Name(_))))
     }
     fn first_version_return(&self, expr: &Expr) -> bool {
         match &expr.kind {
-            ExprKind::IntLiteral(_) | ExprKind::BoolLiteral(_) |
+            ExprKind::Scalar(_) |
             ExprKind::Name(_) | ExprKind::ZeroArgCall(_) => true,
             ExprKind::Group(x) => self.first_version_return(x),
             ExprKind::Add(binary) | ExprKind::Subtract(binary) =>
@@ -144,7 +144,7 @@ impl<'a> Parser<'a> {
     fn condition(&mut self) -> Result<Expr, Diagnostic> {
         self.expect_symbol('(', "if 與 else if 條件須有完整圓括號")?;
         let value = self.expression()?;
-        if !matches!(&value.kind, ExprKind::BoolLiteral(_) | ExprKind::Name(_)) {
+        if !matches!(&value.kind, ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(_)) | ExprKind::Name(_)) {
             return Err(self.err("首版一般條件限 bool 常值或已綁定 bool 名稱"));
         }
         self.expect_symbol(')', "if 與 else if 條件缺少右圓括號")?;
