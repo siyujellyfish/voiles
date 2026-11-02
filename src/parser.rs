@@ -48,7 +48,7 @@ pub(crate) enum StmtKind {
     Assignment(crate::syntax_shared::ParsedNamedAssignment<Expr>),
     /// F03：公開正式 AST 直接持有共用 if/else-if Parser 的完整結果。
     IfChain(crate::syntax_shared::ParsedIfChain<Expr, Block>),
-    Return(Expr),
+    Return(crate::syntax_shared::ParsedReturn<Expr>),
 }
 
 struct Parser<'a> {
