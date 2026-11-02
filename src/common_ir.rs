@@ -4,7 +4,9 @@
 // R02.2 此刻只由私有／公開差異回歸消耗；正式 Checker 遷移前，避免非測試編譯死碼警告。
 #![allow(dead_code)]
 
+#[cfg(test)]
 use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
+#[cfg(test)]
 use crate::parser::{self, Item, StmtKind as PublicStmtKind};
 use crate::ownership_ledger::DeclarationId;
 
@@ -366,6 +368,7 @@ impl ScalarType {
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum ScalarExpr {
     Int(i64),
     Bool(bool),
@@ -375,6 +378,7 @@ pub(crate) enum ScalarExpr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) enum ScalarStmt {
     Declare {
         declaration: DeclarationId,
@@ -389,6 +393,7 @@ pub(crate) enum ScalarStmt {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct ScalarFunction {
     pub(crate) name: String,
     pub(crate) result_ty: ScalarType,
@@ -396,10 +401,12 @@ pub(crate) struct ScalarFunction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[cfg(test)]
 pub(crate) struct SharedAst {
     pub(crate) functions: Vec<ScalarFunction>,
 }
 
+#[cfg(test)]
 fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
     let result = match &expr.kind {
         PublicExprKind::IntLiteral(raw) =>
@@ -419,6 +426,7 @@ fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
     Some(result)
 }
 
+#[cfg(test)]
 fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
     stmts.iter().map(|statement| {
         let value = match &statement.kind {
@@ -454,6 +462,7 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
 }
 
 /// 僅供已驗證 P01 MVP-A 的 AST 做無副作用投影；未支援者回傳 None。
+#[cfg(test)]
 pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
     let functions = file.items.iter().map(|item| {
         let Item::Function(fun) = item else { return None };
@@ -468,6 +477,7 @@ pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
 
 // 外層 Option 表示投影成功／失敗；內層 Option 才表示語法原本不存在。
 // 不可把缺少 initializer 或缺少 else 誤當成「無法投影」。
+#[cfg(test)]
 fn map_optional<T, U>(
     source: Option<&T>, project: impl FnOnce(&T) -> Option<U>,
 ) -> Option<Option<U>> {
