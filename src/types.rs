@@ -122,6 +122,15 @@ impl<'a> TypeChecker<'a> {
                     }
                     _ => None,
                 };
+                if self.resolved.is_some() {
+                    self.verified_hir.borrow_mut().record_arithmetic(
+                        crate::common_ir::VerifiedScalarArithmetic {
+                            span: expr.node_span(),
+                            left: binary.left.node_span(),
+                            right: binary.right.node_span(),
+                            operator: binary.operator,
+                        });
+                }
                 Ok(TypedValue { ty: Type::Int, integer: known })
             }
             // P06 曾為完整語言的後續功能辨識形狀；
