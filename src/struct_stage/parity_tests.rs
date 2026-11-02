@@ -557,3 +557,25 @@ mod r02_f04_真正公私算術型別錯誤仍保持各自核准診斷 {
         }
     }
 }
+
+#[cfg(test)]
+mod r02_f04_公私共同_bool_checker_真實條件回歸 {
+    use super::*;
+    use crate::{names,parser,types,flow};
+    #[test]
+    fn 真實_if_合法來源保持一致_整數條件保留原拒絕() {
+        let valid="fn main()->int{\nvar flag:bool = true\nif(flag){\nreturn 1\n}\nreturn 0\n}\n";
+        let source=Source::new(valid.as_bytes().to_vec());
+        let scanned=lexer::scan(&source);
+        let file=parser::parse(&source,&scanned.tokens).unwrap();
+        let facts=names::resolve_with_facts(&file,&source).unwrap();
+        let hir=types::check_with_names_and_hir(&file,&source,&facts).unwrap();
+        assert!(flow::check_with_typed_hir(&file,&source,&facts,&hir).is_ok());
+        assert!(verified_private_source(valid).is_ok());
+        let invalid=valid.replace("if(flag)","if(1)");
+        let source=Source::new(invalid.as_bytes().to_vec());
+        let scanned=lexer::scan(&source);
+        assert!(parser::parse(&source,&scanned.tokens).is_err());
+        assert!(verified_private_source(&invalid).is_err());
+    }
+}
