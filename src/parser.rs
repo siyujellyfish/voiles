@@ -451,13 +451,13 @@ mod tests {
         let code = "const item:int = 0x2a\nfn main()->int{\nvar alias:int = item\nreturn alias\n}\n";
         let parsed = parse_text(code).unwrap();
         let Item::Binding(top) = &parsed.items[0] else {panic!("缺少頂層 const");};
-        let _: &crate::syntax_shared::ParsedDeclaration<Type, Expr> = top;
+        let _: &crate::syntax_shared::ParsedDeclaration<super::Type, super::Expr> = top;
         let Item::Function(main) = &parsed.items[1] else {panic!("缺少函式");};
         let StmtKind::Binding(inner) = &main.body.statements[0].kind
             else {panic!("缺少 var");};
-        let _: &crate::syntax_shared::ParsedDeclaration<Type, Expr> = inner;
+        let _: &crate::syntax_shared::ParsedDeclaration<super::Type, super::Expr> = inner;
         assert_eq!(top.name, "item");
-        assert_eq!(top.ty, Type::Int);
+        assert_eq!(top.ty, super::Type::Int);
         assert!(!top.mutable);
         assert_eq!(top.start, 0);
         assert_eq!(inner.name, "alias");
