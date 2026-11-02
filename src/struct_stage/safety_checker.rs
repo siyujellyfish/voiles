@@ -357,13 +357,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     Self::scan_future_term_uses(condition, visible, used);
                     Self::scan_future_block_uses(body, &mut visible.clone(), used);
                 }
-                StmtKind::ForRange { iterator, iterator_start, body, .. } => {
-                    let mut nested = visible.clone();
-                    let _ = iterator_start;
-                    // for 迭代器不是進入此後繼掃描前已存在的借用實例，
-                    // 即使重用相同 AST DeclarationId 也不得替舊別名續命。
-                    nested.remove(iterator);
-                    Self::scan_future_block_uses(body, &mut nested, used);
+                StmtKind::ForRange { iterator, lower, upper, body, .. } => {
+                    // 與正式 for 檢查共用「確定零次執行」的 CFG 判準；
+                    // 不可將永遠不可達本體中的名稱誤算成實際最後使用點。
+                    // 其餘未知範圍仍保守掃描，不能憑推測提早歸還借用。
+                    if Self::known_range_iterations(lower, upper) != Some(0) {
+                        let mut nested = visible.clone();
+                        // 迭代器屬於新實例，不得替入口舊別名延長票據。
+                        nested.remove(iterator);
+                        Self::scan_future_block_uses(body, &mut nested, used);
+                    }
                 }
                 StmtKind::Return(term) =>
                     Self::scan_future_term_uses(term, visible, used),
