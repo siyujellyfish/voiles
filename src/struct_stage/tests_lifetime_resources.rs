@@ -2271,9 +2271,10 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         Stmt { kind, start, end: start + 1 }
     }
     fn declare(name: &str, start: usize, init: Option<Term>) -> Stmt {
-        stmt(StmtKind::Declare {
-            name: name.to_owned(), ty: "int".into(), mutable: true, init,
-        }, start)
+        stmt(StmtKind::Declare(crate::syntax_shared::ParsedDeclaration {
+            name: name.to_owned(), ty: "int".into(), mutable: true,
+            initializer: init, start, end: start + 1,
+        }), start)
     }
     fn read(name: &str) -> Stmt { stmt(StmtKind::Return(term(name)), 200) }
     fn mentions(body: &[Stmt], visible: Option<DeclarationId>) -> bool {
