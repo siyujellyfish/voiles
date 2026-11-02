@@ -319,7 +319,8 @@ mod r02_f02_私有_parser_完整共通純值_ast {
         assert!(scanned.diagnostics.is_empty());
         let (_, funcs) = Parser { source:&source, tokens:&scanned.tokens, cursor:0 }.file().unwrap();
         let init = match &funcs[0].body[0].kind {
-            StmtKind::Declare {init:Some(expr),..} => expr,
+            StmtKind::Declare(declaration) => declaration.initializer.as_ref()
+                .expect("必須有真正的整數初始值"),
             _ => panic!("應有已核准整數宣告"),
         };
         assert!(matches!(&init.kind,
