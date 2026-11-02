@@ -210,9 +210,9 @@ pub(crate) struct VerifiedScalarHir {
         (NodeRole, usize), (NodeIdentity, TypedUse<ScalarType>)
     >,
     expressions: std::collections::BTreeMap<NodeIdentity, VerifiedScalarExpression>,
-    /// 同一來源起點不得記錄兩筆不同終點／運算元／運算子；
-    /// 與共通 Typed HIR 一起交付，拒絕事後由 AST 逆推合法加減。
-    arithmetic: std::collections::BTreeMap<usize, VerifiedScalarArithmetic>,
+    /// 來源完整跨度為身份：左結合 A+B+C 的內外節點可具有同
+    /// 起點、不同終點；同一完整跨度不能記錄相互矛盾的運算證據。
+    arithmetic: std::collections::BTreeMap<NodeIdentity, VerifiedScalarArithmetic>,
     conflicted: bool,
 }
 impl VerifiedScalarHir {
@@ -249,10 +249,11 @@ impl VerifiedScalarHir {
     /// 已有來源跨度／左右值型別／副作用完成檢查後才記錄。
     /// 同起點不同加減事實永久矛盾，不准後來的合法重訪洗掉。
     pub(crate) fn record_arithmetic(&mut self, fact: VerifiedScalarArithmetic) {
-        if let Some(previous) = self.arithmetic.get(&fact.span.start) {
+        let key = NodeIdentity { span: fact.span, role: NodeRole::Expression };
+        if let Some(previous) = self.arithmetic.get(&key) {
             if *previous != fact { self.conflicted = true; }
         } else {
-            self.arithmetic.insert(fact.span.start, fact);
+            self.arithmetic.insert(key, fact);
         }
     }
 
@@ -262,7 +263,9 @@ impl VerifiedScalarHir {
     }
 
     pub(crate) fn arithmetic(&self, span: NodeSpan) -> Option<VerifiedScalarArithmetic> {
-        self.arithmetic.get(&span.start).copied().filter(|fact| fact.span == span)
+        self.arithmetic.get(&NodeIdentity {
+            span, role: NodeRole::Expression,
+        }).copied()
     }
 
     pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
@@ -811,6 +814,28 @@ mod r02_f04_公私算術_hir_跨度操作與不可篡改契約 {
         assert!(!hir.is_consistent());
         assert_eq!(hir.arithmetic(parent),Some(fact));
     }
+    #[test]
+    fn 左結合多層運算同起點不同終點應共存而不能假報衝突() {
+        let src="8 - 3 - 1";
+        let left=NodeSpan::new(0,1);
+        let inner_right=NodeSpan::new(4,5);
+        let inner=NodeSpan::new(0,5);
+        let outer_right=NodeSpan::new(8,9);
+        let outer=NodeSpan::new(0,9);
+        let mut hir=VerifiedScalarHir::default();
+        for span in [left,inner_right,inner,outer_right,outer] {
+            hir.record_expression(span,ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span:inner,left,right:inner_right,operator:'-',
+        });
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span:outer,left:inner,right:outer_right,operator:'-',
+        });
+        assert_eq!(hir.verified_arithmetic().count(),2);
+        assert!(hir.source_spans_are_valid(src));
+    }
+
     #[test]
     fn 來源不存在的運算子_或不同型別子節點必須拒絕() {
         let src="4 + 5";
