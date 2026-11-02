@@ -847,8 +847,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let receiver_source = Self::lookup(vars, receiver)
                     .ok_or_else(|| self.error("找不到方法接收者來源", term))?
                     .declaration_start;
+                // self 與預設借用參數在同一次方法呼叫必須共享
+                // 一個真實 tracker，靜態身分由 Checker 詞彙 HIR 產生。
                 let mut argument_loans = BorrowSafety::new();
                 let mut argument_tickets = Vec::new();
+                let mut argument_facts = Vec::new();
                 let mut borrowed_names: Vec<String> = Vec::new();
                 for (arg, parameter) in args.iter().zip(&method.params) {
                     if !Self::method_argument_safe_before_borrow(arg) {
@@ -883,15 +886,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         let kind = if original.mutable {
                             BorrowKind::ExclusiveWrite
                         } else { BorrowKind::SharedRead };
+                        let source = self.checked_binding_use(original, arg)?
+                            .resolved.declaration;
                         self.check_borrow_conflicts(
-                            vars, original.declaration_start, kind, arg,
+                            vars, source, kind, arg,
                             "HC14：方法參數與既有借用衝突",
                         )?;
                         let ticket = argument_loans.acquire(
-                            original.declaration_start, kind)
+                            source, kind)
                             .map_err(|_| self.error(
                                 "HC14：同一方法呼叫的參數借用衝突", arg))?;
                         argument_tickets.push(ticket);
+                        argument_facts.push(BorrowFact::new(source, kind));
                         borrowed_names.push(name.clone());
                         continue;
                     }
@@ -920,21 +926,25 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error("HC14：唯讀借用不可呼叫可寫方法", term));
                     }
                 } else {
-                    let mut loans = BorrowSafety::new();
-                    let loan = loans.acquire(bound.declaration_start, mode)
+                    let source = self.checked_binding_use(bound, term)?
+                        .resolved.declaration;
+                    let loan = argument_loans.acquire(source, mode)
                         .map_err(|_| self.error("方法 self 借用與現有借用衝突", term))?;
-                    if loans.check_direct_access(bound.declaration_start).is_ok() {
+                    argument_tickets.push(loan);
+                    argument_facts.push(BorrowFact::new(source, mode));
+                    if argument_loans.check_direct_access(source).is_ok() {
                         return Err(self.error("HC14：方法期間不得直接使用被借用來源", term));
                     }
-                    loans.finish_scope(&[loan])
-                        .map_err(|_| self.error("方法 self 借用未安全歸還", term))?;
-                    loans.check_direct_access(bound.declaration_start)
+                }
+                // 以 Checker 真正已解析的詞彙來源與同一 tracker 所簽發
+                // 的 self／參數票據嚴格核對後原子釋放；既有借用別名
+                // 屬外層有效期，不在此次方法呼叫額外簽發虛構票據。
+                argument_loans.finish_scope_verified(&argument_tickets, &argument_facts)
+                    .map_err(|_| self.error("P15.6：方法參數作用域歸還失敗", term))?;
+                if bound.loan.is_none() {
+                    argument_loans.check_direct_access(bound.declaration_start)
                         .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
-                // 方法實際完成後才歸還參數，不使用一般借用最後
-                // 使用點規則，也不讓未通過的其他控制路徑釋放票據。
-                argument_loans.finish_scope(&argument_tickets)
-                    .map_err(|_| self.error("P15.6：方法參數作用域歸還失敗", term))?;
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
@@ -970,6 +980,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // 移動、覆寫或再次獨占借用仍被傳入的來源。
                 let mut call_loans = BorrowSafety::new();
                 let mut tickets = Vec::new();
+                let mut call_facts = Vec::new();
                 let mut borrowed_names: Vec<String> = Vec::new();
                 for (arg, parameter) in args.iter().zip(&function.params) {
                     let expected = &parameter.ty;
@@ -997,15 +1008,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 let kind = if original.mutable {
                                     BorrowKind::ExclusiveWrite
                                 } else { BorrowKind::SharedRead };
+                                let source = self.checked_binding_use(original, arg)?
+                                    .resolved.declaration;
                                 self.check_borrow_conflicts(
-                                    vars, original.declaration_start, kind, arg,
+                                    vars, source, kind, arg,
                                     "HC14：函式參數借用與仍有效別名衝突",
                                 )?;
                                 let ticket = call_loans.acquire(
-                                    original.declaration_start, kind)
+                                    source, kind)
                                     .map_err(|_| self.error(
                                         "HC14：同一呼叫內函式借用來源衝突", arg))?;
                                 tickets.push(ticket);
+                                call_facts.push(BorrowFact::new(source, kind));
                                 borrowed_names.push(name.clone());
                                 continue;
                             }
@@ -1016,7 +1030,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         return Err(self.error("P13：函式引數型別不符或尚未初始化", arg));
                     }
                 }
-                call_loans.finish_scope(&tickets)
+                call_loans.finish_scope_verified(&tickets, &call_facts)
                     .map_err(|_| self.error("P15.6：函式退出時借用票據未完整歸還", term))?;
                 Ok((function.result_ty.clone(), true))
             },
