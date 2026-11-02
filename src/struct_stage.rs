@@ -264,19 +264,28 @@ impl VerifiedDeclarationFacts {
         let valid_position = |offset: usize| {
             offset < text.len() && text.is_char_boundary(offset)
         };
+        // 同一正式目標宣告、return 來源位置或欄位賦值語句只能
+        // 對應一筆已驗證轉移；不同 Checker 路徑的雙重主張須保守拒絕，
+        // 不可將它們混成同一執行期資源事件或憑集合去重掩蓋衝突。
+        let mut move_targets = BTreeSet::new();
+        let mut return_positions = BTreeSet::new();
+        let mut field_write_positions = BTreeSet::new();
         self.by_source.iter().all(|(id, fact)| fact.owns(*id) && valid_position(id.0))
         && self.direct_moves.iter().all(|(source, target)| {
-            source != target && source.0 < target.0
+            move_targets.insert(*target)
+                && source != target && source.0 < target.0
                 && self.by_source.get(source).zip(self.by_source.get(target))
                     .is_some_and(|(from, to)| from.declaration == *source
                         && to.declaration == *target && from.ty == to.ty)
         })
         && self.named_returns.iter().all(|(source, return_start)| {
-            self.by_source.contains_key(source) && *return_start >= source.0
+            return_positions.insert(*return_start)
+                && self.by_source.contains_key(source) && *return_start >= source.0
                 && valid_position(*return_start)
         })
         && self.field_writes.iter().all(|(source, statement_start, field)| {
-            self.by_source.get(source).is_some_and(|fact| {
+            field_write_positions.insert(*statement_start)
+                && self.by_source.get(source).is_some_and(|fact| {
                 fact.declaration == *source && fact.mutable && *statement_start >= source.0
                     && valid_position(*statement_start)
                     && structs.get(&fact.ty).and_then(|definition| definition.field(field))
@@ -327,7 +336,8 @@ impl VerifiedDeclarationFacts {
         &self, source: DeclarationId, return_start: usize, ty: &str,
     ) -> Option<VerifiedReturnEvidence> {
         self.typed_declaration(source).filter(|fact| fact.ty == ty)?;
-        self.named_returns.contains(&(source, return_start))
+        (self.named_returns.contains(&(source, return_start))
+            && self.named_returns.iter().filter(|(_, pos)| *pos == return_start).count() == 1)
             .then_some(VerifiedReturnEvidence { source, return_start })
     }
 
@@ -338,7 +348,9 @@ impl VerifiedDeclarationFacts {
     ) -> Option<VerifiedFieldWriteEvidence> {
         self.typed_declaration(owner).filter(|fact|
             fact.ty == ty && fact.mutable)?;
-        self.field_writes.contains(&(owner, statement_start, field.to_owned()))
+        (self.field_writes.contains(&(owner, statement_start, field.to_owned()))
+            && self.field_writes.iter().filter(|(_, pos, _)| *pos == statement_start)
+                .count() == 1)
             .then_some(VerifiedFieldWriteEvidence {
                 owner, statement_start, field: field.to_owned(),
             })
@@ -351,7 +363,8 @@ impl VerifiedDeclarationFacts {
         let from = self.typed_declaration(source)?;
         let to = self.typed_declaration(target)?;
         (source != target && source.0 < target.0 && from.ty == ty && to.ty == ty
-            && self.direct_moves.contains(&(source, target)))
+            && self.direct_moves.contains(&(source, target))
+            && self.direct_moves.iter().filter(|(_, to)| *to == target).count() == 1)
             .then_some(VerifiedMoveEvidence { source, target })
     }
 
