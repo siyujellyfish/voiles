@@ -272,6 +272,17 @@ impl BorrowSafety {
         }
         Ok(())
     }
+
+    /// F06／F09：正式 Checker 先依已解析詞彙 DeclarationId 建立靜態
+    /// 借用事實，與本次呼叫真正簽出的票據逐筆核對後才整批歸還。
+    /// 此處不從 BorrowTicket.fact() 倒推靜態證據；任何快照差異都
+    /// 必須在釋放前拒絕，不得產生半批次解鎖。
+    pub(crate) fn finish_scope_verified(
+        &mut self, tickets: &[BorrowTicket], checked: &[BorrowFact],
+    ) -> Result<(), BorrowSafetyError> {
+        self.verify_static_snapshot(checked.iter().copied())?;
+        self.finish_scope(tickets)
+    }
 }
 
 #[cfg(test)]
@@ -354,6 +365,32 @@ mod tests {
         assert_eq!(actual.verify_tracker(&tracker),
             Err(BorrowSafetyError::SnapshotMismatch));
         assert_eq!(StaticBorrowSnapshot::default().verify_tracker(&tracker), Ok(()));
+    }
+
+    #[test]
+    fn f06_f09_已解析快照與真實票據不符時批次歸還無副作用() {
+        let source = DeclarationId(2001);
+        let shadow = DeclarationId(2002);
+        let mut tracker = BorrowSafety::new();
+        let a = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let b = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let valid = [
+            BorrowFact::new(source, BorrowKind::SharedRead),
+            BorrowFact::new(source, BorrowKind::SharedRead),
+        ];
+        let invalid = [
+            BorrowFact::new(source, BorrowKind::SharedRead),
+            BorrowFact::new(shadow, BorrowKind::SharedRead),
+        ];
+        assert_eq!(tracker.finish_scope_verified(&[a, b], &invalid),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(tracker.check_direct_access(source),
+            Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(tracker.finish_scope_verified(&[a, b], &valid), Ok(()));
+        assert_eq!(tracker.check_direct_access(source), Ok(()));
+        assert_eq!(tracker.finish_scope_verified(&[a, b], &valid),
+            Err(BorrowSafetyError::SnapshotMismatch),
+            "已歸還票據與過期靜態快照都不能再次解鎖");
     }
 
     #[test]
