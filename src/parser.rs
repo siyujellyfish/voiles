@@ -46,10 +46,8 @@ pub(crate) type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 pub(crate) enum StmtKind {
     Binding(Binding),
     Assignment(crate::syntax_shared::ParsedNamedAssignment<Expr>),
-    IfChain {
-        branches: Vec<crate::common_ir::ConditionalBranch<Expr, Block>>,
-        otherwise: Option<Block>,
-    },
+    /// F03：公開正式 AST 直接持有共用 if/else-if Parser 的完整結果。
+    IfChain(crate::syntax_shared::ParsedIfChain<Expr, Block>),
     Return(Expr),
 }
 
@@ -155,10 +153,8 @@ impl<'a> Parser<'a> {
 
     fn if_chain(&mut self) -> Result<(StmtKind, usize), Diagnostic> {
         let parsed = crate::syntax_shared::parse_if_chain(self)?;
-        Ok((StmtKind::IfChain {
-            branches: parsed.arms.into_iter().map(|arm| arm.branch).collect(),
-            otherwise: parsed.otherwise,
-        }, parsed.end))
+        let end = parsed.end;
+        Ok((StmtKind::IfChain(parsed), end))
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -486,9 +482,9 @@ mod tests {
         ).unwrap();
         let Item::Function(f) = &file.items[0] else { panic!("缺少函式"); };
         assert_eq!(f.body.statements.len(), 2);
-        let StmtKind::IfChain { branches, otherwise } = &f.body.statements[0].kind else {panic!("缺少 if");};
-        assert_eq!(branches.len(), 2);
-        assert!(otherwise.is_some());
+        let StmtKind::IfChain(chain) = &f.body.statements[0].kind else {panic!("缺少 if");};
+        assert_eq!(chain.arms.len(), 2);
+        assert!(chain.otherwise.is_some());
         assert!(matches!(&f.body.statements[1].kind, StmtKind::Return(_)));
     }
 
