@@ -335,3 +335,36 @@ mod r02_f02_私有_parser_完整共通純值_ast {
         assert!(verified_private_source(code).is_ok());
     }
 }
+
+#[cfg(test)]
+mod r02_f03_公私正式函式_ast_同一泛型權威 {
+    use super::*;
+
+    #[test]
+    fn 私有解析器直接交付共同函式_AST_及準確來源_span() {
+        let code = "fn main()->int{\nreturn 1\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let (structs, functions) = Parser {
+            source:&source, tokens:&lexed.tokens, cursor:0,
+        }.file().unwrap();
+        assert!(structs.is_empty());
+        let [main] = functions.as_slice() else {panic!("必須恰有一個函式");};
+        let _: &crate::syntax_shared::ParsedFunction<Vec<Parameter>, String, Vec<Stmt>> = main;
+        assert_eq!(main.name, "main");
+        assert!(main.params.is_empty());
+        assert_eq!(main.result_ty, "int");
+        assert_eq!(main.start, 0);
+        assert_eq!(main.end, code.find('}').unwrap() + 1);
+        assert_eq!(inspect(code), Ok(()));
+
+        let public = crate::parser::parse(&source, &lexed.tokens).unwrap();
+        let crate::parser::Item::Function(fun) = &public.items[0]
+            else {panic!("缺少公開函式");};
+        let _: &crate::syntax_shared::ParsedFunction<
+            (),crate::common_ir::ScalarType,crate::parser::Block> = fun;
+        assert_eq!(fun.start,main.start);
+        assert_eq!(fun.end,main.end);
+    }
+}
