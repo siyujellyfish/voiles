@@ -306,6 +306,15 @@ pub(crate) fn parse_assignment<P: AssignmentSyntax>(
 }
 
 /// 公私正式函式呼叫共用已消耗左括號之後的引數與右括號解析順序。
+/// F02：公私真正函式呼叫共同 AST；零參數公開 P01 的
+/// A=()，私有 P13 已核准位置引數的 A=Vec<Term>。
+/// 尚未核准的具名引數／方法語法不藉此擴張。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ParsedNamedCall<A> {
+    pub(crate) name: String,
+    pub(crate) arguments: A,
+}
+
 pub(crate) trait CallSyntax {
     type Arguments;
     fn call_arguments(&mut self) -> Result<Self::Arguments, crate::Diagnostic>;
@@ -317,6 +326,15 @@ pub(crate) fn parse_call<P: CallSyntax>(
     let args = parser.call_arguments()?;
     let end = parser.call_right_paren()?;
     Ok((args, end))
+}
+
+/// 已經消耗函式名稱與左圓括號時，由正式公私共同核心
+/// 將名稱／已核准的參數列表合成同一呼叫 AST。
+pub(crate) fn parse_named_call<P: CallSyntax>(
+    parser: &mut P, name: String,
+) -> Result<(ParsedNamedCall<P::Arguments>, usize), crate::Diagnostic> {
+    let (arguments, end) = parse_call(parser)?;
+    Ok((ParsedNamedCall { name, arguments }, end))
 }
 
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {
