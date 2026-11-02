@@ -245,13 +245,13 @@ fn trace_string_return_source(
     let (content, named_return) = match called.body.as_slice() {
         [Stmt {kind: StmtKind::Return(term), ..}] =>
             (plain_literal(text, term), None),
-        [local @ Stmt {kind: StmtKind::Declare(declaration), ..},
+        [local @ Stmt {kind: StmtKind::Declare(local_declaration), ..},
          Stmt {kind: StmtKind::Return(Term {
             kind: TermKind::Move(returned_name), start: return_start, ..
-        }), ..}] if declaration.ty == "str"
-            && declaration.name.as_str() == returned_name.as_str()
-            && declaration.initializer.is_some() => {
-            let value = declaration.initializer.as_ref()
+        }), ..}] if local_declaration.ty == "str"
+            && local_declaration.name.as_str() == returned_name.as_str()
+            && local_declaration.initializer.is_some() => {
+            let value = local_declaration.initializer.as_ref()
                 .expect("已預檢具名返回有初始值");
             let from = DeclarationId(local.start);
             let to = DeclarationId(declaration.start);
