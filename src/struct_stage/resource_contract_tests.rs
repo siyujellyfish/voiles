@@ -81,22 +81,24 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let src = "fn main()->int{\nvar n:int = 1\nreturn n\n}\n";
         let checked = verified_private_source(src).expect("合法 Checker 應生成完整計畫");
         assert!(checked.plan.is_consistent(&checked.structs, src));
-        let mut forged = VerifiedSafetyPlan {
-            declarations: VerifiedDeclarationFacts::from_checker(
+        let mut forged = VerifiedSafetyPlan::from_checker(
+            VerifiedDeclarationFacts::from_checker(
                 checked.plan.declarations.by_source.clone(),
                 checked.plan.declarations.direct_moves.clone(),
                 checked.plan.declarations.named_returns.clone(),
                 checked.plan.declarations.field_writes.clone(),
             ),
-            scalar_hir: crate::common_ir::VerifiedScalarHir::default(),
-        };
+            crate::common_ir::VerifiedScalarHir::default(),
+        );
         forged.declarations.call_borrows = checked.plan.declarations.call_borrows.clone();
-        assert!(forged.is_consistent(&checked.structs, src),
-            "計畫仍可合法沒有純值操作，但不可由橋接以此重新推斷已檢查的 return");
-        // 交付權威只發生在 verify_source_with_ability 這個私有閉合入口；
-        // 測試構造之空 HIR 不具有 CheckedSource 身分，不能交給資源橋接。
+        // 不可在已建立的正式計畫內偷換空 HIR，仍使用 Checker
+        // 交付時封存的原始運算式／引用／賦值位置義務驗證。
+        forged.expression_spans = checked.plan.expression_spans.clone();
+        forged.reference_spans = checked.plan.reference_spans.clone();
+        forged.assignment_spans = checked.plan.assignment_spans.clone();
         assert!(checked.plan.scalar_hir.verified_expressions().count() > 0);
-        assert_eq!(forged.scalar_hir.verified_expressions().count(), 0);
+        assert!(!forged.is_consistent(&checked.structs, src),
+            "不得刪除正式 Checker 已驗證的 HIR 證據後仍宣稱計畫閉合");
     }
 
     #[test]
