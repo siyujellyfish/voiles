@@ -1164,10 +1164,10 @@ mod p16_真正_voil_來源至_utf8_緩衝區清理 {
         let verified = verified_private_source(SOURCE).expect("合法來源必須通過真實 Checker");
         let main = verified.functions.iter().find(|function| function.name == "main").unwrap();
         let id = DeclarationId(main.body[0].start);
-        assert!(verified.declarations.matches(id, "Message", true));
-        assert!(!verified.declarations.matches(id, "Message", false));
-        assert!(!verified.declarations.matches(id, "str", true));
-        assert!(!verified.declarations.matches(DeclarationId(SOURCE.len() + 1), "Message", true));
+        assert!(verified.plan.declarations.matches(id, "Message", true));
+        assert!(!verified.plan.declarations.matches(id, "Message", false));
+        assert!(!verified.plan.declarations.matches(id, "str", true));
+        assert!(!verified.plan.declarations.matches(DeclarationId(SOURCE.len() + 1), "Message", true));
         assert!(trace_string_struct_source(SOURCE, "item", None).is_ok());
     }
 

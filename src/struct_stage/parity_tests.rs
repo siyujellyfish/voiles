@@ -51,16 +51,16 @@ mod p16_6_r02_公開私有前端交集契約 {
             let at = span(start, length);
             assert_eq!(public.expression(at).map(|fact| fact.ty), Some(expected),
                 "公開 P10 缺少完整型別 HIR：{at:?}");
-            assert_eq!(private.scalar_hir.expression(at).map(|fact| fact.ty),
+            assert_eq!(private.plan.scalar_hir.expression(at).map(|fact| fact.ty),
                 Some(expected), "私有 Checker 與公開 P10 型別／來源位置不一致：{at:?}");
-            assert!(private.scalar_hir.expression(
+            assert!(private.plan.scalar_hir.expression(
                 span(start, length + 1)).is_none(),
                 "較長的半開位置不得冒充 Checker 真正核准的純值節點");
         }
         let declaration = crate::ownership_ledger::DeclarationId(
             code.find("var value").unwrap());
         let pub_decl = names.declaration(declaration).unwrap();
-        let priv_decl = private.declarations.typed_declaration(declaration).unwrap();
+        let priv_decl = private.plan.declarations.typed_declaration(declaration).unwrap();
         assert_eq!(pub_decl.declaration, priv_decl.declaration);
         assert_eq!(match pub_decl.ty {
             crate::common_ir::ScalarType::Int => "int",
@@ -93,7 +93,7 @@ mod p16_6_r02_公開私有前端交集契約 {
             let span = crate::common_ir::NodeSpan::new(at, at + name.len());
             let public_read = public.reference(span)
                 .expect("P10 應交付具名 int 讀取事實");
-            let private_read = private.scalar_hir.reference(span)
+            let private_read = private.plan.scalar_hir.reference(span)
                 .expect("私有 Checker 應交付相同來源 TypedUse");
             assert_eq!(private_read, public_read);
             assert_eq!(private_read.resolved.declaration, declaration);
@@ -103,11 +103,11 @@ mod p16_6_r02_公開私有前端交集契約 {
         let span = crate::common_ir::NodeSpan::new(target, target + "n = alias".len());
         let public_write = public.assignment(span)
             .expect("P10 寫入目標已驗證");
-        let private_write = private.scalar_hir.assignment(span)
+        let private_write = private.plan.scalar_hir.assignment(span)
             .expect("私有 Checker 完成真實賦值後才交付目標 HIR");
         assert_eq!(public_write, private_write);
         assert_eq!(private_write.resolved.declaration, owner);
-        assert!(private.scalar_hir.assignment(crate::common_ir::NodeSpan::new(
+        assert!(private.plan.scalar_hir.assignment(crate::common_ir::NodeSpan::new(
             target, target + "n = alias".len() + 1)).is_none());
 
         let moved = "fn main()->int{\nvar original:str = \"資源\"\nvar target:str = original.move()\nreturn 0\n}\n";
@@ -115,9 +115,9 @@ mod p16_6_r02_公開私有前端交集契約 {
         let start = moved.find("original.move()").unwrap();
         let attempted = crate::common_ir::NodeSpan::new(
             start, start + "original.move()".len());
-        assert!(checked.scalar_hir.reference(attempted).is_none(),
+        assert!(checked.plan.scalar_hir.reference(attempted).is_none(),
             "私有非 Copyable 的明確 move 不可冒充公開純值名稱引用");
-        assert!(checked.scalar_hir.expression(attempted).is_none(),
+        assert!(checked.plan.scalar_hir.expression(attempted).is_none(),
             "私有 str 資源移交不是 ScalarType 的 int/bool 表達式");
     }
 
@@ -152,15 +152,15 @@ mod p16_6_r02_公開私有前端交集契約 {
                 "合法純值交集不可因私有安全模型而意外拒絕");
 
             let pub_refs: Vec<_> = public.verified_references().collect();
-            let priv_refs: Vec<_> = private.scalar_hir.verified_references().collect();
+            let priv_refs: Vec<_> = private.plan.scalar_hir.verified_references().collect();
             assert_eq!(pub_refs, priv_refs, "公私所有具名讀取 HIR 不一致：{code}");
             let pub_assigns: Vec<_> = public.verified_assignments().collect();
-            let priv_assigns: Vec<_> = private.scalar_hir.verified_assignments().collect();
+            let priv_assigns: Vec<_> = private.plan.scalar_hir.verified_assignments().collect();
             assert_eq!(pub_assigns, priv_assigns,
                 "公私全部賦值目標 HIR 不一致：{code}");
             let pub_expressions: Vec<_> = public.verified_expressions().collect();
             let priv_expressions: Vec<_> =
-                private.scalar_hir.verified_expressions().collect();
+                private.plan.scalar_hir.verified_expressions().collect();
             assert_eq!(pub_expressions, priv_expressions,
                 "公私全部運算式跨度與型別 HIR 不一致：{code}");
         }
