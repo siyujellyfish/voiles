@@ -422,6 +422,14 @@ pub(crate) fn arithmetic_operand_is_ready(
     initialized && ty == Some(ScalarType::Int)
 }
 
+/// F04：公開 P10／P11 與私有 P13 if／while／方法 if 單一純值條件裁決。
+/// 不得藉此開放 MVP-A while，亦不將私有 str／資源轉成 Copyable bool。
+pub(crate) fn boolean_condition_is_ready(
+    ty: Option<ScalarType>, initialized: bool,
+) -> bool {
+    initialized && ty == Some(ScalarType::Bool)
+}
+
 // parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
@@ -882,5 +890,19 @@ mod r02_f04_公私共同算術運算元裁決 {
             "私有未初始化來源不得被公開型別推論的 ready 常值旁路");
         assert_eq!(ScalarType::from_name("str"),None);
         assert_eq!(ScalarType::from_name("list"),None);
+    }
+}
+
+#[cfg(test)]
+mod r02_f04_公私共同純值條件裁決 {
+    use super::*;
+    #[test]
+    fn 僅接受可讀取已初始化_bool_不把私有資源當條件() {
+        assert!(boolean_condition_is_ready(Some(ScalarType::Bool), true));
+        assert!(!boolean_condition_is_ready(Some(ScalarType::Bool), false));
+        assert!(!boolean_condition_is_ready(Some(ScalarType::Int), true));
+        assert!(!boolean_condition_is_ready(None, true));
+        assert_eq!(ScalarType::from_name("str"), None);
+        assert_eq!(ScalarType::from_name("struct"), None);
     }
 }

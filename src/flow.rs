@@ -155,7 +155,9 @@ impl Analyzer<'_> {
                         self.read(&arm.condition, &entry)?;
                         if self.typed.is_some_and(|hir|
                             hir.expression(arm.condition.node_span())
-                                .is_none_or(|fact| fact.ty != ScalarType::Bool)) {
+                                .is_none_or(|fact|
+                                    !crate::common_ir::boolean_condition_is_ready(
+                                        Some(fact.ty),true))) {
                             return Err(self.err(
                                 "if 條件缺少 P10 已驗證的 bool 型別",
                                 arm.condition.start, arm.condition.end,

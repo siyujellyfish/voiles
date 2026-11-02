@@ -202,7 +202,10 @@ impl<'a> TypeChecker<'a> {
                 StmtKind::IfChain(chain) => {
                     for arm in &chain.arms {
                         let cond = self.expression(&arm.branch.condition, scopes)?;
-                        self.require(cond.ty, Type::Bool, &arm.branch.condition, "if 條件必須具有 bool 型別")?;
+                        if !crate::common_ir::boolean_condition_is_ready(Some(cond.ty),true) {
+                            return Err(self.error("if 條件必須具有 bool 型別",
+                                arm.branch.condition.start,arm.branch.condition.end));
+                        }
                         self.block(&arm.branch.body, scopes, result)?;
                     }
                     if let Some(body) = &chain.otherwise {
