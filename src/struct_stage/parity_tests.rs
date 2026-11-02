@@ -384,7 +384,7 @@ mod r02_f02_私有真正位置引數呼叫_ast_同一資料模型 {
         let (_, functions) = Parser {source:&source, tokens:&lexed.tokens, cursor:0}
             .file().unwrap();
         let main = functions.iter().find(|f|f.name=="main").unwrap();
-        let [Stmt{kind:StmtKind::Return(Term{kind:TermKind::Call(call),..}),..}] =
+        let [Stmt{kind:StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term{kind:TermKind::Call(call),..} }),..}] =
             main.body.as_slice() else {panic!("私有正式 Parser 須建立具名呼叫");};
         let _: &crate::syntax_shared::ParsedNamedCall<Vec<Term>> = call;
         assert_eq!(call.name,"helper");
