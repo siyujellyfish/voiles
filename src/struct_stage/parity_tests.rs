@@ -579,3 +579,31 @@ mod r02_f04_公私共同_bool_checker_真實條件回歸 {
         assert!(verified_private_source(&invalid).is_err());
     }
 }
+
+#[cfg(test)]
+mod r02_f03_真正公私_return_直接保存共同_parsedreturn {
+    use super::*;
+    #[test]
+    fn 公私_parser_唯一共同_return_ast_仍保留精確來源跨度與型別() {
+        let code="fn main()->int{\nreturn 7\n}\n";
+        let source=Source::new(code.as_bytes().to_vec());
+        let lexed=lexer::scan(&source);
+        let public=crate::parser::parse(&source,&lexed.tokens).unwrap();
+        let crate::parser::Item::Function(pubfun)=&public.items[0]
+            else {panic!("必須有合法公開函式");};
+        let crate::parser::StmtKind::Return(pubreturn)=&pubfun.body[0].kind
+            else {panic!("公開 return 沒有共同 AST");};
+        let _: &crate::syntax_shared::ParsedReturn<crate::expr::Expr>=pubreturn;
+        let (_,private)=Parser {source:&source,tokens:&lexed.tokens,cursor:0}
+            .file().unwrap();
+        let StmtKind::Return(privreturn)=&private[0].body[0].kind
+            else {panic!("私有 return 沒有共同 AST");};
+        let _: &crate::syntax_shared::ParsedReturn<Term>=privreturn;
+        assert_eq!(pubreturn.node_span(),privreturn.node_span());
+        assert_eq!(pubreturn.start,code.find('7').unwrap());
+        assert_eq!(pubreturn.end,pubreturn.start+1);
+        assert!(verified_private_source(code).is_ok());
+        assert!(crate::check_file(&source.bytes).is_empty(),
+            "公開正式檢查不可因內部 return 結點轉換回歸");
+    }
+}
