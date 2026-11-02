@@ -324,7 +324,7 @@ impl Parser<'_> {
             StmtKind::FieldAssign { receiver: name, field, value }
         } else {
             let parsed = crate::syntax_shared::parse_named_assignment(self)?;
-            StmtKind::Assign { name: parsed.name, value: parsed.expression }
+            StmtKind::Assign(parsed)
         };
         let end = self.tokens[self.cursor - 1].end;
         self.end_statement()?;
