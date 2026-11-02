@@ -169,12 +169,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             } else {
                 BorrowKind::SharedRead
             };
-            if source.ty != reference.resolved.ty
+            // 來源 Binding 本身也必須由同一份 Checker 已提交的
+            // TypedDeclaration 授權；不能只看一筆可以被篡改的詞彙型別。
+            let verified_source = self.checked_binding_use(source, term)?;
+            if verified_source.resolved.declaration != loan.fact.source
+                || verified_source.resolved.ty != reference.resolved.ty
                 || source.mutable != owner.mutable
                 || loan.fact.kind != intended {
                 return Err(self.error(
                     "P16：借用別名的來源型別或共享／獨占權限不一致", term));
             }
+            // 只接受全域相容的活躍靜態借用集合，避免某條別名捷徑
+            // 在其他來源已有矛盾票據時繼續放行直接存取。
+            Self::active_loan_snapshot(vars).validate().map_err(|_| self.error(
+                "HC14：活躍借用快照包含衝突的共享／獨占權限", term,
+            ))?;
             return Ok(());
         }
         // 擁有者的讀取、寫入、複製與 move 使用相同 HC14-A 快照。
