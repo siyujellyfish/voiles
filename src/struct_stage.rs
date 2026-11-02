@@ -63,7 +63,7 @@ type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
 enum StmtKind {
-    Declare { name: String, ty: String, mutable: bool, init: Option<Term> },
+    Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
     FieldAssign { receiver: String, field: String, value: Term },
     If {
