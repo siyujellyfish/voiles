@@ -43,15 +43,11 @@ pub(crate) struct Block {
     pub(crate) end: usize,
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct Binding {
-    pub(crate) name: String,
-    pub(crate) ty: Type,
-    pub(crate) mutable: bool,
-    pub(crate) initializer: Option<Expr>,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-}
+/// F03：真正公開語句與頂層宣告 AST 直接持有 Parser 共通
+/// `ParsedDeclaration`，不再經第二套同欄位的獨立 Binding 模型。
+/// 私有 Parser 亦直接由相同 parse_declaration 產生此節點後，
+/// 才由原安全 AST 型別隔離其擴充的語意。
+pub(crate) type Binding = crate::syntax_shared::ParsedDeclaration<Type, Expr>;
 
 /// 公開 MVP-A 語句 AST 的位元組範圍結構與私有 P13 共用。
 pub(crate) type Stmt = crate::common_ir::SpannedNode<StmtKind>;
@@ -150,11 +146,7 @@ impl<'a> Parser<'a> {
         }
     }
     fn binding(&mut self) -> Result<Binding, Diagnostic> {
-        let parsed = crate::syntax_shared::parse_declaration(self)?;
-        Ok(Binding {
-            name: parsed.name, ty: parsed.ty, mutable: parsed.mutable,
-            initializer: parsed.initializer, start: parsed.start, end: parsed.end,
-        })
+        crate::syntax_shared::parse_declaration(self)
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
@@ -452,6 +444,26 @@ mod tests {
             assert!(result.is_err(), "{filename} 不應被解析器接受");
             assert_eq!(result.unwrap_err().kind, DiagnosticKind::Syntax);
         }
+    }
+
+    #[test]
+    fn 公開正式_ast_宣告就是共通解析核心所產出的同一型別() {
+        let code = "const item:int = 0x2a\nfn main()->int{\nvar alias:int = item\nreturn alias\n}\n";
+        let parsed = parse_text(code).unwrap();
+        let Item::Binding(top) = &parsed.items[0] else {panic!("缺少頂層 const");};
+        let _: &crate::syntax_shared::ParsedDeclaration<Type, Expr> = top;
+        let Item::Function(main) = &parsed.items[1] else {panic!("缺少函式");};
+        let StmtKind::Binding(inner) = &main.body.statements[0].kind
+            else {panic!("缺少 var");};
+        let _: &crate::syntax_shared::ParsedDeclaration<Type, Expr> = inner;
+        assert_eq!(top.name, "item");
+        assert_eq!(top.ty, Type::Int);
+        assert!(!top.mutable);
+        assert_eq!(top.start, 0);
+        assert_eq!(inner.name, "alias");
+        assert!(inner.mutable);
+        assert_eq!(inner.start, code.find("var alias:int").unwrap());
+        assert_eq!(inner.end, code.find("= item").unwrap() + "= item".len());
     }
 
     #[test]
