@@ -109,8 +109,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             StmtKind::Declare(declaration) => declaration.initializer.as_ref()
                 .is_some_and(|t| Self::term_moves_name(t, name)),
             StmtKind::Assign(assignment) => Self::term_moves_name(&assignment.expression, name),
-            StmtKind::FieldAssign { value, .. } | StmtKind::Return(value) =>
+            StmtKind::FieldAssign { value, .. } =>
                 Self::term_moves_name(value, name),
+            StmtKind::Return(value) =>
+                Self::term_moves_name(&value.expression, name),
             StmtKind::If { branch, no } =>
                 Self::term_moves_name(&branch.condition, name)
                     || Self::statements_move_name(&branch.body, name)
