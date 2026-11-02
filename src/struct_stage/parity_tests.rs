@@ -306,3 +306,32 @@ mod p16_6_r02_f02_方法位置引數共用正式呼叫解析 {
         }
     }
 }
+
+#[cfg(test)]
+mod r02_f02_私有_parser_完整共通純值_ast {
+    use super::*;
+    use crate::syntax_shared::ScalarLiteral;
+    #[test]
+    fn 真正私有_ast_保存十六進位原文及_bool_語意() {
+        let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let scanned = lexer::scan(&source);
+        assert!(scanned.diagnostics.is_empty());
+        let (_, funcs) = Parser { source:&source, tokens:&scanned.tokens, cursor:0 }.file().unwrap();
+        let init = match &funcs[0].body[0].kind {
+            StmtKind::Declare {init:Some(expr),..} => expr,
+            _ => panic!("應有已核准整數宣告"),
+        };
+        assert!(matches!(&init.kind,
+            TermKind::Scalar(ScalarLiteral::Integer(raw)) if raw=="0x2a"));
+        let cond = match &funcs[0].body[1].kind {
+            StmtKind::If{branch,..} => &branch.condition,
+            _ => panic!("應有 if"),
+        };
+        assert!(matches!(&cond.kind,
+            TermKind::Scalar(ScalarLiteral::Boolean(true))));
+        let start = code.find("0x2a").unwrap();
+        assert_eq!(init.node_span(), crate::common_ir::NodeSpan::new(start,start+4));
+        assert!(verified_private_source(code).is_ok());
+    }
+}
