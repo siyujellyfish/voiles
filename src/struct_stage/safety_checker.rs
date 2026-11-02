@@ -1775,7 +1775,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::Assign(assignment) => {
                     self.reject_method_term(&assignment.expression)?;
                 }
-                StmtKind::Return(value) | StmtKind::FieldAssign { value, .. } => {
+                StmtKind::Return(value) => {
+                    self.reject_method_term(&value.expression)?;
+                }
+                StmtKind::FieldAssign { value, .. } => {
                     self.reject_method_term(value)?;
                 }
                 StmtKind::If { branch, no } => {
