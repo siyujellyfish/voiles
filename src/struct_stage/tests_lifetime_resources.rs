@@ -2308,13 +2308,13 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         let no = vec![read("alias")];
         let cond = Term { kind: TermKind::Literal("bool"), start: 40, end: 44 };
         let only_shadow = stmt(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(
-                cond.clone(), yes.clone()),
+            branch: crate::syntax_shared::ParsedIfArm { start: 50, branch: crate::common_ir::ConditionalBranch::new(
+                cond.clone(), yes.clone()) },
             no: Some(vec![declare("alias", 50, None), read("alias")]),
         }, 50);
         assert!(!mentions(&[only_shadow], outer));
         let sibling_uses_outer = stmt(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(cond, yes),
+            branch: crate::syntax_shared::ParsedIfArm { start: 60, branch: crate::common_ir::ConditionalBranch::new(cond, yes) },
             no: Some(no),
         }, 60);
         assert!(mentions(&[sibling_uses_outer], outer));
@@ -2423,9 +2423,9 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
     #[test]
     fn if_兩側均確定返回_分支後面的名字沒有可達_use_def() {
         let both = stmt(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(
+            branch: crate::syntax_shared::ParsedIfArm { start: 10, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 11, end: 15 },
-                vec![read("first", 30)]),
+                vec![read("first", 30)]) },
             no: Some(vec![read("second", 40)]),
         }, 10);
         let uses = used(&[both.clone(), read("alias", 80)]);
@@ -2448,8 +2448,8 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
             }), 19)]),
         ] {
             let guarded = stmt(StmtKind::If {
-                branch: crate::common_ir::ConditionalBranch::new(
-                    condition.clone(), vec![read("first", 40)]),
+                branch: crate::syntax_shared::ParsedIfArm { start: 9, branch: crate::common_ir::ConditionalBranch::new(
+                    condition.clone(), vec![read("first", 40)]) },
                 no: alternative,
             }, 9);
             assert!(!Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
@@ -2502,9 +2502,9 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
     }
     fn conditional(left: FlowState, right: FlowState) -> Stmt {
         statement(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(
+            branch: crate::syntax_shared::ParsedIfArm { start: 8, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 10, end: 14 },
-                vec![result_statement(left, 20)]),
+                vec![result_statement(left, 20)]) },
             no: Some(vec![result_statement(right, 30)]),
         }, 8)
     }
@@ -2534,9 +2534,9 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
     #[test]
     fn 巢狀混合退出仍不擅自判定為全部_return() {
         let nested = statement(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(
+            branch: crate::syntax_shared::ParsedIfArm { start: 49, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 50, end: 54 },
-                vec![conditional(FlowState::Returned, FlowState::Break)]),
+                vec![conditional(FlowState::Returned, FlowState::Break)]) },
             no: Some(vec![result_statement(FlowState::Continue, 80)]),
         }, 49);
         let classified = Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(
@@ -2544,9 +2544,9 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
         assert_eq!(classified, Some(FlowState::LoopTransfer));
         assert_ne!(classified, Some(FlowState::Returned));
         let no_else = statement(StmtKind::If {
-            branch: crate::common_ir::ConditionalBranch::new(
+            branch: crate::syntax_shared::ParsedIfArm { start: 89, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 90, end: 94 },
-                vec![result_statement(FlowState::Returned, 95)]),
+                vec![result_statement(FlowState::Returned, 95)]) },
             no: None,
         }, 89);
         assert_eq!(Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(

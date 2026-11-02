@@ -251,13 +251,16 @@ impl Parser<'_> {
         // 公開平面鏈在私有既有 AST 中仍需折成原來的 else-if 巢狀鏈，
         // 合流規則與原始半開位置不變，不能憑此開放新語言能力。
         for arm in arms.collect::<Vec<_>>().into_iter().rev() {
+            // 單次讀取真正分支來源，後續整筆移交同一 AST，
+            // 不 clone、不卡住 moved value，也不猜測 NodeSpan。
+            let start = arm.start;
             no = Some(vec![Stmt {
-                kind: StmtKind::If { branch: arm.branch, no },
-                start: arm.start,
+                kind: StmtKind::If { branch: arm, no },
+                start,
                 end: parsed.end,
             }]);
         }
-        Ok(StmtKind::If { branch: first.branch, no })
+        Ok(StmtKind::If { branch: first, no })
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
