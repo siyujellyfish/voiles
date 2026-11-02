@@ -143,7 +143,13 @@ impl<'a> ExprParser<'a> {
         )? {
             return Ok(literal);
         }
-        // 一般具名原子亦由同一共通 AST 位置產生器建立。
+        // 已核准的無後綴名稱直接由同一正式公私 AST 產生核心建構。
+        if let Some(name) = crate::syntax_shared::parse_bare_name(
+            self.tokens, &mut self.cursor, ExprKind::Name,
+        ) {
+            return Ok(name);
+        }
+        // 其餘呼叫或可能含模式專屬後綴的名稱保持原 P01 Parser 路徑。
         if let Some(name) =
             crate::syntax_shared::take_spanned_name(self.tokens, &mut self.cursor) {
             let kind = if self.symbol('(') {

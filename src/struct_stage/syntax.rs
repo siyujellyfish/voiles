@@ -104,6 +104,13 @@ impl Parser<'_> {
     }
 
     fn atom(&mut self) -> Result<Term, Diagnostic> {
+        // 無函式／方法／索引後綴時由公私共同核心直接建構裸名
+        // AST；不能讓公開入口藉此接受私有 .move／.borrow 語法。
+        if let Some(name) = crate::syntax_shared::parse_bare_name(
+            self.tokens, &mut self.cursor, TermKind::Name,
+        ) {
+            return Ok(name);
+        }
         let start = self.tok().start;
         // 與公開 ExprParser 共用真正節點產生及游標提交核心。
         // 私有 i64 必須仍在解析期拒絕；保留此前使用的繁體中文語法診斷。
