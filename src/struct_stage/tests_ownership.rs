@@ -110,6 +110,36 @@ mod tests {
         Rc::make_mut(&mut vars[0]).get_mut("source").unwrap().ty = "bool".into();
         assert!(checker.check_direct(&vars, "alias", &term).is_err(),
             "即使 alias 本身正確，借用來源被置換型別也不得放行");
+        Rc::make_mut(&mut vars[0]).get_mut("source").unwrap().ty = "int".into();
+
+        checker.recorded_declarations.borrow_mut().insert(
+            original, crate::common_ir::TypedDeclaration::new(
+                original, "bool".into(), false,
+            ));
+        assert!(checker.check_direct(&vars, "alias", &term).is_err(),
+            "來源 Binding 表面型別正確也不得繞過真正 Checker 的來源型別 HIR");
+        checker.recorded_declarations.borrow_mut().insert(
+            original, crate::common_ir::TypedDeclaration::new(
+                original, "int".into(), false,
+            ));
+        assert!(checker.check_direct(&vars, "alias", &term).is_ok());
+
+        // 對 alias 的局部證據完全合法，但另一條活躍別名偽造了
+        // 與共享借用衝突的獨占票據，不能跳過整份快照一致性閘門。
+        Rc::make_mut(&mut vars[0]).insert("forged".into(), Binding {
+            declaration_start: DeclarationId(100), ty: "int".into(), mutable: true,
+            value: ValueSlot::initialized(Allowed), pending_fields: None,
+            loan: Some(LoanBinding {
+                fact: BorrowFact::new(original, BorrowKind::ExclusiveWrite),
+                active: true,
+            }),
+        });
+        assert!(!Checker::<fn(&str) -> CopyPermission>::active_loan_state_is_consistent(&vars));
+        assert!(checker.check_direct(&vars, "alias", &term).is_err(),
+            "局部來源有效時也不能忽略其它活躍借用的全域衝突");
+        Rc::make_mut(&mut vars[0]).remove("forged");
+        assert!(checker.check_direct(&vars, "alias", &term).is_ok(),
+            "移除矛盾快照後原有合法共享借用仍應繼續有效");
     }
 
     #[test]
