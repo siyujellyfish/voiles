@@ -542,17 +542,17 @@ mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
         let target_id = DeclarationId(main.body[0].start);
         let StmtKind::Return(return_term) = &provider.body[1].kind
             else { panic!("此橋接只接受真正的具名 return move") };
-        assert_eq!(verified.declarations.verified_named_return(
+        assert_eq!(verified.plan.declarations.verified_named_return(
             source_id, return_term.start, "str",
         ), Some(VerifiedReturnEvidence { source: source_id, return_start: return_term.start }));
-        assert_eq!(verified.declarations.verified_named_return(
+        assert_eq!(verified.plan.declarations.verified_named_return(
             source_id, return_term.start, "int",
         ), None, "型別不同不得冒充返回移交");
-        assert_eq!(verified.declarations.verified_named_return(
+        assert_eq!(verified.plan.declarations.verified_named_return(
             target_id, return_term.start, "str",
         ), None, "不能用呼叫端接收者冒充被呼叫端返回來源");
         let no_proof = VerifiedDeclarationFacts::from_checker(
-            verified.declarations.by_source.clone(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
+            verified.plan.declarations.by_source.clone(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new());
         assert!(no_proof.verified_named_return(source_id, return_term.start, "str").is_none(),
             "只有 AST 與宣告型別、卻沒有 Checker 回傳證據不可建立資源橋接");
         assert_ne!(source_id, target_id);
@@ -595,11 +595,11 @@ mod p16_6_r03_4_結構整筆移交與失敗回滾資源責任 {
         let [source, target, _] = main.body.as_slice() else { panic!("只接受三語句"); };
         let source_id = DeclarationId(source.start);
         let target_id = DeclarationId(target.start);
-        assert!(verified.declarations.verified_direct_move(source_id, target_id, "Message").is_some(),
+        assert!(verified.plan.declarations.verified_direct_move(source_id, target_id, "Message").is_some(),
             "整筆結構移交必須有 Checker 真正驗證並交付的宣告身分與型別");
-        assert!(verified.declarations.verified_direct_move(source_id, target_id, "str").is_none(),
+        assert!(verified.plan.declarations.verified_direct_move(source_id, target_id, "str").is_none(),
             "不得把結構整筆移交偽裝成單一 str 欄位移動");
-        assert!(verified.declarations.verified_direct_move(target_id, source_id, "Message").is_none(),
+        assert!(verified.plan.declarations.verified_direct_move(target_id, source_id, "Message").is_none(),
             "不得顛倒所有權移交方向");
         assert!(VerifiedDeclarationFacts::from_checker(
             BTreeMap::new(), BTreeSet::new(), BTreeSet::new(), BTreeSet::new(),
@@ -659,10 +659,10 @@ mod p16_6_r03_5_跨函式結構返回多資源責任 {
         let source = DeclarationId(provider.body[0].start);
         let StmtKind::Return(return_term) = &provider.body[1].kind
             else { panic!("須有完整 Checker 已驗證整筆 return") };
-        assert_eq!(verified.declarations.verified_named_return(
+        assert_eq!(verified.plan.declarations.verified_named_return(
             source, return_term.start, "Bundle"),
             Some(VerifiedReturnEvidence { source, return_start: return_term.start }));
-        assert!(verified.declarations.verified_named_return(
+        assert!(verified.plan.declarations.verified_named_return(
             source, return_term.start, "str").is_none(),
             "不能把整筆 Bundle 轉移冒充單一 str 資源");
         WholeStructResourcePlan::new(
@@ -729,7 +729,7 @@ mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
             StmtKind::FieldAssign { field, .. } => field.as_str(),
             _ => unreachable!("測試上方已核對欄位賦值"),
         };
-        assert_eq!(verified.declarations.verified_field_write(
+        assert_eq!(verified.plan.declarations.verified_field_write(
             owner, write.start, "Holder", field_name,
         ), Some(VerifiedFieldWriteEvidence {
             owner, statement_start: write.start, field: field_name.to_owned(),
@@ -740,12 +740,12 @@ mod p16_6_r03_8_真正欄位覆寫與失敗回滾對帳 {
             (owner, write.start + 1, "Holder", field_name),
             (DeclarationId(write.start), write.start, "Holder", field_name),
         ] {
-            assert!(verified.declarations.verified_field_write(
+            assert!(verified.plan.declarations.verified_field_write(
                 source, at, ty, member,
             ).is_none(), "錯誤身分、型別、欄位或來源位置不得取得資源寫入證據");
         }
         let no_proof = VerifiedDeclarationFacts::from_checker(
-            verified.declarations.by_source.clone(), BTreeSet::new(),
+            verified.plan.declarations.by_source.clone(), BTreeSet::new(),
             BTreeSet::new(), BTreeSet::new(),
         );
         assert!(no_proof.verified_field_write(owner, write.start, "Holder", field_name)
@@ -885,15 +885,15 @@ mod p16_6_r03_10_單層布林分支與作用域資源清理 {
         let main=verified.functions.iter().find(|f|f.name=="main").unwrap();
         let [outside,branch,_]=main.body.as_slice() else {panic!("須為三語句");};
         let outer = DeclarationId(outside.start);
-        assert!(verified.declarations.matches(outer,"Holder",true),
+        assert!(verified.plan.declarations.matches(outer,"Holder",true),
             "外層實際持有者必須由 Checker 驗證型別和權限");
-        assert!(!verified.declarations.matches(outer,"str",true));
+        assert!(!verified.plan.declarations.matches(outer,"str",true));
         let selected=if with_inner {
             let StmtKind::If {branch:arm,..}=&branch.kind else {panic!("須為 if");};
             let inner = DeclarationId(arm.body[0].start);
             assert_ne!(outer,inner,"內外作用域不可沿用同一宣告身分");
-            assert!(verified.declarations.matches(inner,"Holder",true));
-            assert!(!verified.declarations.matches(inner,"Holder",false));
+            assert!(verified.plan.declarations.matches(inner,"Holder",true));
+            assert!(!verified.plan.declarations.matches(inner,"Holder",false));
             Some((inner,1))
         } else {None};
         ScopedResourcePlan::new(DeclarationId(outside.start),1,selected).unwrap()
@@ -905,18 +905,18 @@ mod p16_6_r03_10_單層布林分支與作用域資源清理 {
         let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
         let StmtKind::If { branch, .. } = &main.body[1].kind
             else { panic!("原始來源必須是單一已驗證 if") };
-        let actual = verified.scalar_hir.expression(branch.condition.node_span())
+        let actual = verified.plan.scalar_hir.expression(branch.condition.node_span())
             .expect("真實 Checker 全部成功後必須交付 if 的 Typed HIR");
         assert_eq!(actual.ty, crate::common_ir::ScalarType::Bool);
         assert_eq!(actual.span, branch.condition.node_span());
-        assert!(verified.scalar_hir.expression(
+        assert!(verified.plan.scalar_hir.expression(
             crate::common_ir::NodeSpan::new(actual.span.start,
                 actual.span.end + 1)).is_none(),
             "不允許相同起點、不同終點的偽造條件證據");
 
         let StmtKind::Return(return_term) = &main.body[2].kind
             else { panic!("必須有最後 return 0") };
-        assert_eq!(verified.scalar_hir.expression(return_term.node_span())
+        assert_eq!(verified.plan.scalar_hir.expression(return_term.node_span())
             .expect("合法 return int 應有成功求值證據").ty,
             crate::common_ir::ScalarType::Int);
         for source in [SRC.to_owned(), SRC.replace("if(true)", "if(false)")] {
