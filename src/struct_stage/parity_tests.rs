@@ -369,3 +369,29 @@ mod r02_f03_公私正式函式_ast_同一泛型權威 {
         assert_eq!(fun.end,main.end);
     }
 }
+
+#[cfg(test)]
+mod r02_f02_私有真正位置引數呼叫_ast_同一資料模型 {
+    use super::*;
+
+    #[test]
+    fn 私有函式呼叫直接保存共同_ast_名稱與引數_公開仍不能接受相同參數() {
+        let code = "fn helper(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn helper(7)\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let (_, functions) = Parser {source:&source, tokens:&lexed.tokens, cursor:0}
+            .file().unwrap();
+        let main = functions.iter().find(|f|f.name=="main").unwrap();
+        let [Stmt{kind:StmtKind::Return(Term{kind:TermKind::Call(call),..}),..}] =
+            main.body.as_slice() else {panic!("私有正式 Parser 須建立具名呼叫");};
+        let _: &crate::syntax_shared::ParsedNamedCall<Vec<Term>> = call;
+        assert_eq!(call.name,"helper");
+        assert_eq!(call.arguments.len(),1);
+        assert!(matches!(call.arguments[0].kind,
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))));
+        assert!(inspect(code).is_ok(),"私有已核准 int 參數呼叫不可因重構被拒絕");
+        assert!(crate::parser::parse(&source,&lexed.tokens).is_err(),
+            "公開 MVP-A 參數與位置引數仍不可開放");
+    }
+}
