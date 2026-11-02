@@ -334,13 +334,7 @@ impl Parser<'_> {
         Ok(crate::syntax_shared::parse_block(self)?.statements)
     }
     fn function(&mut self) -> Result<Function, Diagnostic> {
-        let parsed = crate::syntax_shared::parse_function_decl(self)?;
-        Ok(Function {
-            name: parsed.name,
-            params: parsed.params,
-            result_ty: parsed.result_ty,
-            body: parsed.body,
-        })
+        crate::syntax_shared::parse_function_decl(self)
     }
     fn strukt(&mut self) -> Result<(String, StructDecl), Diagnostic> {
         self.cursor += 1; // struct
