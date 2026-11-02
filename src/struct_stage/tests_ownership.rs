@@ -26,9 +26,9 @@ mod tests {
             let cond = Term { kind: TermKind::Literal("bool"), start: 0, end: 4 };
             let mk = |kind| Stmt { kind, start: 0, end: 4 };
             let conditional = mk(StmtKind::If {
-                branch: crate::common_ir::ConditionalBranch::new(
+                branch: crate::syntax_shared::ParsedIfArm { start: 0, branch: crate::common_ir::ConditionalBranch::new(
                     cond, vec![mk(left)],
-                ),
+                ) },
                 no: Some(vec![mk(right)]),
             });
             let mut vars = vec![Rc::new(HashMap::new())];
