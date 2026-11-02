@@ -495,6 +495,15 @@ pub(crate) fn boolean_condition_is_ready(
     initialized && ty == Some(ScalarType::Bool)
 }
 
+/// F04：公私正式 Checker 已核准純值函式的返回資格裁決。
+/// 只能在來源確定完成型別檢查、初始化／可讀取安全後成立；
+/// 私有 str、float、struct 等結果仍由原有所有權規則單獨裁決。
+pub(crate) fn scalar_return_is_ready(
+    actual: Option<ScalarType>, expected: ScalarType, initialized: bool,
+) -> bool {
+    initialized && actual == Some(expected)
+}
+
 // parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
@@ -1039,6 +1048,23 @@ mod r02_f04_公私共同算術運算元裁決 {
             "私有未初始化來源不得被公開型別推論的 ready 常值旁路");
         assert_eq!(ScalarType::from_name("str"),None);
         assert_eq!(ScalarType::from_name("list"),None);
+    }
+}
+
+#[cfg(test)]
+mod r02_f04_公私函式純值回傳共同裁決 {
+    use super::*;
+
+    #[test]
+    fn 核准型別一致且已初始化才可回傳() {
+        for kind in [ScalarType::Int, ScalarType::Bool] {
+            assert!(scalar_return_is_ready(Some(kind), kind, true));
+            assert!(!scalar_return_is_ready(Some(kind), kind, false));
+        }
+        assert!(!scalar_return_is_ready(Some(ScalarType::Bool), ScalarType::Int, true));
+        assert!(!scalar_return_is_ready(Some(ScalarType::Int), ScalarType::Bool, true));
+        assert!(!scalar_return_is_ready(None, ScalarType::Int, true));
+        assert!(!scalar_return_is_ready(None, ScalarType::Bool, true));
     }
 }
 
