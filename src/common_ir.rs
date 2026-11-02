@@ -10,7 +10,7 @@ use crate::ownership_ledger::DeclarationId;
 
 /// 原始 UTF-8 位元組半開範圍，供共同解析核心與各模式正式 AST 使用。
 /// 此型別不是已換算為一基行列的公開診斷位置。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct NodeSpan {
     pub(crate) start: usize,
     pub(crate) end: usize,
