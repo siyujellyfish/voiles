@@ -252,12 +252,12 @@ impl Parser<'_> {
         // 合流規則與原始半開位置不變，不能憑此開放新語言能力。
         for arm in arms.collect::<Vec<_>>().into_iter().rev() {
             no = Some(vec![Stmt {
-                kind: StmtKind::If { branch: arm.branch, no },
+                kind: StmtKind::If { branch: arm, no },
                 start: arm.start,
                 end: parsed.end,
             }]);
         }
-        Ok(StmtKind::If { branch: first.branch, no })
+        Ok(StmtKind::If { branch: first, no })
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
