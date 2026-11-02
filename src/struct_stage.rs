@@ -382,29 +382,18 @@ impl VerifiedDeclarationFacts {
     fn scalar_hir_is_consistent(
         &self, hir: &crate::common_ir::VerifiedScalarHir, text: &str,
     ) -> bool {
-        // 位元組邊界落在 UTF-8 多位元組字元中間即使仍 < len
-        // 也不是合法的來源節點，不能簽成可供資源事件消費的 HIR。
-        let valid_span = |span: crate::common_ir::NodeSpan| {
-            span.start < span.end && span.end <= text.len()
-                && text.is_char_boundary(span.start)
-                && text.is_char_boundary(span.end)
-        };
-        hir.is_consistent()
-            && hir.verified_expressions().all(|expr| valid_span(expr.span))
+        // 由同一個公私正式 Typed HIR 閘門驗證來源 UTF-8、
+        // 三類 NodeIdentity 與已讀取運算式的型別一致性。
+        // 本層僅額外核對私有宣告所有權與 var/const 授權。
+        hir.source_spans_are_valid(text)
             && hir.verified_references().all(|entry| {
-                valid_span(entry.span)
-                    // 每筆具名 read 都必須有同跨度同型別的真正
-                    // Checker 運算式事實，不能自行拼造額外的引用。
-                    && hir.expression(entry.span)
-                        .is_some_and(|expr| expr.ty == entry.resolved.ty)
-                    && self.typed_declaration(entry.resolved.declaration)
+                self.typed_declaration(entry.resolved.declaration)
                         .is_some_and(|decl| decl.declaration.0 <= entry.span.start
                             && crate::common_ir::ScalarType::from_name(decl.ty)
                                 == Some(entry.resolved.ty))
             })
             && hir.verified_assignments().all(|entry| {
-                valid_span(entry.span)
-                    && self.typed_declaration(entry.resolved.declaration)
+                self.typed_declaration(entry.resolved.declaration)
                         .is_some_and(|decl| decl.mutable
                             && decl.declaration.0 <= entry.span.start
                             && crate::common_ir::ScalarType::from_name(decl.ty)
