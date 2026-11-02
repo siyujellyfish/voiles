@@ -80,7 +80,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let write = main.body[1].start;
         let target = DeclarationId(main.body[2].start);
         let facts = &checked.declarations;
-        assert!(facts.evidence_is_consistent(&checked.structs));
+        assert!(facts.evidence_is_consistent(&checked.structs, code));
         assert!(facts.verified_direct_move(owner, target, "Holder").is_some());
         assert!(facts.verified_field_write(owner, write, "Holder", "title").is_some());
 
@@ -89,8 +89,39 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             facts.named_returns.clone(), facts.field_writes.clone(),
         );
         forged.direct_moves.insert((owner, owner));
-        assert!(!forged.evidence_is_consistent(&checked.structs),
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
             "來源與目的不得共用唯一擁有者");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.direct_moves.insert((target, owner));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
+            "具名直線移交不得將後方宣告偽裝成先前的來源");
+        assert!(forged.verified_direct_move(target, owner, "Holder").is_none(),
+            "資源橋接的直接證據查詢亦不得返回逆向移交");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        let invalid_owner = DeclarationId(code.len() + 1);
+        forged.by_source.insert(invalid_owner,
+            crate::common_ir::TypedDeclaration::new(
+                invalid_owner, "Holder".to_owned(), true));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
+            "即使沒有被任何轉移引用，超出 EOF 的宣告也不可簽入計畫");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        let char_start = code.find('舊').expect("須含 UTF-8 多位元組字元");
+        assert!(!code.is_char_boundary(char_start + 1));
+        forged.field_writes.insert((owner, char_start + 1, "title".to_owned()));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
+            "欄位寫入不能以中文字元中間的位元組當作已驗證原始位置");
 
         let mut forged = VerifiedDeclarationFacts::from_checker(
             facts.by_source.clone(), facts.direct_moves.clone(),
@@ -98,7 +129,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         );
         forged.by_source.insert(target,
             crate::common_ir::TypedDeclaration::new(target, "str".to_owned(), true));
-        assert!(!forged.evidence_is_consistent(&checked.structs),
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
             "型別錯置的移交即使存在 Checker AST 也不能產生有效計畫");
 
         let mut forged = VerifiedDeclarationFacts::from_checker(
@@ -106,7 +137,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             facts.named_returns.clone(), facts.field_writes.clone(),
         );
         forged.field_writes.insert((owner, write, "id".to_owned()));
-        assert!(!forged.evidence_is_consistent(&checked.structs),
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
             "const 欄位不得在有效安全計畫中被當成可寫");
 
         let mut forged = VerifiedDeclarationFacts::from_checker(
@@ -114,7 +145,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             facts.named_returns.clone(), facts.field_writes.clone(),
         );
         forged.by_source.remove(&owner);
-        assert!(!forged.evidence_is_consistent(&checked.structs),
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
             "任何資源證據都不可引用不存在的來源身分");
 
         let mut forged = VerifiedDeclarationFacts::from_checker(
@@ -123,7 +154,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         );
         forged.by_source.insert(target,
             crate::common_ir::TypedDeclaration::new(owner, "Holder".to_owned(), true));
-        assert!(!forged.evidence_is_consistent(&checked.structs),
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
             "typed HIR 宣告表鍵與實際宣告位置不同必須拒絕");
         assert!(forged.typed_declaration(target).is_none(),
             "不能把來源身分竄改的宣告交給資源橋接");
@@ -142,7 +173,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let code = "fn provide()->str{\nvar value:str = \"資料\"\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
         let checked = verified_private_source(code).expect("具名返回通過 Checker");
         let facts = &checked.declarations;
-        assert!(facts.evidence_is_consistent(&checked.structs));
+        assert!(facts.evidence_is_consistent(&checked.structs, code));
         let provider = checked.functions.iter().find(|fun| fun.name == "provide").unwrap();
         let owner = DeclarationId(provider.body[0].start);
         let StmtKind::Return(value) = &provider.body[1].kind
@@ -154,10 +185,21 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             facts.named_returns.clone(), facts.field_writes.clone(),
         );
         forged.named_returns.insert((owner, owner.0.saturating_sub(1)));
-        assert!(!forged.evidence_is_consistent(&checked.structs));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code));
         forged.named_returns.remove(&(owner, owner.0.saturating_sub(1)));
         forged.named_returns.insert((DeclarationId(code.len() + 1), value.start));
-        assert!(!forged.evidence_is_consistent(&checked.structs));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code));
+        forged.named_returns.clear();
+        forged.named_returns.insert((owner, code.len() + 1));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
+            "合法持有者也不能在原始碼 EOF 之外宣稱已完成返回");
+
+        forged.named_returns.clear();
+        let chinese = code.find('資').expect("必須有 UTF-8 字串常值");
+        assert!(!code.is_char_boundary(chinese + 1));
+        forged.named_returns.insert((owner, chinese + 1));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
+            "返回證據不能指向 UTF-8 字元中間的位元組");
     }
 
     #[test]
