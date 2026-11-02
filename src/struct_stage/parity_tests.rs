@@ -132,6 +132,12 @@ mod p16_6_r02_公開私有前端交集契約 {
             "fn main()->int{\nconst value:int = 0b101\nreturn value\n}\n",
             "fn main()->int{\nvar n:int = 0\nif(true){\nn = 2\n}else{\nn = 3\n}\nreturn n\n}\n",
             "fn main()->int{\nvar n:int = 1\nvar alias:int = n\nn = alias\nreturn n\n}\n",
+            // 真正共用運算式核心：左結合加減、巢狀二元運算、
+            // 無參數函式呼叫，以及公私共同分支下的身分解析。
+            "fn main()->int{\nvar n:int = 1 + 2 - 3\nreturn n + 4 - 5\n}\n",
+            "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar value:int = helper() + 1\nreturn value - 1\n}\n",
+            "fn main()->int{\nvar n:int = 1\nif(true){\nn = n + 1\n}else if(false){\nn = n - 2\n}else{\nn = n + 3\n}\nreturn n\n}\n",
+            "fn main()->int{\nvar n:int = 1\nif(false){\nvar n:int = 2\nn = n + 3\n}else{\nn = n + 4\n}\nreturn n\n}\n",
         ] {
             assert_eq!(public_check(code), Ok(()), "正式公開來源不合法：{code}");
             let source = Source::new(code.as_bytes().to_vec());
