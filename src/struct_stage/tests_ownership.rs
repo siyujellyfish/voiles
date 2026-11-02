@@ -2849,3 +2849,60 @@ mod f07_全後繼詞彙使用身分計畫 {
             "至少一條可達後繼使用外層別名時必須保守保留票據");
     }
 }
+
+#[cfg(test)]
+mod p16_6_r03_f08_f10_單一作用域安全狀態契約 {
+    use super::*;
+
+    fn sample() -> Binding {
+        Binding {
+            declaration_start: DeclarationId(30),
+            ty: "int".to_owned(),
+            mutable: true,
+            value: ValueSlot::initialized(CopyPermission::Allowed),
+            pending_fields: None,
+            loan: Some(LoanBinding {
+                fact: BorrowFact::new(DeclarationId(15), BorrowKind::SharedRead),
+                active: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn 同一安全狀態可跨分支與迴圈比較_型別和權限也不得漂移() {
+        let original = sample();
+        assert!(original.same_safety_state(&original.clone()));
+        let mut moved = original.clone();
+        moved.value.move_whole().unwrap();
+        assert!(!original.same_safety_state(&moved));
+        let mut wrong_type = original.clone();
+        wrong_type.ty = "bool".to_owned();
+        assert!(!original.same_safety_state(&wrong_type));
+        let mut wrong_permission = original.clone();
+        wrong_permission.mutable = false;
+        assert!(!original.same_safety_state(&wrong_permission));
+        let mut wrong_declaration = original.clone();
+        wrong_declaration.declaration_start = DeclarationId(31);
+        assert!(!original.same_safety_state(&wrong_declaration));
+    }
+
+    #[test]
+    fn 反向邊的部分初始化與靜態借用票據來源及有效期均不可漂移() {
+        let original = sample();
+        let mut pending = original.clone();
+        pending.pending_fields = Some(HashSet::from(["text".to_owned()]));
+        assert!(!original.same_safety_state(&pending));
+        let mut released = original.clone();
+        released.loan.as_mut().unwrap().active = false;
+        assert!(!original.same_safety_state(&released));
+        let mut wrong_source = original.clone();
+        wrong_source.loan.as_mut().unwrap().fact.source = DeclarationId(16);
+        assert!(!original.same_safety_state(&wrong_source));
+        let mut exclusive = original.clone();
+        exclusive.loan.as_mut().unwrap().fact.kind = BorrowKind::ExclusiveWrite;
+        assert!(!original.same_safety_state(&exclusive));
+        let mut no_loan = original.clone();
+        no_loan.loan = None;
+        assert!(!original.same_safety_state(&no_loan));
+    }
+}
