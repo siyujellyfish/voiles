@@ -425,3 +425,40 @@ mod r02_f03_私有真正函式區塊使用共同_parser_ast {
         assert_eq!(fun.body.end,main.body.end);
     }
 }
+
+#[cfg(test)]
+mod r02_f04_公私正式運算式_typed_hir_同一加減證據 {
+    use super::*;
+    use crate::{names,parser,types};
+
+    #[test]
+    fn 公私真實_checker_已核准左結合運算證據逐筆相同() {
+        let code="fn main()->int{\nvar n:int = 1\nreturn n + 2 - 3\n}\n";
+        let src=Source::new(code.as_bytes().to_vec());
+        let tokens=lexer::scan(&src);
+        let parsed=parser::parse(&src,&tokens.tokens).unwrap();
+        let named=names::resolve_with_facts(&parsed,&src).unwrap();
+        let public=types::check_with_names_and_hir(&parsed,&src,&named).unwrap();
+        let private=verified_private_source(code).unwrap();
+        let public_arithmetic:Vec<_>=public.verified_arithmetic().collect();
+        let private_arithmetic:Vec<_>=private.plan.scalar_hir.verified_arithmetic().collect();
+        assert_eq!(public_arithmetic.len(),2,"兩筆左結合運算必須完整留存");
+        assert_eq!(public_arithmetic,private_arithmetic);
+        assert!(public.source_spans_are_valid(code));
+        assert!(private.plan.scalar_hir.source_spans_are_valid(code));
+        let first=crate::common_ir::NodeSpan::new(
+            code.find("n + 2").unwrap(),
+            code.find("n + 2").unwrap()+"n + 2".len());
+        assert_eq!(public.arithmetic(first).map(|fact|fact.operator),Some('+'));
+        assert_eq!(private.plan.scalar_hir.arithmetic(first),public.arithmetic(first));
+        for illegal in ["true + 1","1 - false"] {
+            let source=format!("fn main()->int{{\nreturn {illegal}\n}}\n");
+            assert!(verified_private_source(&source).is_err());
+            let src=Source::new(source.as_bytes().to_vec());
+            let lexed=lexer::scan(&src);
+            let ast=parser::parse(&src,&lexed.tokens).unwrap();
+            let facts=names::resolve_with_facts(&ast,&src).unwrap();
+            assert!(types::check_with_names_and_hir(&ast,&src,&facts).is_err());
+        }
+    }
+}
