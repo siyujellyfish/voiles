@@ -441,16 +441,16 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
                 name: assignment.name.clone(),
                 value: public_expression(&assignment.expression)?,
             },
-            PublicStmtKind::IfChain { branches, otherwise } => {
-                // P01 的平面 else-if 與私有 P13 的巢狀 If(no=[If])
-                // 必須產生同一棵保留原分支順序的共同 AST。
-                if branches.is_empty() { return None; }
-                let mut tail = map_optional(otherwise.as_ref(),
+            PublicStmtKind::IfChain(chain) => {
+                // P01 直接消費共同 ParsedIfChain，保留每個分支跨度；
+                // 私有 P13 歷史差異測試仍核對巢狀 if 的等價順序。
+                if chain.arms.is_empty() { return None; }
+                let mut tail = map_optional(chain.otherwise.as_ref(),
                     |block| public_statements(&block.statements))?;
-                for arm in branches.iter().rev() {
+                for arm in chain.arms.iter().rev() {
                     tail = Some(vec![ScalarStmt::If {
-                        condition: public_expression(&arm.condition)?,
-                        yes: public_statements(&arm.body.statements)?,
+                        condition: public_expression(&arm.branch.condition)?,
+                        yes: public_statements(&arm.branch.body.statements)?,
                         no: tail,
                     }]);
                 }
