@@ -12,8 +12,8 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         use crate::common_ir::{NodeSpan, ResolvedUse, ScalarType, TypedUse, VerifiedScalarHir};
         let code = "fn main()->int{\nvar n:int = 1\nconst label:int = 2\nvar alias:int = n\nn = alias\nreturn n\n}\n";
         let checked = verified_private_source(code).expect("合法來源應交付完整 Checker HIR");
-        let facts = &checked.declarations;
-        assert!(facts.scalar_hir_is_consistent(&checked.scalar_hir, code));
+        let facts = &checked.plan.declarations;
+        assert!(facts.scalar_hir_is_consistent(&checked.plan.scalar_hir, code));
         let owner = DeclarationId(code.find("var n:int").unwrap());
         let constant = DeclarationId(code.find("const label:int").unwrap());
         let span = NodeSpan::new(
@@ -77,22 +77,45 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     }
 
     #[test]
+    fn f11_正式計畫整體驗證禁止以另一份_hir_偷換_checker_來源證據() {
+        let src = "fn main()->int{\nvar n:int = 1\nreturn n\n}\n";
+        let checked = verified_private_source(src).expect("合法 Checker 應生成完整計畫");
+        assert!(checked.plan.is_consistent(&checked.structs, src));
+        let mut forged = VerifiedSafetyPlan {
+            declarations: VerifiedDeclarationFacts::from_checker(
+                checked.plan.declarations.by_source.clone(),
+                checked.plan.declarations.direct_moves.clone(),
+                checked.plan.declarations.named_returns.clone(),
+                checked.plan.declarations.field_writes.clone(),
+            ),
+            scalar_hir: crate::common_ir::VerifiedScalarHir::default(),
+        };
+        forged.declarations.call_borrows = checked.plan.declarations.call_borrows.clone();
+        assert!(forged.is_consistent(&checked.structs, src),
+            "計畫仍可合法沒有純值操作，但不可由橋接以此重新推斷已檢查的 return");
+        // 交付權威只發生在 verify_source_with_ability 這個私有閉合入口；
+        // 測試構造之空 HIR 不具有 CheckedSource 身分，不能交給資源橋接。
+        assert!(checked.plan.scalar_hir.verified_expressions().count() > 0);
+        assert_eq!(forged.scalar_hir.verified_expressions().count(), 0);
+    }
+
+    #[test]
     fn f11_真正函式呼叫借用計畫與宣告身分_共享重數_呼叫位置閉合() {
         let code = "fn view(a:str,b:str)->int{\nreturn 2\n}\nfn main()->int{\nconst text:str = \"資源🪼\"\nvar answer:int = view(text,text)\nreturn answer\n}\n";
         let checked = verified_private_source(code).expect("已核准真實函式來源");
         let start = code.find("view(text,text)").unwrap();
         let span = crate::common_ir::NodeSpan::new(start, start + "view(text,text)".len());
         let source = DeclarationId(code.find("const text:str").unwrap());
-        let call = checked.declarations.call_borrows_at(span).expect("必須交付真實呼叫借用來源");
+        let call = checked.plan.declarations.call_borrows_at(span).expect("必須交付真實呼叫借用來源");
         assert_eq!(call, [
             BorrowFact::new(source, BorrowKind::SharedRead),
             BorrowFact::new(source, BorrowKind::SharedRead),
         ]);
-        assert!(checked.declarations.evidence_is_consistent(&checked.structs, code));
-        assert!(checked.declarations.call_borrows_at(
+        assert!(checked.plan.declarations.evidence_is_consistent(&checked.structs, code));
+        assert!(checked.plan.declarations.call_borrows_at(
             crate::common_ir::NodeSpan::new(span.start, span.end + 1)).is_none());
 
-        let facts = &checked.declarations;
+        let facts = &checked.plan.declarations;
         let mut fake = VerifiedDeclarationFacts::from_checker(
             facts.by_source.clone(), facts.direct_moves.clone(),
             facts.named_returns.clone(), facts.field_writes.clone(),
@@ -119,18 +142,18 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         use crate::common_ir::{NodeSpan, ScalarType, VerifiedScalarHir};
         let code = "fn main()->int{\nvar text:str = \"海洋🪼\"\nreturn 0\n}\n";
         let checked = verified_private_source(code).expect("合法 UTF-8 私有來源應被接受");
-        assert!(checked.declarations.scalar_hir_is_consistent(&checked.scalar_hir, code));
+        assert!(checked.plan.declarations.scalar_hir_is_consistent(&checked.plan.scalar_hir, code));
         let first = code.find('海').expect("必須有多位元組 UTF-8 字元");
         assert!(!code.is_char_boundary(first + 1));
         assert!(!code.is_char_boundary(first + 2));
         let mut fake = VerifiedScalarHir::default();
         fake.record_expression(NodeSpan::new(first + 1, first + 2),
             ScalarType::Int);
-        assert!(!checked.declarations.scalar_hir_is_consistent(&fake, code),
+        assert!(!checked.plan.declarations.scalar_hir_is_consistent(&fake, code),
             "即使在原始碼長度內，字元中間的範圍也不是合法來源跨度");
         let mut fake_end = VerifiedScalarHir::default();
         fake_end.record_expression(NodeSpan::new(first, first + 2), ScalarType::Int);
-        assert!(!checked.declarations.scalar_hir_is_consistent(&fake_end, code));
+        assert!(!checked.plan.declarations.scalar_hir_is_consistent(&fake_end, code));
     }
 
     #[test]
@@ -141,7 +164,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let owner = DeclarationId(main.body[0].start);
         let write = main.body[1].start;
         let target = DeclarationId(main.body[2].start);
-        let facts = &checked.declarations;
+        let facts = &checked.plan.declarations;
         assert!(facts.evidence_is_consistent(&checked.structs, code));
         assert!(facts.verified_direct_move(owner, target, "Holder").is_some());
         assert!(facts.verified_field_write(owner, write, "Holder", "title").is_some());
@@ -266,7 +289,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     fn f11_已驗證返回位置必須對應真實具名持有者且不得倒序() {
         let code = "fn provide()->str{\nvar value:str = \"資料\"\nreturn value.move()\n}\nfn main()->int{\nreturn 0\n}\n";
         let checked = verified_private_source(code).expect("具名返回通過 Checker");
-        let facts = &checked.declarations;
+        let facts = &checked.plan.declarations;
         assert!(facts.evidence_is_consistent(&checked.structs, code));
         let provider = checked.functions.iter().find(|fun| fun.name == "provide").unwrap();
         let owner = DeclarationId(provider.body[0].start);
@@ -327,9 +350,9 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         assert_eq!(no_checker_proof.verified_direct_move(origin, target, "str"), None);
 
         let checked = verified_private_source(code).expect("必須通過真正私有 Checker");
-        assert_eq!(checked.declarations.verified_direct_move(origin, target, "str"),
+        assert_eq!(checked.plan.declarations.verified_direct_move(origin, target, "str"),
             Some(VerifiedMoveEvidence { source: origin, target }));
-        assert_eq!(checked.declarations.verified_direct_move(target, origin, "str"), None);
+        assert_eq!(checked.plan.declarations.verified_direct_move(target, origin, "str"), None);
     }
 
     #[test]
@@ -372,18 +395,18 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         assert_ne!(first.start, second.start);
         let source_id = DeclarationId(first.start);
         let target_id = DeclarationId(second.start);
-        assert_eq!(checked.declarations.verified_direct_move(source_id, target_id, "str"),
+        assert_eq!(checked.plan.declarations.verified_direct_move(source_id, target_id, "str"),
             Some(VerifiedMoveEvidence { source: source_id, target: target_id }),
             "正式資源橋接應取得已驗證的原始轉移身分");
-        assert_eq!(checked.declarations.verified_direct_move(source_id, target_id, "int"),
+        assert_eq!(checked.plan.declarations.verified_direct_move(source_id, target_id, "int"),
             None, "不得把 str 資源轉移假冒 int 值轉移");
-        assert_eq!(checked.declarations.verified_direct_move(target_id, source_id, "str"),
+        assert_eq!(checked.plan.declarations.verified_direct_move(target_id, source_id, "str"),
             None, "轉移證據不能顛倒來源與目標");
-        assert!(checked.declarations.has_direct_move(source_id, target_id),
+        assert!(checked.plan.declarations.has_direct_move(source_id, target_id),
             "已驗證來源直接產生真正具名整筆移動證據");
-        assert!(!checked.declarations.has_direct_move(target_id, source_id),
+        assert!(!checked.plan.declarations.has_direct_move(target_id, source_id),
             "不得顛倒真實資源移交方向");
-        assert!(!checked.declarations.has_direct_move(source_id, DeclarationId(code.len()+1)),
+        assert!(!checked.plan.declarations.has_direct_move(source_id, DeclarationId(code.len()+1)),
             "不存在的接收宣告不可冒充已驗證移動目標");
         let events = trace_named_string_move_source(code)
             .expect("UTF-8 字串實際生命週期證據");
@@ -402,13 +425,13 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             (target_id, source_id, "str"),
             (source_id, DeclarationId(code.len() + 1), "str"),
         ] {
-            assert_eq!(checked.declarations.apply_verified_direct_move(
+            assert_eq!(checked.plan.declarations.apply_verified_direct_move(
                 &mut pipeline, from, to, ty,
             ), Err(VerifiedMoveError::MissingEvidence));
             assert!(pipeline.read(source_id).is_ok(), "沒有 Checker 證據不能搬走所有者");
             assert_eq!(pipeline.outstanding(), 1);
         }
-        checked.declarations.apply_verified_direct_move(
+        checked.plan.declarations.apply_verified_direct_move(
             &mut pipeline, source_id, target_id, "str",
         ).expect("只有真正經 Checker 核准的來源及型別可進行抽象移交");
         assert!(pipeline.read(source_id).is_err(), "移動後原來源已失效");
@@ -434,10 +457,10 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         // Checker 具備真實的移交證據，但目標在安全帳簿已被占用，
         // 雙側交易仍須預檢拒絕，不能先讓來源失效。
         pipeline.declare(target, CopyPermission::Allowed).unwrap();
-        assert_eq!(checked.declarations.apply_verified_direct_move(
+        assert_eq!(checked.plan.declarations.apply_verified_direct_move(
             &mut pipeline, source, target, "bool",
         ), Err(VerifiedMoveError::MissingEvidence));
-        assert_eq!(checked.declarations.apply_verified_direct_move(
+        assert_eq!(checked.plan.declarations.apply_verified_direct_move(
             &mut pipeline, source, target, "str",
         ), Err(VerifiedMoveError::Pipeline(
             crate::resource_borrow_pipeline::PipelineError::Ownership(
@@ -462,11 +485,11 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let StmtKind::If { branch, .. } = &main.body[1].kind
             else { panic!("必須有分支遮蔽") };
         let shadow = DeclarationId(branch.body[0].start);
-        assert!(checked.declarations.matches(from, "str", true));
-        assert!(checked.declarations.matches(to, "str", true));
-        assert!(checked.declarations.matches(shadow, "int", true));
-        assert!(!checked.declarations.matches(shadow, "str", true));
-        assert!(!checked.declarations.matches(DeclarationId(src.len()+10), "str", true));
+        assert!(checked.plan.declarations.matches(from, "str", true));
+        assert!(checked.plan.declarations.matches(to, "str", true));
+        assert!(checked.plan.declarations.matches(shadow, "int", true));
+        assert!(!checked.plan.declarations.matches(shadow, "str", true));
+        assert!(!checked.plan.declarations.matches(DeclarationId(src.len()+10), "str", true));
         assert_ne!(from, to);
         assert_ne!(to, shadow);
     }
@@ -500,10 +523,10 @@ mod p16_6_r03_3_函式返回跨來源宣告身分稽核 {
             else { panic!("必須是已驗證 if 分支") };
         let StmtKind::Return(value) = &branch.body[0].kind
             else { panic!("必須是分支內具名 return move") };
-        assert_eq!(checked.declarations.verified_named_return(
+        assert_eq!(checked.plan.declarations.verified_named_return(
             original, value.start, "str",
         ), None, "靜態可能執行不能冒充已執行的直線 P16 資源返回");
-        assert!(checked.declarations.matches(original, "str", true),
+        assert!(checked.plan.declarations.matches(original, "str", true),
             "不得因禁止資源橋接證據而錯誤否決合法靜態來源");
     }
 
@@ -785,19 +808,19 @@ mod p16_6_r03_9_混合純值與資源責任帳簿實際來源 {
         let origin = DeclarationId(declare.start);
         let destination = DeclarationId(assign.start);
         let kind = if str_count == 0 { "Plain" } else { "Mixed" };
-        assert!(checked.declarations.matches(origin, kind, true));
-        assert!(checked.declarations.matches(destination, kind, true));
+        assert!(checked.plan.declarations.matches(origin, kind, true));
+        assert!(checked.plan.declarations.matches(destination, kind, true));
         if str_count > 0 {
-            assert_eq!(checked.declarations.verified_direct_move(
+            assert_eq!(checked.plan.declarations.verified_direct_move(
                 origin, destination, kind,
             ), Some(VerifiedMoveEvidence { source: origin, target: destination }));
-            assert!(checked.declarations.verified_direct_move(
+            assert!(checked.plan.declarations.verified_direct_move(
                 origin, destination, "str").is_none(),
                 "資源 str 欄位不得冒充 Mixed 的整筆移動型別");
-            assert!(checked.declarations.verified_direct_move(
+            assert!(checked.plan.declarations.verified_direct_move(
                 destination, origin, kind).is_none());
         } else {
-            assert!(checked.declarations.verified_direct_move(origin,destination,kind).is_none(),
+            assert!(checked.plan.declarations.verified_direct_move(origin,destination,kind).is_none(),
                 "Copyable 直接讀取不允許製造非 Copyable 整筆移動證據");
         }
         MixedResourcePlan::new(origin,destination,str_count).unwrap()
