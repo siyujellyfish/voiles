@@ -132,6 +132,14 @@ pub(crate) struct ParsedBlock<S> {
     pub(crate) end: usize,
 }
 
+/// F03：原私有 Checker 已核准的唯讀區塊走訪仍可使用
+/// Vec<S> 的迭代、切片和索引介面，但必須讀取正式 Parser
+/// 唯一交付的 ParsedBlock，不得事後複製成第二本 body AST。
+impl<S> std::ops::Deref for ParsedBlock<S> {
+    type Target = Vec<S>;
+    fn deref(&self) -> &Vec<S> { &self.statements }
+}
+
 /// 公開／私有只負責自身診斷、分句與具體語句，區塊走訪流程由共通核心負責。
 pub(crate) trait BlockSyntax {
     type Statement;

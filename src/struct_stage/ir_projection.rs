@@ -134,7 +134,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
             panic!("公開函式必須存在");
         };
         assert_eq!(fun.body.statements.len(), private_funcs[0].body.len());
-        for (public, private) in fun.body.statements.iter().zip(&private_funcs[0].body) {
+        for (public, private) in fun.body.statements.iter().zip(private_funcs[0].body.iter()) {
             assert_eq!(public.node_span(), private.node_span());
         }
     }
