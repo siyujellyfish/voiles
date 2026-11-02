@@ -334,6 +334,27 @@ pub(crate) fn take_scalar_literal(
         .expect("相同純值字面值不需附加模式驗證")
 }
 
+/// F02：兩套正式 Parser 的無後綴具名原子直接由單一 AST 產生器
+/// 建構 SpannedNode<K>。先以共通名稱讀取預覽下一個 token，遇到
+/// 可能含函式呼叫／方法／索引等模式專屬後綴時不消耗游標；
+/// 仍由各模式原有的後綴及權限規則獨立解析。
+pub(crate) fn parse_bare_name<K>(
+    tokens: &[Token], cursor: &mut usize, convert: impl FnOnce(String) -> K,
+) -> Option<crate::common_ir::SpannedNode<K>> {
+    let mut following = *cursor;
+    let name = take_spanned_name(tokens, &mut following)?;
+    if matches!(
+        tokens.get(following).map(|token| &token.kind),
+        Some(TokenKind::Symbol('(' | '.' | '['))
+    ) {
+        return None;
+    }
+    *cursor = following;
+    Some(crate::common_ir::SpannedNode {
+        kind: convert(name.kind), start: name.start, end: name.end,
+    })
+}
+
 pub(crate) fn boolean_keyword(word: &str) -> Option<bool> {
     match word {
         "true" => Some(true),
@@ -790,5 +811,35 @@ mod f02_真正公私純值字面值共同建構器 {
             .unwrap().unwrap();
         assert_eq!(allowed.kind, ScalarLiteral::Integer("42".to_owned()));
         assert_eq!(denied, 3);
+    }
+}
+
+#[cfg(test)]
+mod f02_正式無後綴名稱共通組樹 {
+    use super::*;
+    use crate::{lexer, source::Source};
+
+    #[test]
+    fn 無後綴名稱公私使用同一半開跨度_後綴形式不能被預先消耗() {
+        let source = Source::new("value\ncall()\nowner.move()\narr[0]\n".as_bytes().to_vec());
+        let scanned = lexer::scan(&source);
+        assert!(scanned.diagnostics.is_empty());
+        let toks = &scanned.tokens;
+        let start = toks.iter().position(|t| matches!(&t.kind, TokenKind::Name(s) if s=="value"))
+            .unwrap();
+        let mut at = start;
+        let name = parse_bare_name(toks, &mut at, |s| s).unwrap();
+        assert_eq!(name.kind, "value");
+        assert_eq!(name.start, 0);
+        assert_eq!(name.end, 5);
+        assert_eq!(at, start + 1);
+
+        for expected in ["call", "owner", "arr"] {
+            let pos = toks.iter().position(
+                |t| matches!(&t.kind, TokenKind::Name(s) if s == expected)).unwrap();
+            let mut cursor = pos;
+            assert!(parse_bare_name(toks, &mut cursor, |s| s).is_none());
+            assert_eq!(cursor, pos, "函式、方法、索引的專屬後綴不得被共通裸名解析器消耗");
+        }
     }
 }
