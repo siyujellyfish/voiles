@@ -203,6 +203,21 @@ pub(crate) struct VerifiedScalarHir {
 impl VerifiedScalarHir {
     pub(crate) fn is_consistent(&self) -> bool { !self.conflicted }
 
+    /// F01／F04：公私正式 Typed HIR 共同使用唯一 UTF-8
+    /// NodeIdentity 來源驗證器；同跨度具名引用必須存在同型別
+    /// 的成功 Checker 運算式，任一缺漏都不可交付後續階段。
+    pub(crate) fn source_spans_are_valid(&self, source: &str) -> bool {
+        self.is_consistent()
+            && self.verified_expressions().all(|expr|
+                NodeIdentity::checked(expr.span, NodeRole::Expression, source).is_some())
+            && self.verified_references().all(|reference|
+                NodeIdentity::checked(reference.span, NodeRole::Reference, source).is_some()
+                    && self.expression(reference.span)
+                        .is_some_and(|expr| expr.ty == reference.resolved.ty))
+            && self.verified_assignments().all(|assignment|
+                NodeIdentity::checked(assignment.span, NodeRole::Assignment, source).is_some())
+    }
+
     pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
         let fact = VerifiedScalarExpression { span, ty };
         let key = NodeIdentity { span, role: NodeRole::Expression };
@@ -681,5 +696,37 @@ mod r02_f01_f04_單一_nodeidentity_typed_hir_權威 {
         assert_eq!(hir.reference(original), Some(first.use_at(original)));
         assert_eq!(hir.reference(forged), None);
         assert_eq!(hir.verified_references().count(), 1);
+    }
+}
+
+#[cfg(test)]
+mod r02_f01_f04_公私唯一_hir_來源閉合 {
+    use super::*;
+    #[test]
+    fn utf8_字元內部跨度_越界_沒有對應運算式的引用全部拒絕() {
+        let src = "🪼value";
+        let start = src.find("value").unwrap();
+        let valid = NodeSpan::new(start,start+5);
+        let id = TypedDeclaration::new(DeclarationId(0), ScalarType::Int, true);
+        let mut correct = VerifiedScalarHir::default();
+        correct.record_expression(valid,ScalarType::Int);
+        correct.record_reference(id.use_at(valid));
+        assert!(correct.source_spans_are_valid(src));
+
+        let mut fake = VerifiedScalarHir::default();
+        fake.record_reference(id.use_at(valid));
+        assert!(!fake.source_spans_are_valid(src),
+            "單有來源引用不代表 Checker 已成功建立同跨度型別 HIR");
+        fake.record_expression(valid,ScalarType::Bool);
+        assert!(!fake.source_spans_are_valid(src),
+            "同跨度不同型別的引用不能冒充成功的 Checker 證據");
+
+        for span in [NodeSpan::new(1,2),
+            NodeSpan::new(start,src.len()+1)] {
+            let mut broken = VerifiedScalarHir::default();
+            broken.record_expression(span,ScalarType::Int);
+            assert!(!broken.source_spans_are_valid(src),
+                "來源範圍不可指向 UTF-8 中間或 EOF 之外");
+        }
     }
 }
