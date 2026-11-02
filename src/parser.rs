@@ -489,6 +489,25 @@ mod tests {
     }
 
     #[test]
+    fn 真正共同_ifchain_ast_保留每個分支_utf8_起點與鏈尾端() {
+        let code = "fn main()->int{\nif (true){\nreturn 1\n}else if (false){\nreturn 2\n}else{\nreturn 3\n}\nreturn 0\n}\n";
+        let file = parse_text(code).unwrap();
+        let Item::Function(main) = &file.items[0] else { panic!("缺少 main"); };
+        let stmt = &main.body.statements[0];
+        let StmtKind::IfChain(chain) = &stmt.kind else { panic!("未交付共同 if AST"); };
+        let _: &crate::syntax_shared::ParsedIfChain<super::Expr, super::Block> = chain;
+        assert_eq!(chain.arms.len(), 2);
+        assert_eq!(chain.arms[0].start, code.find("if (true)").unwrap());
+        assert_eq!(chain.arms[1].start, code.find("if (false)").unwrap());
+        assert!(chain.arms[0].branch.condition.start < chain.arms[1].start);
+        assert_eq!(chain.end, code.find("}\nreturn 0").unwrap() + 1);
+        assert_eq!(stmt.end, chain.end);
+        let position = crate::common_ir::NodeSpan::new(stmt.start, stmt.end);
+        assert!(crate::common_ir::NodeIdentity::checked(
+            position, crate::common_ir::NodeRole::Statement, code).is_some());
+    }
+
+    #[test]
     fn 沒有分句換行不能默默當成兩個合法語句() {
         assert!(parse_text("fn main()->int{\nvar x:int = 1 return 0\n}\n").is_err());
     }
