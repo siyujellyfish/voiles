@@ -10,7 +10,7 @@ use crate::ownership_ledger::DeclarationId;
 
 /// 原始 UTF-8 位元組半開範圍，供共同解析核心與各模式正式 AST 使用。
 /// 此型別不是已換算為一基行列的公開診斷位置。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct NodeSpan {
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -19,6 +19,48 @@ impl NodeSpan {
     pub(crate) fn new(start: usize, end: usize) -> Self {
         debug_assert!(start <= end, "節點來源半開範圍不可反向");
         Self { start, end }
+    }
+
+    /// 共同來源身分的不可造假驗證：拒絕 EOF 以外或多位元組
+    /// UTF-8 字元中間的位置。只用原始碼的真實 byte offset。
+    pub(crate) fn checked(self, source: &str) -> Option<Self> {
+        (self.start < self.end
+            && self.end <= source.len()
+            && source.is_char_boundary(self.start)
+            && source.is_char_boundary(self.end)).then_some(self)
+    }
+}
+
+/// F01：不同前端雖共用 AST／HIR，模式權限不能取語法聯集。
+/// 私有受限語法的合法性仍由原有 P13～P16 Parser／Checker 決定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum FrontendMode {
+    PublicMvpA,
+    PrivateVerified,
+}
+
+/// F01：在源檔內以語法類別及來源半開跨度識別一筆 AST／HIR 節點。
+/// 同位置不同角色（例如 return 表達式和名稱讀取）不能混淆；
+/// DeclarationId 只表示詞彙宣告，絕不等於執行期 ResourceId。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum NodeRole {
+    Expression,
+    Reference,
+    Assignment,
+    Declaration,
+    Statement,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct NodeIdentity {
+    pub(crate) span: NodeSpan,
+    pub(crate) role: NodeRole,
+}
+impl NodeIdentity {
+    pub(crate) fn checked(
+        span: NodeSpan, role: NodeRole, source: &str,
+    ) -> Option<Self> {
+        Some(Self { span: span.checked(source)?, role })
     }
 }
 
@@ -33,6 +75,9 @@ pub(crate) struct SpannedNode<K> {
 impl<K> SpannedNode<K> {
     pub(crate) fn node_span(&self) -> NodeSpan {
         NodeSpan::new(self.start, self.end)
+    }
+    pub(crate) fn node_identity(&self, role: NodeRole) -> NodeIdentity {
+        NodeIdentity { span: self.node_span(), role }
     }
 }
 

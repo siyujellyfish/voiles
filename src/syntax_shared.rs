@@ -235,6 +235,55 @@ pub(crate) fn parse_declaration<P: DeclarationSyntax>(
     Ok(ParsedDeclaration { name, ty, mutable, initializer, start, end })
 }
 
+/// F03：正式公私 Parser 唯一的共同語句前綴分類。
+/// 僅識別原有交集及私有延伸的外形，絕不替任何前端核准語意。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum StatementHead {
+    Declaration,
+    Conditional,
+    Return,
+    Named,
+    ModeSpecific,
+}
+pub(crate) fn statement_head(
+    tokens: &[Token], cursor: usize, mode: crate::common_ir::FrontendMode,
+) -> Option<StatementHead> {
+    let token = tokens.get(cursor)?;
+    match &token.kind {
+        TokenKind::Keyword(word) if word == "var" || word == "const" =>
+            Some(StatementHead::Declaration),
+        TokenKind::Keyword(word) if word == "if" =>
+            Some(StatementHead::Conditional),
+        TokenKind::Keyword(word) if word == "return" =>
+            Some(StatementHead::Return),
+        TokenKind::Name(_) => Some(StatementHead::Named),
+        // 僅讓私有 Parser 辨識已核准的延伸語句種類，權限
+        // 依然由原 P13 Parser + Checker 判斷，不放寬公用入口。
+        TokenKind::Keyword(word) if mode == crate::common_ir::FrontendMode::PrivateVerified
+            && matches!(word.as_str(), "for" | "while" | "break" | "continue") =>
+            Some(StatementHead::ModeSpecific),
+        _ => None,
+    }
+}
+
+/// F03：公私皆必須透過本共同建構器依序讀取賦值名稱／=／RHS。
+/// 保留原 Name 與型別／初始化的專屬診斷。私有欄位賦值
+/// 仍先由 P13 確認 . 後綴並轉入原有欄位寫入規則。
+pub(crate) struct ParsedNamedAssignment<E> {
+    pub(crate) name: String,
+    pub(crate) expression: E,
+}
+pub(crate) trait NamedAssignmentSyntax: AssignmentSyntax {
+    fn named_assignment_name(&mut self) -> Result<String, crate::Diagnostic>;
+}
+pub(crate) fn parse_named_assignment<P: NamedAssignmentSyntax>(
+    parser: &mut P,
+) -> Result<ParsedNamedAssignment<P::Expression>, crate::Diagnostic> {
+    let name = parser.named_assignment_name()?;
+    let expression = parse_assignment(parser)?;
+    Ok(ParsedNamedAssignment { name, expression })
+}
+
 /// 公私已核准具名整筆賦值尾段的共同解析核心。
 /// 名稱在進入前已解析；欄位賦值由私有入口獨立保留。
 pub(crate) trait AssignmentSyntax {
@@ -841,5 +890,46 @@ mod f02_正式無後綴名稱共通組樹 {
             assert!(parse_bare_name(toks, &mut cursor, |s| s).is_none());
             assert_eq!(cursor, pos, "函式、方法、索引的專屬後綴不得被共通裸名解析器消耗");
         }
+    }
+}
+
+#[cfg(test)]
+mod r02_f01_f03_模式隔離及共同賦值分類 {
+    use super::*;
+    use crate::common_ir::{FrontendMode, NodeIdentity, NodeRole, NodeSpan};
+
+    #[test]
+    fn 公私語句前綴只有原核准交集相同_私有關鍵字不開放公開模式() {
+        for word in ["var", "const", "if", "return"] {
+            let tokens = [Token {
+                kind: TokenKind::Keyword(word.into()), start: 0, end: word.len(),
+            }];
+            assert_eq!(
+                statement_head(&tokens, 0, FrontendMode::PublicMvpA),
+                statement_head(&tokens, 0, FrontendMode::PrivateVerified));
+        }
+        for word in ["for", "while", "break", "continue"] {
+            let tokens = [Token {
+                kind: TokenKind::Keyword(word.into()), start: 0, end: word.len(),
+            }];
+            assert_eq!(statement_head(&tokens, 0, FrontendMode::PublicMvpA), None);
+            assert_eq!(statement_head(&tokens, 0, FrontendMode::PrivateVerified),
+                Some(StatementHead::ModeSpecific));
+        }
+    }
+
+    #[test]
+    fn 節點身分由_utf8_半開位置及角色共同決定_無效位置不可取得() {
+        let source = "中文\nvalue";
+        let from = source.find("value").unwrap();
+        let span = NodeSpan::new(from, from + 5);
+        let reference = NodeIdentity::checked(span, NodeRole::Reference, source).unwrap();
+        let assignment = NodeIdentity::checked(span, NodeRole::Assignment, source).unwrap();
+        assert_ne!(reference, assignment);
+        assert_eq!(reference.span, span);
+        assert!(NodeIdentity::checked(NodeSpan::new(1, 2),
+            NodeRole::Expression, source).is_none());
+        assert!(NodeIdentity::checked(NodeSpan::new(from, source.len() + 1),
+            NodeRole::Statement, source).is_none());
     }
 }

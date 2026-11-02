@@ -184,21 +184,23 @@ impl<'a> Parser<'a> {
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.current().ok_or_else(|| self.err("缺少語句"))?.start;
-        let (kind, end) = if self.keyword("var") || self.keyword("const") {
+        let head = crate::syntax_shared::statement_head(
+            self.tokens, self.cursor, crate::common_ir::FrontendMode::PublicMvpA,
+        );
+        let (kind, end) = if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let binding = self.binding()?;
             let end = binding.end;
             (StmtKind::Binding(binding), end)
-        } else if self.keyword("if") {
+        } else if head == Some(crate::syntax_shared::StatementHead::Conditional) {
             self.if_chain()?
-        } else if self.keyword("return") {
+        } else if head == Some(crate::syntax_shared::StatementHead::Return) {
             let value = crate::syntax_shared::parse_return(self)?;
             let end = value.end;
             (StmtKind::Return(value), end)
-        } else if matches!(self.current().map(|t| &t.kind), Some(TokenKind::Name(_))) {
-            let name = self.name()?;
-            let value = crate::syntax_shared::parse_assignment(self)?;
-            let end = value.end;
-            (StmtKind::Assignment {name, value}, end)
+        } else if head == Some(crate::syntax_shared::StatementHead::Named) {
+            let parsed = crate::syntax_shared::parse_named_assignment(self)?;
+            let end = parsed.expression.end;
+            (StmtKind::Assignment { name: parsed.name, value: parsed.expression }, end)
         } else {
             return Err(self.err("首版不接受的語句或未核准語法"));
         };
@@ -280,6 +282,10 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
         initializer.as_ref().map(|value| value.end)
             .unwrap_or_else(|| self.tokens[self.cursor - 1].end)
     }
+}
+
+impl crate::syntax_shared::NamedAssignmentSyntax for Parser<'_> {
+    fn named_assignment_name(&mut self) -> Result<String, Diagnostic> { self.name() }
 }
 
 impl crate::syntax_shared::AssignmentSyntax for Parser<'_> {
