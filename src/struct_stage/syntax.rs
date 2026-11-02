@@ -631,7 +631,7 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
 impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
     type Params = Vec<Parameter>;
     type ResultType = String;
-    type Body = Vec<Stmt>;
+    type Body = crate::syntax_shared::ParsedBlock<Stmt>;
 
     fn begin_function(&mut self) -> Result<usize, Diagnostic> {
         crate::syntax_shared::take_keyword(self.tokens, &mut self.cursor, "fn")
@@ -668,6 +668,8 @@ impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
             .map(|_| ()).ok_or_else(|| self.syntax("函式需要回傳型別標註"))
     }
     fn function_result_type(&mut self) -> Result<String, Diagnostic> { self.name() }
-    fn function_body(&mut self) -> Result<Vec<Stmt>, Diagnostic> { self.body() }
+    fn function_body(&mut self) -> Result<crate::syntax_shared::ParsedBlock<Stmt>, Diagnostic> {
+        crate::syntax_shared::parse_block(self)
+    }
     fn function_last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
 }
