@@ -132,7 +132,9 @@ impl OwnershipPass<'_> {
             if !state.reachable { break; }
             match &statement.kind {
                 StmtKind::Binding(b) => self.binding_declaration(b, state)?,
-                StmtKind::Assignment { name, value } => {
+                StmtKind::Assignment(assignment) => {
+                    let name = &assignment.name;
+                    let value = &assignment.expression;
                     self.expression(value, state)?;
                     // 可變權限與型別一致性已由 P10/P11 先行檢查；
                     // 只有合法 RHS 求值後才把原宣告標為重新初始化。
