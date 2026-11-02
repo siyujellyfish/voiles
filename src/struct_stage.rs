@@ -298,7 +298,8 @@ impl VerifiedDeclarationFacts {
                 && text.is_char_boundary(span.start)
                 && text.is_char_boundary(span.end)
         };
-        hir.verified_expressions().all(|expr| valid_span(expr.span))
+        hir.is_consistent()
+            && hir.verified_expressions().all(|expr| valid_span(expr.span))
             && hir.verified_references().all(|entry| {
                 valid_span(entry.span)
                     // 每筆具名 read 都必須有同跨度同型別的真正
