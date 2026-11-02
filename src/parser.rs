@@ -46,10 +46,8 @@ pub(crate) type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 pub(crate) enum StmtKind {
     Binding(Binding),
     Assignment(crate::syntax_shared::ParsedNamedAssignment<Expr>),
-    IfChain {
-        branches: Vec<crate::common_ir::ConditionalBranch<Expr, Block>>,
-        otherwise: Option<Block>,
-    },
+    /// F03：公開正式 AST 直接持有共用 if/else-if Parser 的完整結果。
+    IfChain(crate::syntax_shared::ParsedIfChain<Expr, Block>),
     Return(Expr),
 }
 
@@ -155,10 +153,8 @@ impl<'a> Parser<'a> {
 
     fn if_chain(&mut self) -> Result<(StmtKind, usize), Diagnostic> {
         let parsed = crate::syntax_shared::parse_if_chain(self)?;
-        Ok((StmtKind::IfChain {
-            branches: parsed.arms.into_iter().map(|arm| arm.branch).collect(),
-            otherwise: parsed.otherwise,
-        }, parsed.end))
+        let end = parsed.end;
+        Ok((StmtKind::IfChain(parsed), end))
     }
 
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
@@ -486,10 +482,29 @@ mod tests {
         ).unwrap();
         let Item::Function(f) = &file.items[0] else { panic!("缺少函式"); };
         assert_eq!(f.body.statements.len(), 2);
-        let StmtKind::IfChain { branches, otherwise } = &f.body.statements[0].kind else {panic!("缺少 if");};
-        assert_eq!(branches.len(), 2);
-        assert!(otherwise.is_some());
+        let StmtKind::IfChain(chain) = &f.body.statements[0].kind else {panic!("缺少 if");};
+        assert_eq!(chain.arms.len(), 2);
+        assert!(chain.otherwise.is_some());
         assert!(matches!(&f.body.statements[1].kind, StmtKind::Return(_)));
+    }
+
+    #[test]
+    fn 真正共同_ifchain_ast_保留每個分支_utf8_起點與鏈尾端() {
+        let code = "fn main()->int{\nif (true){\nreturn 1\n}else if (false){\nreturn 2\n}else{\nreturn 3\n}\nreturn 0\n}\n";
+        let file = parse_text(code).unwrap();
+        let Item::Function(main) = &file.items[0] else { panic!("缺少 main"); };
+        let stmt = &main.body.statements[0];
+        let StmtKind::IfChain(chain) = &stmt.kind else { panic!("未交付共同 if AST"); };
+        let _: &crate::syntax_shared::ParsedIfChain<super::Expr, super::Block> = chain;
+        assert_eq!(chain.arms.len(), 2);
+        assert_eq!(chain.arms[0].start, code.find("if (true)").unwrap());
+        assert_eq!(chain.arms[1].start, code.find("if (false)").unwrap());
+        assert!(chain.arms[0].branch.condition.start < chain.arms[1].start);
+        assert_eq!(chain.end, code.find("}\nreturn 0").unwrap() + 1);
+        assert_eq!(stmt.end, chain.end);
+        let position = crate::common_ir::NodeSpan::new(stmt.start, stmt.end);
+        assert!(crate::common_ir::NodeIdentity::checked(
+            position, crate::common_ir::NodeRole::Statement, code).is_some());
     }
 
     #[test]

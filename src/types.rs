@@ -182,13 +182,13 @@ impl<'a> TypeChecker<'a> {
                     let actual = self.expression(expr, scopes)?;
                     self.require(actual.ty, result, expr, "回傳值型別與函式標註不一致")?;
                 }
-                StmtKind::IfChain { branches, otherwise } => {
-                    for branch in branches {
-                        let cond = self.expression(&branch.condition, scopes)?;
-                        self.require(cond.ty, Type::Bool, &branch.condition, "if 條件必須具有 bool 型別")?;
-                        self.block(&branch.body, scopes, result)?;
+                StmtKind::IfChain(chain) => {
+                    for arm in &chain.arms {
+                        let cond = self.expression(&arm.branch.condition, scopes)?;
+                        self.require(cond.ty, Type::Bool, &arm.branch.condition, "if 條件必須具有 bool 型別")?;
+                        self.block(&arm.branch.body, scopes, result)?;
                     }
-                    if let Some(body) = otherwise {
+                    if let Some(body) = &chain.otherwise {
                         self.block(body, scopes, result)?;
                     }
                 }

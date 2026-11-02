@@ -106,12 +106,12 @@ impl<'a> Resolver<'a> {
                     self.check_expr(value, scopes)?;
                 }
                 StmtKind::Return(expr) => self.check_expr(expr, scopes)?,
-                StmtKind::IfChain { branches, otherwise } => {
-                    for branch in branches {
-                        self.check_expr(&branch.condition, scopes)?;
-                        self.block(&branch.body, scopes)?;
+                StmtKind::IfChain(chain) => {
+                    for arm in &chain.arms {
+                        self.check_expr(&arm.branch.condition, scopes)?;
+                        self.block(&arm.branch.body, scopes)?;
                     }
-                    if let Some(branch) = otherwise {
+                    if let Some(branch) = &chain.otherwise {
                         self.block(branch, scopes)?;
                     }
                 }
@@ -294,9 +294,9 @@ mod tests {
         let Item::Function(function) = &file.items[0] else { panic!("缺少 main"); };
         let StmtKind::Binding(outer) = &function.body.statements[0].kind
             else { panic!("缺少外層名稱"); };
-        let StmtKind::IfChain { branches, .. } = &function.body.statements[1].kind
+        let StmtKind::IfChain(chain) = &function.body.statements[1].kind
             else { panic!("缺少內層分支"); };
-        let StmtKind::Binding(inner) = &branches[0].body.statements[0].kind
+        let StmtKind::Binding(inner) = &chain.arms[0].branch.body.statements[0].kind
             else { panic!("缺少內層遮蔽宣告"); };
 
         let resolver = Resolver {

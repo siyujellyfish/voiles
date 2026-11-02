@@ -28,12 +28,14 @@ pub(crate) fn take_return_arrow(tokens: &[Token], cursor: &mut usize) -> Option<
 }
 
 /// 公私共同 if/else-if 文法產生的單一條件分支。
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedIfArm<E, B> {
     pub(crate) start: usize,
     pub(crate) branch: crate::common_ir::ConditionalBranch<E, B>,
 }
 
 /// 不依賴任何特定 Parser 的完整已核准 if/else-if 鏈。
+#[derive(Debug, Clone)]
 pub(crate) struct ParsedIfChain<E, B> {
     pub(crate) arms: Vec<ParsedIfArm<E, B>>,
     pub(crate) otherwise: Option<B>,
