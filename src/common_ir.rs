@@ -437,8 +437,9 @@ fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
                 mutable: binding.mutable,
                 init: map_optional(binding.initializer.as_ref(), public_expression)?,
             },
-            PublicStmtKind::Assignment { name, value } => ScalarStmt::Assign {
-                name: name.clone(), value: public_expression(value)?,
+            PublicStmtKind::Assignment(assignment) => ScalarStmt::Assign {
+                name: assignment.name.clone(),
+                value: public_expression(&assignment.expression)?,
             },
             PublicStmtKind::IfChain { branches, otherwise } => {
                 // P01 的平面 else-if 與私有 P13 的巢狀 If(no=[If])
