@@ -239,7 +239,7 @@ fn check_with_hir_internal<'a>(
     let mut globals = HashMap::new();
     for item in &file.items {
         match item {
-            Item::Function(f) => { functions.insert(f.name.clone(), f.returns); }
+            Item::Function(f) => { functions.insert(f.name.clone(), f.result_ty); }
             Item::Binding(b) => { globals.insert(b.name.clone(),
                 TypedDeclaration::new(DeclarationId(b.start), b.ty, b.mutable)); }
         }
@@ -251,7 +251,7 @@ fn check_with_hir_internal<'a>(
     for item in &file.items {
         match item {
             Item::Binding(b) => checker.initializer(b, &[])?,
-            Item::Function(f) => checker.block(&f.body, &mut Vec::new(), f.returns)?,
+            Item::Function(f) => checker.block(&f.body, &mut Vec::new(), f.result_ty)?,
         }
     }
     let verified_hir = checker.verified_hir.into_inner();
