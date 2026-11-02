@@ -785,6 +785,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error("P13：加減右運算元必須為已初始化 int", right));
                 }
                 debug_assert!(*operator == '+' || *operator == '-');
+                self.recorded_scalar_hir.borrow_mut().record_arithmetic(
+                    crate::common_ir::VerifiedScalarArithmetic {
+                        span: term.node_span(),
+                        left: left.node_span(),
+                        right: right.node_span(),
+                        operator: *operator,
+                    });
                 Ok(("int".to_string(), true))
             }
             TermKind::Name(name) => {

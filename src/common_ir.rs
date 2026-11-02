@@ -191,6 +191,16 @@ pub(crate) struct VerifiedScalarExpression {
     pub(crate) ty: ScalarType,
 }
 
+/// R02 F04：由真正公私 Checker 驗證的同一個 int 加減節點及其
+/// 左右運算元來源；不把這個純值事實冒充可移動資源的票據。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct VerifiedScalarArithmetic {
+    pub(crate) span: NodeSpan,
+    pub(crate) left: NodeSpan,
+    pub(crate) right: NodeSpan,
+    pub(crate) operator: char,
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedScalarHir {
     /// F01／F04：讀取與賦值由同一筆 NodeIdentity 索引表管理，
@@ -200,6 +210,9 @@ pub(crate) struct VerifiedScalarHir {
         (NodeRole, usize), (NodeIdentity, TypedUse<ScalarType>)
     >,
     expressions: std::collections::BTreeMap<NodeIdentity, VerifiedScalarExpression>,
+    /// 來源完整跨度為身份：左結合 A+B+C 的內外節點可具有同
+    /// 起點、不同終點；同一完整跨度不能記錄相互矛盾的運算證據。
+    arithmetic: std::collections::BTreeMap<NodeIdentity, VerifiedScalarArithmetic>,
     conflicted: bool,
 }
 impl VerifiedScalarHir {
@@ -218,6 +231,41 @@ impl VerifiedScalarHir {
                         .is_some_and(|expr| expr.ty == reference.resolved.ty))
             && self.verified_assignments().all(|assignment|
                 NodeIdentity::checked(assignment.span, NodeRole::Assignment, source).is_some())
+            && self.verified_arithmetic().all(|fact| {
+                NodeIdentity::checked(fact.span, NodeRole::Expression, source).is_some()
+                    && NodeIdentity::checked(fact.left, NodeRole::Expression, source).is_some()
+                    && NodeIdentity::checked(fact.right, NodeRole::Expression, source).is_some()
+                    && fact.span.start <= fact.left.start
+                    && fact.left.end <= fact.right.start
+                    && fact.right.end <= fact.span.end
+                    && matches!(fact.operator, '+' | '-')
+                    && source.get(fact.left.end..fact.right.start)
+                        .is_some_and(|between| between.contains(fact.operator))
+                    && [fact.span, fact.left, fact.right].into_iter().all(|span|
+                        self.expression(span).is_some_and(|entry| entry.ty == ScalarType::Int))
+            })
+    }
+
+    /// 已有來源跨度／左右值型別／副作用完成檢查後才記錄。
+    /// 同起點不同加減事實永久矛盾，不准後來的合法重訪洗掉。
+    pub(crate) fn record_arithmetic(&mut self, fact: VerifiedScalarArithmetic) {
+        let key = NodeIdentity { span: fact.span, role: NodeRole::Expression };
+        if let Some(previous) = self.arithmetic.get(&key) {
+            if *previous != fact { self.conflicted = true; }
+        } else {
+            self.arithmetic.insert(key, fact);
+        }
+    }
+
+    pub(crate) fn verified_arithmetic(&self)
+        -> impl Iterator<Item = VerifiedScalarArithmetic> + '_ {
+        self.arithmetic.values().copied()
+    }
+
+    pub(crate) fn arithmetic(&self, span: NodeSpan) -> Option<VerifiedScalarArithmetic> {
+        self.arithmetic.get(&NodeIdentity {
+            span, role: NodeRole::Expression,
+        }).copied()
     }
 
     pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
@@ -739,5 +787,72 @@ mod r02_f01_f04_公私唯一_hir_來源閉合 {
             assert!(!broken.source_spans_are_valid(src),
                 "來源範圍不可指向 UTF-8 中間或 EOF 之外");
         }
+    }
+}
+
+#[cfg(test)]
+mod r02_f04_公私算術_hir_跨度操作與不可篡改契約 {
+    use super::*;
+    #[test]
+    fn 合法_utf8_二元節點在同一_hir_驗證子節點類型及原始運算子() {
+        let code="繁體\n4 + 5";
+        let begin=code.find('4').unwrap();
+        let lhs=NodeSpan::new(begin,begin+1);
+        let rhs=NodeSpan::new(begin+4,begin+5);
+        let parent=NodeSpan::new(begin,begin+5);
+        let fact=VerifiedScalarArithmetic {
+            span:parent,left:lhs,right:rhs,operator:'+',
+        };
+        let mut hir=VerifiedScalarHir::default();
+        for span in [lhs,rhs,parent] { hir.record_expression(span,ScalarType::Int); }
+        hir.record_arithmetic(fact);
+        assert!(hir.source_spans_are_valid(code));
+        assert_eq!(hir.arithmetic(parent),Some(fact));
+        assert_eq!(hir.verified_arithmetic().count(),1);
+        // 更換運算子或左右來源均不得覆寫已核准事實。
+        hir.record_arithmetic(VerifiedScalarArithmetic {operator:'-',..fact});
+        assert!(!hir.is_consistent());
+        assert_eq!(hir.arithmetic(parent),Some(fact));
+    }
+    #[test]
+    fn 左結合多層運算同起點不同終點應共存而不能假報衝突() {
+        let src="8 - 3 - 1";
+        let left=NodeSpan::new(0,1);
+        let inner_right=NodeSpan::new(4,5);
+        let inner=NodeSpan::new(0,5);
+        let outer_right=NodeSpan::new(8,9);
+        let outer=NodeSpan::new(0,9);
+        let mut hir=VerifiedScalarHir::default();
+        for span in [left,inner_right,inner,outer_right,outer] {
+            hir.record_expression(span,ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span:inner,left,right:inner_right,operator:'-',
+        });
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span:outer,left:inner,right:outer_right,operator:'-',
+        });
+        assert_eq!(hir.verified_arithmetic().count(),2);
+        assert!(hir.source_spans_are_valid(src));
+    }
+
+    #[test]
+    fn 來源不存在的運算子_或不同型別子節點必須拒絕() {
+        let src="4 + 5";
+        let left=NodeSpan::new(0,1);
+        let right=NodeSpan::new(4,5);
+        let span=NodeSpan::new(0,5);
+        let mut wrong=VerifiedScalarHir::default();
+        wrong.record_expression(left,ScalarType::Int);
+        wrong.record_expression(right,ScalarType::Bool);
+        wrong.record_expression(span,ScalarType::Int);
+        wrong.record_arithmetic(VerifiedScalarArithmetic {
+            span,left,right,operator:'-',
+        });
+        assert!(!wrong.source_spans_are_valid(src));
+        let mut missing=VerifiedScalarHir::default();
+        missing.record_expression(span,ScalarType::Int);
+        missing.record_arithmetic(VerifiedScalarArithmetic {span,left,right,operator:'+'});
+        assert!(!missing.source_spans_are_valid(src));
     }
 }
