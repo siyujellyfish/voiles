@@ -476,14 +476,39 @@ impl VerifiedDeclarationFacts {
 struct VerifiedSafetyPlan {
     declarations: VerifiedDeclarationFacts,
     scalar_hir: crate::common_ir::VerifiedScalarHir,
+    /// Checker 交付時即封存的已驗證 HIR 位置契約；避免橋接錯誤
+    /// 丟失任何一類證據後，僅靠剩餘的相容項目通過空集合檢查。
+    expression_spans: Vec<crate::common_ir::NodeSpan>,
+    reference_spans: Vec<crate::common_ir::NodeSpan>,
+    assignment_spans: Vec<crate::common_ir::NodeSpan>,
 }
 
 impl VerifiedSafetyPlan {
+    fn from_checker(
+        declarations: VerifiedDeclarationFacts,
+        scalar_hir: crate::common_ir::VerifiedScalarHir,
+    ) -> Self {
+        let expression_spans =
+            scalar_hir.verified_expressions().map(|fact| fact.span).collect();
+        let reference_spans =
+            scalar_hir.verified_references().map(|fact| fact.span).collect();
+        let assignment_spans =
+            scalar_hir.verified_assignments().map(|fact| fact.span).collect();
+        Self { declarations, scalar_hir,
+            expression_spans, reference_spans, assignment_spans }
+    }
+
     /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
     /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
     fn is_consistent(&self, structs: &HashMap<String, StructDecl>, text: &str) -> bool {
         self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
+            && self.expression_spans == self.scalar_hir.verified_expressions()
+                .map(|fact| fact.span).collect::<Vec<_>>()
+            && self.reference_spans == self.scalar_hir.verified_references()
+                .map(|fact| fact.span).collect::<Vec<_>>()
+            && self.assignment_spans == self.scalar_hir.verified_assignments()
+                .map(|fact| fact.span).collect::<Vec<_>>()
     }
 }
 
@@ -546,7 +571,7 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
     declarations.call_borrows = checker.recorded_call_borrows.into_inner();
     // 雙帳簿與 P16 來源橋接只能拿到整份通過同一交叉驗證的計畫。
     // 真正 Checker 的資訊由此單一所有權移入，不能傳遞獨立可換的兩本表。
-    let plan = VerifiedSafetyPlan { declarations, scalar_hir };
+    let plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir);
     if !plan.is_consistent(&structs, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
