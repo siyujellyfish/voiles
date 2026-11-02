@@ -39,12 +39,12 @@ fn private_scalar_statements(stmts: &[Stmt], text: &str)
     -> Option<Vec<crate::common_ir::ScalarStmt>> {
     use crate::common_ir::{ScalarStmt, ScalarType};
     stmts.iter().map(|statement| Some(match &statement.kind {
-        StmtKind::Declare { name, ty, mutable, init } => ScalarStmt::Declare {
+        StmtKind::Declare(declaration) => ScalarStmt::Declare {
             declaration: DeclarationId(statement.start),
-            name: name.clone(),
-            ty: ScalarType::from_name(ty)?,
-            mutable: *mutable,
-            init: match init {
+            name: declaration.name.clone(),
+            ty: ScalarType::from_name(&declaration.ty)?,
+            mutable: declaration.mutable,
+            init: match &declaration.initializer {
                 Some(value) => Some(private_scalar_expression(value, text)?),
                 None => None,
             },
