@@ -26,22 +26,12 @@ pub(crate) enum Item {
     Binding(Binding),
 }
 
-#[derive(Debug, Clone)]
-pub(crate) struct Function {
-    pub(crate) name: String,
-    pub(crate) returns: Type,
-    pub(crate) body: Block,
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-}
+/// F03：公開 P01 的真正函式 AST 直接是共通 Parser 產物。
+/// Params=() 僅表示已核准 P01 零參數，不放寬私有 P13 參數。
+pub(crate) type Function = crate::syntax_shared::ParsedFunction<(), Type, Block>;
 
-#[derive(Debug, Clone)]
-pub(crate) struct Block {
-    pub(crate) statements: Vec<Stmt>,
-    #[allow(dead_code)] // P08 AST 除錯保留來源起點。
-    pub(crate) start: usize,
-    pub(crate) end: usize,
-}
+/// 公開 P01 的真正區塊 AST 直接由共通 parse_block 建構。
+pub(crate) type Block = crate::syntax_shared::ParsedBlock<Stmt>;
 
 /// F03：真正公開語句與頂層宣告 AST 直接持有 Parser 共通
 /// `ParsedDeclaration`，不再經第二套同欄位的獨立 Binding 模型。
@@ -150,10 +140,7 @@ impl<'a> Parser<'a> {
     }
 
     fn block(&mut self) -> Result<Block, Diagnostic> {
-        let parsed = crate::syntax_shared::parse_block(self)?;
-        Ok(Block {
-            statements: parsed.statements, start: parsed.start, end: parsed.end,
-        })
+        crate::syntax_shared::parse_block(self)
     }
 
     fn condition(&mut self) -> Result<Expr, Diagnostic> {
@@ -205,10 +192,7 @@ impl<'a> Parser<'a> {
         if !matches!(parsed.body.statements.last().map(|s| &s.kind), Some(StmtKind::Return(_))) {
             return Err(self.err("函式最外層最後一條語句必須為明確 return"));
         }
-        Ok(Function {
-            name: parsed.name, returns: parsed.result_ty, body: parsed.body,
-            start: parsed.start, end: parsed.end,
-        })
+        Ok(parsed)
     }
 
     fn file(mut self) -> Result<File, Diagnostic> {
@@ -464,6 +448,23 @@ mod tests {
         assert!(inner.mutable);
         assert_eq!(inner.start, code.find("var alias:int").unwrap());
         assert_eq!(inner.end, code.find("= item").unwrap() + "= item".len());
+    }
+
+    #[test]
+    fn 真正公開函式與區塊_ast_不再轉換共通_parser_產物() {
+        let code = "fn main()->int{\nvar value:int = 3\nreturn value\n}\n";
+        let ast = parse_text(code).unwrap();
+        let Item::Function(main) = &ast.items[0] else {panic!("缺少 main");};
+        // Rust 編譯期驗證這不是第二份具相同欄位的公開 Function／Block。
+        let _: &crate::syntax_shared::ParsedFunction<(), super::Type, super::Block> = main;
+        let _: &crate::syntax_shared::ParsedBlock<super::Stmt> = &main.body;
+        assert_eq!(main.params, ());
+        assert_eq!(main.name, "main");
+        assert_eq!(main.result_ty, super::Type::Int);
+        assert_eq!(main.start, 0);
+        assert_eq!(main.end, code.find('}').unwrap() + 1);
+        assert_eq!(main.body.start, code.find('{').unwrap());
+        assert_eq!(main.body.end, main.end);
     }
 
     #[test]
