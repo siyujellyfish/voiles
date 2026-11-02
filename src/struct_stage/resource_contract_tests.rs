@@ -108,6 +108,38 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         assert!(facts.verified_direct_move(owner, target, "Holder").is_some());
         assert!(facts.verified_field_write(owner, write, "Holder", "title").is_some());
 
+        // 真實 AST 只有一個 target／欄位寫入語句；製造另一個表面合法、
+        // 位於 UTF-8 邊界內的來源，確認不能將兩個持有者或寫入權威
+        // 冒充同一個資源轉移與清理事件。
+        let fake_owner = DeclarationId(owner.0 + 1);
+        assert!(code.is_char_boundary(fake_owner.0));
+        let mut duplicated_target = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        duplicated_target.by_source.insert(fake_owner,
+            crate::common_ir::TypedDeclaration::new(
+                fake_owner, "Holder".to_owned(), true));
+        duplicated_target.direct_moves.insert((fake_owner, target));
+        assert!(!duplicated_target.evidence_is_consistent(&checked.structs, code),
+            "即使兩個來源都有相同型別，一個宣告目標不能接收兩次整筆資源");
+        assert!(duplicated_target.verified_direct_move(owner, target, "Holder").is_none(),
+            "單筆橋接不能忽略整張證據表中的競爭持有者");
+
+        let mut duplicated_write = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        duplicated_write.by_source.insert(fake_owner,
+            crate::common_ir::TypedDeclaration::new(
+                fake_owner, "Holder".to_owned(), true));
+        duplicated_write.field_writes.insert((fake_owner, write, "title".to_owned()));
+        assert!(!duplicated_write.evidence_is_consistent(&checked.structs, code),
+            "同一筆欄位寫入語句不可由兩個不同持有者認領");
+        assert!(duplicated_write.verified_field_write(
+            owner, write, "Holder", "title").is_none(),
+            "欄位事件查詢亦不可讓相衝突的證據繞過整體稽核");
+
         let mut forged = VerifiedDeclarationFacts::from_checker(
             facts.by_source.clone(), facts.direct_moves.clone(),
             facts.named_returns.clone(), facts.field_writes.clone(),
@@ -203,6 +235,21 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         let StmtKind::Return(value) = &provider.body[1].kind
             else { panic!("應為已驗證具名返回") };
         assert!(facts.verified_named_return(owner, value.start, "str").is_some());
+
+        let fake_owner = DeclarationId(owner.0 + 1);
+        let mut duplicate_return = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        duplicate_return.by_source.insert(fake_owner,
+            crate::common_ir::TypedDeclaration::new(
+                fake_owner, "str".to_owned(), true));
+        duplicate_return.named_returns.insert((fake_owner, value.start));
+        assert!(!duplicate_return.evidence_is_consistent(&checked.structs, code),
+            "同一個 return 來源位置不能同時交接兩名資源持有者");
+        assert!(duplicate_return.verified_named_return(
+            owner, value.start, "str").is_none(),
+            "單筆 return 橋接必須拒絕整體證據表的多重來源");
 
         let mut forged = VerifiedDeclarationFacts::from_checker(
             facts.by_source.clone(), facts.direct_moves.clone(),
