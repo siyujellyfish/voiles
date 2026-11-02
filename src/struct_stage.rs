@@ -46,13 +46,10 @@ impl StructDecl {
     }
 }
 
-#[derive(Debug, Clone)]
-struct Function {
-    name: String,
-    params: Vec<Parameter>,
-    result_ty: String,
-    body: Vec<Stmt>,
-}
+/// R02 F03：私有函式 AST 與公開函式宣告直接使用同一
+/// ParsedFunction 泛型核心；私有仍保留 params、struct 與安全
+/// Checker 已核准的差異化能力，沒有將私有語法公開。
+type Function = crate::syntax_shared::ParsedFunction<Vec<Parameter>, String, Vec<Stmt>>;
 
 #[derive(Debug, Clone)]
 struct Parameter {
