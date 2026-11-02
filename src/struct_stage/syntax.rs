@@ -267,10 +267,7 @@ impl Parser<'_> {
         );
         let kind = if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
-            StmtKind::Declare {
-                name: parsed.name, ty: parsed.ty, mutable: parsed.mutable,
-                init: parsed.initializer,
-            }
+            StmtKind::Declare(parsed)
         } else if head == Some(crate::syntax_shared::StatementHead::Conditional) {
             self.if_statement_kind()?
         } else if self.keyword("for") {
