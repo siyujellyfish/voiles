@@ -603,7 +603,10 @@ mod r02_f03_真正公私_return_直接保存共同_parsedreturn {
         assert_eq!(pubreturn.start,code.find('7').unwrap());
         assert_eq!(pubreturn.end,pubreturn.start+1);
         assert!(verified_private_source(code).is_ok());
-        assert!(crate::check_file(&source.bytes).is_empty(),
-            "公開正式檢查不可因內部 return 結點轉換回歸");
+        let named=crate::names::resolve_with_facts(&public,&source).unwrap();
+        let typed=crate::types::check_with_names_and_hir(&public,&source,&named).unwrap();
+        assert!(crate::flow::check_with_typed_hir(&public,&source,&named,&typed).is_ok());
+        assert!(crate::functions::check(&public,&source).is_ok(),
+            "公開正式 P09→P10→P11→P12 不得因 return AST 轉換回歸");
     }
 }
