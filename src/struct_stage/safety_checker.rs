@@ -104,7 +104,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn statements_move_name(body: &[Stmt], name: &str) -> bool {
         body.iter().any(|stmt| match &stmt.kind {
-            StmtKind::Declare { init, .. } => init.as_ref()
+            StmtKind::Declare(declaration) => declaration.initializer.as_ref()
                 .is_some_and(|t| Self::term_moves_name(t, name)),
             StmtKind::Assign(assignment) => Self::term_moves_name(&assignment.expression, name),
             StmtKind::FieldAssign { value, .. } | StmtKind::Return(value) =>
@@ -344,7 +344,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     ) {
         for statement in body {
             match &statement.kind {
-                StmtKind::Declare { name, init, .. } => {
+                StmtKind::Declare(declaration) => {
+                    let name = &declaration.name;
+                    let init = &declaration.initializer;
                     if let Some(term) = init {
                         Self::scan_future_term_uses(term, visible, used);
                     }
@@ -1193,7 +1195,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::release_last_uses(vars, body, continuation);
         for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
-                StmtKind::Declare { name, ty, mutable, init } => {
+                StmtKind::Declare(declaration) => {
+                    let name = &declaration.name;
+                    let ty = &declaration.ty;
+                    let mutable = &declaration.mutable;
+                    let init = &declaration.initializer;
                     if vars.last().expect("應有詞彙作用域").contains_key(name) {
                         return Err(Diagnostic { kind: DiagnosticKind::Static,
                             message: "此受限子集不接受同作用域重複宣告".into(),
@@ -1731,7 +1737,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn reject_method_statements(&self, body: &[Stmt]) -> Result<(), Diagnostic> {
         for stmt in body {
             match &stmt.kind {
-                StmtKind::Declare { init, .. } => {
+                StmtKind::Declare(declaration) => {
+                    let init = &declaration.initializer;
                     if let Some(value) = init { self.reject_method_term(value)?; }
                 }
                 StmtKind::Assign(assignment) => {
