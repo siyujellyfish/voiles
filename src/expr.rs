@@ -6,8 +6,8 @@ use crate::source::Source;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExprKind {
-    IntLiteral(String),
-    BoolLiteral(bool),
+    /// R02 F02：真正公開與私有 Parser 均直接保留同一 ScalarLiteral。
+    Scalar(crate::syntax_shared::ScalarLiteral),
     DecimalLiteral(String),
     StringLiteral(String),
     Name(String),
@@ -134,12 +134,8 @@ impl<'a> ExprParser<'a> {
         // 直接由公私共通解析核心生成正式 Expr AST，而非事後投影。
         // 公開模式仍將 i64 合法性留給原 P10，以維持原診斷優先序。
         if let Some(literal) = crate::syntax_shared::parse_scalar_atom(
-            self.tokens, &mut self.cursor, |atom| Ok(match atom {
-                crate::syntax_shared::ScalarLiteral::Integer(text) =>
-                    ExprKind::IntLiteral(text),
-                crate::syntax_shared::ScalarLiteral::Boolean(value) =>
-                    ExprKind::BoolLiteral(value),
-            }),
+            self.tokens, &mut self.cursor,
+            |atom| Ok(ExprKind::Scalar(atom)),
         )? {
             return Ok(literal);
         }
@@ -240,7 +236,7 @@ mod tests {
         match e.kind {
             ExprKind::Subtract(binary) => {
                 assert_eq!(binary.operator, '-');
-                assert!(matches!(binary.right.kind, ExprKind::IntLiteral(_)));
+                assert!(matches!(binary.right.kind, ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))));
                 assert!(matches!(binary.left.kind, ExprKind::Subtract(_)));
             }
             _ => panic!("二元減法必須左結合"),
