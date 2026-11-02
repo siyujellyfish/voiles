@@ -201,6 +201,32 @@ pub(crate) struct VerifiedScalarArithmetic {
     pub(crate) operator: char,
 }
 
+/// F04：以真正 Lexer 記號證明兩個已驗證運算元之間恰有一個
+/// 加減運算子。原本的 `contains` 會把註解內符號、額外記號
+/// 或多個運算子誤當成可交付的 Checker 證據。
+/// 換行及註解不產生運算子；是否允許換行仍由正式 Parser 裁決。
+fn source_has_verified_additive_operator(
+    source: &str, left: NodeSpan, right: NodeSpan, operator: char,
+) -> bool {
+    let Some(between) = source.get(left.end..right.start) else {
+        return false;
+    };
+    let lexed = crate::lexer::scan(
+        &crate::source::Source::new(between.as_bytes().to_vec())
+    );
+    if !lexed.diagnostics.is_empty() {
+        return false;
+    }
+    let mut meaningful = lexed.tokens.iter().filter(|token| !matches!(
+        &token.kind,
+        crate::lexer::TokenKind::Newline | crate::lexer::TokenKind::End
+    ));
+    matches!(
+        meaningful.next().map(|token| &token.kind),
+        Some(crate::lexer::TokenKind::Symbol(found)) if *found == operator
+    ) && meaningful.next().is_none()
+}
+
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedScalarHir {
     /// F01／F04：讀取與賦值由同一筆 NodeIdentity 索引表管理，
@@ -235,12 +261,13 @@ impl VerifiedScalarHir {
                 NodeIdentity::checked(fact.span, NodeRole::Expression, source).is_some()
                     && NodeIdentity::checked(fact.left, NodeRole::Expression, source).is_some()
                     && NodeIdentity::checked(fact.right, NodeRole::Expression, source).is_some()
-                    && fact.span.start <= fact.left.start
+                    && fact.span.start == fact.left.start
                     && fact.left.end <= fact.right.start
-                    && fact.right.end <= fact.span.end
+                    && fact.right.end == fact.span.end
                     && matches!(fact.operator, '+' | '-')
-                    && source.get(fact.left.end..fact.right.start)
-                        .is_some_and(|between| between.contains(fact.operator))
+                    && source_has_verified_additive_operator(
+                        source, fact.left, fact.right, fact.operator,
+                    )
                     && [fact.span, fact.left, fact.right].into_iter().all(|span|
                         self.expression(span).is_some_and(|entry| entry.ty == ScalarType::Int))
             })
@@ -873,6 +900,66 @@ mod r02_f04_公私算術_hir_跨度操作與不可篡改契約 {
         missing.record_expression(span,ScalarType::Int);
         missing.record_arithmetic(VerifiedScalarArithmetic {span,left,right,operator:'+'});
         assert!(!missing.source_spans_are_valid(src));
+    }
+}
+
+#[cfg(test)]
+mod r02_f04_算術來源必須是唯一真實詞彙記號 {
+    use super::*;
+
+    fn proof(source: &str, left: NodeSpan, right: NodeSpan, operator: char) -> bool {
+        let parent = NodeSpan::new(left.start, right.end);
+        let mut hir = VerifiedScalarHir::default();
+        for span in [left, right, parent] {
+            hir.record_expression(span, ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span: parent, left, right, operator,
+        });
+        hir.source_spans_are_valid(source)
+    }
+
+    #[test]
+    fn 不得把多個運算子或額外數值誤認成單一加減() {
+        assert!(!proof(
+            "4 + - 5", NodeSpan::new(0, 1), NodeSpan::new(6, 7), '+',
+        ));
+        assert!(!proof(
+            "4 + 2 + 5", NodeSpan::new(0, 1), NodeSpan::new(8, 9), '+',
+        ));
+        assert!(!proof(
+            "4 123 + 5", NodeSpan::new(0, 1), NodeSpan::new(8, 9), '+',
+        ));
+    }
+
+    #[test]
+    fn 註解內的假運算符不得偽造_真實運算子仍可驗證() {
+        let text = "4 \"\"\"註解 + 記號\"\"\" - 5";
+        let right = NodeSpan::new(text.len() - 1, text.len());
+        let left = NodeSpan::new(0, 1);
+        assert!(!proof(text, left, right, '+'));
+        assert!(proof(text, left, right, '-'));
+    }
+
+    #[test]
+    fn 正式括號內換行與空白仍保留原有合法運算子() {
+        let text = "(4\n + 5)";
+        assert!(proof(text, NodeSpan::new(1, 2), NodeSpan::new(6, 7), '+'));
+    }
+
+    #[test]
+    fn 不可用更大父節點跨度偽裝原本的左右運算子() {
+        let text = "0 + 4 - 5";
+        let left = NodeSpan::new(4, 5);
+        let right = NodeSpan::new(8, 9);
+        let mut hir = VerifiedScalarHir::default();
+        for span in [left, right, NodeSpan::new(0, 9)] {
+            hir.record_expression(span, ScalarType::Int);
+        }
+        hir.record_arithmetic(VerifiedScalarArithmetic {
+            span: NodeSpan::new(0, 9), left, right, operator: '-',
+        });
+        assert!(!hir.source_spans_are_valid(text));
     }
 }
 
