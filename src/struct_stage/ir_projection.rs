@@ -49,8 +49,9 @@ fn private_scalar_statements(stmts: &[Stmt], text: &str)
                 None => None,
             },
         },
-        StmtKind::Assign { name, value } => ScalarStmt::Assign {
-            name: name.clone(), value: private_scalar_expression(value, text)?,
+        StmtKind::Assign(assignment) => ScalarStmt::Assign {
+            name: assignment.name.clone(),
+            value: private_scalar_expression(&assignment.expression, text)?,
         },
         StmtKind::If { branch, no } => ScalarStmt::If {
             condition: private_scalar_expression(&branch.condition, text)?,
