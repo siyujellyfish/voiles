@@ -281,6 +281,14 @@ impl BorrowSafety {
         &mut self, tickets: &[BorrowTicket], checked: &[BorrowFact],
     ) -> Result<(), BorrowSafetyError> {
         self.verify_static_snapshot(checked.iter().copied())?;
+        // 即使靜態快照與 tracker 完全吻合，呼叫者仍可能只傳入
+        // 一部分真正票據；禁止在「已核對快照」的包裝介面回傳
+        // 假完成。票據完整性必須在任何解鎖前以唯讀條件證明。
+        // finish_scope 已原子預檢每張票據的 tracker／序號／來源、
+        // 權限及不可重複；數量相同便代表恰好覆蓋全部活躍票據。
+        if tickets.len() != checked.len() {
+            return Err(BorrowSafetyError::SnapshotMismatch);
+        }
         self.finish_scope(tickets)
     }
 }
@@ -384,6 +392,14 @@ mod tests {
         ];
         assert_eq!(tracker.finish_scope_verified(&[a, b], &invalid),
             Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(tracker.finish_scope_verified(&[a], &valid),
+            Err(BorrowSafetyError::SnapshotMismatch),
+            "來源／權限快照即使正確，也不得只歸還部分真實票據");
+        assert_eq!(tracker.finish_scope_verified(&[], &valid),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(tracker.finish_scope_verified(&[a, a], &valid),
+            Err(BorrowSafetyError::InvalidRelease),
+            "不允許重複票據冒充完整共享借用重數");
         assert_eq!(tracker.check_direct_access(source),
             Err(BorrowSafetyError::SourceIsBorrowed));
         assert_eq!(tracker.finish_scope_verified(&[a, b], &valid), Ok(()));

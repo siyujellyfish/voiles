@@ -69,8 +69,10 @@ impl SafetyPipeline {
     pub(crate) fn finish_method_with_snapshot(
         &mut self, tickets: &[BorrowTicket], facts: &[BorrowFact],
     ) -> Result<(), PipelineError> {
-        self.verify_static_borrows(facts)?;
-        self.finish_method(tickets)
+        // 直接委託單一 tracker 的已驗證完整歸還契約，不能先
+        // 驗證靜態集合後，讓不完整票據清單意外回報作用域完成。
+        self.ownership.finish_method_scope_verified(tickets, facts)
+            .map_err(PipelineError::Ownership)
     }
 
     pub(crate) fn finish_method(&mut self, tickets: &[BorrowTicket])
@@ -219,6 +221,11 @@ mod tests {
             GateError::Borrow(BorrowSafetyError::SnapshotMismatch));
         assert_eq!(pipeline.finish_method_with_snapshot(&[one, two], &[one.fact(), wrong_source]),
             Err(mismatch));
+        assert_eq!(pipeline.finish_method_with_snapshot(
+            &[one], &[one.fact(), two.fact()]), Err(mismatch),
+            "完整靜態快照不得讓不完整票據批次假裝已安全退出");
+        assert_eq!(pipeline.finish_method_with_snapshot(
+            &[], &[one.fact(), two.fact()]), Err(mismatch));
         assert_eq!(pipeline.read(owner), Err(PipelineError::Ownership(
             GateError::Borrow(BorrowSafetyError::SourceIsBorrowed))));
         assert_eq!(pipeline.outstanding(), 1);
