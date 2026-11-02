@@ -25,6 +25,30 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             owner, ScalarType::Int)));
         hir.record_expression(span, ScalarType::Int);
         assert!(facts.scalar_hir_is_consistent(&hir, code));
+        // 相同來源節點的第二種型別、來源身分或賦值跨度必須留下
+        // 不可恢復的衝突，不能以首次有效值仍在索引裡就宣告安全。
+        hir.record_expression(span, ScalarType::Bool);
+        assert!(!facts.scalar_hir_is_consistent(&hir, code));
+        hir.record_expression(span, ScalarType::Int);
+        assert!(!facts.scalar_hir_is_consistent(&hir, code));
+
+        let mut forged_reference = VerifiedScalarHir::default();
+        forged_reference.record_expression(span, ScalarType::Int);
+        forged_reference.record_reference(TypedUse::new(
+            span, ResolvedUse::new(owner, ScalarType::Int)));
+        forged_reference.record_reference(TypedUse::new(
+            span, ResolvedUse::new(constant, ScalarType::Int)));
+        assert!(!facts.scalar_hir_is_consistent(&forged_reference, code),
+            "引用身分衝突即使其第一筆權威有效仍不能交付 Checker 計畫");
+
+        let mut forged_assignment = VerifiedScalarHir::default();
+        forged_assignment.record_assignment(TypedUse::new(
+            span, ResolvedUse::new(owner, ScalarType::Int)));
+        forged_assignment.record_assignment(TypedUse::new(
+            NodeSpan::new(span.start, span.end + 1),
+            ResolvedUse::new(owner, ScalarType::Int)));
+        assert!(!facts.scalar_hir_is_consistent(&forged_assignment, code),
+            "同一賦值位置的不同來源跨度不得由最後一筆掩蓋");
         let mut unclosed = VerifiedScalarHir::default();
         unclosed.record_reference(TypedUse::new(span, ResolvedUse::new(
             owner, ScalarType::Int)));

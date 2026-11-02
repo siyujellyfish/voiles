@@ -149,26 +149,38 @@ pub(crate) struct VerifiedScalarHir {
     references: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
     assignments: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
     expressions: std::collections::BTreeMap<(usize, usize), VerifiedScalarExpression>,
+    /// 任何一條 Checker 路徑遇到型別或宣告身分衝突，都不得以較後一次
+    /// 合法重訪洗去先前矛盾；正式與除錯編譯必須同樣拒絕交付。
+    conflicted: bool,
 }
 impl VerifiedScalarHir {
+    pub(crate) fn is_consistent(&self) -> bool { !self.conflicted }
+
     pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
         let fact = VerifiedScalarExpression { span, ty };
-        let previous = self.expressions.insert((span.start, span.end), fact);
-        debug_assert!(previous.is_none_or(|old| old == fact),
-            "同一個來源位置不能有兩種衝突的運算式型別");
+        let key = (span.start, span.end);
+        if let Some(previous) = self.expressions.get(&key) {
+            if *previous != fact { self.conflicted = true; }
+        } else {
+            self.expressions.insert(key, fact);
+        }
     }
     pub(crate) fn expression(&self, span: NodeSpan) -> Option<VerifiedScalarExpression> {
         self.expressions.get(&(span.start, span.end)).copied()
     }
     pub(crate) fn record_reference(&mut self, use_at: TypedUse<ScalarType>) {
-        let previous = self.references.insert(use_at.span.start, use_at);
-        debug_assert!(previous.is_none_or(|old| old == use_at),
-            "同一個來源讀取位置不能有兩個相衝突的具型別身份");
+        if let Some(previous) = self.references.get(&use_at.span.start) {
+            if *previous != use_at { self.conflicted = true; }
+        } else {
+            self.references.insert(use_at.span.start, use_at);
+        }
     }
     pub(crate) fn record_assignment(&mut self, use_at: TypedUse<ScalarType>) {
-        let previous = self.assignments.insert(use_at.span.start, use_at);
-        debug_assert!(previous.is_none_or(|old| old == use_at),
-            "同一個賦值來源位置不能有兩個相衝突的目標身份");
+        if let Some(previous) = self.assignments.get(&use_at.span.start) {
+            if *previous != use_at { self.conflicted = true; }
+        } else {
+            self.assignments.insert(use_at.span.start, use_at);
+        }
     }
     pub(crate) fn reference(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
         self.references.get(&span.start).copied().filter(|entry| entry.span == span)
@@ -409,6 +421,44 @@ mod f04_正式_p10_交付給_p11_的具型別存取證據 {
         assert_eq!(hir.reference(NodeSpan::new(50, 57)), None,
             "相同起點不同結束位置不能冒充經型別檢查的來源");
         assert_eq!(hir.assignment(NodeSpan::new(80, 88)), None);
+        assert!(hir.is_consistent());
+    }
+
+    #[test]
+    fn 同一節點型別衝突永久標記_首次權威不可被覆寫() {
+        let at = NodeSpan::new(60, 66);
+        let mut hir = VerifiedScalarHir::default();
+        hir.record_expression(at, ScalarType::Int);
+        hir.record_expression(at, ScalarType::Int);
+        assert!(hir.is_consistent(), "同一 AST 多條路徑重訪相同證據應冪等");
+        hir.record_expression(at, ScalarType::Bool);
+        assert!(!hir.is_consistent());
+        assert_eq!(hir.expression(at).unwrap().ty, ScalarType::Int,
+            "不得以第二筆型別覆寫首次證明");
+        hir.record_expression(at, ScalarType::Int);
+        assert!(!hir.is_consistent(), "後續相同證據不得清除歷史衝突");
+    }
+
+    #[test]
+    fn 讀取或賦值相同起點不同身分及跨度都必須永久拒絕() {
+        let owner = TypedDeclaration::new(DeclarationId(4), ScalarType::Int, true);
+        let other = TypedDeclaration::new(DeclarationId(18), ScalarType::Int, true);
+        let read = NodeSpan::new(100, 105);
+        let write = NodeSpan::new(130, 140);
+        let mut hir = VerifiedScalarHir::default();
+        hir.record_reference(owner.use_at(read));
+        hir.record_assignment(owner.use_at(write));
+        hir.record_reference(owner.use_at(read));
+        hir.record_assignment(owner.use_at(write));
+        assert!(hir.is_consistent());
+        hir.record_reference(other.use_at(read));
+        hir.record_assignment(owner.use_at(NodeSpan::new(130, 141)));
+        assert!(!hir.is_consistent());
+        assert_eq!(hir.reference(read), Some(owner.use_at(read)));
+        assert_eq!(hir.assignment(write), Some(owner.use_at(write)));
+        hir.record_reference(owner.use_at(read));
+        hir.record_assignment(owner.use_at(write));
+        assert!(!hir.is_consistent());
     }
 }
 

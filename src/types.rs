@@ -252,7 +252,17 @@ fn check_with_hir_internal<'a>(
             Item::Function(f) => checker.block(&f.body, &mut Vec::new(), f.returns)?,
         }
     }
-    Ok(checker.verified_hir.into_inner())
+    let verified_hir = checker.verified_hir.into_inner();
+    // 正式 P10→P11 不可僅靠 debug_assert 判定相同 AST 節點是否
+    // 被不同控制路徑簽成不一致的型別、宣告來源或 var 目標。
+    if !verified_hir.is_consistent() {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P10：相同來源位置的已驗證型別或宣告身分證據衝突".into(),
+            span: None,
+        });
+    }
+    Ok(verified_hir)
 }
 
 #[cfg(test)]
