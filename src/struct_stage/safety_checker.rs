@@ -152,14 +152,35 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         -> Result<(), Diagnostic> {
         let owner = Self::lookup(vars, name)
             .ok_or_else(|| self.error("找不到原始來源宣告", term))?;
-        // 與抽象 BorrowTicket 使用同一個 HC14-A 直接存取規則；
-        // 別名自身仍遵守現有 evaluate／loan 權限與最後使用點證明。
-        if owner.loan.is_none() {
-            let reference = self.checked_binding_use(owner, term)?;
-            Self::active_loan_snapshot(vars).validate_direct(reference.resolved.declaration)
-                .map_err(|_| self.error(
-                    "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
+        // 所有入口先驗證同一筆 Checker TypedDeclaration，包括非擁有
+        // 借用別名。先前 loan.is_some() 的捷徑會跳過身份／型別核對，
+        // 使欄位讀取、方法接收者等路徑另有一套未受驗證的權威。
+        let reference = self.checked_binding_use(owner, term)?;
+        if let Some(loan) = &owner.loan {
+            // 僅驗證借用來源身分／型別／權限；實際最後使用點仍由
+            // 既有 evaluate 與 CFG 入口查核，不藉此重新啟用失效別名。
+            let source = vars.iter().rev()
+                .flat_map(|scope| scope.values())
+                .find(|binding| binding.declaration_start == loan.fact.source)
+                .ok_or_else(|| self.error(
+                    "P16：借用別名不存在對應的原始來源身分", term))?;
+            let intended = if owner.mutable {
+                BorrowKind::ExclusiveWrite
+            } else {
+                BorrowKind::SharedRead
+            };
+            if source.ty != reference.resolved.ty
+                || source.mutable != owner.mutable
+                || loan.fact.kind != intended {
+                return Err(self.error(
+                    "P16：借用別名的來源型別或共享／獨占權限不一致", term));
+            }
+            return Ok(());
         }
+        // 擁有者的讀取、寫入、複製與 move 使用相同 HC14-A 快照。
+        Self::active_loan_snapshot(vars).validate_direct(reference.resolved.declaration)
+            .map_err(|_| self.error(
+                "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動", term))?;
         Ok(())
     }
 
