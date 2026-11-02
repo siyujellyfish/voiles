@@ -191,11 +191,13 @@ pub(crate) struct VerifiedScalarExpression {
 
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedScalarHir {
-    references: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
-    assignments: std::collections::BTreeMap<usize, TypedUse<ScalarType>>,
-    expressions: std::collections::BTreeMap<(usize, usize), VerifiedScalarExpression>,
-    /// 任何一條 Checker 路徑遇到型別或宣告身分衝突，都不得以較後一次
-    /// 合法重訪洗去先前矛盾；正式與除錯編譯必須同樣拒絕交付。
+    /// F01／F04：讀取與賦值由同一筆 NodeIdentity 索引表管理，
+    /// (語意角色, 來源起點) 唯一；同位置範圍、來源、型別不合
+    /// 只標記衝突，不允許後一次合法重訪覆寫首次授權。
+    uses: std::collections::BTreeMap<
+        (NodeRole, usize), (NodeIdentity, TypedUse<ScalarType>)
+    >,
+    expressions: std::collections::BTreeMap<NodeIdentity, VerifiedScalarExpression>,
     conflicted: bool,
 }
 impl VerifiedScalarHir {
@@ -203,45 +205,61 @@ impl VerifiedScalarHir {
 
     pub(crate) fn record_expression(&mut self, span: NodeSpan, ty: ScalarType) {
         let fact = VerifiedScalarExpression { span, ty };
-        let key = (span.start, span.end);
+        let key = NodeIdentity { span, role: NodeRole::Expression };
         if let Some(previous) = self.expressions.get(&key) {
             if *previous != fact { self.conflicted = true; }
         } else {
             self.expressions.insert(key, fact);
         }
     }
+
     pub(crate) fn expression(&self, span: NodeSpan) -> Option<VerifiedScalarExpression> {
-        self.expressions.get(&(span.start, span.end)).copied()
-    }
-    pub(crate) fn record_reference(&mut self, use_at: TypedUse<ScalarType>) {
-        if let Some(previous) = self.references.get(&use_at.span.start) {
-            if *previous != use_at { self.conflicted = true; }
-        } else {
-            self.references.insert(use_at.span.start, use_at);
-        }
-    }
-    pub(crate) fn record_assignment(&mut self, use_at: TypedUse<ScalarType>) {
-        if let Some(previous) = self.assignments.get(&use_at.span.start) {
-            if *previous != use_at { self.conflicted = true; }
-        } else {
-            self.assignments.insert(use_at.span.start, use_at);
-        }
-    }
-    pub(crate) fn reference(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
-        self.references.get(&span.start).copied().filter(|entry| entry.span == span)
-    }
-    pub(crate) fn assignment(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
-        self.assignments.get(&span.start).copied().filter(|entry| entry.span == span)
+        self.expressions.get(&NodeIdentity {
+            span, role: NodeRole::Expression,
+        }).copied()
     }
 
-    /// F11：只讀稽核介面，保留原 HIR 已驗證位置而不交出可寫 map。
+    fn record_use(&mut self, role: NodeRole, fact: TypedUse<ScalarType>) {
+        debug_assert!(matches!(role, NodeRole::Reference | NodeRole::Assignment));
+        let node = NodeIdentity { span: fact.span, role };
+        let key = (node.role, node.span.start);
+        if let Some(previous) = self.uses.get(&key) {
+            if *previous != (node, fact) { self.conflicted = true; }
+        } else {
+            self.uses.insert(key, (node, fact));
+        }
+    }
+
+    pub(crate) fn record_reference(&mut self, use_at: TypedUse<ScalarType>) {
+        self.record_use(NodeRole::Reference, use_at);
+    }
+    pub(crate) fn record_assignment(&mut self, use_at: TypedUse<ScalarType>) {
+        self.record_use(NodeRole::Assignment, use_at);
+    }
+
+    fn verified_use(&self, span: NodeSpan, role: NodeRole)
+        -> Option<TypedUse<ScalarType>> {
+        let (node, fact) = self.uses.get(&(role, span.start))?;
+        (node.span == span && node.role == role).then_some(*fact)
+    }
+
+    pub(crate) fn reference(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.verified_use(span, NodeRole::Reference)
+    }
+    pub(crate) fn assignment(&self, span: NodeSpan) -> Option<TypedUse<ScalarType>> {
+        self.verified_use(span, NodeRole::Assignment)
+    }
+
+    /// 三種類型的來源節點都只可經由此單一已驗證資料結構消費。
     pub(crate) fn verified_references(&self)
         -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
-        self.references.values().copied()
+        self.uses.iter().filter_map(|((role, _), (_, fact))|
+            (*role == NodeRole::Reference).then_some(*fact))
     }
     pub(crate) fn verified_assignments(&self)
         -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
-        self.assignments.values().copied()
+        self.uses.iter().filter_map(|((role, _), (_, fact))|
+            (*role == NodeRole::Assignment).then_some(*fact))
     }
     pub(crate) fn verified_expressions(&self)
         -> impl Iterator<Item = VerifiedScalarExpression> + '_ {
@@ -625,5 +643,43 @@ mod p16_6_r02_6_共通型別即公開解析型別 {
         assert_eq!(back, crate::parser::Type::Bool);
         assert_eq!(ScalarType::from_name("int"), Some(from_parser));
         assert_eq!(ScalarType::from_name("str"), None);
+    }
+}
+
+#[cfg(test)]
+mod r02_f01_f04_單一_nodeidentity_typed_hir_權威 {
+    use super::*;
+
+    #[test]
+    fn 相同來源跨度的讀寫由節點角色隔離但共用真正已解析表() {
+        let source = TypedDeclaration::new(DeclarationId(21), ScalarType::Int, true);
+        let span = NodeSpan::new(41, 45);
+        let mut hir = VerifiedScalarHir::default();
+        hir.record_reference(source.use_at(span));
+        hir.record_assignment(source.use_at(span));
+        hir.record_expression(span, ScalarType::Int);
+        assert!(hir.is_consistent());
+        assert_eq!(hir.reference(span), Some(source.use_at(span)));
+        assert_eq!(hir.assignment(span), Some(source.use_at(span)));
+        assert_eq!(hir.expression(span).unwrap().ty, ScalarType::Int);
+        assert_eq!(hir.verified_references().count(), 1);
+        assert_eq!(hir.verified_assignments().count(), 1);
+    }
+
+    #[test]
+    fn 同語意角色同起點不同跨度或宣告身分不可藉新節點覆寫() {
+        let first = TypedDeclaration::new(DeclarationId(15), ScalarType::Bool, false);
+        let second = TypedDeclaration::new(DeclarationId(26), ScalarType::Bool, false);
+        let original = NodeSpan::new(66, 70);
+        let forged = NodeSpan::new(66, 71);
+        let mut hir = VerifiedScalarHir::default();
+        hir.record_reference(first.use_at(original));
+        hir.record_reference(first.use_at(forged));
+        hir.record_reference(second.use_at(original));
+        hir.record_reference(first.use_at(original));
+        assert!(!hir.is_consistent());
+        assert_eq!(hir.reference(original), Some(first.use_at(original)));
+        assert_eq!(hir.reference(forged), None);
+        assert_eq!(hir.verified_references().count(), 1);
     }
 }
