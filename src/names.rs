@@ -96,7 +96,9 @@ impl<'a> Resolver<'a> {
                     self.facts.declarations.insert(id, declaration);
                     scopes.last_mut().unwrap().insert(b.name.clone(), declaration);
                 }
-                StmtKind::Assignment { name, value } => {
+                StmtKind::Assignment(assignment) => {
+                    let name = &assignment.name;
+                    let value = &assignment.expression;
                     let declaration = self.binding_for_reference(name, statement.start, scopes)
                         .ok_or_else(|| self.error(
                             "賦值目標尚未宣告", statement.start, statement.end))?;
