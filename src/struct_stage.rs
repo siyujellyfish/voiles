@@ -257,20 +257,28 @@ impl VerifiedDeclarationFacts {
 
     /// F11：Checker 證據只有在全表互相吻合時才可交給 P16 資源橋接。
     /// 不得把沒有宣告來源或型別不同的分支推測事件當成安全計畫。
-    fn evidence_is_consistent(&self, structs: &HashMap<String, StructDecl>) -> bool {
-        self.by_source.iter().all(|(id, fact)| fact.owns(*id))
+    fn evidence_is_consistent(&self, structs: &HashMap<String, StructDecl>, text: &str) -> bool {
+        // F11：來源身分及每個資源操作位置都必須屬於真正的 UTF-8 原始碼。
+        // 不可以只檢查前後順序，讓超出 EOF 或落在多位元組字元中間的
+        // 位置冒充已驗證的持有者／清理事件證據。
+        let valid_position = |offset: usize| {
+            offset < text.len() && text.is_char_boundary(offset)
+        };
+        self.by_source.iter().all(|(id, fact)| fact.owns(*id) && valid_position(id.0))
         && self.direct_moves.iter().all(|(source, target)| {
-            source != target
+            source != target && source.0 < target.0
                 && self.by_source.get(source).zip(self.by_source.get(target))
                     .is_some_and(|(from, to)| from.declaration == *source
                         && to.declaration == *target && from.ty == to.ty)
         })
         && self.named_returns.iter().all(|(source, return_start)| {
             self.by_source.contains_key(source) && *return_start >= source.0
+                && valid_position(*return_start)
         })
         && self.field_writes.iter().all(|(source, statement_start, field)| {
             self.by_source.get(source).is_some_and(|fact| {
                 fact.declaration == *source && fact.mutable && *statement_start >= source.0
+                    && valid_position(*statement_start)
                     && structs.get(&fact.ty).and_then(|definition| definition.field(field))
                         .is_some_and(|member| !member.immutable)
             })
@@ -341,7 +349,7 @@ impl VerifiedDeclarationFacts {
     ) -> Option<VerifiedMoveEvidence> {
         let from = self.typed_declaration(source)?;
         let to = self.typed_declaration(target)?;
-        (source != target && from.ty == ty && to.ty == ty
+        (source != target && source.0 < target.0 && from.ty == ty && to.ty == ty
             && self.direct_moves.contains(&(source, target)))
             .then_some(VerifiedMoveEvidence { source, target })
     }
@@ -415,7 +423,7 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
     let declarations = VerifiedDeclarationFacts::from_checker(
         by_source, direct_moves, named_returns, field_writes);
     // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
-    if !declarations.evidence_is_consistent(&structs)
+    if !declarations.evidence_is_consistent(&structs, text)
         || !declarations.scalar_hir_is_consistent(&scalar_hir, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
