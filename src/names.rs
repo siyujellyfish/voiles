@@ -136,7 +136,7 @@ pub(crate) fn resolve_with_facts(
     for item in &file.items {
         match item {
             Item::Function(f) => {
-                if functions.insert(f.name.clone(), f.returns).is_some() {
+                if functions.insert(f.name.clone(), f.result_ty).is_some() {
                     // 首版只有零引數、單一簽章；不推導完整語言的多載政策。
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
