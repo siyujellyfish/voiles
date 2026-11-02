@@ -462,3 +462,30 @@ mod r02_f04_公私正式運算式_typed_hir_同一加減證據 {
         }
     }
 }
+
+#[cfg(test)]
+mod r02_f03_私有真正_if_分支直接保存共同來源身分 {
+    use super::*;
+    #[test]
+    fn 真正解析器_if_else_if_每一來源起點均來自唯一共同_ast() {
+        let code="fn main()->int{\nif(true){\nreturn 1\n}else if(false){\nreturn 2\n}else{\nreturn 3\n}\nreturn 0\n}\n";
+        let source=Source::new(code.as_bytes().to_vec());
+        let lexed=lexer::scan(&source);
+        let (_,functions)=Parser {source:&source,tokens:&lexed.tokens,cursor:0}
+            .file().unwrap();
+        let main=&functions[0];
+        let StmtKind::If {branch, no}=&main.body[0].kind
+            else {panic!("應有 if");};
+        let _: &crate::syntax_shared::ParsedIfArm<Term,Vec<Stmt>>=branch;
+        assert_eq!(branch.start,code.find("if(true)").unwrap());
+        let otherwise=no.as_ref().expect("應有 else-if");
+        let [next]=otherwise.as_slice() else {panic!("else-if 不可丟失");};
+        let StmtKind::If {branch:second,no:tail}=&next.kind
+            else {panic!("應由原安全 Checker 辨識巢狀 if");};
+        assert_eq!(second.start,code.find("if(false)").unwrap());
+        assert_eq!(second.start,next.start);
+        assert_eq!(tail.as_ref().expect("缺少 else").len(),1);
+        assert!(verified_private_source(code).is_ok(),
+            "保持原 P13 巢狀 if 安全合流及資源證明");
+    }
+}
