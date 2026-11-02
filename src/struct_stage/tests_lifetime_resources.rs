@@ -1573,6 +1573,24 @@ mod p15_3_函式預設借用跨分支迴圈交叉驗證 {
     }
 
     #[test]
+    fn 正式方法_self_與兩個共享字串參數使用同一追蹤器並可全數歸還() {
+        let src="struct Holder{\nvar count:int = 1\nfn read(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst text:str = \"共用🪼\"\nvar receiver:Holder = Holder()\nvar value:int = receiver.read(text,text)\nreturn value + receiver.count\n}\n";
+        assert!(inspect(src).is_ok(),
+            "方法 self 與兩個同源共享票據須由一份真實 tracker 精確驗證及歸還");
+        let forbidden=src.replace("const text:str", "var text:str");
+        let err=inspect(&forbidden).expect_err("雙獨占參數借用仍不可通過");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("HC14"));
+    }
+
+    #[test]
+    fn 正式函式多個共享預設借用在呼叫出口可全數歸還() {
+        let src="fn view(a:str,b:str)->int{\nreturn 3\n}\nfn main()->int{\nconst text:str = \"共用🪼\"\nvar n:int = view(text,text)\nvar moved:str = text.move()\nreturn n\n}\n";
+        assert!(inspect(src).is_ok(),
+            "同源共享借用重數必須精確核對，函式出口不得殘留票據");
+    }
+
+    #[test]
     fn 迴圈內借用後再明確移動資源仍須拒絕不穩定反向邊() {
         let src=format!("{SEE}fn main()->int{{\nvar owner:str = \"資源\"\nfor i in 1..4{{\nvar observed:int = see(owner)\nvar moved:str = owner.move()\n}}\nreturn 0\n}}\n");
         let err=inspect(&src).expect_err("函式借用退出不會容許多次迴圈移走持有者");
