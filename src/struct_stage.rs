@@ -176,6 +176,9 @@ struct Checker<'a, C> {
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
+    /// F11：相同 AST 宣告被不同路徑檢查時若型別／可變權限不一致，
+    /// 不能以覆寫表項掩藏衝突，也不能只靠 debug_assert 保護。
+    recorded_declaration_conflicts: RefCell<BTreeSet<DeclarationId>>,
     /// F11：具名 return .move() 經來源身分、型別、借用與有效期驗證後的證據。
     recorded_named_returns: RefCell<BTreeSet<(DeclarationId, usize)>>,
     /// 真正完成型別、寫入授權及 RHS 評估後的結構欄位提交證據。
@@ -389,11 +392,21 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         function_index, ability,
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
+        recorded_declaration_conflicts: RefCell::new(BTreeSet::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
         recorded_field_writes: RefCell::new(BTreeSet::new()),
         recorded_scalar_hir: RefCell::new(crate::common_ir::VerifiedScalarHir::default()),
     };
     checker.all(&functions)?;
+    // 任何路徑的同一 DeclarationId 證據若有衝突，整份成功
+    // Checked HIR 不能交給 P16。不能讓最後一次寫入覆蓋異常。
+    if !checker.recorded_declaration_conflicts.borrow().is_empty() {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：不同控制流程路徑的宣告型別或寫入權限證據衝突".into(),
+            span: None,
+        });
+    }
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
     let named_returns = checker.recorded_named_returns.into_inner();
