@@ -620,5 +620,8 @@ include!("struct_stage/parity_tests.rs");
 #[cfg(test)]
 include!("struct_stage/resource_contract_tests.rs");
 
-// P16.6-R02.2：僅投影已核准公開／私有交集，不放寬 P13 私有邊界。
+// F05：歷史共通 ScalarExpr／SharedAst 的 AST 事後投影只做
+// 獨立公私差異回歸；正式內部 Checker 與 P16 橋接僅使用
+// parser 直接建構的 AST＋VerifiedScalarHir／VerifiedSafetyPlan。
+#[cfg(test)]
 include!("struct_stage/ir_projection.rs");
