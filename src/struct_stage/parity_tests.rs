@@ -395,3 +395,32 @@ mod r02_f02_私有真正位置引數呼叫_ast_同一資料模型 {
             "公開 MVP-A 參數與位置引數仍不可開放");
     }
 }
+
+#[cfg(test)]
+mod r02_f03_私有真正函式區塊使用共同_parser_ast {
+    use super::*;
+
+    #[test]
+    fn 公私函式區塊共用_parsedblock_且保留_utf8_半開跨度() {
+        let code="fn main()->int{\nvar n:int = 2\nreturn n\n}\n";
+        let source=Source::new(code.as_bytes().to_vec());
+        let lexed=lexer::scan(&source);
+        let (structs,functions)=Parser{source:&source,tokens:&lexed.tokens,cursor:0}
+            .file().unwrap();
+        assert!(structs.is_empty());
+        let [main]=functions.as_slice() else {panic!("應有唯一 main");};
+        let _: &crate::syntax_shared::ParsedBlock<Stmt> = &main.body;
+        let _: &crate::syntax_shared::ParsedFunction<
+            Vec<Parameter>,String,crate::syntax_shared::ParsedBlock<Stmt>> = main;
+        assert_eq!(main.body.start,code.find('{').unwrap());
+        assert_eq!(main.body.end,code.find('}').unwrap()+1);
+        assert_eq!(main.body.statements.len(),2);
+        assert!(matches!(main.body[0].kind,StmtKind::Declare(_)));
+        assert!(verified_private_source(code).is_ok());
+        let public=crate::parser::parse(&source,&lexed.tokens).unwrap();
+        let crate::parser::Item::Function(fun)=&public.items[0]
+            else {panic!("公開入口應有同形函式");};
+        assert_eq!(fun.body.start,main.body.start);
+        assert_eq!(fun.body.end,main.body.end);
+    }
+}
