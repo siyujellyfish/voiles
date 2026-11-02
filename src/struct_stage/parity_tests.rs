@@ -550,7 +550,7 @@ mod r02_f04_真正公私算術型別錯誤仍保持各自核准診斷 {
             assert_eq!(pe.kind, DiagnosticKind::Static);
             assert!(pe.message.contains("整數加減"),
                 "公開 P10 診斷不可被私有所有權診斷取代");
-            let re=verified_private_source(code).unwrap_err();
+            let re=verified_private_source(code).err().expect("已核准私有型別錯誤必須拒絕");
             assert_eq!(re.kind, DiagnosticKind::Static);
             assert!(re.message.contains("P13：加減"),
                 "私有既有 P13 診斷不得被公開 MVP-A 診斷取代");
