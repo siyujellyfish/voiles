@@ -115,9 +115,9 @@ mod p16_6_r02_公開私有前端交集契約 {
         let start = moved.find("original.move()").unwrap();
         let attempted = crate::common_ir::NodeSpan::new(
             start, start + "original.move()".len());
-        assert!(checked.scalar_hir.reference(attempted).is_none(),
+        assert!(checked.plan.scalar_hir.reference(attempted).is_none(),
             "私有非 Copyable 的明確 move 不可冒充公開純值名稱引用");
-        assert!(checked.scalar_hir.expression(attempted).is_none(),
+        assert!(checked.plan.scalar_hir.expression(attempted).is_none(),
             "私有 str 資源移交不是 ScalarType 的 int/bool 表達式");
     }
 
