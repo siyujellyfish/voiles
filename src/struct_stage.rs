@@ -89,6 +89,9 @@ type Term = crate::common_ir::SpannedNode<TermKind>;
 
 #[derive(Debug, Clone)]
 enum TermKind {
+    /// F02：正式私有 Parser 與公開 Parser 共用完整 int/bool 常值 AST。
+    Scalar(crate::syntax_shared::ScalarLiteral),
+    /// 保留私有 float、str 與既有內部手造 AST 的相容入口。
     Literal(&'static str),
     Name(String),
     /// P01 已核准的 int 加減；計算前必須依序驗證兩端所有權。
