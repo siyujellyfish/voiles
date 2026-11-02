@@ -1550,7 +1550,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 下一次條件檢查及迭代本體都屬未來可達路徑，
                     // 不能在本次迭代提早歸還還會被引用的外層別名。
                     let condition_read = Stmt {
-                        kind: StmtKind::Return(condition.clone()),
+                        kind: StmtKind::Return(
+                            crate::syntax_shared::ParsedReturn::new(condition.clone())),
                         start: condition.start,
                         end: condition.end,
                     };
