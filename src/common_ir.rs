@@ -892,3 +892,17 @@ mod r02_f04_公私共同算術運算元裁決 {
         assert_eq!(ScalarType::from_name("list"),None);
     }
 }
+
+#[cfg(test)]
+mod r02_f04_公私共同純值條件裁決 {
+    use super::*;
+    #[test]
+    fn 僅接受可讀取已初始化_bool_不把私有資源當條件() {
+        assert!(boolean_condition_is_ready(Some(ScalarType::Bool), true));
+        assert!(!boolean_condition_is_ready(Some(ScalarType::Bool), false));
+        assert!(!boolean_condition_is_ready(Some(ScalarType::Int), true));
+        assert!(!boolean_condition_is_ready(None, true));
+        assert_eq!(ScalarType::from_name("str"), None);
+        assert_eq!(ScalarType::from_name("struct"), None);
+    }
+}
