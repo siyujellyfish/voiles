@@ -132,12 +132,13 @@ mod p16_6_r02_公開私有前端交集契約 {
             "fn main()->int{\nconst value:int = 0b101\nreturn value\n}\n",
             "fn main()->int{\nvar n:int = 0\nif(true){\nn = 2\n}else{\nn = 3\n}\nreturn n\n}\n",
             "fn main()->int{\nvar n:int = 1\nvar alias:int = n\nn = alias\nreturn n\n}\n",
-            // 真正共用運算式核心：左結合加減、巢狀二元運算、
-            // 無參數函式呼叫，以及公私共同分支下的身分解析。
-            "fn main()->int{\nvar n:int = 1 + 2 - 3\nreturn n + 4 - 5\n}\n",
-            "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar value:int = helper() + 1\nreturn value - 1\n}\n",
-            "fn main()->int{\nvar n:int = 1\nif(true){\nn = n + 1\n}else if(false){\nn = n - 2\n}else{\nn = n + 3\n}\nreturn n\n}\n",
-            "fn main()->int{\nvar n:int = 1\nif(false){\nvar n:int = 2\nn = n + 3\n}else{\nn = n + 4\n}\nreturn n\n}\n",
+            // MVP-A 僅允許加減與無參數函式呼叫置於 return 表達式；
+            // 宣告初始化與賦值仍只准相符型別常值或具名變數。
+            // 不可為了擴大交集測試而擅自放寬正式公開語言範圍。
+            "fn main()->int{\nvar n:int = 1\nreturn n + 4 - 5\n}\n",
+            "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar value:int = 1\nreturn helper() + value - 1\n}\n",
+            "fn main()->int{\nvar n:int = 1\nif(true){\nn = 2\n}else if(false){\nn = 3\n}else{\nn = 4\n}\nreturn n + 1 - 2\n}\n",
+            "fn main()->int{\nvar n:int = 1\nif(false){\nvar n:int = 2\nn = 3\n}else{\nn = 4\n}\nreturn n + 1\n}\n",
         ] {
             assert_eq!(public_check(code), Ok(()), "正式公開來源不合法：{code}");
             let source = Source::new(code.as_bytes().to_vec());
@@ -162,6 +163,19 @@ mod p16_6_r02_公開私有前端交集契約 {
                 private.scalar_hir.verified_expressions().collect();
             assert_eq!(pub_expressions, priv_expressions,
                 "公私全部運算式跨度與型別 HIR 不一致：{code}");
+        }
+    }
+
+    #[test]
+    fn f05_交集矩陣不可擅自擴大公開_mvp_a_初始化及賦值運算式() {
+        let invalid_public = [
+            "fn main()->int{\nvar n:int = 1 + 2\nreturn n\n}\n",
+            "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = helper()\nreturn n\n}\n",
+            "fn main()->int{\nvar n:int = 1\nn = n + 2\nreturn n\n}\n",
+        ];
+        for code in invalid_public {
+            assert!(public_check(code).is_err(),
+                "R02 不得以內部運算式能力打開公開 MVP-A 未核准用法：{code}");
         }
     }
 
