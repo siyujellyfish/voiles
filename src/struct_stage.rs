@@ -185,6 +185,10 @@ struct Checker<'a, C> {
     recorded_field_writes: RefCell<BTreeSet<(DeclarationId, usize, String)>>,
     /// F04：私有 Checker 真正求值成功才產生共同 int／bool 運算式型別 HIR。
     recorded_scalar_hir: RefCell<crate::common_ir::VerifiedScalarHir>,
+    /// 已經真正使用 Checker TypedDeclaration 並與 BorrowTicket tracker
+    /// 對照成功的呼叫預設借用，不包含執行期票據 serial／tracker_id。
+    recorded_call_borrows: RefCell<BTreeMap<usize, VerifiedCallBorrowPlan>>,
+    recorded_call_borrow_conflicts: RefCell<BTreeSet<usize>>,
 }
 
 // P13～P16 的受限靜態安全檢查；下一步再分離型別／資料流責任。
@@ -225,8 +229,17 @@ enum VerifiedMoveError {
     Pipeline(crate::resource_borrow_pipeline::PipelineError),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedCallBorrowPlan {
+    span: crate::common_ir::NodeSpan,
+    facts: Vec<BorrowFact>,
+}
+
 struct VerifiedDeclarationFacts {
     by_source: BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>,
+    /// 僅儲存真實私有 Checker 呼叫成功、與當次真實票據核對後的
+    /// 靜態來源責任；不同分支的靜態計畫不表示兩分支均已執行。
+    call_borrows: BTreeMap<usize, VerifiedCallBorrowPlan>,
     /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
     /// 僅保存 Checker 成功提交的具名整筆返回來源及 return 運算式位置。
@@ -242,11 +255,19 @@ impl VerifiedDeclarationFacts {
         named_returns: BTreeSet<(DeclarationId, usize)>,
         field_writes: BTreeSet<(DeclarationId, usize, String)>,
     ) -> Self {
-        Self { by_source, direct_moves, named_returns, field_writes }
+        Self { by_source, call_borrows: BTreeMap::new(),
+            direct_moves, named_returns, field_writes }
     }
 
     /// 公私雙 Checker 共用的完整宣告 HIR。避免驗證資源證據時
     /// 再將 (型別, var/const) 裝成另一個沒有 DeclarationId 的狀態模型。
+    /// F11：由 Checker 實際呼叫驗證後的借用快照；只供已驗證來源
+    /// 安全計畫消耗，不允許把推測 CFG 跨路徑快照當作實際簽發票據。
+    fn call_borrows_at(&self, span: crate::common_ir::NodeSpan) -> Option<&[BorrowFact]> {
+        self.call_borrows.get(&span.start)
+            .filter(|plan| plan.span == span).map(|plan| plan.facts.as_slice())
+    }
+
     fn typed_declaration(&self, source: DeclarationId)
         -> Option<crate::common_ir::TypedDeclaration<&str>> {
         let fact = self.by_source.get(&source)?;
@@ -291,6 +312,20 @@ impl VerifiedDeclarationFacts {
                     && structs.get(&fact.ty).and_then(|definition| definition.field(field))
                         .is_some_and(|member| !member.immutable)
             })
+        })
+        && self.call_borrows.iter().all(|(start, plan)| {
+            plan.span.start == *start
+                && plan.span.start < plan.span.end
+                && plan.span.end <= text.len()
+                && text.is_char_boundary(plan.span.start)
+                && text.is_char_boundary(plan.span.end)
+                && crate::borrow_safety::BorrowSafety::validate_active_set(
+                    plan.facts.iter().map(|fact| (fact.source, fact.kind))
+                ).is_ok()
+                && plan.facts.iter().all(|fact| self.by_source.get(&fact.source)
+                    .is_some_and(|decl| decl.owns(fact.source)
+                        && fact.source.0 <= plan.span.start
+                        && (fact.kind != BorrowKind::ExclusiveWrite || decl.mutable)))
         })
     }
 
@@ -418,6 +453,8 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         recorded_named_returns: RefCell::new(BTreeSet::new()),
         recorded_field_writes: RefCell::new(BTreeSet::new()),
         recorded_scalar_hir: RefCell::new(crate::common_ir::VerifiedScalarHir::default()),
+        recorded_call_borrows: RefCell::new(BTreeMap::new()),
+        recorded_call_borrow_conflicts: RefCell::new(BTreeSet::new()),
     };
     checker.all(&functions)?;
     // 任何路徑的同一 DeclarationId 證據若有衝突，整份成功
@@ -429,13 +466,23 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
             span: None,
         });
     }
+    if !checker.recorded_call_borrow_conflicts.borrow().is_empty() {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：相同呼叫位置的借用來源或權限證據衝突".into(),
+            span: None,
+        });
+    }
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
     let named_returns = checker.recorded_named_returns.into_inner();
     let field_writes = checker.recorded_field_writes.into_inner();
     let scalar_hir = checker.recorded_scalar_hir.into_inner();
-    let declarations = VerifiedDeclarationFacts::from_checker(
+    let mut declarations = VerifiedDeclarationFacts::from_checker(
         by_source, direct_moves, named_returns, field_writes);
+    // 只由真正 Checker 在每次已驗證的呼叫出口交付來源事實，
+    // 不從任何 AST 呼叫外形或模擬資源事件逆向重建。
+    declarations.call_borrows = checker.recorded_call_borrows.into_inner();
     // 雙帳簿與所有 P16 來源追蹤只能消費閉合且身分一致的 Checker 證據。
     if !declarations.evidence_is_consistent(&structs, text)
         || !declarations.scalar_hir_is_consistent(&scalar_hir, text) {

@@ -3,6 +3,24 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn find_function(&self, name: &str) -> Option<&Function> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
     }
+    /// F11：真正呼叫的全部真實票據已與 Checker TypedDeclaration 核對
+    /// 並完成批次歸還後，才將不含動態票據序號的借用責任交付安全計畫。
+    /// 相同 AST 在分支或迴圈重訪時只能提出相同身分及權限；不覆寫
+    /// 已存在的首次證據，衝突狀態不可由後續路徑自動恢復。
+    fn record_verified_call_borrows(&self, term: &Term, facts: &[BorrowFact]) {
+        let plan = VerifiedCallBorrowPlan {
+            span: term.node_span(), facts: facts.to_vec(),
+        };
+        let mut recorded = self.recorded_call_borrows.borrow_mut();
+        if let Some(previous) = recorded.get(&term.start) {
+            if previous != &plan {
+                self.recorded_call_borrow_conflicts.borrow_mut().insert(term.start);
+            }
+        } else {
+            recorded.insert(term.start, plan);
+        }
+    }
+
     fn record_declaration(&self, id: DeclarationId, ty: &str, mutable: bool) {
         let fact = crate::common_ir::TypedDeclaration::new(
             id, ty.to_owned(), mutable,
@@ -945,6 +963,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     argument_loans.check_direct_access(bound.declaration_start)
                         .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
+                self.record_verified_call_borrows(term, &argument_facts);
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
@@ -1032,6 +1051,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 call_loans.finish_scope_verified(&tickets, &call_facts)
                     .map_err(|_| self.error("P15.6：函式退出時借用票據未完整歸還", term))?;
+                self.record_verified_call_borrows(term, &call_facts);
                 Ok((function.result_ty.clone(), true))
             },
             TermKind::Construct(name, args) => {

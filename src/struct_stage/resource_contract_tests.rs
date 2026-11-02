@@ -77,6 +77,44 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     }
 
     #[test]
+    fn f11_真正函式呼叫借用計畫與宣告身分_共享重數_呼叫位置閉合() {
+        let code = "fn view(a:str,b:str)->int{\nreturn 2\n}\nfn main()->int{\nconst text:str = \"資源🪼\"\nvar answer:int = view(text,text)\nreturn answer\n}\n";
+        let checked = verified_private_source(code).expect("已核准真實函式來源");
+        let start = code.find("view(text,text)").unwrap();
+        let span = crate::common_ir::NodeSpan::new(start, start + "view(text,text)".len());
+        let source = DeclarationId(code.find("const text:str").unwrap());
+        let call = checked.declarations.call_borrows_at(span).expect("必須交付真實呼叫借用來源");
+        assert_eq!(call, [
+            BorrowFact::new(source, BorrowKind::SharedRead),
+            BorrowFact::new(source, BorrowKind::SharedRead),
+        ]);
+        assert!(checked.declarations.evidence_is_consistent(&checked.structs, code));
+        assert!(checked.declarations.call_borrows_at(
+            crate::common_ir::NodeSpan::new(span.start, span.end + 1)).is_none());
+
+        let facts = &checked.declarations;
+        let mut fake = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        fake.call_borrows = facts.call_borrows.clone();
+        fake.call_borrows.get_mut(&start).unwrap().facts.push(
+            BorrowFact::new(DeclarationId(code.len() + 5), BorrowKind::SharedRead));
+        assert!(!fake.evidence_is_consistent(&checked.structs, code),
+            "不能為未經 Checker 宣告來源的借用偽造真實呼叫證據");
+
+        let mut forged = VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        );
+        forged.call_borrows = facts.call_borrows.clone();
+        forged.call_borrows.get_mut(&start).unwrap().facts.push(
+            BorrowFact::new(source, BorrowKind::ExclusiveWrite));
+        assert!(!forged.evidence_is_consistent(&checked.structs, code),
+            "共享與獨占的活躍集合不可冒充單次有效呼叫票據計畫");
+    }
+
+    #[test]
     fn f11_不能將_utf8_字元中間的位元組冒充合法已驗證_hir_來源() {
         use crate::common_ir::{NodeSpan, ScalarType, VerifiedScalarHir};
         let code = "fn main()->int{\nvar text:str = \"海洋🪼\"\nreturn 0\n}\n";
