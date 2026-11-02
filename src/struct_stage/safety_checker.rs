@@ -94,7 +94,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Move(source) => source == name,
             TermKind::Construct(_, args) =>
                 args.iter().any(|(_, t)| Self::term_moves_name(t, name)),
-            TermKind::Call(_, args) | TermKind::MethodCall(_, _, args) =>
+            TermKind::Call(call) =>
+                call.arguments.iter().any(|t| Self::term_moves_name(t, name)),
+            TermKind::MethodCall(_, _, args) =>
                 args.iter().any(|t| Self::term_moves_name(t, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_moves_name(&binary.left, name) || Self::term_moves_name(&binary.right, name),
@@ -251,8 +253,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 || args.iter().any(|arg| Self::term_mentions(arg, name)),
             TermKind::Construct(_, arguments) =>
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
-            TermKind::Call(_, arguments) =>
-                arguments.iter().any(|value| Self::term_mentions(value, name)),
+            TermKind::Call(call) =>
+                call.arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
             TermKind::Scalar(_) | TermKind::Literal(_) => false,
@@ -290,8 +292,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     Self::scan_future_term_uses(term, visible, used);
                 }
             }
-            TermKind::Call(_, arguments) => {
-                for term in arguments {
+            TermKind::Call(call) => {
+                for term in &call.arguments {
                     Self::scan_future_term_uses(term, visible, used);
                 }
             }
@@ -499,7 +501,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok(field.ty.clone())
             }
-            TermKind::Call(name, args) => {
+            TermKind::Call(call) => {
+                let name = &call.name;
+                let args = &call.arguments;
                 // 一般函式可操作自己的局部來源，但方法目前僅准把
                 // Copyable 的獨立引數交給它，且回傳也須已核准 Copyable。
                 let function = self.find_function(name)
@@ -584,7 +588,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 的一般函式呼叫直接新建並在 return 時整筆交接。
         // 僅放行已核准 str 擁有值；尚無安全證明的其他資源保留拒絕。
         let ordinary_call: Option<(&str, &[Term])> = match &term.kind {
-            TermKind::Call(name, args) => Some((name.as_str(), args.as_slice())),
+            TermKind::Call(call) => Some((call.name.as_str(), call.arguments.as_slice())),
             TermKind::Construct(name, args) if args.is_empty()
                 && !self.structs.contains_key(name) => Some((name.as_str(), &[])),
             _ => None,
@@ -977,7 +981,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let _ = struct_ownership::check_struct_move_target(MoveTarget::SingleField);
                 Err(self.error("S21：結構欄位不能單獨移動", term))
             }
-            TermKind::Call(name, args) => {
+            TermKind::Call(call) => {
+                let name = &call.name;
+                let args = &call.arguments;
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
                 if function.params.len() != args.len() {
@@ -995,7 +1001,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             TermKind::Name(_) if !Self::parameter_is_consumed(
                                 function, &parameter.name) => {}
                             TermKind::Literal("str") | TermKind::Move(_)
-                                | TermKind::Construct(_, _) | TermKind::Call(_, _) => {}
+                                | TermKind::Construct(_, _) | TermKind::Call(_) => {}
                             _ => return Err(self.error(
                                 "P15.6：非 Copyable 參數只接受可證明的預設借用或明確擁有權轉交", arg)),
                         }
@@ -1720,10 +1726,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for (_, value) in args { self.reject_method_term(value)?; }
                 Ok(())
             }
-            TermKind::Call(_, args) => {
+            TermKind::Call(call) => {
                 // 函式呼叫的合法型別、Copyable 資格與完整參數來源
                 // 由 method_pure_value_type 統一查核；仍先檢查 S15／S21。
-                for value in args { self.reject_method_term(value)?; }
+                for value in &call.arguments { self.reject_method_term(value)?; }
                 Ok(())
             }
             TermKind::BinaryInt(binary) => {
@@ -1823,10 +1829,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     self.check_default_term(value, active, checked)?;
                 }
             }
-            TermKind::Call(_, args) => {
+            TermKind::Call(call) => {
                 // 呼叫引數內的結構建立式亦屬預設值的巢狀來源，
                 // 不得繞過循環建構的靜態檢查。
-                for value in args {
+                for value in &call.arguments {
                     self.check_default_term(value, active, checked)?;
                 }
             }
