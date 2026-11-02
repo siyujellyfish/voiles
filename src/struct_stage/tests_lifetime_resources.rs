@@ -2553,3 +2553,31 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
             &no_else), None);
     }
 }
+
+#[cfg(test)]
+mod r02_f04_方法純值算術與一般_checker_同一語意入口 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn 已核准_self_欄位及整數參數加減保持可用() {
+        let source = "struct Counter{\nvar count:int = 4\nfn plus(delta:int)->int{\nreturn self.count + delta - 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok(),
+            "公私加減共用語意不得讓已核准 Copyable 方法失效");
+    }
+
+    #[test]
+    fn 方法的_bool_左右運算元維持各自原診斷且不得視為_int() {
+        for invalid in [
+            "self.count + flag",
+            "flag - self.count",
+        ] {
+            let source = format!(
+                "struct Counter{{\nvar count:int = 4\nfn plus(flag:bool)->int{{\nreturn {invalid}\n}}\n}}\nfn main()->int{{\nreturn 0\n}}\n");
+            let failure = inspect(&source).expect_err("方法 bool 加減必須拒絕");
+            assert_eq!(failure.kind, DiagnosticKind::Static);
+            assert!(failure.message.contains("方法整數加減"),
+                "方法的專用診斷順序不應被一般 P13 來源替代");
+        }
+    }
+}
