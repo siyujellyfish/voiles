@@ -131,16 +131,17 @@ impl<'a> ExprParser<'a> {
     }
 
     fn primary(&mut self) -> Result<Expr, Diagnostic> {
-        // 直接消耗共通 Parser 核心建立的具跨度純值字面值 AST。
-        if let Some(literal) =
-            crate::syntax_shared::take_scalar_literal(self.tokens, &mut self.cursor) {
-            let kind = match literal.kind {
+        // 直接由公私共通解析核心生成正式 Expr AST，而非事後投影。
+        // 公開模式仍將 i64 合法性留給原 P10，以維持原診斷優先序。
+        if let Some(literal) = crate::syntax_shared::parse_scalar_atom(
+            self.tokens, &mut self.cursor, |atom| Ok(match atom {
                 crate::syntax_shared::ScalarLiteral::Integer(text) =>
                     ExprKind::IntLiteral(text),
                 crate::syntax_shared::ScalarLiteral::Boolean(value) =>
                     ExprKind::BoolLiteral(value),
-            };
-            return Ok(Expr { kind, start: literal.start, end: literal.end });
+            }),
+        )? {
+            return Ok(literal);
         }
         // 一般具名原子亦由同一共通 AST 位置產生器建立。
         if let Some(name) =

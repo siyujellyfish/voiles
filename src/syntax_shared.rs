@@ -311,13 +311,27 @@ pub(crate) fn peek_scalar_literal(
     })
 }
 
-/// 已核准可以消耗的字面值直接由相同共同 AST 生成器建構。
+/// F02：兩條正式 Parser 共用**同一個字面值節點產生及提交演算法**。
+/// Parser 模式只負責 ScalarLiteral→正式 AST Kind 的轉換及已核准模式
+/// 特有的型別限制；轉換失敗不消耗 token，保留既有私有診斷優先序。
+pub(crate) fn parse_scalar_atom<K>(
+    tokens: &[Token], cursor: &mut usize,
+    convert: impl FnOnce(ScalarLiteral) -> Result<K, crate::Diagnostic>,
+) -> Result<Option<crate::common_ir::SpannedNode<K>>, crate::Diagnostic> {
+    let Some(node) = peek_scalar_literal(tokens, *cursor) else { return Ok(None); };
+    let kind = convert(node.kind)?;
+    *cursor += 1;
+    Ok(Some(crate::common_ir::SpannedNode {
+        kind, start: node.start, end: node.end,
+    }))
+}
+
+/// 既有相容入口委派給相同正式節點產生器，不保留另一套游標邏輯。
 pub(crate) fn take_scalar_literal(
     tokens: &[Token], cursor: &mut usize,
 ) -> Option<crate::common_ir::SpannedNode<ScalarLiteral>> {
-    let node = peek_scalar_literal(tokens, *cursor)?;
-    *cursor += 1;
-    Some(node)
+    parse_scalar_atom(tokens, cursor, Ok)
+        .expect("相同純值字面值不需附加模式驗證")
 }
 
 pub(crate) fn boolean_keyword(word: &str) -> Option<bool> {
@@ -739,5 +753,42 @@ mod tests {
         assert!(end(&tokens.tokens, tokens.tokens.len()));
         assert!(!newline(&tokens.tokens, 0));
         assert!(tokens.tokens.iter().enumerate().any(|(i, _)| newline(&tokens.tokens, i)));
+    }
+}
+
+#[cfg(test)]
+mod f02_真正公私純值字面值共同建構器 {
+    use super::*;
+    use crate::{lexer, source::Source, Diagnostic, DiagnosticKind};
+
+    #[test]
+    fn 相同_utf8_節點跨度與游標只有成功後提交() {
+        let src = Source::new("true\n42\n".as_bytes().to_vec());
+        let toks = lexer::scan(&src);
+        assert!(toks.diagnostics.is_empty());
+        let mut cursor = 0;
+        let first = parse_scalar_atom(&toks.tokens, &mut cursor,
+            |atom| -> Result<ScalarLiteral, Diagnostic> { Ok(atom) })
+            .unwrap().unwrap();
+        assert_eq!(first.kind, ScalarLiteral::Boolean(true));
+        assert_eq!(first.start, 0);
+        assert_eq!(first.end, 4);
+        assert_eq!(cursor, 1);
+
+        let mut denied = 2;
+        let err = parse_scalar_atom::<ScalarLiteral>(&toks.tokens, &mut denied, |_| {
+            Err(Diagnostic {
+                kind: DiagnosticKind::Syntax,
+                message: "私有模式拒絕".into(),
+                span: None,
+            })
+        }).unwrap_err();
+        assert_eq!(err.message.as_ref(), "私有模式拒絕");
+        assert_eq!(denied, 2, "模式驗證失敗必須保留原詞彙位置");
+        let allowed = parse_scalar_atom(&toks.tokens, &mut denied,
+            |atom| -> Result<ScalarLiteral, Diagnostic> { Ok(atom) })
+            .unwrap().unwrap();
+        assert_eq!(allowed.kind, ScalarLiteral::Integer("42".to_owned()));
+        assert_eq!(denied, 3);
     }
 }
