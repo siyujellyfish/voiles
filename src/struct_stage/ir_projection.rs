@@ -111,7 +111,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
     #[test]
     fn 公開與私有運算式確實使用同一通用節點外殼並保存原位置() {
         let public: crate::expr::Expr = crate::common_ir::SpannedNode {
-            kind: crate::expr::ExprKind::BoolLiteral(true), start: 3, end: 7,
+            kind: crate::expr::ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(true)), start: 3, end: 7,
         };
         let private: Term = crate::common_ir::SpannedNode {
             kind: TermKind::Literal("bool"), start: 3, end: 7,
