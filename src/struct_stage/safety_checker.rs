@@ -1149,14 +1149,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         message: "P15：跳轉後外層來源宣告遺失".into(),
                         span: Some(self.source.span(statement.start, statement.end)),
                     })?;
-                let original_loan = original.loan.as_ref().map(|loan|
-                    (loan.fact.source, loan.fact.kind, loan.active));
-                let candidate_loan = candidate.loan.as_ref().map(|loan|
-                    (loan.fact.source, loan.fact.kind, loan.active));
-                if candidate.declaration_start != original.declaration_start
-                    || candidate.value != original.value
-                    || candidate.pending_fields != original.pending_fields
-                    || original_loan != candidate_loan {
+                if !original.same_safety_state(candidate) {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
                         message: if matches!(&statement.kind, StmtKind::ForRange { .. }) {
@@ -1490,14 +1483,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             for (name, original) in scope.iter() {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
-                                let old_loan = original.loan.as_ref().map(|loan|
-                                    (loan.fact.source, loan.fact.kind, loan.active));
-                                let new_loan = candidate.loan.as_ref().map(|loan|
-                                    (loan.fact.source, loan.fact.kind, loan.active));
-                                if candidate.declaration_start != original.declaration_start
-                                    || candidate.value != original.value
-                                    || candidate.pending_fields != original.pending_fields
-                                    || old_loan != new_loan {
+                                if !original.same_safety_state(candidate) {
                                     return Err(Diagnostic {
                                         kind: DiagnosticKind::Static,
                                         message: "P15：for 反向邊來源狀態不穩定，不可跨迭代沿用借用／所有權".into(),
@@ -1553,14 +1539,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             for (name, original) in scope.iter() {
                                 let candidate = simulated[depth].get(name)
                                     .expect("迴圈不得移除外層宣告");
-                                let old_loan = original.loan.as_ref().map(|loan|
-                                    (loan.fact.source, loan.fact.kind, loan.active));
-                                let new_loan = candidate.loan.as_ref().map(|loan|
-                                    (loan.fact.source, loan.fact.kind, loan.active));
-                                if candidate.declaration_start != original.declaration_start
-                                    || candidate.value != original.value
-                                    || candidate.pending_fields != original.pending_fields
-                                    || old_loan != new_loan {
+                                if !original.same_safety_state(candidate) {
                                     return Err(self.error(
                                         "P15：while 反向邊的來源所有權／借用狀態不穩定，需完整不動點證明",
                                         condition));
