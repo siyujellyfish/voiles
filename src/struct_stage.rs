@@ -95,7 +95,7 @@ enum TermKind {
     BinaryInt(crate::common_ir::ArithmeticNode<Term>),
     Construct(String, Vec<(String, Term)>),
     /// 一般函式位置引數；呼叫端所有權資料流完成前不得接受。
-    Call(String, Vec<Term>),
+    Call(crate::syntax_shared::ParsedNamedCall<Vec<Term>>),
     Move(String),
     /// VA14-01-A：只於具型別 var／const 直接初始化時建立非擁有借用。
     Borrow(String),
