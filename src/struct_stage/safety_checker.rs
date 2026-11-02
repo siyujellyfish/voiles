@@ -564,7 +564,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn method_bool_condition(&self, owner: &str, method: &Function, term: &Term)
         -> Result<(), Diagnostic> {
         let ty = self.method_pure_value_type(owner, method, term)?;
-        if ty != "bool" {
+        if !crate::common_ir::boolean_condition_is_ready(
+            crate::common_ir::ScalarType::from_name(&ty),true,
+        ) {
             return Err(self.error("方法 if 條件必須為可複製的 bool", term));
         }
         Ok(())
@@ -1523,7 +1525,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             "P15：while 條件只能使用無資源副作用的合法純值", condition));
                     }
                     let (actual, ready) = self.evaluate(condition, vars)?;
-                    if actual != "bool" || !ready {
+                    if !crate::common_ir::boolean_condition_is_ready(
+                        crate::common_ir::ScalarType::from_name(&actual),ready,
+                    ) {
                         return Err(self.error("while 條件必須是已初始化 bool", condition));
                     }
                     if self.recorded_scalar_hir.borrow()
@@ -1574,7 +1578,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let condition = &branch.condition;
                     let yes = &branch.body;
                     let (actual, ready) = self.evaluate(condition, vars)?;
-                    if actual != "bool" || !ready {
+                    if !crate::common_ir::boolean_condition_is_ready(
+                        crate::common_ir::ScalarType::from_name(&actual),ready,
+                    ) {
                         return Err(self.error("if 條件必須是已初始化 bool", condition));
                     }
                     if self.recorded_scalar_hir.borrow()
