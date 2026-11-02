@@ -530,3 +530,30 @@ mod r02_f02_真正公私_scalar_literal_ast_同一節點種類 {
             pubinit.node_span(),crate::common_ir::NodeRole::Expression,code).is_some());
     }
 }
+
+#[cfg(test)]
+mod r02_f04_真正公私算術型別錯誤仍保持各自核准診斷 {
+    use super::*;
+    use crate::{names,parser,types};
+    #[test]
+    fn bool_及字串運算不得因共用型別檢查器偷渡合法化() {
+        let invalid=[
+            "fn main()->int{\nreturn true + 1\n}\n",
+            "fn main()->int{\nreturn 1 - false\n}\n",
+        ];
+        for code in invalid {
+            let source=Source::new(code.as_bytes().to_vec());
+            let lexed=lexer::scan(&source);
+            let public=parser::parse(&source,&lexed.tokens).unwrap();
+            let facts=names::resolve_with_facts(&public,&source).unwrap();
+            let pe=types::check_with_names_and_hir(&public,&source,&facts).unwrap_err();
+            assert_eq!(pe.kind, DiagnosticKind::Static);
+            assert!(pe.message.contains("整數加減"),
+                "公開 P10 診斷不可被私有所有權診斷取代");
+            let re=verified_private_source(code).err().expect("已核准私有型別錯誤必須拒絕");
+            assert_eq!(re.kind, DiagnosticKind::Static);
+            assert!(re.message.contains("P13：加減"),
+                "私有既有 P13 診斷不得被公開 MVP-A 診斷取代");
+        }
+    }
+}

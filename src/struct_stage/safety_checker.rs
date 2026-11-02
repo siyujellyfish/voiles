@@ -777,11 +777,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let operator = &binary.operator;
                 // 順序由 P01 左結合決定，不得跳過內層 .move() 狀態更新。
                 let (left_ty, left_ready) = self.evaluate(left, vars)?;
-                if left_ty != "int" || !left_ready {
+                if !crate::common_ir::arithmetic_operand_is_ready(
+                    crate::common_ir::ScalarType::from_name(&left_ty), left_ready,
+                ) {
                     return Err(self.error("P13：加減左運算元必須為已初始化 int", left));
                 }
                 let (right_ty, right_ready) = self.evaluate(right, vars)?;
-                if right_ty != "int" || !right_ready {
+                if !crate::common_ir::arithmetic_operand_is_ready(
+                    crate::common_ir::ScalarType::from_name(&right_ty), right_ready,
+                ) {
                     return Err(self.error("P13：加減右運算元必須為已初始化 int", right));
                 }
                 debug_assert!(*operator == '+' || *operator == '-');
