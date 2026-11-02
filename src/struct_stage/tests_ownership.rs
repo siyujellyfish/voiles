@@ -45,6 +45,74 @@ mod tests {
     }
 
     #[test]
+    fn f08_借用別名的讀取與欄位接收者須由同一_declid_與借用權限授權() {
+        let source = Source::new(b"source alias".to_vec());
+        let structs = HashMap::new();
+        let functions = Vec::new();
+        let checker = Checker {
+            source: &source, structs: &structs, functions: &functions,
+            function_index: HashMap::new(),
+            ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default()),
+        };
+        let original = DeclarationId(0);
+        let borrowed = DeclarationId(7);
+        let fact = BorrowFact::new(original, BorrowKind::SharedRead);
+        let owner = Binding {
+            declaration_start: original, ty: "int".into(), mutable: false,
+            value: ValueSlot::initialized(Allowed), pending_fields: None, loan: None,
+        };
+        let alias = Binding {
+            declaration_start: borrowed, ty: "int".into(), mutable: false,
+            value: ValueSlot::initialized(Allowed), pending_fields: None,
+            loan: Some(LoanBinding { fact, active: true }),
+        };
+        let mut vars = vec![Rc::new(HashMap::from([
+            ("source".into(), owner), ("alias".into(), alias),
+        ]))];
+        let term = Term {
+            kind: TermKind::Name("alias".into()), start: 7, end: 12,
+        };
+        checker.record_declaration(original, "int", false);
+        checker.record_declaration(borrowed, "int", false);
+        assert!(checker.check_direct(&vars, "alias", &term).is_ok(),
+            "合法的共享借用別名仍可在其有效期內使用");
+        assert_eq!(checker.evaluate(&term, &mut vars), Ok(("int".into(), true)));
+        assert!(checker.check_direct(&vars, "source", &term).is_err(),
+            "有效別名仍應禁止直接操作借用中的原來源");
+
+        checker.recorded_declarations.borrow_mut().insert(
+            borrowed, crate::common_ir::TypedDeclaration::new(
+                borrowed, "bool".into(), false,
+            ));
+        assert!(checker.check_direct(&vars, "alias", &term).is_err(),
+            "借用別名不得繞過 Checker 型別權威");
+        checker.recorded_declarations.borrow_mut().insert(
+            borrowed, crate::common_ir::TypedDeclaration::new(
+                borrowed, "int".into(), false,
+            ));
+        for bad in [
+            BorrowFact::new(DeclarationId(200), BorrowKind::SharedRead),
+            BorrowFact::new(original, BorrowKind::ExclusiveWrite),
+        ] {
+            Rc::make_mut(&mut vars[0]).get_mut("alias").unwrap()
+                .loan.as_mut().unwrap().fact = bad;
+            assert!(checker.check_direct(&vars, "alias", &term).is_err(),
+                "虛構來源與冒充獨占票據不能跳過具型別借用來源核對");
+        }
+        Rc::make_mut(&mut vars[0]).get_mut("alias").unwrap()
+            .loan.as_mut().unwrap().fact = fact;
+        Rc::make_mut(&mut vars[0]).get_mut("source").unwrap().ty = "bool".into();
+        assert!(checker.check_direct(&vars, "alias", &term).is_err(),
+            "即使 alias 本身正確，借用來源被置換型別也不得放行");
+    }
+
+    #[test]
     fn f04_f08_私有實際讀取借用及移動必須消費同一_checker_具型別宣告權威() {
         let source = Source::new(b"var value:int = 1\nvalue\n".to_vec());
         let structs = HashMap::new();
