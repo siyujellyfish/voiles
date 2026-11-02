@@ -2314,6 +2314,46 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
     }
 
     #[test]
+    fn 確定零次的_迴圈本體不參與借用最後使用點_未知次數仍保守保留() {
+        let old = Some(DeclarationId(10));
+        let zero = stmt(StmtKind::ForRange {
+            iterator: "i".into(), iterator_start: 80,
+            lower: "0x2".into(), upper: "2".into(),
+            body: vec![read("alias")],
+        }, 81);
+        assert!(!mentions(&[zero], old),
+            "同一整數的不同核准進位表示仍屬確定零次執行");
+
+        let once = stmt(StmtKind::ForRange {
+            iterator: "i".into(), iterator_start: 80,
+            lower: "2".into(), upper: "3".into(),
+            body: vec![read("alias")],
+        }, 81);
+        assert!(mentions(&[once], old), "實際可能迭代時不得提前釋放外層借用");
+
+        let conservative = stmt(StmtKind::ForRange {
+            iterator: "i".into(), iterator_start: 80,
+            lower: "3".into(), upper: "1".into(),
+            body: vec![read("alias")],
+        }, 81);
+        assert!(mentions(&[conservative], old),
+            "未有正式確定零次證明的倒置範圍仍必須保守處理");
+    }
+
+    #[test]
+    fn 真實來源的零次迴圈內假想引用不可封鎖所有者讀取() {
+        let zero = "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar before:int = owner\nfor i in 2..2{\nvar unused:int = alias\n}\nreturn before\n}\n";
+        assert!(inspect(zero).is_ok(),
+            "迴圈確定不進入時，不得以不可達的 alias 引用阻擋 owner");
+        let actual = zero.replace("2..2", "2..3");
+        let error = inspect(&actual).expect_err(
+            "迴圈至少迭代一次時仍需保留 alias 借用並禁止先讀 owner");
+        assert_eq!(error.kind, crate::DiagnosticKind::Static);
+        assert!(error.message.contains("HC14"),
+            "不能將仍活躍的借用錯誤轉成其它診斷類別");
+    }
+
+    #[test]
     fn 正式私有檢查不能因內層遮蔽而提早釋放外層仍會使用的借用() {
         let illegal = "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nif(true){\nvar alias:int = 3\nvar shadow_copy:int = source\n}\nreturn alias\n}\n";
         let error = inspect(illegal).expect_err("外層仍使用 alias 必須保留借用");
