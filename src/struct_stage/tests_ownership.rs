@@ -18,6 +18,8 @@ mod tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())
             };
@@ -59,6 +61,8 @@ mod tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default()),
         };
@@ -93,6 +97,8 @@ mod tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default()),
         };
@@ -192,6 +198,8 @@ mod tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default()),
         };
@@ -240,6 +248,8 @@ mod tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default()),
         };
@@ -749,6 +759,8 @@ mod automatic_self_borrow_tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())};
         assert_eq!(checker.check_method("Counter", methods.iter().find(|m| m.name == "get").unwrap()).unwrap(),
@@ -819,6 +831,8 @@ mod conditional_self_inference_tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())};
         let method = &types["Counter"].methods[0];
@@ -1199,6 +1213,8 @@ mod float_copyable_approved_tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())
         };
@@ -1248,6 +1264,8 @@ mod float_copyable_method_tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())
         };
@@ -1273,6 +1291,8 @@ mod float_copyable_method_tests {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())
         };
@@ -2511,6 +2531,8 @@ mod p13_1_copyable_完整能力分類 {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())
         };
@@ -2568,6 +2590,8 @@ mod p13_1_正式來源閉包 {
             recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_call_borrows: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_call_borrow_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
                 crate::common_ir::VerifiedScalarHir::default())
         }.permission(ty)
