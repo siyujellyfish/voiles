@@ -15,6 +15,7 @@ mod tests {
                 ability: crate::ownership_policy::approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -45,6 +46,40 @@ mod tests {
     }
 
     #[test]
+    fn f11_同一來源路徑宣告重訪只能完全相同_衝突不得被覆寫() {
+        let source = Source::new(b"fn main()->int{return 0}".to_vec());
+        let structs = HashMap::new();
+        let functions = Vec::new();
+        let checker = Checker {
+            source: &source, structs: &structs, functions: &functions,
+            function_index: HashMap::new(),
+            ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
+            recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
+            recorded_scalar_hir: std::cell::RefCell::new(
+                crate::common_ir::VerifiedScalarHir::default()),
+        };
+        let owner = DeclarationId(3);
+        checker.record_declaration(owner, "int", true);
+        checker.record_declaration(owner, "int", true);
+        assert!(checker.recorded_declaration_conflicts.borrow().is_empty(),
+            "合法路徑重訪相同已解析宣告必須冪等");
+        checker.record_declaration(owner, "bool", true);
+        checker.record_declaration(owner, "int", false);
+        assert!(checker.recorded_declaration_conflicts.borrow().contains(&owner),
+            "型別／var-const 權限不同不得以最後寫入覆蓋已驗證的來源");
+        let original = checker.recorded_declarations.borrow()[&owner].clone();
+        assert_eq!(original.ty, "int");
+        assert!(original.mutable, "首次 Checker 宣告證據必須保留而不可被覆蓋");
+        checker.record_declaration(owner, "int", true);
+        assert!(checker.recorded_declaration_conflicts.borrow().contains(&owner),
+            "後續再遇相同證據不能消除曾經存在的路徑矛盾");
+    }
+
+    #[test]
     fn f08_借用別名的讀取與欄位接收者須由同一_declid_與借用權限授權() {
         let source = Source::new(b"source alias".to_vec());
         let structs = HashMap::new();
@@ -55,6 +90,7 @@ mod tests {
             ability: crate::ownership_policy::approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -153,6 +189,7 @@ mod tests {
             ability: crate::ownership_policy::approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -200,6 +237,7 @@ mod tests {
             ability: crate::ownership_policy::approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -708,6 +746,7 @@ mod automatic_self_borrow_tests {
             function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -777,6 +816,7 @@ mod conditional_self_inference_tests {
             function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -1156,6 +1196,7 @@ mod float_copyable_approved_tests {
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -1204,6 +1245,7 @@ mod float_copyable_method_tests {
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -1228,6 +1270,7 @@ mod float_copyable_method_tests {
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -2465,6 +2508,7 @@ mod p13_1_copyable_完整能力分類 {
             function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(
@@ -2521,6 +2565,7 @@ mod p13_1_正式來源閉包 {
             function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: approved_leaf_copy_permission,
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
+            recorded_declaration_conflicts: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_named_returns: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_field_writes: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_scalar_hir: std::cell::RefCell::new(

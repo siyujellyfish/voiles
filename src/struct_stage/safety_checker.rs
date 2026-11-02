@@ -7,12 +7,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         let fact = crate::common_ir::TypedDeclaration::new(
             id, ty.to_owned(), mutable,
         );
-        let replaced = self.recorded_declarations.borrow_mut()
-            .insert(id, fact.clone());
-        // 同一 AST 宣告若因靜態可達路徑分析再次造訪，可重用相同證據；
-        // 但絕不能以相同原始位元組起點宣稱不同型別或寫入權限。
-        debug_assert!(replaced.is_none_or(|previous| previous == fact),
-            "同一來源身分在不同可達路徑不得擁有衝突的型別或可變權限");
+        let mut existing = self.recorded_declarations.borrow_mut();
+        if let Some(earlier) = existing.get(&id) {
+            // 同一 AST 宣告在不同路徑被反覆造訪可重用同一證據；
+            // 如有型別／var-const 權限矛盾，保留第一次真實記錄
+            // 並持久標記衝突，禁止 release 建置繞過 debug_assert。
+            if earlier != &fact {
+                self.recorded_declaration_conflicts.borrow_mut().insert(id);
+            }
+        } else {
+            existing.insert(id, fact);
+        }
     }
     fn error(&self, text: &str, term: &Term) -> Diagnostic {
         Diagnostic {
