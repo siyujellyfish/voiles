@@ -412,6 +412,16 @@ impl ScalarType {
     }
 }
 
+/// R02 F04：公私正式 Checker 對共同加減運算元使用唯一語意裁決。
+/// 回傳 `false` 時仍由各自核准模式產生原有診斷與作用域位置；
+/// ready 只代表既有 Checker 已證明的初始化／可讀取性，不可藉此
+/// 重新核准 str、結構、borrow、move 或容器的 Copyable 資格。
+pub(crate) fn arithmetic_operand_is_ready(
+    ty: Option<ScalarType>, initialized: bool,
+) -> bool {
+    initialized && ty == Some(ScalarType::Int)
+}
+
 // parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
@@ -855,5 +865,22 @@ mod r02_f04_公私算術_hir_跨度操作與不可篡改契約 {
         missing.record_expression(span,ScalarType::Int);
         missing.record_arithmetic(VerifiedScalarArithmetic {span,left,right,operator:'+'});
         assert!(!missing.source_spans_are_valid(src));
+    }
+}
+
+#[cfg(test)]
+mod r02_f04_公私共同算術運算元裁決 {
+    use super::*;
+    #[test]
+    fn 只有已驗證初始化_int_可成為公私加減運算元() {
+        assert!(arithmetic_operand_is_ready(Some(ScalarType::Int), true));
+        for ty in [None, Some(ScalarType::Bool)] {
+            assert!(!arithmetic_operand_is_ready(ty, true),
+                "其他型別／未受核准資源不可藉共通契約取得 int 權限");
+        }
+        assert!(!arithmetic_operand_is_ready(Some(ScalarType::Int), false),
+            "私有未初始化來源不得被公開型別推論的 ready 常值旁路");
+        assert_eq!(ScalarType::from_name("str"),None);
+        assert_eq!(ScalarType::from_name("list"),None);
     }
 }
