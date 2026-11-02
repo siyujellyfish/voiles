@@ -58,7 +58,7 @@ fn binding(out: &mut Vec<NodeLocation>, source: &Source, decl: &Binding, kind: &
 fn stmt(out: &mut Vec<NodeLocation>, source: &Source, s: &Stmt) {
     let name = match &s.kind {
         StmtKind::Binding(_) => "LocalBinding",
-        StmtKind::Assignment { .. } => "Assignment",
+        StmtKind::Assignment(_) => "Assignment",
         StmtKind::IfChain { .. } => "IfChain",
         StmtKind::Return(_) => "Return",
     };
@@ -68,8 +68,8 @@ fn stmt(out: &mut Vec<NodeLocation>, source: &Source, s: &Stmt) {
             // 語句與宣告節點是同一來源跨度，保留概念分組。
             binding(out,source,b,"LocalBinding");
         }
-        StmtKind::Assignment { value, .. } | StmtKind::Return(value) =>
-            expression(out,source,value),
+        StmtKind::Assignment(assignment) => expression(out,source,&assignment.expression),
+        StmtKind::Return(value) => expression(out,source,value),
         StmtKind::IfChain { branches, otherwise } => {
             for arm in branches {
                 expression(out,source,&arm.condition);
