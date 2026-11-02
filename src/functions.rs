@@ -10,7 +10,7 @@ pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
     for item in &file.items {
         if let Item::Function(f) = item {
             if f.name == "main" {
-                if f.returns != Type::Int {
+                if f.result_ty != Type::Int {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
                         message: "首版入口 fn main() 必須標註 -> int".into(),
