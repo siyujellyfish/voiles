@@ -251,6 +251,61 @@ impl<T: Copy + PartialEq> TypedDeclaration<T> {
     }
 }
 
+/// F01／F04：正式私有 Checker 成功確認後，對欄位與參數
+/// 保留完整的型別註記來源身分。此事實只證明 token／宣告／型別
+/// 的一致性，**不授權** BorrowTicket、ValueSlot.move 或 ResourceId。
+///
+/// 與真正可借用的詞彙 Binding 使用不同欄位及角色，避免把
+/// `struct` 欄位型別註記誤當成合法獨立資源持有者。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VerifiedTypedMember {
+    pub(crate) identity: ModeNodeIdentity,
+    pub(crate) name_identity: ModeNodeIdentity,
+    pub(crate) type_identity: ModeNodeIdentity,
+    pub(crate) name: String,
+    pub(crate) declaration: TypedDeclaration<String>,
+}
+impl VerifiedTypedMember {
+    /// 只接受兩種原有 Parser 已交付的來源角色；不可憑字串
+    /// 或其它模式的 NodeId 自行建立「已核准借用」的假證據。
+    pub(crate) fn checked_private(
+        source: &str, role: NodeRole, span: NodeSpan,
+        name: &str, name_span: NodeSpan,
+        ty: &str, type_span: NodeSpan, mutable: bool,
+    ) -> Option<Self> {
+        if !matches!(role, NodeRole::Field | NodeRole::Parameter)
+            || name_span.start < span.start || name_span.end > span.end
+            || type_span.start < name_span.end || type_span.end > span.end
+            || source.get(name_span.start..name_span.end) != Some(name)
+            || source.get(type_span.start..type_span.end) != Some(ty) {
+            return None;
+        }
+        let mode = FrontendMode::PrivateVerified;
+        Some(Self {
+            identity: ModeNodeIdentity::checked(mode, span, role, source)?,
+            name_identity: ModeNodeIdentity::checked(
+                mode, name_span, NodeRole::Name, source,
+            )?,
+            type_identity: ModeNodeIdentity::checked(
+                mode, type_span, NodeRole::Type, source,
+            )?,
+            name: name.to_owned(),
+            declaration: TypedDeclaration::new(
+                DeclarationId(span.start), ty.to_owned(), mutable,
+            ),
+        })
+    }
+
+    pub(crate) fn source_is_consistent(&self, source: &str) -> bool {
+        Self::checked_private(
+            source, self.identity.node.role, self.identity.node.span,
+            &self.name, self.name_identity.node.span,
+            &self.declaration.ty, self.type_identity.node.span,
+            self.declaration.mutable,
+        ).as_ref() == Some(self)
+    }
+}
+
 /// F04：正式型別化引用的來源半開跨度與已解析宣告必須同行傳遞。
 /// 不以名稱文字重新推測擁有者；具體型別能力仍由不同模式的 Checker 驗證。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
