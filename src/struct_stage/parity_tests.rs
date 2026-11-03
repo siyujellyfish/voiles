@@ -476,13 +476,17 @@ mod r02_f03_私有真正_if_分支直接保存共同來源身分 {
         let main=&functions[0];
         let StmtKind::If {branch, no}=&main.body[0].kind
             else {panic!("應有 if");};
-        let _: &crate::syntax_shared::ParsedIfArm<Term,Vec<Stmt>>=branch;
+        let _: &crate::syntax_shared::ParsedIfArm<
+            Term, crate::syntax_shared::ParsedBlock<Stmt>
+        >=branch;
+        assert_eq!(&code[branch.body.start..branch.body.end], "{\nreturn 1\n}");
         assert_eq!(branch.start,code.find("if(true)").unwrap());
         let otherwise=no.as_ref().expect("應有 else-if");
         let [next]=otherwise.as_slice() else {panic!("else-if 不可丟失");};
         let StmtKind::If {branch:second,no:tail}=&next.kind
             else {panic!("應由原安全 Checker 辨識巢狀 if");};
         assert_eq!(second.start,code.find("if(false)").unwrap());
+        assert_eq!(&code[second.body.start..second.body.end], "{\nreturn 2\n}");
         assert_eq!(second.start,next.start);
         assert_eq!(tail.as_ref().expect("缺少 else").len(),1);
         assert!(verified_private_source(code).is_ok(),

@@ -247,7 +247,9 @@ impl Parser<'_> {
         let parsed = crate::syntax_shared::parse_if_chain(self)?;
         let mut arms = parsed.arms.into_iter();
         let first = arms.next().expect("if 文法至少產生一條分支");
-        let mut no = parsed.otherwise;
+        // 既有 else-if 的巢狀 CFG 保留 Vec；成立分支則直接
+        // 保存 Parser 交付的完整 ParsedBlock，不丟失原始大括號跨度。
+        let mut no = parsed.otherwise.map(|block| block.statements);
         // 公開平面鏈在私有既有 AST 中仍需折成原來的 else-if 巢狀鏈，
         // 合流規則與原始半開位置不變，不能憑此開放新語言能力。
         for arm in arms.collect::<Vec<_>>().into_iter().rev() {
@@ -600,7 +602,7 @@ impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
 
 impl crate::syntax_shared::IfSyntax for Parser<'_> {
     type Condition = Term;
-    type Body = Vec<Stmt>;
+    type Body = crate::syntax_shared::ParsedBlock<Stmt>;
 
     fn current_if_start(&self) -> usize { self.tok().start }
     fn begin_if(&mut self) -> Result<(), Diagnostic> {
@@ -616,8 +618,8 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
         self.take(')', "if 條件需要右括號")?;
         Ok(condition)
     }
-    fn if_body(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
-        Ok(self.body()?.statements)
+    fn if_body(&mut self) -> Result<crate::syntax_shared::ParsedBlock<Stmt>, Diagnostic> {
+        self.body()
     }
     fn maybe_else(&mut self) -> bool {
         let saved = self.cursor;
