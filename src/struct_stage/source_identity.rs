@@ -5,6 +5,12 @@
 fn verified_private_syntax_tree(
     text: &str, structs: &HashMap<String, StructDecl>, functions: &[Function],
 ) -> bool {
+    verified_private_syntax_roles(text, structs, functions).is_some()
+}
+/// A1：直接從唯一已驗證私有 AST 走訪得到帶模式的全角色來源清冊。
+fn verified_private_syntax_roles(
+    text: &str, structs: &HashMap<String, StructDecl>, functions: &[Function],
+) -> Option<std::collections::BTreeSet<crate::common_ir::ModeNodeIdentity>> {
     use crate::common_ir::{FrontendMode, NodeRole, NodeSpan, SourceIdentityAudit};
 
     fn term(
@@ -145,5 +151,5 @@ fn verified_private_syntax_tree(
             })
             && definition.methods.iter().all(|method| function(method, span, &mut audit))
     }) && functions.iter().all(|fun| function(fun, full, &mut audit));
-    checked && audit.count() > 0
+    (checked && audit.count() > 0).then(|| audit.verified_roles().collect())
 }
