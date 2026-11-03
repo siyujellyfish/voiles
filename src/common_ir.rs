@@ -51,6 +51,8 @@ pub(crate) enum NodeRole {
     Assignment,
     Declaration,
     Statement,
+    Function,
+    Block,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -63,6 +65,22 @@ impl NodeIdentity {
         span: NodeSpan, role: NodeRole, source: &str,
     ) -> Option<Self> {
         Some(Self { span: span.checked(source)?, role })
+    }
+}
+
+/// F01：同一份 UTF-8 來源的同位置／同語意角色可能由公開或私有
+/// 兩條正式入口驗證；將入口模式納入已驗證節點身分，而不是
+/// 把兩入口接受集合或 DeclarationId／ResourceId 混成同一種身分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct ModeNodeIdentity {
+    pub(crate) mode: FrontendMode,
+    pub(crate) node: NodeIdentity,
+}
+impl ModeNodeIdentity {
+    pub(crate) fn checked(
+        mode: FrontendMode, span: NodeSpan, role: NodeRole, source: &str,
+    ) -> Option<Self> {
+        Some(Self { mode, node: NodeIdentity::checked(span, role, source)? })
     }
 }
 
@@ -80,6 +98,12 @@ impl<K> SpannedNode<K> {
     }
     pub(crate) fn node_identity(&self, role: NodeRole) -> NodeIdentity {
         NodeIdentity { span: self.node_span(), role }
+    }
+    /// 公開與私有共用的真正來源跨度／角色／模式身分驗證。
+    pub(crate) fn checked_mode_identity(
+        &self, mode: FrontendMode, role: NodeRole, source: &str,
+    ) -> Option<ModeNodeIdentity> {
+        ModeNodeIdentity::checked(mode, self.node_span(), role, source)
     }
 }
 
