@@ -56,7 +56,7 @@ impl<'a> Resolver<'a> {
                     Err(self.error("找不到合法的無參數函式宣告", e.start, e.end))
                 }
             }
-            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+            ExprKind::BinaryInt(binary) => {
                 self.check_expr(&binary.left, scopes)?;
                 self.check_expr(&binary.right, scopes)
             }
