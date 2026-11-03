@@ -3,6 +3,18 @@
 /// P16 私有測試橋接：先完成真正 .voil 的來源／型別／所有權檢查，
 /// 再對可靜態確定的單一結構建立式建立真實 UTF-8 擁有者資源追蹤。
 /// 不推定主程式控制流程、一般運算式、轉義解碼或 P17 直譯執行。
+/// A2/F02：只在通過正式 Checker 後以同一原 Parser 節點讀取
+/// 已確認的具名建構欄位；裸 name() 的語法尚未分類，真正結構
+/// 存在性仍必須由每條橋接原有的 structs／宣告證據核對。
+fn trace_struct_constructor<'a>(term: &'a Term)
+    -> Option<(&'a str, &'a [(String, Term)])> {
+    match &term.kind {
+        TermKind::Construct(name, args) => Some((name, args.as_slice())),
+        TermKind::UnresolvedZeroArgs(name) => Some((name, &[])),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 fn trace_string_struct_source(
     text: &str, variable: &str, fail_after: Option<&str>,
@@ -37,8 +49,8 @@ fn trace_string_struct_source(
         return Err(unsupported("P16：返回及控制流程尚未接通資源追蹤"));
     }
     let (ty, mutable, args) = match &declaration.kind {
-        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-            Some(Term { kind: TermKind::Construct(owner, args), .. })
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+            Some((owner, args))
                 if declaration.name == variable && &declaration.ty == owner =>
                 (declaration.ty.as_str(), declaration.mutable, args),
             _ => return Err(unsupported("P16：不存在單次具名字串結構建立式")),
@@ -122,8 +134,8 @@ fn trace_persistent_struct_move_source(
         return Err(reject("P16：非直接 return 0 的控制流程尚無資源執行證明"));
     }
     let (owner, struct_name, named_args)=match &declare.kind {
-        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-            Some(Term {kind:TermKind::Construct(actual,args), ..})
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+            Some((actual, args))
                 if &declaration.ty==actual =>
                 (declaration.name.as_str(),declaration.ty.as_str(),args),
             _=>return Err(reject("P16：第一語句須建立具名 str 欄位結構")),
@@ -230,8 +242,8 @@ fn trace_string_return_source(
     let valid_receiver = matches!(&declaration.kind, StmtKind::Declare(declaration)
         if declaration.name == receiver && declaration.ty == "str" && declaration.mutable
             && matches!(declaration.initializer.as_ref(),
-                Some(Term {kind:TermKind::Construct(name_called,args),..})
-                    if name_called == provider && args.is_empty()));
+                Some(Term {kind:TermKind::UnresolvedZeroArgs(name_called),..})
+                    if name_called == provider));
     if !valid_receiver {
         return Err(unsupported("P16：呼叫端須以 var str 接收單次函式返回"));
     }
@@ -325,8 +337,8 @@ fn trace_persistent_struct_field_write_source(
         return Err(reject("P16：欄位資源清理僅證明直接 return 0"));
     }
     let (owner,ty,mutable,args)=match &declaration.kind {
-        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-            Some(Term {kind:TermKind::Construct(ctor,args),..})
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+            Some((ctor, args))
                 if &declaration.ty==ctor =>
                 (declaration.name.as_str(),declaration.ty.as_str(),declaration.mutable,args),
             _=>return Err(reject("P16：來源須先宣告具名字串結構")),
@@ -447,8 +459,8 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
         return Err(reject("P16：尚未證明非直接返回的清理順序"));
     }
     let (owner,ty,args)=match &declare.kind {
-        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-            Some(Term {kind:TermKind::Construct(ctor,args),..})
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+            Some((ctor, args))
                 if &declaration.ty==ctor =>
                 (declaration.name.as_str(),declaration.ty.as_str(),args),
             _=>return Err(reject("P16：必須先建構混合結構")),
@@ -619,8 +631,8 @@ fn trace_scope_struct_source(
     // *確實執行* 的作用域所取得 str 數量；未走到的 else 不得建帳。
     let count_planned=|stmt:&Stmt,stop:Option<&str>|->Result<usize,Diagnostic> {
         let (ty,args)=match &stmt.kind {
-            StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-                Some(Term {kind:TermKind::Construct(ctor,args),..})
+            StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+                Some((ctor, args))
                     if &declaration.ty==ctor => (declaration.ty.as_str(),args),
                 _=>return Err(reject("P16：單層分支僅證明已核准結構建立")),
             },
@@ -658,8 +670,8 @@ fn trace_scope_struct_source(
         stmt:&Stmt,fail_after:Option<&str>|
         ->Result<Result<(),StructRuntimeError>,Diagnostic> {
         let (name,ty,mutable,args)=match &stmt.kind {
-            StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-                Some(Term{kind:TermKind::Construct(ctor,args),..})
+            StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+                Some((ctor, args))
                     if &declaration.ty==ctor =>
                     (declaration.name.as_str(),declaration.ty.as_str(),declaration.mutable,args),
                 _=>return Err(reject("P16：區塊橋接僅執行明確結構建立")),
@@ -773,8 +785,8 @@ fn trace_persistent_struct_return_source(
         return Err(unsupported("P16：被呼叫函式僅接受一次建立與一次整筆返回"));
     };
     let (local,ty,named_args)=match &declaration.kind {
-        StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
-            Some(Term {kind:TermKind::Construct(actual,args),..})
+        StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
+            Some((actual, args))
                 if &declaration.ty==actual && declaration.ty==callee.result_ty =>
                 (declaration.name.as_str(),declaration.ty.as_str(),args),
             _=>return Err(unsupported("P16：被呼叫端須先建立具名結構持有者")),
@@ -792,8 +804,8 @@ fn trace_persistent_struct_return_source(
     if !matches!(&receive.kind,StmtKind::Declare(declaration)
         if declaration.name==receiver && declaration.ty==ty
             && matches!(declaration.initializer.as_ref(),
-                Some(Term{kind:TermKind::Construct(called,args),..})
-                    if called==provider && args.is_empty())) {
+                Some(Term{kind:TermKind::UnresolvedZeroArgs(called),..})
+                    if called==provider)) {
         return Err(unsupported("P16：main 須以新結構宣告接收無參數函式結果"));
     }
     if !matches!(&main_return.kind,StmtKind::Return(crate::syntax_shared::ParsedReturn { expression: Term {

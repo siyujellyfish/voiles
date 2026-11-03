@@ -2,6 +2,87 @@
 // 不把私有結構語法偷開到公開入口，且兩路不同的錯誤文字不可假設相同。
 
 #[cfg(test)]
+mod a2_f02_零參數語意唯一分類權威 {
+    use super::*;
+
+    #[test]
+    fn 私有_name_空括號保留待解析且完整符號表裁決已宣告函式() {
+        let code = "fn helper()->int{\nreturn 7\n}\nfn main()->int{\nreturn helper()\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let (_, funcs) = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
+        }.file().unwrap();
+        let main = funcs.iter().find(|f| f.name == "main").unwrap();
+        let StmtKind::Return(ret) = &main.body[0].kind
+            else { panic!("須有真正 return 節點") };
+        assert!(matches!(&ret.expression.kind,
+            TermKind::UnresolvedZeroArgs(name) if name == "helper"));
+        // 前段 fn helper() 是宣告，真正 return helper() 位於檔案後方。
+        let start = code.rfind("helper()").unwrap();
+        assert_eq!(ret.expression.node_span(),
+            crate::common_ir::NodeSpan::new(start, start + "helper()".len()));
+        assert!(verified_private_source(code).is_ok(),
+            "完成符號表後原 P13 零參數函式應保持可呼叫");
+        assert!(crate::parser::parse(&source, &lexed.tokens).is_ok(),
+            "公開原本的零參數一般函式仍不變");
+    }
+
+    #[test]
+    fn 私有_name_空括號同名結構優先且具名結構仍使用_construct() {
+        let code = "struct Meter{\nconst amount:int = 1\n}\nfn Meter()->int{\nreturn 9\n}\nfn main()->int{\nvar value:Meter = Meter()\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let (structs, funcs) = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
+        }.file().unwrap();
+        assert!(structs.contains_key("Meter"));
+        let main = funcs.iter().find(|f| f.name == "main").unwrap();
+        let StmtKind::Declare(decl) = &main.body[0].kind
+            else { panic!("結構變數需由真正 Parser 建立") };
+        assert!(matches!(decl.initializer.as_ref().map(|t| &t.kind),
+            Some(TermKind::UnresolvedZeroArgs(name)) if name == "Meter"));
+        assert!(verified_private_source(code).is_ok(),
+            "同名 struct 必須維持原優先序及原有預設欄位求值能力");
+
+        let named = "struct Meter{\nvar amount:int\n}\nfn main()->int{\nvar value:Meter = Meter(amount = 1)\nreturn 0\n}\n";
+        let source = Source::new(named.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let (_, funcs) = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
+        }.file().unwrap();
+        let main = funcs.iter().find(|f| f.name == "main").unwrap();
+        let StmtKind::Declare(decl) = &main.body[0].kind else { panic!("缺真正欄位建構") };
+        assert!(matches!(decl.initializer.as_ref().map(|t| &t.kind),
+            Some(TermKind::Construct(name, args)) if name == "Meter" && args.len() == 1));
+        assert!(verified_private_source(named).is_ok());
+    }
+
+    #[test]
+    fn 私有_name_空括號未知與錯誤引數數量維持既有精確診斷() {
+        let missing = "fn main()->int{\nreturn missing()\n}\n";
+        let error = verified_private_source(missing).err().unwrap();
+        assert_eq!(&*error.message, "找不到結構型別或不支援一般函式呼叫");
+
+        let required = "fn helper(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn helper()\n}\n";
+        let error = verified_private_source(required).err().unwrap();
+        assert_eq!(&*error.message, "P13：函式引數數量不符");
+
+        let args = "fn helper(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn helper(1)\n}\n";
+        let source = Source::new(args.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let (_, funcs) = Parser {source:&source,tokens:&tokens.tokens,cursor:0}.file().unwrap();
+        let main = funcs.iter().find(|f| f.name == "main").unwrap();
+        let StmtKind::Return(value) = &main.body[0].kind else { panic!("缺 return") };
+        assert!(matches!(&value.expression.kind,
+            TermKind::Call(call) if call.name == "helper" && call.arguments.len() == 1));
+        assert!(verified_private_source(args).is_ok());
+        assert!(crate::parser::parse(&source, &tokens.tokens).is_err(),
+            "公開 MVP-A 不得因私有零引數語意解析而接受位置引數");
+    }
+}
+
+#[cfg(test)]
 mod p16_6_r02_公開私有前端交集契約 {
     use super::*;
     use crate::{parser, names, types, flow, functions};
@@ -1087,18 +1168,17 @@ mod r02_f02_正式具名呼叫單一變體與公開模式隔離 {
             &code[expression.expression.start..expression.expression.end], "helper()",
         );
 
-        // 零引數 helper() 在私有受限 Parser 中仍要先保持
-        // Construct/Call 的既有曖昧判定；不能把它改當所有權資源建構
-        // 或擅自打破 P13 之後依已知 struct 名稱決定的核准規則。
+        // 零引數 helper() 只保留「未分類」的真語法來源，
+        // 真正 Struct/Function 名稱優先序必須在 Checker 完整符號表
+        // 上唯一裁決；不得讓 Parser 假裝它已是資源建構式。
         let (_, private) = Parser {
             source: &source, tokens: &tokens.tokens, cursor: 0,
         }.file().unwrap();
         let StmtKind::Return(returned) = &private[1].body[0].kind
             else { panic!("缺少私有 main return") };
-        let TermKind::Construct(name, fields) = &returned.expression.kind
-            else { panic!("無參數呼叫仍須保留私有名稱消歧義的原 AST") };
+        let TermKind::UnresolvedZeroArgs(name) = &returned.expression.kind
+            else { panic!("無參數 name() 必須以未分類私有 AST 交付 Checker") };
         assert_eq!(name, "helper");
-        assert!(fields.is_empty());
         assert_eq!(inspect(code), Ok(()));
     }
 }

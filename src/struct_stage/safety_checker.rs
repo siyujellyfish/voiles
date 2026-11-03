@@ -1,7 +1,26 @@
 // 對應 P16.6-R01 無語意變更之實作拆檔。
+/// A2/F02：只有這個真正 Checker 名稱決策能將 name()
+/// 裁決為已核准 struct 或零參數 fn；缺名維持舊拒絕路徑。
+enum ZeroArgResolution<'a> {
+    Structure,
+    Function(&'a Function),
+    Missing,
+}
+
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn find_function(&self, name: &str) -> Option<&Function> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
+    }
+    /// 原有同名 struct 優先與函式前向宣告都只由此處判定，
+    /// Parser 不得猜名稱屬於類型或函式；所有方法和一般式共用。
+    fn resolve_empty_call(&self, name: &str) -> ZeroArgResolution<'_> {
+        if self.structs.contains_key(name) {
+            ZeroArgResolution::Structure
+        } else if let Some(function) = self.find_function(name) {
+            ZeroArgResolution::Function(function)
+        } else {
+            ZeroArgResolution::Missing
+        }
     }
     /// F04：真正私有 Checker 所有函式、方法、欄位與區塊宣告
     /// 共用唯一型別名稱存在性裁決；不改任何既有錯誤優先順序。
@@ -315,7 +334,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 call.arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
-            TermKind::Scalar(_) | TermKind::Literal(_) => false,
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
         }
     }
 
@@ -360,7 +379,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_future_term_uses(&binary.left, visible, used);
                 Self::scan_future_term_uses(&binary.right, visible, used);
             }
-            TermKind::Scalar(_) | TermKind::Literal(_) => {}
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => {}
         }
     }
 
@@ -587,12 +606,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok(function.result_ty.clone())
             }
-            TermKind::Construct(name, args) if args.is_empty()
-                && !self.structs.contains_key(name) => {
-                // helper() 與 Struct() 共用解析分支，只有已存在的
-                // 零參數一般函式可以作為純 Copyable 方法值來源。
-                let function = self.find_function(name)
-                    .ok_or_else(|| self.error("方法內零參數函式不存在", term))?;
+            TermKind::UnresolvedZeroArgs(name) => {
+                // 方法也使用單一完整符號決議；同名 struct 仍不可冒充
+                // 可獨立求值的零參數函式回傳值。
+                let function = match self.resolve_empty_call(name) {
+                    ZeroArgResolution::Function(function) => function,
+                    ZeroArgResolution::Structure => return Err(self.error(
+                        "方法值來源尚未證明可安全獨立求值", term)),
+                    ZeroArgResolution::Missing => return Err(self.error(
+                        "方法內零參數函式不存在", term)),
+                };
                 if !function.params.is_empty() {
                     return Err(self.error("方法內零參數函式實際需傳入引數", term));
                 }
@@ -661,8 +684,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 僅放行已核准 str 擁有值；尚無安全證明的其他資源保留拒絕。
         let ordinary_call: Option<(&str, &[Term])> = match &term.kind {
             TermKind::Call(call) => Some((call.name.as_str(), call.arguments.as_slice())),
-            TermKind::Construct(name, args) if args.is_empty()
-                && !self.structs.contains_key(name) => Some((name.as_str(), &[])),
+            TermKind::UnresolvedZeroArgs(name)
+                if !matches!(self.resolve_empty_call(name), ZeroArgResolution::Structure) =>
+                Some((name.as_str(), &[])),
             _ => None,
         };
         if let Some((name, args)) = ordinary_call {
@@ -1093,7 +1117,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             TermKind::Name(_) if !Self::parameter_is_consumed(
                                 function, &parameter.name) => {}
                             TermKind::Literal("str") | TermKind::Move(_)
-                                | TermKind::Construct(_, _) | TermKind::Call(_) => {}
+                                | TermKind::Construct(_, _) | TermKind::Call(_)
+                                | TermKind::UnresolvedZeroArgs(_) => {}
                             _ => return Err(self.error(
                                 "P15.6：非 Copyable 參數只接受可證明的預設借用或明確擁有權轉交", arg)),
                         }
@@ -1159,65 +1184,78 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 self.record_verified_call_borrows(term, &call_facts);
                 Ok((function.result_ty.clone(), true))
             },
-            TermKind::Construct(name, args) => {
-                // 零引數語法與結構建立式共用括號。只有不存在同名結構
-                // 且已宣告零參數函式時，才按函式呼叫處理。
-                if args.is_empty() && !self.structs.contains_key(name) {
-                    if let Some(function) = self.find_function(name) {
-                        if !function.params.is_empty() {
-                            return Err(self.error("P13：函式引數數量不符", term));
-                        }
-                        return Ok((function.result_ty.clone(), true));
-                    }
+            TermKind::UnresolvedZeroArgs(name) => {
+                // 唯一完整符號分類：同名 struct 優先，否則只能
+                // 是已宣告的零參數函式；沒有獨立可寫的 Parser 判斷。
+                match self.resolve_empty_call(name) {
+                    ZeroArgResolution::Structure =>
+                        self.evaluate_struct_constructor(name, &[], term, vars),
+                    ZeroArgResolution::Function(function) if !function.params.is_empty() =>
+                        Err(self.error("P13：函式引數數量不符", term)),
+                    ZeroArgResolution::Function(function) =>
+                        Ok((function.result_ty.clone(), true)),
+                    ZeroArgResolution::Missing =>
+                        Err(self.error("找不到結構型別或不支援一般函式呼叫", term)),
                 }
-                let definition = self.structs.get(name)
-                    .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
-                // VB16-01-A：嚴格依書寫順序先求值所有具名引數，之後
-                // 再依宣告順序求值未被覆蓋的預設值。先檢查整份
-                // 計畫再求值，重複／不存在欄位不得先消耗資源來源。
-                let fields: Vec<_> = definition.fields.iter().map(|field|
-                    crate::struct_eval_plan::FieldInfo {
-                        name: field.name.as_str(),
-                        has_default: field.default.is_some(),
-                        immutable: field.immutable,
-                    }).collect();
-                let names: Vec<_> = args.iter().map(|(field, _)| field.as_str()).collect();
-                let ordered = crate::struct_eval_plan::plan(&fields, &names)
-                    .map_err(|error| self.error(&format!(
-                        "VB16：結構求值計畫不合法：{error:?}"), term))?;
-                for step in &ordered.steps {
-                    let expected = definition.fields.iter()
-                        .find(|field| field.name == step.field)
-                        .expect("計畫中的欄位已預檢存在");
-                    let (expr, actual, ready) = match step.origin {
-                        crate::struct_eval_plan::Origin::Named => {
-                            let expr = args.iter()
-                                .find(|(field, _)| *field == step.field)
-                                .map(|(_, expression)| expression)
-                                .expect("具名引數已預檢存在");
-                            let (actual, ready) = self.evaluate(expr, vars)?;
-                            (expr, actual, ready)
-                        }
-                        crate::struct_eval_plan::Origin::Default => {
-                            let expr = expected.default.as_ref()
-                                .expect("未被覆蓋的預設值已預檢存在");
-                            // 欄位預設值在其宣告本身的獨立上下文求值，
-                            // 不暗中捕獲呼叫端的區域名稱。
-                            let (actual, ready) = self.evaluate(
-                                expr, &mut vec![Rc::new(HashMap::new())])?;
-                            (expr, actual, ready)
-                        }
-                    };
-                    if actual != expected.ty || !ready {
-                        return Err(self.error(
-                            "VB16：結構欄位求值型別錯誤或資源尚未初始化",
-                            expr));
-                    }
-                }
-                Ok((name.clone(), ordered.missing_mutable_fields.is_empty()))
             }
+            TermKind::Construct(name, args) =>
+                self.evaluate_struct_constructor(name, args, term, vars),
         }
     }
+    /// 只對 Parser 已確認的具名 struct 欄位建立式，或同一唯一
+    /// 零引數分類器確認為 struct 的 name() 執行既有 VB16 求值計畫。
+    /// 安全預檢、引數求值次序、預設值與 Copyable 規則不變。
+    fn evaluate_struct_constructor(
+        &self, name: &str, args: &[(String, Term)], term: &Term,
+        vars: &mut Scopes,
+    ) -> Result<(String, bool), Diagnostic> {
+            let definition = self.structs.get(name)
+                .ok_or_else(|| self.error("找不到結構型別或不支援一般函式呼叫", term))?;
+            // VB16-01-A：嚴格依書寫順序先求值所有具名引數，之後
+            // 再依宣告順序求值未被覆蓋的預設值。先檢查整份
+            // 計畫再求值，重複／不存在欄位不得先消耗資源來源。
+            let fields: Vec<_> = definition.fields.iter().map(|field|
+                crate::struct_eval_plan::FieldInfo {
+                    name: field.name.as_str(),
+                    has_default: field.default.is_some(),
+                    immutable: field.immutable,
+                }).collect();
+            let names: Vec<_> = args.iter().map(|(field, _)| field.as_str()).collect();
+            let ordered = crate::struct_eval_plan::plan(&fields, &names)
+                .map_err(|error| self.error(&format!(
+                    "VB16：結構求值計畫不合法：{error:?}"), term))?;
+            for step in &ordered.steps {
+                let expected = definition.fields.iter()
+                    .find(|field| field.name == step.field)
+                    .expect("計畫中的欄位已預檢存在");
+                let (expr, actual, ready) = match step.origin {
+                    crate::struct_eval_plan::Origin::Named => {
+                        let expr = args.iter()
+                            .find(|(field, _)| *field == step.field)
+                            .map(|(_, expression)| expression)
+                            .expect("具名引數已預檢存在");
+                        let (actual, ready) = self.evaluate(expr, vars)?;
+                        (expr, actual, ready)
+                    }
+                    crate::struct_eval_plan::Origin::Default => {
+                        let expr = expected.default.as_ref()
+                            .expect("未被覆蓋的預設值已預檢存在");
+                        // 欄位預設值在其宣告本身的獨立上下文求值，
+                        // 不暗中捕獲呼叫端的區域名稱。
+                        let (actual, ready) = self.evaluate(
+                            expr, &mut vec![Rc::new(HashMap::new())])?;
+                        (expr, actual, ready)
+                    }
+                };
+                if actual != expected.ty || !ready {
+                    return Err(self.error(
+                        "VB16：結構欄位求值型別錯誤或資源尚未初始化",
+                        expr));
+                }
+            }
+            Ok((name.to_string(), ordered.missing_mutable_fields.is_empty()))
+    }
+
     fn model_error(&self, err: ModelError, term: &Term) -> Diagnostic {
         let message = match err {
             ModelError::MovedRead => "來源已移動，禁止再次使用",
@@ -1334,7 +1372,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 只有具名 struct 建立式可給出精確的缺失欄位集合；
                     // 無初始化的普通 var 宣告不得假設已分配結構實例。
                     let pending_fields = if !initialized {
-                        if let Some(Term { kind: TermKind::Construct(actual, args), .. }) = init {
+                        let struct_args: Option<(&str, &[(String, Term)])> = match
+                            init.as_ref().map(|expr| &expr.kind) {
+                            Some(TermKind::Construct(actual, args)) =>
+                                Some((actual, args.as_slice())),
+                            Some(TermKind::UnresolvedZeroArgs(actual))
+                                if matches!(self.resolve_empty_call(actual),
+                                    ZeroArgResolution::Structure) =>
+                                Some((actual, &[])),
+                            _ => None,
+                        };
+                        if let Some((actual, args)) = struct_args {
                             self.structs.get(actual).and_then(|definition| {
                                 let explicit: HashSet<&str> =
                                     args.iter().map(|(name, _)| name.as_str()).collect();
@@ -1934,6 +1982,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for (_, value) in args {
                     self.check_default_term(value, active, checked)?;
                 }
+            }
+            TermKind::UnresolvedZeroArgs(name)
+                if matches!(self.resolve_empty_call(name), ZeroArgResolution::Structure) => {
+                if active.contains(name) {
+                    return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
+                }
+                self.check_default_type(name, active, checked)?;
             }
             TermKind::Call(call) => {
                 // 呼叫引數內的結構建立式亦屬預設值的巢狀來源，
