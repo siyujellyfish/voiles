@@ -498,7 +498,8 @@ impl VerifiedSafetyPlan {
     /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
     /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
     fn is_consistent(&self, structs: &HashMap<String, StructDecl>, text: &str) -> bool {
-        self.declarations.evidence_is_consistent(structs, text)
+        self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
+            && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
             && self.expression_spans == self.scalar_hir.verified_expressions()
                 .map(|fact| fact.span).collect::<Vec<_>>()
@@ -561,7 +562,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_declaration_conflicts: RefCell::new(BTreeSet::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
         recorded_field_writes: RefCell::new(BTreeSet::new()),
-        recorded_scalar_hir: RefCell::new(crate::common_ir::VerifiedScalarHir::default()),
+        recorded_scalar_hir: RefCell::new(crate::common_ir::VerifiedScalarHir::for_mode(
+            crate::common_ir::FrontendMode::PrivateVerified)),
         recorded_call_borrows: RefCell::new(BTreeMap::new()),
         recorded_call_borrow_conflicts: RefCell::new(BTreeSet::new()),
     };

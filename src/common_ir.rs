@@ -345,6 +345,10 @@ fn source_has_verified_group_wrapper(
 
 #[derive(Debug, Default)]
 pub(crate) struct VerifiedScalarHir {
+    /// F01/F04：只有真正正式 Checker 在建構時指定的語法模式
+    /// 才能簽出 Typed HIR，不能拿公開 MVP-A 的證據冒充私有
+    /// P13～P16 安全計畫。None 僅供純 Rust 單元資料組裝測試。
+    mode: Option<FrontendMode>,
     /// F01／F04：讀取與賦值由同一筆 NodeIdentity 索引表管理，
     /// (語意角色, 來源起點) 唯一；同位置範圍、來源、型別不合
     /// 只標記衝突，不允許後一次合法重訪覆寫首次授權。
@@ -358,6 +362,18 @@ pub(crate) struct VerifiedScalarHir {
     conflicted: bool,
 }
 impl VerifiedScalarHir {
+    pub(crate) fn for_mode(mode: FrontendMode) -> Self {
+        Self { mode: Some(mode), ..Self::default() }
+    }
+    pub(crate) fn mode_is(&self, mode: FrontendMode) -> bool {
+        self.mode == Some(mode)
+    }
+    /// 只能由對應正式 Checker 入口交付的自帶模式 HIR 通過。
+    pub(crate) fn source_spans_are_valid_for_mode(
+        &self, mode: FrontendMode, source: &str,
+    ) -> bool {
+        self.mode_is(mode) && self.source_spans_are_valid(source)
+    }
     pub(crate) fn is_consistent(&self) -> bool { !self.conflicted }
 
     /// F01／F04：公私正式 Typed HIR 共同使用唯一 UTF-8
