@@ -614,7 +614,7 @@ fn trace_scope_struct_source(
         return Err(reject("P16：未知條件不可以模擬單一資源路徑"));
     };
     let executed=if condition {Some(yes.as_slice())}
-        else {no.as_ref().map(Vec::as_slice)};
+        else {no.as_ref().map(|otherwise| otherwise.as_slice())};
     // 以同一真正已驗證 AST、具名／預設求值計畫計算每個
     // *確實執行* 的作用域所取得 str 數量；未走到的 else 不得建帳。
     let count_planned=|stmt:&Stmt,stop:Option<&str>|->Result<usize,Diagnostic> {

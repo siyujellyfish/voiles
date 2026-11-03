@@ -649,6 +649,8 @@ mod r02_f03_私有真正_if_分支直接保存共同來源身分 {
         assert_eq!(&code[branch.body.start..branch.body.end], "{\nreturn 1\n}");
         assert_eq!(branch.start,code.find("if(true)").unwrap());
         let otherwise=no.as_ref().expect("應有 else-if");
+        assert!(matches!(otherwise, crate::syntax_shared::ParsedElse::ElseIf(_)),
+            "Parser 必須保留正式 else-if 來源身分而非 Vec 投影");
         let [next]=otherwise.as_slice() else {panic!("else-if 不可丟失");};
         let StmtKind::If {branch:second,no:tail}=&next.kind
             else {panic!("應由原安全 Checker 辨識巢狀 if");};
@@ -658,6 +660,33 @@ mod r02_f03_私有真正_if_分支直接保存共同來源身分 {
         assert_eq!(tail.as_ref().expect("缺少 else").len(),1);
         assert!(verified_private_source(code).is_ok(),
             "保持原 P13 巢狀 if 安全合流及資源證明");
+    }
+}
+
+#[cfg(test)]
+mod r02_f03_私有_else_直接使用共同_parser_區塊 {
+    use super::*;
+
+    #[test]
+    fn 正式_else_保留來源大括號且不再轉換成_vec_語句() {
+        let src = "fn main()->int{\nvar result:int = 1\nif(false){\nresult = 2\n}else{\nresult = 3\n}\nreturn result\n}\n";
+        let source = Source::new(src.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let (_, funcs) = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
+        }.file().unwrap();
+        let main = &funcs[0];
+        let StmtKind::If { branch, no } = &main.body[1].kind
+            else { panic!("真正 if 未建立") };
+        assert_eq!(&src[branch.body.start..branch.body.end],
+            "{\nresult = 2\n}");
+        let tail = no.as_ref().expect("真正 else 分支應保留");
+        let crate::syntax_shared::ParsedElse::Block(otherwise) = tail
+            else { panic!("真正 Parser 的 else 必須直接保存 ParsedBlock") };
+        assert_eq!(&src[otherwise.start..otherwise.end],
+            "{\nresult = 3\n}");
+        assert_eq!(otherwise.len(), 1);
+        assert!(verified_private_source(src).is_ok());
     }
 }
 

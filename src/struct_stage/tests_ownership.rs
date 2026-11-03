@@ -31,7 +31,7 @@ mod tests {
                         statements: vec![mk(left)], start: 0, end: 4,
                     },
                 ) },
-                no: Some(vec![mk(right)]),
+                no: Some(vec![mk(right)].into()),
             });
             let mut vars = vec![Rc::new(HashMap::new())];
             let entry = vars.clone();

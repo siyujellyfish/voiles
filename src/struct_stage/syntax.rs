@@ -247,20 +247,20 @@ impl Parser<'_> {
         let parsed = crate::syntax_shared::parse_if_chain(self)?;
         let mut arms = parsed.arms.into_iter();
         let first = arms.next().expect("if 文法至少產生一條分支");
-        // 既有 else-if 的巢狀 CFG 保留 Vec；成立分支則直接
-        // 保存 Parser 交付的完整 ParsedBlock，不丟失原始大括號跨度。
-        let mut no = parsed.otherwise.map(|block| block.statements);
+        // F03：實際 else 區塊直接保留共同 Parser 的 ParsedBlock，
+        // else-if 以單一真正巢狀 Stmt 保留 CFG，不再降階成 Vec。
+        let mut no = parsed.otherwise.map(crate::syntax_shared::ParsedElse::Block);
         // 公開平面鏈在私有既有 AST 中仍需折成原來的 else-if 巢狀鏈，
         // 合流規則與原始半開位置不變，不能憑此開放新語言能力。
         for arm in arms.collect::<Vec<_>>().into_iter().rev() {
             // 單次讀取真正分支來源，後續整筆移交同一 AST，
             // 不 clone、不卡住 moved value，也不猜測 NodeSpan。
             let start = arm.start;
-            no = Some(vec![Stmt {
+            no = Some(crate::syntax_shared::ParsedElse::ElseIf(Box::new(Stmt {
                 kind: StmtKind::If { branch: arm, no },
                 start,
                 end: parsed.end,
-            }]);
+            })));
         }
         Ok(StmtKind::If { branch: first, no })
     }

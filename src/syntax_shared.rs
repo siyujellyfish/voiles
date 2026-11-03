@@ -88,6 +88,36 @@ pub(crate) fn parse_if_chain<P: IfSyntax>(
     }
 }
 
+/// F03：正式 if 的 else 可以是真實 Parser 直接交付的大括號區塊，
+/// 或 else-if 既有 CFG 單一巢狀語句；兩種情況不得再將區塊
+/// 拆成純 Vec 而遺失其來源跨度。私有 Checker 仍可唯讀走訪 slice。
+#[derive(Debug, Clone)]
+pub(crate) enum ParsedElse<S> {
+    Block(ParsedBlock<S>),
+    ElseIf(Box<S>),
+    /// 僅相容歷史手工建立 CFG 的 Rust 測試，不允許正式 Parser 產生。
+    #[cfg(test)]
+    SyntheticTest(Vec<S>),
+}
+impl<S> ParsedElse<S> {
+    pub(crate) fn as_slice(&self) -> &[S] {
+        match self {
+            Self::Block(block) => &block.statements,
+            Self::ElseIf(stmt) => std::slice::from_ref(stmt.as_ref()),
+            #[cfg(test)]
+            Self::SyntheticTest(stmts) => stmts,
+        }
+    }
+}
+impl<S> std::ops::Deref for ParsedElse<S> {
+    type Target = [S];
+    fn deref(&self) -> &Self::Target { self.as_slice() }
+}
+#[cfg(test)]
+impl<S> From<Vec<S>> for ParsedElse<S> {
+    fn from(stmts: Vec<S>) -> Self { Self::SyntheticTest(stmts) }
+}
+
 /// 正式函式簽章及本體的共同產物；各入口仍保留專屬參數、回傳型別與 body AST。
 #[derive(Debug, Clone)]
 pub(crate) struct ParsedFunction<P, R, B> {
