@@ -197,7 +197,15 @@ impl<'a> TypeChecker<'a> {
                 }
                 StmtKind::Return(expr) => {
                     let actual = self.expression(expr, scopes)?;
-                    self.require(actual.ty, result, expr, "回傳值型別與函式標註不一致")?;
+                    // P10 已核准 int／bool 型別；P11 仍獨立證明每條路徑
+                    // 的讀前初始化，不在這裡製造未經檢查的資源權限。
+                    if !crate::common_ir::scalar_return_is_ready(
+                        Some(actual.ty), result, true,
+                    ) {
+                        return Err(self.error(
+                            "回傳值型別與函式標註不一致", expr.start, expr.end,
+                        ));
+                    }
                 }
                 StmtKind::IfChain(chain) => {
                     for arm in &chain.arms {
@@ -349,6 +357,26 @@ mod tests {
             "fn helper()->bool{\nreturn true\n}\nfn main()->int{\nreturn helper() + 1\n}\n",
         ] {
             assert_eq!(inspect(code).unwrap_err().kind, DiagnosticKind::Static);
+        }
+    }
+
+    #[test]
+    fn 公開正式回傳使用共同_int_bool_安全裁決且診斷不退步() {
+        for code in [
+            "fn helper()->int{\nreturn 1\n}\nfn main()->int{\nreturn helper()\n}\n",
+            "fn flag()->bool{\nreturn true\n}\nfn main()->int{\nreturn 0\n}\n",
+        ] {
+            assert!(inspect(code).is_ok(), "合法函式返回不得退步：{code}");
+        }
+        for (code, message) in [
+            ("fn main()->int{\nreturn true\n}\n", "回傳值型別與函式標註不一致"),
+            ("fn flag()->bool{\nreturn 1\n}\nfn main()->int{\nreturn 0\n}\n",
+             "回傳值型別與函式標註不一致"),
+        ] {
+            let error = inspect(code).expect_err("純值結果不符必須拒絕");
+            assert_eq!(error.kind, DiagnosticKind::Static);
+            assert_eq!(error.message.as_ref(), message);
+            assert!(error.span.is_some(), "診斷應保留真正來源位置");
         }
     }
 

@@ -3,6 +3,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn find_function(&self, name: &str) -> Option<&Function> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
     }
+    /// F04：已核准 int/bool 使用與公開 P10 唯一共同返回裁決。
+    /// float、str、struct 只維持原本的精確型別字串一致性和 ready
+    /// 條件；其獨立所有權、借用及回傳資源證據仍由其他安全檢查證明。
+    fn checked_return_type(actual: &str, expected: &str, ready: bool) -> bool {
+        match crate::common_ir::ScalarType::from_name(expected) {
+            Some(scalar) => crate::common_ir::scalar_return_is_ready(
+                crate::common_ir::ScalarType::from_name(actual), scalar, ready,
+            ),
+            None => ready && actual == expected,
+        }
+    }
     /// F11：真正呼叫的全部真實票據已與 Checker TypedDeclaration 核對
     /// 並完成批次歸還後，才將不含動態票據序號的借用責任交付安全計畫。
     /// 相同 AST 在分支或迴圈重訪時只能提出相同身分及權限；不覆寫
@@ -659,7 +670,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // P01 已核准可達分支提前 return；方法的每個出口
                     // 均須遵守相同回傳型別與 Copyable／self 借用限制。
                     let actual = self.method_return_type(owner, method, value)?;
-                    if actual != method.result_ty {
+                    if !Self::checked_return_type(&actual, &method.result_ty, true) {
                         return Err(self.error("方法提前回傳型別與簽章不一致", value));
                     }
                     // 後續同一條路徑已不可達，不得把它當作額外借用操作。
@@ -708,7 +719,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
         let actual = self.method_return_type(owner, method, return_value)?;
-        if actual != method.result_ty {
+        if !Self::checked_return_type(&actual, &method.result_ty, true) {
             return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
         }
         Ok(mode)
@@ -1421,7 +1432,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         Self::lookup(vars, name).map(|binding| binding.declaration_start)
                     } else { None };
                     let (actual, ready) = self.evaluate(term, vars)?;
-                    if actual != expected_return || !ready {
+                    if !Self::checked_return_type(&actual, expected_return, ready) {
                         return Err(self.error("函式回傳型別不一致或來源未初始化", term));
                     }
                     // 靜態分支／迴圈的 return 可能可達，但不能假裝已執行。

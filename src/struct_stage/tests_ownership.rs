@@ -2409,6 +2409,31 @@ mod p13_函式與方法回傳型別封閉 {
     }
 
     #[test]
+    fn 私有正式函式純值返回不得繞過公私共同裁決() {
+        let positive = "fn flag()->bool{\nreturn true\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(positive).is_ok());
+        for src in [
+            "fn main()->int{\nreturn true\n}\n",
+            "fn flag()->bool{\nreturn 1\n}\nfn main()->int{\nreturn 0\n}\n",
+            "fn main()->int{\nvar value:int\nreturn value\n}\n",
+        ] {
+            let error = inspect(src).expect_err("錯誤型別或未初始化的回傳必須拒絕");
+            assert_eq!(error.kind, DiagnosticKind::Static);
+            assert!(error.message.contains("回傳") || error.message.contains("初始化"));
+        }
+    }
+
+    #[test]
+    fn 私有方法純值回傳與資源返回各守原核准界線() {
+        let valid="struct Status{\nvar ok:bool = true\nfn read()->bool{\nreturn self.ok\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(valid).is_ok());
+        let wrong="struct Status{\nvar ok:bool = true\nfn read()->int{\nreturn self.ok\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let err=inspect(wrong).expect_err("bool 欄位不可當成 int 返回");
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("回傳型別"));
+    }
+
+    #[test]
     fn 合法結構回傳型別保持允許整筆移交() {
         let src="struct Boxed{\nvar value:int = 1\n}\nfn make()->Boxed{\nreturn Boxed()\n}\nfn main()->int{\nvar item:Boxed = make()\nreturn item.value\n}\n";
         assert!(inspect(src).is_ok());
