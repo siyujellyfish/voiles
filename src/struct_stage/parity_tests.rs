@@ -241,12 +241,11 @@ mod p16_6_r02_公開私有前端交集契約 {
         assert_eq!(param.declaration_span.end, param.type_span.end);
 
         let original_name = field.name_span;
-        structs.get_mut("Holder").unwrap().fields[0].name_span =
-            structs["Holder"].fields[0].type_span;
+        let original_type = structs["Holder"].fields[0].type_span;
+        structs.get_mut("Holder").unwrap().fields[0].name_span = original_type;
         assert!(!verified_private_syntax_tree(text, &structs, &functions),
             "欄位名稱不得假借有效型別 token 的位置");
         structs.get_mut("Holder").unwrap().fields[0].name_span = original_name;
-        let original_type = structs["Holder"].fields[0].type_span;
         structs.get_mut("Holder").unwrap().fields[0].type_span = original_name;
         assert!(!verified_private_syntax_tree(text, &structs, &functions),
             "欄位型別不得用相同檔案中的名稱 token 偽造");
