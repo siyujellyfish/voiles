@@ -52,7 +52,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     /// 以真實 P09/P10 與私有 Checker 列出目前只由公開記錄的節點；
-    /// 不把不可達尾句、Group 內層證據錯認為可替代的正式 HIR。
+    /// 共同 Group 內層已由公私直接同形保留；不可達尾句仍不得冒充實際求值。
     fn public_only_hir(text: &str) -> Vec<common_ir::VerifiedScalarExpression> {
         let source = Source::new(text.as_bytes().to_vec());
         let lexed = lexer::scan(&source);
@@ -68,18 +68,23 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
-    fn f04_公私_checker_待對齊差異有具體來源與可重現的精確跨度() {
+    fn f02_共用_group_完整內外跨度已一致_不可達_hir_仍保留阻塞() {
         use crate::common_ir::{NodeSpan, VerifiedScalarExpression};
         let grouping = "fn main()->int{\nreturn (8 - 3) + 2\n}\n";
         let at = grouping.find("8 - 3").unwrap();
-        assert_eq!(
-            public_only_hir(grouping),
-            vec![VerifiedScalarExpression {
-                span: NodeSpan::new(at, at + "8 - 3".len()),
-                ty: ScalarType::Int,
-            }],
-            "公開 Group 的內層算術被私有 Parser 消去，F02/F04 尚不得宣告完全等價",
-        );
+        assert!(public_only_hir(grouping).is_empty(),
+            "公私共同 Group 現在都必須保留兩層確切算術 Typed HIR");
+        let private = verified_private_source(grouping).unwrap();
+        let StmtKind::Return(value) = &private.functions[0].body[0].kind
+            else { panic!("缺少私有正式 return") };
+        let TermKind::BinaryInt(outer) = &value.expression.kind
+            else { panic!("外層加法必須由同一 BinaryInt AST 建立") };
+        let TermKind::Group(inner) = &outer.left.kind
+            else { panic!("括號不能再透過修改子運算元跨度抹除 Group 節點") };
+        assert_eq!(inner.node_span(), NodeSpan::new(at, at + "8 - 3".len()));
+        assert_eq!(&grouping[outer.left.start..outer.left.end], "(8 - 3)");
+        assert!(private.plan.scalar_hir.arithmetic(inner.node_span()).is_some(),
+            "真正 Checker 應同時簽發已核准內層 BinaryInt 的運算子證據");
 
         let unreachable = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
         let at = unreachable.find("return 0").unwrap() + "return ".len();
