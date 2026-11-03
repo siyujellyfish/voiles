@@ -319,80 +319,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn f06_b05_不同別名共享同來源保留重數並對帳真票據() {
-        let source = DeclarationId(900);
-        let mut tracker = BorrowSafety::new();
-        let one = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
-        let two = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
-        let snapshot = StaticBorrowSnapshot::from_aliases([
-            (DeclarationId(901), one.fact(), true),
-            (DeclarationId(902), two.fact(), true),
-        ]);
-        assert_eq!(snapshot.validate(), Ok(()));
-        assert_eq!(snapshot.kinds_for(source).count(), 2);
-        assert_eq!(snapshot.verify_tracker(&tracker), Ok(()));
-        tracker.finish_scope_verified(&[one, two], snapshot.facts()).unwrap();
-        assert_eq!(snapshot.verify_tracker(&tracker), Err(BorrowSafetyError::SnapshotMismatch));
-    }
-
-    #[test]
-    fn f06_b05_重複靜態別名不允許冒充兩張合法共享票據() {
-        let source = DeclarationId(920);
-        let mut tracker = BorrowSafety::new();
-        let one = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
-        let two = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
-        let alias = DeclarationId(921);
-        let fake = StaticBorrowSnapshot::from_aliases([
-            (alias, one.fact(), true), (alias, two.fact(), true),
-        ]);
-        assert_eq!(fake.validate(), Err(BorrowSafetyError::SnapshotMismatch));
-        assert_eq!(fake.validate_acquire(DeclarationId(922), BorrowKind::SharedRead),
-            Err(BorrowSafetyError::SnapshotMismatch));
-        assert_eq!(fake.validate_direct(DeclarationId(922)),
-            Err(BorrowSafetyError::SnapshotMismatch));
-        assert_eq!(fake.verify_tracker(&tracker), Err(BorrowSafetyError::SnapshotMismatch));
-        // 假快照不能影響實際票據來源，也不能半批次歸還。
-        assert_eq!(tracker.check_direct_access(source), Err(BorrowSafetyError::SourceIsBorrowed));
-        tracker.finish_scope(&[one, two]).unwrap();
-    }
-
-    #[test]
-    fn f06_b05_失效別名不被算作活躍借用或虛構票據() {
-        let source = DeclarationId(930);
-        let expired = StaticBorrowSnapshot::from_aliases([
-            (DeclarationId(931), BorrowFact::new(source, BorrowKind::SharedRead), false),
-        ]);
-        assert_eq!(expired.validate(), Ok(()));
-        assert_eq!(expired.validate_direct(source), Ok(()));
-        assert_eq!(expired.kinds_for(source).count(), 0);
-        let mut tracker = BorrowSafety::new();
-        assert_eq!(expired.verify_tracker(&tracker), Ok(()));
-        let ticket = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
-        assert_eq!(expired.verify_tracker(&tracker), Err(BorrowSafetyError::SnapshotMismatch));
-        assert_eq!(tracker.check_direct_access(source), Err(BorrowSafetyError::SourceIsBorrowed));
-        tracker.release(ticket).unwrap();
-    }
-
-    #[test]
-    fn f06_b05_遮蔽別名與參數自身借用使用真宣告身分() {
-        let outer = DeclarationId(940);
-        let shadow = DeclarationId(941);
-        let parameter = DeclarationId(942);
-        let snapshot = StaticBorrowSnapshot::from_aliases([
-            (outer, BorrowFact::new(parameter, BorrowKind::SharedRead), true),
-            (shadow, BorrowFact::new(parameter, BorrowKind::SharedRead), false),
-            (parameter, BorrowFact::new(parameter, BorrowKind::SharedRead), true),
-        ]);
-        assert_eq!(snapshot.validate(), Ok(()));
-        assert_eq!(snapshot.kinds_for(parameter).count(), 2);
-        assert_eq!(snapshot.validate_direct(parameter), Err(BorrowSafetyError::SourceIsBorrowed));
-        assert_eq!(snapshot.validate_direct(shadow), Ok(()));
-        assert_eq!(snapshot.validate_acquire(parameter, BorrowKind::ExclusiveWrite),
-            Err(BorrowSafetyError::BorrowConflict));
-    }
-
-
-    #[test]
     fn f08_失效合流快照不可對無關來源發放新借用或直接操作授權() {
         let a = DeclarationId(4201);
         let unrelated = DeclarationId(4202);
@@ -712,6 +638,86 @@ mod tests {
         assert!(safety.check_direct_access(source).is_ok());
         assert!(safety.acquire(source, BorrowKind::ExclusiveWrite).is_ok());
     }
+}
+
+#[cfg(test)]
+mod r03_f06_b05_別名身分獨立證據 {
+    use super::*;
+
+    #[test]
+    fn f06_b05_不同別名共享同來源保留重數並對帳真票據() {
+        let source = DeclarationId(900);
+        let mut tracker = BorrowSafety::new();
+        let one = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let two = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let snapshot = StaticBorrowSnapshot::from_aliases([
+            (DeclarationId(901), one.fact(), true),
+            (DeclarationId(902), two.fact(), true),
+        ]);
+        assert_eq!(snapshot.validate(), Ok(()));
+        assert_eq!(snapshot.kinds_for(source).count(), 2);
+        assert_eq!(snapshot.verify_tracker(&tracker), Ok(()));
+        tracker.finish_scope_verified(&[one, two], snapshot.facts()).unwrap();
+        assert_eq!(snapshot.verify_tracker(&tracker), Err(BorrowSafetyError::SnapshotMismatch));
+    }
+
+    #[test]
+    fn f06_b05_重複靜態別名不允許冒充兩張合法共享票據() {
+        let source = DeclarationId(920);
+        let mut tracker = BorrowSafety::new();
+        let one = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let two = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        let alias = DeclarationId(921);
+        let fake = StaticBorrowSnapshot::from_aliases([
+            (alias, one.fact(), true), (alias, two.fact(), true),
+        ]);
+        assert_eq!(fake.validate(), Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(fake.validate_acquire(DeclarationId(922), BorrowKind::SharedRead),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(fake.validate_direct(DeclarationId(922)),
+            Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(fake.verify_tracker(&tracker), Err(BorrowSafetyError::SnapshotMismatch));
+        // 假快照不能影響實際票據來源，也不能半批次歸還。
+        assert_eq!(tracker.check_direct_access(source), Err(BorrowSafetyError::SourceIsBorrowed));
+        tracker.finish_scope(&[one, two]).unwrap();
+    }
+
+    #[test]
+    fn f06_b05_失效別名不被算作活躍借用或虛構票據() {
+        let source = DeclarationId(930);
+        let expired = StaticBorrowSnapshot::from_aliases([
+            (DeclarationId(931), BorrowFact::new(source, BorrowKind::SharedRead), false),
+        ]);
+        assert_eq!(expired.validate(), Ok(()));
+        assert_eq!(expired.validate_direct(source), Ok(()));
+        assert_eq!(expired.kinds_for(source).count(), 0);
+        let mut tracker = BorrowSafety::new();
+        assert_eq!(expired.verify_tracker(&tracker), Ok(()));
+        let ticket = tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        assert_eq!(expired.verify_tracker(&tracker), Err(BorrowSafetyError::SnapshotMismatch));
+        assert_eq!(tracker.check_direct_access(source), Err(BorrowSafetyError::SourceIsBorrowed));
+        tracker.release(ticket).unwrap();
+    }
+
+    #[test]
+    fn f06_b05_遮蔽別名與參數自身借用使用真宣告身分() {
+        let outer = DeclarationId(940);
+        let shadow = DeclarationId(941);
+        let parameter = DeclarationId(942);
+        let snapshot = StaticBorrowSnapshot::from_aliases([
+            (outer, BorrowFact::new(parameter, BorrowKind::SharedRead), true),
+            (shadow, BorrowFact::new(parameter, BorrowKind::SharedRead), false),
+            (parameter, BorrowFact::new(parameter, BorrowKind::SharedRead), true),
+        ]);
+        assert_eq!(snapshot.validate(), Ok(()));
+        assert_eq!(snapshot.kinds_for(parameter).count(), 2);
+        assert_eq!(snapshot.validate_direct(parameter), Err(BorrowSafetyError::SourceIsBorrowed));
+        assert_eq!(snapshot.validate_direct(shadow), Ok(()));
+        assert_eq!(snapshot.validate_acquire(parameter, BorrowKind::ExclusiveWrite),
+            Err(BorrowSafetyError::BorrowConflict));
+    }
+
+
 }
 
 #[cfg(test)]
