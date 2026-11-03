@@ -63,8 +63,8 @@ mod a2_f02_suffix_原詞彙後綴共同分類與模式防護 {
         let index_code = "fn main()->int{\nvar item:int = 1\nreturn item[0]\n}\n";
         let src = Source::new(index_code.as_bytes().to_vec());
         let scan = lexer::scan(&src);
-        assert!(crate::parser::parse(&src, &scan.tokens).is_ok(),
-            "公開 Parser 原有索引形狀仍可建立 AST，型別合法性另由原 Checker 拒絕");
+        assert!(crate::parser::parse(&src, &scan.tokens).is_err(),
+            "公開正式 MVP-A 仍不可將內部索引 AST 辨識擴大為核准的來源語法");
         let private_error = Parser {
             source:&src,tokens:&scan.tokens,cursor:0,
         }.file().unwrap_err();
