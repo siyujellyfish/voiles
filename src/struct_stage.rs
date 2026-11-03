@@ -594,6 +594,7 @@ struct VerifiedPrivateSource {
 
 // F01：私有真正 Parser 產生後的所有來源角色身分均用相同契約。
 include!("struct_stage/source_identity.rs");
+include!("struct_stage/token_provenance.rs");
 
 fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<VerifiedPrivateSource, Diagnostic> {
@@ -619,10 +620,11 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
-    if !verified_private_syntax_tree(text, &structs, &functions) {
+    if !verified_private_syntax_tree(text, &structs, &functions)
+        || !verified_private_source_tokens(text, &tokens.tokens, &structs, &functions) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
-            message: "私有 AST 的結構、欄位、參數或巢狀來源身分不一致".into(),
+            message: "私有 AST 的結構、函式標頭、宣告型別 token 或巢狀來源身分不一致".into(),
             span: None,
         });
     }

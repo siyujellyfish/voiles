@@ -26,6 +26,90 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn a1_f01_真正公開_parser_函式與所有宣告名稱型別_token_正反驗證() {
+        let code = "# 註記🪼\r\nconst global:int = 4\r\nfn main()->int{\r\nvar item:int = global\r\nif(true){\r\nvar nested:int = 2\r\nreturn nested\r\n}else{\r\nreturn item\r\n}\r\nreturn item\r\n}\r\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty());
+        let parsed = parser::parse(&source, &scan.tokens).unwrap();
+        assert!(parser::verified_public_source_tokens(&parsed, code, &scan.tokens));
+        let mut forged = parsed.clone();
+        let parser::Item::Function(fun) = &mut forged.items[1]
+            else { panic!("必須從真 Parser 取得完整函式") };
+        fun.name = "other".into();
+        assert!(!parser::verified_public_source_tokens(&forged, code, &scan.tokens),
+            "函式 AST 名稱不得冒充原始 token");
+        let parser::Item::Function(fun) = &mut forged.items[1]
+            else { panic!("必須從真 Parser 取得完整函式") };
+        fun.name = "main".into();
+        fun.result_ty = crate::common_ir::ScalarType::Bool;
+        assert!(!parser::verified_public_source_tokens(&forged, code, &scan.tokens),
+            "回傳型別原始 token 不得在 Parser 成功後換成另一種型別");
+        let parser::Item::Function(fun) = &mut forged.items[1]
+            else { panic!("必須從真 Parser 取得完整函式") };
+        fun.result_ty = crate::common_ir::ScalarType::Int;
+        let parser::StmtKind::IfChain(chain) = &mut fun.body.statements[1].kind
+            else { panic!("必須有巢狀 if") };
+        let parser::StmtKind::Binding(decl) = &mut chain.arms[0].branch.body.statements[0].kind
+            else { panic!("巢狀原始 var 未建立") };
+        decl.ty = crate::common_ir::ScalarType::Bool;
+        assert!(!parser::verified_public_source_tokens(&forged, code, &scan.tokens),
+            "內層宣告的型別不能只修改 AST 即更改許可");
+        let mut bad = scan.tokens.clone();
+        let idx = bad.iter().position(|token|
+            matches!(&token.kind, crate::lexer::TokenKind::Arrow)
+        ).unwrap();
+        bad[idx].kind = crate::lexer::TokenKind::Symbol(':');
+        assert!(!parser::verified_public_source_tokens(&parsed, code, &bad),
+            "沒有真正箭號 token 不得假造函式簽章");
+    }
+
+    #[test]
+    fn a1_f01_真正私有_parser_方法與巢狀宣告_token_來源不可竄改() {
+        let code = "# 私有來源🪼\r\nstruct Meter{\r\nconst field:int = 4\r\nfn get(value:int)->int{\r\nif(true){\r\nvar inner:int = value\r\nreturn inner\r\n}else{\r\nreturn 0\r\n}\r\nreturn value\r\n}\r\n}\r\nfn main()->int{\r\nreturn 1\r\n}\r\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty());
+        let (mut structs, mut funcs) = Parser {
+            source: &source, tokens: &scan.tokens, cursor: 0,
+        }.file().unwrap();
+        assert!(verified_private_syntax_tree(code, &structs, &funcs));
+        assert!(verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
+        let original = structs["Meter"].methods[0].result_ty.clone();
+        structs.get_mut("Meter").unwrap().methods[0].result_ty = "bool".into();
+        assert!(!verified_private_source_tokens(code, &scan.tokens, &structs, &funcs),
+            "私有方法不得把原始 int 返回 token 改成 bool");
+        structs.get_mut("Meter").unwrap().methods[0].result_ty = original;
+        {
+            let method = &mut structs.get_mut("Meter").unwrap().methods[0];
+            let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
+                else { panic!("必須有巢狀私有 if") };
+            let StmtKind::Declare(decl) = &mut branch.branch.body.statements[0].kind
+                else { panic!("巢狀宣告缺失") };
+            decl.name = "changed".into();
+        }
+        assert!(!verified_private_source_tokens(code, &scan.tokens, &structs, &funcs),
+            "巢狀私有原始名稱被修改應拒絕");
+        {
+            let method = &mut structs.get_mut("Meter").unwrap().methods[0];
+            let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
+                else { panic!("必須有巢狀私有 if") };
+            let StmtKind::Declare(decl) = &mut branch.branch.body.statements[0].kind
+                else { panic!("巢狀宣告缺失") };
+            decl.name = "inner".into();
+        }
+        assert!(verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
+        funcs[0].name = "forged".into();
+        assert!(!verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
+        let mut bad = scan.tokens.clone();
+        let pos = bad.iter().position(|token| matches!(&token.kind,
+            crate::lexer::TokenKind::Keyword(word) if word == "struct"
+        )).unwrap();
+        bad[pos].kind = crate::lexer::TokenKind::Keyword("fn".into());
+        assert!(!verified_private_source_tokens(code, &bad, &structs, &funcs));
+    }
+
+    #[test]
     fn f01_f04_真正公私_checker_簽出不可跨模式冒用的完整_typed_hir() {
         use crate::common_ir::FrontendMode;
         let code = "fn main()->int{\nvar n:int = 3\nreturn n + 1\n}\n";
