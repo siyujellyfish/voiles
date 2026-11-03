@@ -526,11 +526,13 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
     // F01：正式私有 Parser 的函式與區塊使用共同模式身分驗證，
     // 來源跨度必須是真實 UTF-8 半開範圍；保留原私有安全語意。
-    if functions.iter().any(|fun|
+    if functions.iter().chain(
+        structs.values().flat_map(|definition| definition.methods.iter())
+    ).any(|fun|
         fun.checked_identity(crate::common_ir::FrontendMode::PrivateVerified, text)
             .is_none()
-        || fun.body.checked_identity(
-            crate::common_ir::FrontendMode::PrivateVerified, text).is_none()
+        || !fun.body.checked_direct_statements(
+            crate::common_ir::FrontendMode::PrivateVerified, text)
     ) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
