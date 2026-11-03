@@ -172,13 +172,14 @@ mod p16_6_r02_公開私有前端交集契約 {
             source: &parsed_source, tokens: &tokens.tokens, cursor: 0,
         }.file().unwrap();
         assert!(verified_private_syntax_tree(private_src, &structs, &functions));
-        let original = structs.get_mut("Holder").unwrap();
-        let stored = original.fields[0].declaration_span;
-        original.fields[0].declaration_span = NodeSpan::new(stored.start, private_src.len() + 1);
+        let stored = structs["Holder"].fields[0].declaration_span;
+        structs.get_mut("Holder").unwrap().fields[0].declaration_span =
+            NodeSpan::new(stored.start, private_src.len() + 1);
         assert!(!verified_private_syntax_tree(private_src, &structs, &functions),
             "私有 struct 欄位不可借用合法函式跨度偽造權限");
-        original.fields[0].declaration_span = stored;
-        original.methods[0].params[0].declaration_start = private_src.len() + 1;
+        structs.get_mut("Holder").unwrap().fields[0].declaration_span = stored;
+        structs.get_mut("Holder").unwrap().methods[0].params[0].declaration_start =
+            private_src.len() + 1;
         assert!(!verified_private_syntax_tree(private_src, &structs, &functions),
             "參數名字的 DeclarationId 必須是現存原始來源位置");
 
