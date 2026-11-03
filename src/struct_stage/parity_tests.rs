@@ -26,6 +26,78 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn a1_f01_遮蔽宣告的兩次具名引用必須分別對應真實_ast_身分() {
+        use crate::common_ir::NodeSpan;
+        let code = "fn main()->int{\nvar value:int = 1\nif(true){\nvar value:int = 2\nvar copy:int = value\n}\nreturn value\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let public_ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let names = names::resolve_with_facts(&public_ast, &source).unwrap();
+        let public_hir = types::check_with_names_and_hir(&public_ast, &source, &names)
+            .expect("P10 應核准兩種不同詞彙作用域的同名來源");
+        let private = verified_private_source(code)
+            .expect("私有受限 Checker 應保持相同遮蔽來源");
+        let parser::Item::Function(fun) = &public_ast.items[0]
+            else { panic!("真 Parser 必須產生 main") };
+        let parser::StmtKind::Binding(outer) = &fun.body.statements[0].kind
+            else { panic!("缺少外層宣告") };
+        let parser::StmtKind::IfChain(chain) = &fun.body.statements[1].kind
+            else { panic!("缺少 if") };
+        let parser::StmtKind::Binding(inner) = &chain.arms[0].branch.body.statements[0].kind
+            else { panic!("缺少被遮蔽內層宣告") };
+        assert_ne!(DeclarationId(outer.start), DeclarationId(inner.start));
+        let inner_pos = code.find("var copy:int = value").unwrap()
+            + "var copy:int = ".len();
+        let outer_pos = code.rfind("return value").unwrap() + "return ".len();
+        let inner_span = NodeSpan::new(inner_pos, inner_pos + "value".len());
+        let outer_span = NodeSpan::new(outer_pos, outer_pos + "value".len());
+        for hir in [&public_hir, &private.plan.scalar_hir] {
+            assert_eq!(hir.reference(inner_span).unwrap().resolved.declaration,
+                DeclarationId(inner.start), "內層引用不得引用遮蔽前的變數");
+            assert_eq!(hir.reference(outer_span).unwrap().resolved.declaration,
+                DeclarationId(outer.start), "離開 if 後不得重新引用內層宣告");
+        }
+        assert!(private.plan.is_consistent(&private.structs, &private.functions, code));
+    }
+
+    #[test]
+    fn a1_f01_原始語法錯誤須保留公私診斷先後種類與_utf8_位置() {
+        use crate::DiagnosticKind;
+        let invalid = "fn ()->int{\nreturn 0\n}\n";
+        let source = Source::new(invalid.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let public = parser::parse(&source, &tokens.tokens).unwrap_err();
+        let private = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0,
+        }.file().unwrap_err();
+        assert_eq!(public.kind, DiagnosticKind::Syntax);
+        assert_eq!(private.kind, DiagnosticKind::Syntax);
+        assert_eq!(&*public.message, "缺少合法名稱");
+        assert_eq!(&*private.message, "需要合法的名稱或型別名稱");
+        assert_eq!(public.span, private.span,
+            "模式各自保留合法差異，但相同缺失 token 的真位置不得漂移");
+
+        let broken = "fn main()->int{\nreturn (8 - 3\n}\n";
+        let source = Source::new(broken.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let public = parser::parse(&source, &tokens.tokens).unwrap_err();
+        let private = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0,
+        }.file().unwrap_err();
+        assert_eq!(&*public.message, "算術分組缺少右圓括號");
+        assert_eq!(&*private.message, "括號運算式缺少右括號");
+        assert_eq!(public.span, private.span);
+
+        let empty_source = Source::new(Vec::new());
+        let empty_tokens = lexer::scan(&empty_source);
+        assert!(parser::parse(&empty_source, &empty_tokens.tokens).is_err(),
+            "空來源不得被來源身份閘門意外接受");
+    }
+
+    #[test]
     fn a1_f01_真_ast_來源與_具型別_hir_不得由合法字元範圍單獨偽造() {
         use crate::common_ir::{
             FrontendMode, NodeSpan, ScalarType, VerifiedScalarHir,
