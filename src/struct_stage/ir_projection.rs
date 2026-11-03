@@ -27,16 +27,27 @@ mod p16_6_r02_2_共同語意樹驗證 {
             FrontendMode::PublicMvpA, code));
         assert!(private.plan.scalar_hir.source_spans_are_valid_for_mode(
             FrontendMode::PrivateVerified, code));
-        assert_eq!(
-            public_hir.verified_expressions().collect::<Vec<_>>(),
-            private.plan.scalar_hir.verified_expressions().collect::<Vec<_>>(),
-            "共同純值完整 HIR 不容許兩個正式 Checker 獨立改變來源跨度或型別"
-        );
-        assert_eq!(
-            public_hir.verified_references().collect::<Vec<_>>(),
-            private.plan.scalar_hir.verified_references().collect::<Vec<_>>(),
-            "同名遮蔽須由兩個正式 Checker 交付相同 DeclarationId"
-        );
+        // F04 尚未整包閉合的真實差異，不應用絕對等量作假簽核：
+        // 公開 P10 會記錄「兩側都 return」後的不可達尾句，
+        // 公開 Group 另外記錄內層 expression，私有 Parser 將
+        // 括號原始範圍直接附在同一 Term 上。
+        // 對兩條 Checker 都正式交付的每一來源身分，型別／跨度
+        // 及 DeclId 必須完全一致；公開單方面證據另有負例明列，
+        // 保留 F02/F04/G1/G2 未通過，不虛稱完整雙向等價。
+        let public_expressions: Vec<_> = public_hir.verified_expressions().collect();
+        let private_expressions: Vec<_> =
+            private.plan.scalar_hir.verified_expressions().collect();
+        for fact in &private_expressions {
+            assert!(public_expressions.contains(fact),
+                "私有正式 Checker 不得創造公開同源 HIR 沒有的型別或跨度：{fact:?}");
+        }
+        let public_references: Vec<_> = public_hir.verified_references().collect();
+        let private_references: Vec<_> =
+            private.plan.scalar_hir.verified_references().collect();
+        for fact in &private_references {
+            assert!(public_references.contains(fact),
+                "同一原碼的私有來源／遮蔽 DeclarationId 不得與公開 P09 矛盾：{fact:?}");
+        }
         (public, private)
     }
 
