@@ -601,6 +601,17 @@ pub(crate) fn syntax_covers_verified_scalar_hir(
     let Some(hir_roles) = hir.verified_roles_for_mode(mode, source) else {
         return false;
     };
+    // 詞彙 DeclarationId 的確必須屬於「這棵」真 Parser AST
+    // 的宣告或參數起點；光是原始碼內、在使用點之前仍可能是函式名稱。
+    let owned_declarations: std::collections::BTreeSet<_> = ast_roles.iter()
+        .filter(|fact| fact.mode == mode
+            && matches!(fact.node.role, NodeRole::Declaration | NodeRole::Parameter))
+        .map(|fact| fact.node.span.start)
+        .collect();
+    if hir.verified_references().chain(hir.verified_assignments())
+        .any(|use_at| !owned_declarations.contains(&use_at.resolved.declaration.0)) {
+        return false;
+    }
     hir_roles.into_iter().all(|fact| {
         let syntax_role = match fact.node.role {
             NodeRole::Expression | NodeRole::Reference => NodeRole::Expression,
