@@ -2325,7 +2325,9 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         let looping = stmt(StmtKind::ForRange {
             iterator: "alias".into(), iterator_start: 80,
             lower: "0".into(), upper: "2".into(),
-            body: vec![read("alias")],
+            body: crate::syntax_shared::ParsedBlock {
+                statements: vec![read("alias")], start: 91, end: 110,
+            },
         }, 81);
         let old = Some(DeclarationId(10));
         assert!(!mentions(&[looping.clone()], old));
@@ -2338,7 +2340,9 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         let zero = stmt(StmtKind::ForRange {
             iterator: "i".into(), iterator_start: 80,
             lower: "0x2".into(), upper: "2".into(),
-            body: vec![read("alias")],
+            body: crate::syntax_shared::ParsedBlock {
+                statements: vec![read("alias")], start: 91, end: 110,
+            },
         }, 81);
         assert!(!mentions(&[zero], old),
             "同一整數的不同核准進位表示仍屬確定零次執行");
@@ -2346,14 +2350,18 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         let once = stmt(StmtKind::ForRange {
             iterator: "i".into(), iterator_start: 80,
             lower: "2".into(), upper: "3".into(),
-            body: vec![read("alias")],
+            body: crate::syntax_shared::ParsedBlock {
+                statements: vec![read("alias")], start: 91, end: 110,
+            },
         }, 81);
         assert!(mentions(&[once], old), "實際可能迭代時不得提前釋放外層借用");
 
         let conservative = stmt(StmtKind::ForRange {
             iterator: "i".into(), iterator_start: 80,
             lower: "3".into(), upper: "1".into(),
-            body: vec![read("alias")],
+            body: crate::syntax_shared::ParsedBlock {
+                statements: vec![read("alias")], start: 91, end: 110,
+            },
         }, 81);
         assert!(mentions(&[conservative], old),
             "未有正式確定零次證明的倒置範圍仍必須保守處理");
@@ -2468,7 +2476,9 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
             ];
             let while_statement = stmt(StmtKind::While {
                 condition: Term { kind: TermKind::Literal("bool"), start: 50, end: 54 },
-                body: loop_body,
+                body: crate::syntax_shared::ParsedBlock {
+                    statements: loop_body, start: 60, end: 110,
+                },
             }, 45);
             assert!(!Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
                 &while_statement));
