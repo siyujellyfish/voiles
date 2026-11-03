@@ -17,6 +17,8 @@ macro_rules! define_shared_expression_kind {
             Scalar(crate::syntax_shared::ScalarLiteral),
             Name(String),
             BinaryInt(crate::common_ir::ArithmeticNode<$node>),
+            /// F02：公私共同純值括號節點保留內外兩份真實來源身分。
+            Group(Box<$node>),
             $($specific)*
         }
     };
