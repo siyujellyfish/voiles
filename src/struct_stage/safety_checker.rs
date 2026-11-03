@@ -315,7 +315,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 call.arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
-            TermKind::Scalar(_) | TermKind::Literal(_) => false,
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
         }
     }
 
@@ -360,7 +360,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_future_term_uses(&binary.left, visible, used);
                 Self::scan_future_term_uses(&binary.right, visible, used);
             }
-            TermKind::Scalar(_) | TermKind::Literal(_) => {}
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => {}
         }
     }
 
@@ -587,8 +587,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok(function.result_ty.clone())
             }
-            TermKind::Construct(name, args) if args.is_empty()
-                && !self.structs.contains_key(name) => {
+            TermKind::UnresolvedZeroArgs(name)
+                if !self.structs.contains_key(name) => {
                 // helper() 與 Struct() 共用解析分支，只有已存在的
                 // 零參數一般函式可以作為純 Copyable 方法值來源。
                 let function = self.find_function(name)
@@ -661,8 +661,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 僅放行已核准 str 擁有值；尚無安全證明的其他資源保留拒絕。
         let ordinary_call: Option<(&str, &[Term])> = match &term.kind {
             TermKind::Call(call) => Some((call.name.as_str(), call.arguments.as_slice())),
-            TermKind::Construct(name, args) if args.is_empty()
-                && !self.structs.contains_key(name) => Some((name.as_str(), &[])),
+            TermKind::UnresolvedZeroArgs(name)
+                if !self.structs.contains_key(name) => Some((name.as_str(), &[])),
             _ => None,
         };
         if let Some((name, args)) = ordinary_call {
@@ -1093,7 +1093,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             TermKind::Name(_) if !Self::parameter_is_consumed(
                                 function, &parameter.name) => {}
                             TermKind::Literal("str") | TermKind::Move(_)
-                                | TermKind::Construct(_, _) | TermKind::Call(_) => {}
+                                | TermKind::Construct(_, _) | TermKind::Call(_)
+                                | TermKind::UnresolvedZeroArgs(_) => {}
                             _ => return Err(self.error(
                                 "P15.6：非 Copyable 參數只接受可證明的預設借用或明確擁有權轉交", arg)),
                         }
@@ -1348,7 +1349,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 只有具名 struct 建立式可給出精確的缺失欄位集合；
                     // 無初始化的普通 var 宣告不得假設已分配結構實例。
                     let pending_fields = if !initialized {
-                        if let Some(Term { kind: TermKind::Construct(actual, args), .. }) = init {
+                        let struct_args: Option<(&str, &[(String, Term)])> = match
+                            init.as_ref().map(|expr| &expr.kind) {
+                            Some(TermKind::Construct(actual, args)) =>
+                                Some((actual, args.as_slice())),
+                            Some(TermKind::UnresolvedZeroArgs(actual))
+                                if self.structs.contains_key(actual) =>
+                                Some((actual, &[])),
+                            _ => None,
+                        };
+                        if let Some((actual, args)) = struct_args {
                             self.structs.get(actual).and_then(|definition| {
                                 let explicit: HashSet<&str> =
                                     args.iter().map(|(name, _)| name.as_str()).collect();
@@ -1948,6 +1958,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for (_, value) in args {
                     self.check_default_term(value, active, checked)?;
                 }
+            }
+            TermKind::UnresolvedZeroArgs(name) if self.structs.contains_key(name) => {
+                if active.contains(name) {
+                    return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
+                }
+                self.check_default_type(name, active, checked)?;
             }
             TermKind::Call(call) => {
                 // 呼叫引數內的結構建立式亦屬預設值的巢狀來源，
