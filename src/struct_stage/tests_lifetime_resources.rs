@@ -2312,14 +2312,14 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
                 cond.clone(), crate::syntax_shared::ParsedBlock {
                     statements: yes.clone(), start: 50, end: 80,
                 }) },
-            no: Some(vec![declare("alias", 50, None), read("alias")]),
+            no: Some(vec![declare("alias", 50, None), read("alias")].into()),
         }, 50);
         assert!(!mentions(&[only_shadow], outer));
         let sibling_uses_outer = stmt(StmtKind::If {
             branch: crate::syntax_shared::ParsedIfArm { start: 60, branch: crate::common_ir::ConditionalBranch::new(cond, crate::syntax_shared::ParsedBlock {
                 statements: yes, start: 60, end: 80,
             }) },
-            no: Some(no),
+            no: Some(no.into()),
         }, 60);
         assert!(mentions(&[sibling_uses_outer], outer));
     }
@@ -2440,7 +2440,7 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
                 crate::syntax_shared::ParsedBlock {
                     statements: vec![read("first", 30)], start: 15, end: 35,
                 }) },
-            no: Some(vec![read("second", 40)]),
+            no: Some(vec![read("second", 40)].into()),
         }, 10);
         let uses = used(&[both.clone(), read("alias", 80)]);
         assert!(uses.contains(&DeclarationId(20)));
@@ -2466,7 +2466,7 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
                     condition.clone(), crate::syntax_shared::ParsedBlock {
                         statements: vec![read("first", 40)], start: 15, end: 45,
                     }) },
-                no: alternative,
+                no: alternative.map(Into::into),
             }, 9);
             assert!(!Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
                 &guarded));
@@ -2526,7 +2526,7 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
                     statements: vec![result_statement(left, 20)],
                     start: 15, end: 25,
                 }) },
-            no: Some(vec![result_statement(right, 30)]),
+            no: Some(vec![result_statement(right, 30)].into()),
         }, 8)
     }
 
@@ -2561,7 +2561,7 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
                     statements: vec![conditional(FlowState::Returned, FlowState::Break)],
                     start: 54, end: 75,
                 }) },
-            no: Some(vec![result_statement(FlowState::Continue, 80)]),
+            no: Some(vec![result_statement(FlowState::Continue, 80)].into()),
         }, 49);
         let classified = Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(
             &nested);
