@@ -1,7 +1,26 @@
 // 對應 P16.6-R01 無語意變更之實作拆檔。
+/// A2/F02：只有這個真正 Checker 名稱決策能將 name()
+/// 裁決為已核准 struct 或零參數 fn；缺名維持舊拒絕路徑。
+enum ZeroArgResolution<'a> {
+    Structure,
+    Function(&'a Function),
+    Missing,
+}
+
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn find_function(&self, name: &str) -> Option<&Function> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
+    }
+    /// 原有同名 struct 優先與函式前向宣告都只由此處判定，
+    /// Parser 不得猜名稱屬於類型或函式；所有方法和一般式共用。
+    fn resolve_empty_call(&self, name: &str) -> ZeroArgResolution<'_> {
+        if self.structs.contains_key(name) {
+            ZeroArgResolution::Structure
+        } else if let Some(function) = self.find_function(name) {
+            ZeroArgResolution::Function(function)
+        } else {
+            ZeroArgResolution::Missing
+        }
     }
     /// F04：真正私有 Checker 所有函式、方法、欄位與區塊宣告
     /// 共用唯一型別名稱存在性裁決；不改任何既有錯誤優先順序。
@@ -1163,16 +1182,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::UnresolvedZeroArgs(name) => {
                 // 唯一完整符號分類：同名 struct 優先，否則只能
                 // 是已宣告的零參數函式；沒有獨立可寫的 Parser 判斷。
-                if self.structs.contains_key(name) {
-                    self.evaluate_struct_constructor(name, &[], term, vars)
-                } else if let Some(function) = self.find_function(name) {
-                    if !function.params.is_empty() {
-                        Err(self.error("P13：函式引數數量不符", term))
-                    } else {
-                        Ok((function.result_ty.clone(), true))
-                    }
-                } else {
-                    Err(self.error("找不到結構型別或不支援一般函式呼叫", term))
+                match self.resolve_empty_call(name) {
+                    ZeroArgResolution::Structure =>
+                        self.evaluate_struct_constructor(name, &[], term, vars),
+                    ZeroArgResolution::Function(function) if !function.params.is_empty() =>
+                        Err(self.error("P13：函式引數數量不符", term)),
+                    ZeroArgResolution::Function(function) =>
+                        Ok((function.result_ty.clone(), true)),
+                    ZeroArgResolution::Missing =>
+                        Err(self.error("找不到結構型別或不支援一般函式呼叫", term)),
                 }
             }
             TermKind::Construct(name, args) =>
