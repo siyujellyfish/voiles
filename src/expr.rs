@@ -11,7 +11,7 @@ crate::common_ir::define_shared_expression_kind!(
         DecimalLiteral(String),
         StringLiteral(String),
         ZeroArgCall(crate::syntax_shared::ParsedNamedCall<()>),
-        Group(Box<Expr>),
+
         /// 僅為完整語言字串索引語法的內部準備；MVP-A 不接受。
         IndexAccess(Box<Expr>, Box<Expr>),
         /// 對已確認完整語言方法／move／borrow 的語法辨識；不核准所有權語意。
