@@ -286,7 +286,7 @@ impl Parser<'_> {
             StmtKind::Declare(parsed)
         } else if head == Some(crate::syntax_shared::StatementHead::Conditional) {
             self.if_statement_kind()?
-        } else if self.keyword("for") {
+        } else if head == Some(crate::syntax_shared::StatementHead::ForRange) {
             self.cursor += 1;
             let iterator_start = self.tok().start;
             let iterator = self.name()?;
@@ -310,7 +310,7 @@ impl Parser<'_> {
             self.cursor += 1;
             let body = self.body()?;
             StmtKind::ForRange { iterator, iterator_start, lower, upper, body }
-        } else if self.keyword("while") {
+        } else if head == Some(crate::syntax_shared::StatementHead::WhileLoop) {
             self.cursor += 1;
             self.take('(', "while 條件需要左括號")?;
             let condition = self.term()?;
@@ -319,10 +319,10 @@ impl Parser<'_> {
             StmtKind::While { condition, body }
         } else if head == Some(crate::syntax_shared::StatementHead::Return) {
             StmtKind::Return(crate::syntax_shared::parse_return(self)?)
-        } else if self.keyword("break") {
+        } else if head == Some(crate::syntax_shared::StatementHead::Break) {
             self.cursor += 1;
             StmtKind::Break
-        } else if self.keyword("continue") {
+        } else if head == Some(crate::syntax_shared::StatementHead::Continue) {
             self.cursor += 1;
             StmtKind::Continue
         } else if matches!(
