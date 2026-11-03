@@ -60,9 +60,15 @@ fn verified_private_syntax_tree(
                 branch.start >= span.start
                     && term(&branch.condition, span, audit)
                     && block(&branch.body, span, audit)
-                    && no.as_ref().is_none_or(|otherwise|
-                        otherwise.iter().all(|stmt| statement(stmt, span, audit))
-                    ),
+                    && no.as_ref().is_none_or(|otherwise| match otherwise {
+                        crate::syntax_shared::ParsedElse::Block(block_value) =>
+                            block(block_value, span, audit),
+                        crate::syntax_shared::ParsedElse::ElseIf(stmt) =>
+                            statement(stmt, span, audit),
+                        #[cfg(test)]
+                        crate::syntax_shared::ParsedElse::SyntheticTest(stmts) =>
+                            stmts.iter().all(|stmt| statement(stmt, span, audit)),
+                    }),
             StmtKind::While { condition, body } =>
                 term(condition, span, audit)
                     && block(body, span, audit),
