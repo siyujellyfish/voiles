@@ -1,7 +1,8 @@
 //! P11 MVP-A 確定初始化與賦值權限。
 //! 不替未決的不可達碼一般合法性或完整語言字串／所有權創建語意。
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
+use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::{Diagnostic, DiagnosticKind};
@@ -9,7 +10,10 @@ use crate::expr::{Expr, ExprKind};
 use crate::parser::{Binding, Block, File, Item, StmtKind};
 use crate::source::Source;
 use crate::ownership_ledger::DeclarationId;
-use crate::common_ir::{TypedDeclaration, ScalarType, VerifiedScalarHir};
+use crate::common_ir::{
+    FrontendMode, NodeSpan, ScalarType, TypedDeclaration, TypedUse,
+    VerifiedScalarExpression, VerifiedScalarHir,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct Variable {
@@ -46,6 +50,10 @@ struct Analyzer<'a> {
     /// 正式 P09 已完成的來源身分證據；獨立 P11 測試仍可使用原入口。
     resolved: Option<&'a crate::common_ir::ResolvedNames>,
     typed: Option<&'a VerifiedScalarHir>,
+    /// 只記錄真正通過本次 P11 可達路徑驗證的原始來源跨度。
+    /// 型別和詞彙 DeclarationId 仍只能唯讀取自 P10 同一 HIR。
+    reached_expressions: RefCell<BTreeSet<NodeSpan>>,
+    reached_assignments: RefCell<BTreeSet<NodeSpan>>,
 }
 
 impl Analyzer<'_> {
@@ -95,6 +103,9 @@ impl Analyzer<'_> {
             ExprKind::ZeroArgCall(_) | ExprKind::DecimalLiteral(_) |
             ExprKind::StringLiteral(_) => {}
         }
+        if self.typed.is_some() {
+            self.reached_expressions.borrow_mut().insert(expr.node_span());
+        }
         Ok(())
     }
 
@@ -141,6 +152,9 @@ impl Analyzer<'_> {
                         return Err(self.err("const 宣告不可再次賦值", statement.start, statement.end));
                     }
                     state.write(name).expect("已確認目標有名稱繫結").initialized = true;
+                    if self.typed.is_some() {
+                        self.reached_assignments.borrow_mut().insert(statement.node_span());
+                    }
                 }
                 StmtKind::Return(value) => {
                     self.read(value, state)?;
@@ -201,14 +215,14 @@ impl Analyzer<'_> {
 /// 須在 P07 解析、P09 名稱及 P10 基本型別成功後才呼叫。
 /// 不具備 P12 的完整函式／控制流程驗收。
 pub(crate) fn check(file: &File, source: &Source) -> Result<(), Diagnostic> {
-    check_with_names_internal(file, source, None, None)
+    check_with_names_internal(file, source, None, None).map(|_| ())
 }
 
 /// 正式 P11 靜態流程檢查消耗 P09 的引用及賦值目標來源身分證據。
 pub(crate) fn check_with_names(
     file: &File, source: &Source, names: &crate::common_ir::ResolvedNames,
 ) -> Result<(), Diagnostic> {
-    check_with_names_internal(file, source, Some(names), None)
+    check_with_names_internal(file, source, Some(names), None).map(|_| ())
 }
 
 /// 正式 P11 消費 P10 成功型別檢查後產生的 HIR；
@@ -217,15 +231,67 @@ pub(crate) fn check_with_typed_hir(
     file: &File, source: &Source,
     names: &crate::common_ir::ResolvedNames, hir: &VerifiedScalarHir,
 ) -> Result<(), Diagnostic> {
-    check_with_names_internal(file, source, Some(names), Some(hir))
+    check_with_typed_hir_and_reachability(file, source, names, hir).map(|_| ())
+}
+
+/// F04：這是 P11 真正已到達且完成型別／初始化安全檢查的
+/// P10 HIR 唯讀視圖，而非另一筆可寫型別表或偽造執行期事件。
+/// 型別與來源身分始終由真正 Checker 的同一 HIR 提供。
+pub(crate) struct ReachableScalarHirView<'a> {
+    hir: &'a VerifiedScalarHir,
+    expressions: BTreeSet<NodeSpan>,
+    assignments: BTreeSet<NodeSpan>,
+}
+impl ReachableScalarHirView<'_> {
+    pub(crate) fn verified_expressions(
+        &self,
+    ) -> impl Iterator<Item = VerifiedScalarExpression> + '_ {
+        self.expressions.iter().map(|span|
+            self.hir.expression(*span)
+                .expect("P11 只從真正存在的 P10 HIR 記錄可達運算式"))
+    }
+    pub(crate) fn verified_references(
+        &self,
+    ) -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
+        self.expressions.iter().filter_map(|span| self.hir.reference(*span))
+    }
+    pub(crate) fn verified_assignments(
+        &self,
+    ) -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
+        self.assignments.iter().map(|span|
+            self.hir.assignment(*span)
+                .expect("P11 只從 P10 同一 HIR 交付已檢查可達賦值證據"))
+    }
+}
+
+/// 正式 P11 的同一條演算法產生來源可達性證據；不可由 P10
+/// 事後掃描 AST 推測，更不能拿 PrivateVerified HIR 偽裝 MVP-A。
+pub(crate) fn check_with_typed_hir_and_reachability<'a>(
+    file: &File, source: &Source,
+    names: &crate::common_ir::ResolvedNames, hir: &'a VerifiedScalarHir,
+) -> Result<ReachableScalarHirView<'a>, Diagnostic> {
+    let (expressions, assignments) =
+        check_with_names_internal(file, source, Some(names), Some(hir))?;
+    if !hir.mode_is(FrontendMode::PublicMvpA) {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P11：可達來源證據必須由正式公開 P10 Checker 簽發".into(),
+            span: None,
+        });
+    }
+    Ok(ReachableScalarHirView { hir, expressions, assignments })
 }
 
 fn check_with_names_internal<'a>(
     file: &File, source: &'a Source,
     resolved: Option<&'a crate::common_ir::ResolvedNames>,
     typed: Option<&'a VerifiedScalarHir>,
-) -> Result<(), Diagnostic> {
-    let analyzer = Analyzer { source, resolved, typed };
+) -> Result<(BTreeSet<NodeSpan>, BTreeSet<NodeSpan>), Diagnostic> {
+    let analyzer = Analyzer {
+        source, resolved, typed,
+        reached_expressions: RefCell::new(BTreeSet::new()),
+        reached_assignments: RefCell::new(BTreeSet::new()),
+    };
     let mut globals = Flow {
         scopes: vec![Rc::new(HashMap::new())],
         reachable: true,
@@ -244,7 +310,10 @@ fn check_with_names_internal<'a>(
             analyzer.block(&f.body, &mut state)?;
         }
     }
-    Ok(())
+    Ok((
+        analyzer.reached_expressions.into_inner(),
+        analyzer.reached_assignments.into_inner(),
+    ))
 }
 
 #[cfg(test)]
