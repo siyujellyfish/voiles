@@ -103,7 +103,7 @@ impl<S> ParsedElse<S> {
     pub(crate) fn as_slice(&self) -> &[S] {
         match self {
             Self::Block(block) => &block.statements,
-            Self::ElseIf(stmt) => std::slice::from_ref(stmt),
+            Self::ElseIf(stmt) => std::slice::from_ref(stmt.as_ref()),
             #[cfg(test)]
             Self::SyntheticTest(stmts) => stmts,
         }
