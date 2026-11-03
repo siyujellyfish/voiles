@@ -115,6 +115,10 @@ jobs:
         run: |
           python3 tools/核對F05驗收.py --test-bin target/p02/p04_source_internal --check
 
+      - name: R03 B05／F06 第一批靜態別名身分與真票據保守驗證（非整包簽核）
+        run: |
+          python3 tools/核對R03B05第一批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
