@@ -83,7 +83,7 @@ impl Analyzer<'_> {
             }
             ExprKind::Group(inner) | ExprKind::ZeroArgMethod(inner, _) =>
                 self.read(inner, state)?,
-            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+            ExprKind::BinaryInt(binary) => {
                 self.read(&binary.left, state)?;
                 self.read(&binary.right, state)?;
             }

@@ -28,8 +28,10 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
         ExprKind::StringLiteral(_) => "StringLiteral",
         ExprKind::Name(_) => "NameRef",
         ExprKind::ZeroArgCall(_) => "ZeroArgCall",
-        ExprKind::Add(_) => "Add",
-        ExprKind::Subtract(_) => "Subtract",
+        // P08 的既有觀測文字保留，AST 正式值則只存共同 operator。
+        ExprKind::BinaryInt(binary) if binary.operator == '+' => "Add",
+        ExprKind::BinaryInt(binary) if binary.operator == '-' => "Subtract",
+        ExprKind::BinaryInt(_) => "InvalidArithmetic",
         ExprKind::Group(_) => "ArithmeticGroup",
         ExprKind::IndexAccess(_, _) => "IndexAccess",
         ExprKind::ZeroArgMethod(_, _) => "ZeroArgMethod",
@@ -37,7 +39,7 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
     };
     record(out, source, name, expr.start, expr.end);
     match &expr.kind {
-        ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+        ExprKind::BinaryInt(binary) => {
             expression(out, source, &binary.left);
             expression(out, source, &binary.right);
         }
@@ -121,7 +123,10 @@ mod tests {
         assert_eq!(group.end.column,19);
         assert!(positions.iter().any(|n|n.kind=="Subtract"));
         assert!(positions.iter().any(|n|n.kind=="Return"));
-        assert!(format!("{file:#?}").contains("Subtract"));
+        assert!(format!("{file:#?}").contains("BinaryInt"),
+            "正式 AST 已改用公私共通算術變體");
+        assert!(positions.iter().filter(|n| n.kind == "Subtract").count() >= 2,
+            "P08 原有減法觀測標籤及兩層左結合仍須保留");
     }
 
     #[test]

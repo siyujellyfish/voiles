@@ -12,7 +12,7 @@ pub(crate) fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
             return false;
         }
         match &value.kind {
-            ExprKind::Add(binary) | ExprKind::Subtract(binary) =>
+            ExprKind::BinaryInt(binary) =>
                 expression(&binary.left, span, audit)
                     && expression(&binary.right, span, audit),
             ExprKind::Group(inner) | ExprKind::ZeroArgMethod(inner, _) =>

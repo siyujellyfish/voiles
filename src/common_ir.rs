@@ -616,7 +616,7 @@ fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
         PublicExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) =>
             ScalarExpr::Bool(*value),
         PublicExprKind::Name(value) => ScalarExpr::Name(value.clone()),
-        PublicExprKind::Add(binary) | PublicExprKind::Subtract(binary) =>
+        PublicExprKind::BinaryInt(binary) =>
             ScalarExpr::Binary {
                 left: Box::new(public_expression(&binary.left)?),
                 op: binary.operator,

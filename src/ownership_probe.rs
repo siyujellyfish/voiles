@@ -93,7 +93,7 @@ impl OwnershipPass<'_> {
             ExprKind::Scalar(_) |
             ExprKind::ZeroArgCall(_) => Ok(()),
             ExprKind::Group(inner) => self.expression(inner, state),
-            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+            ExprKind::BinaryInt(binary) => {
                 self.expression(&binary.left, state)?;
                 self.expression(&binary.right, state)
             }
