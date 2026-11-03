@@ -90,7 +90,8 @@ impl<'a> ExprParser<'a> {
     fn postfix(&mut self) -> Result<Expr, Diagnostic> {
         let mut value = self.primary()?;
         loop {
-            if self.symbol('[') {
+            if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+                == crate::syntax_shared::NameSuffixHead::Index {
                 self.next();
                 let index = self.expression()?;
                 let end = self.expect_symbol(']', "索引缺少右中括號")?;
@@ -101,7 +102,8 @@ impl<'a> ExprParser<'a> {
                 };
                 continue;
             }
-            if self.symbol('.') {
+            if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+                == crate::syntax_shared::NameSuffixHead::Member {
                 self.next();
                 let method = match self.next() {
                     Some(Token { kind: TokenKind::Name(name), .. }) => name.clone(),
@@ -139,7 +141,8 @@ impl<'a> ExprParser<'a> {
         // 其餘呼叫或可能含模式專屬後綴的名稱保持原 P01 Parser 路徑。
         if let Some(name) =
             crate::syntax_shared::take_spanned_name(self.tokens, &mut self.cursor) {
-            let kind = if self.symbol('(') {
+            let kind = if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+                == crate::syntax_shared::NameSuffixHead::Call {
                 self.next();
                 let (call, end) =
                     crate::syntax_shared::parse_named_call(self, name.kind)?;

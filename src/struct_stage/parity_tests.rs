@@ -2,6 +2,107 @@
 // 不把私有結構語法偷開到公開入口，且兩路不同的錯誤文字不可假設相同。
 
 #[cfg(test)]
+mod a2_f02_suffix_原詞彙後綴共同分類與模式防護 {
+    use super::*;
+    use crate::syntax_shared::{name_suffix_head, NameSuffixHead};
+
+    #[test]
+    fn 公私唯一後綴詞彙分類保持原始_utf8_跨度與游標不變() {
+        let code = "# 中文🪼\r\nfn main()->int{\r\nvar plain:int = 0\r\nreturn plain\r\n}\r\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty());
+        let index = scan.tokens.iter().position(|token| {
+            matches!(&token.kind, crate::lexer::TokenKind::Name(word) if word == "plain")
+        }).unwrap();
+        assert_eq!(name_suffix_head(&scan.tokens, index + 1), NameSuffixHead::Bare);
+        let mut cursor = index;
+        let bare = crate::syntax_shared::parse_bare_name(
+            &scan.tokens, &mut cursor, |name| name,
+        ).unwrap();
+        assert_eq!(bare.kind, "plain");
+        assert_eq!(&code[bare.start..bare.end], "plain");
+        assert_eq!(cursor, index + 1);
+
+        for (syntax, suffix) in [
+            ("fn main()->int{\nreturn item()\n}\n", NameSuffixHead::Call),
+            ("fn main()->int{\nreturn item.move()\n}\n", NameSuffixHead::Member),
+            ("fn main()->int{\nreturn item[0]\n}\n", NameSuffixHead::Index),
+        ] {
+            let input = Source::new(syntax.as_bytes().to_vec());
+            let scan = lexer::scan(&input);
+            assert!(scan.diagnostics.is_empty());
+            let index = scan.tokens.iter().position(|token| {
+                matches!(&token.kind, crate::lexer::TokenKind::Name(word) if word == "item")
+            }).unwrap();
+            assert_eq!(name_suffix_head(&scan.tokens, index + 1), suffix);
+            let mut cursor = index;
+            assert!(crate::syntax_shared::parse_bare_name(
+                &scan.tokens, &mut cursor, |name| name,
+            ).is_none());
+            assert_eq!(cursor, index, "後綴尚未由模式解析器消費時不可提前推進游標");
+        }
+    }
+
+    #[test]
+    fn 真正公私解析器沿用後綴分類但保留不相等的核准語法集合() {
+        let code = "fn helper()->int{\nreturn 7\n}\nfn main()->int{\nreturn helper()\n}\n";
+        let src = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&src);
+        let public = crate::parser::parse(&src, &tokens.tokens).unwrap();
+        let private = Parser { source:&src, tokens:&tokens.tokens, cursor:0 }.file().unwrap();
+        let crate::parser::Item::Function(fun) = &public.items[1]
+            else { panic!("公開真 Parser 須保存函式") };
+        let crate::parser::StmtKind::Return(ret) = &fun.body.statements[0].kind
+            else { panic!("公開真 Parser 須保存 return") };
+        assert!(matches!(&ret.expression.kind, crate::expr::ExprKind::Call(_)));
+        assert!(matches!(&private.1[1].body[0].kind,
+            StmtKind::Return(ret) if matches!(&ret.expression.kind, TermKind::UnresolvedZeroArgs(_))));
+        assert!(verified_private_source(code).is_ok());
+
+        let index_code = "fn main()->int{\nvar item:int = 1\nreturn item[0]\n}\n";
+        let src = Source::new(index_code.as_bytes().to_vec());
+        let scan = lexer::scan(&src);
+        assert!(crate::parser::parse(&src, &scan.tokens).is_err(),
+            "公開正式 MVP-A 仍不可將內部索引 AST 辨識擴大為核准的來源語法");
+        let private_error = Parser {
+            source:&src,tokens:&scan.tokens,cursor:0,
+        }.file().unwrap_err();
+        assert_eq!(&*private_error.message,
+            "P15.4：索引元素的借用／別名有效期尚未證明，私有所有權前端保守拒絕");
+
+        let chained = "fn helper()->int{\nreturn 7\n}\nfn main()->int{\nreturn helper().move()\n}\n";
+        let src = Source::new(chained.as_bytes().to_vec());
+        let scan = lexer::scan(&src);
+        let private_error = Parser {
+            source:&src,tokens:&scan.tokens,cursor:0,
+        }.file().unwrap_err();
+        assert_eq!(&*private_error.message, "此階段尚不支援複合接收者或額外後綴操作");
+    }
+
+    #[test]
+    fn 後綴符號錯誤不被分類器吃掉且維持原有私有安全診斷() {
+        let missing = "fn main()->int{\nreturn anything.foo\n}\n";
+        let src = Source::new(missing.as_bytes().to_vec());
+        let scan = lexer::scan(&src);
+        let pub_error = crate::parser::parse(&src, &scan.tokens).unwrap_err();
+        assert_eq!(&*pub_error.message, "方法呼叫缺少左圓括號");
+        let (_, funcs) = Parser { source:&src,tokens:&scan.tokens,cursor:0 }.file().unwrap();
+        let StmtKind::Return(ret) = &funcs[0].body[0].kind
+            else {panic!("私有欄位讀取形狀必須保留")};
+        assert!(matches!(&ret.expression.kind,
+            TermKind::FieldRead(base,field) if base == "anything" && field == "foo"));
+
+        let invalid = "fn main()->int{\nreturn anything.borrow(1)\n}\n";
+        let src = Source::new(invalid.as_bytes().to_vec());
+        let scan = lexer::scan(&src);
+        let private_error = Parser { source:&src,tokens:&scan.tokens,cursor:0 }
+            .file().unwrap_err();
+        assert_eq!(&*private_error.message, "一般借用 .borrow() 不可帶引數");
+    }
+}
+
+#[cfg(test)]
 mod a2_f02_零參數語意唯一分類權威 {
     use super::*;
 

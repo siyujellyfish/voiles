@@ -150,7 +150,8 @@ impl Parser<'_> {
                     .expect("已預檢具名節點");
                 let s = name.kind;
                 let end = name.end;
-                if self.symbol('(') {
+                if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+                    == crate::syntax_shared::NameSuffixHead::Call {
                     self.cursor += 1;
                     // 只有 name = value 才是結構具名欄位建立式；
                     // 位置引數須另建 AST，避免錯當欄位或略過所有權檢查。
@@ -190,7 +191,8 @@ impl Parser<'_> {
                         let (call, end) = crate::syntax_shared::parse_named_call(self, s)?;
                         (TermKind::Call(call), end)
                     }
-                } else if self.symbol('.') {
+                } else if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+                    == crate::syntax_shared::NameSuffixHead::Member {
                     self.cursor += 1;
                     let field_or_move = self.name()?;
                     if field_or_move == "borrow" && self.symbol('(') {
@@ -230,7 +232,8 @@ impl Parser<'_> {
                         (TermKind::FieldRead(s, field_or_move),
                             self.tokens[self.cursor - 1].end)
                     }
-                } else if self.symbol('[') {
+                } else if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+                    == crate::syntax_shared::NameSuffixHead::Index {
                     // P15.4：仍無索引項目的來源身分／存活期證明，
                     // 不得把 str、list 或 dict 的元素當成可直接借用的持有者。
                     return Err(self.syntax(
@@ -242,7 +245,8 @@ impl Parser<'_> {
             _ => return Err(self.syntax("此階段不接受的運算式或來源形式")),
         }
         };
-        if self.symbol('.') || self.symbol('(') || self.symbol('[') {
+        if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
+            != crate::syntax_shared::NameSuffixHead::Bare {
             return Err(self.syntax("此階段尚不支援複合接收者或額外後綴操作"));
         }
         if end < start { end = start; }
