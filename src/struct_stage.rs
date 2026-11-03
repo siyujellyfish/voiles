@@ -485,6 +485,11 @@ impl VerifiedDeclarationFacts {
 struct VerifiedSafetyPlan {
     declarations: VerifiedDeclarationFacts,
     scalar_hir: crate::common_ir::VerifiedScalarHir,
+    /// F01/F04：僅由真 Checker 驗證欄位／參數後簽出、與借用
+    /// 資源持有者分離的型別 token 來源證據。
+    members: BTreeMap<
+        crate::common_ir::ModeNodeIdentity, crate::common_ir::VerifiedTypedMember
+    >,
     /// Checker 交付時即封存的已驗證 HIR 位置契約；避免橋接錯誤
     /// 丟失任何一類證據後，僅靠剩餘的相容項目通過空集合檢查。
     expression_spans: Vec<crate::common_ir::NodeSpan>,
@@ -496,6 +501,9 @@ impl VerifiedSafetyPlan {
     fn from_checker(
         declarations: VerifiedDeclarationFacts,
         scalar_hir: crate::common_ir::VerifiedScalarHir,
+        members: BTreeMap<
+            crate::common_ir::ModeNodeIdentity, crate::common_ir::VerifiedTypedMember
+        >,
     ) -> Self {
         let expression_spans =
             scalar_hir.verified_expressions().map(|fact| fact.span).collect();
@@ -503,15 +511,69 @@ impl VerifiedSafetyPlan {
             scalar_hir.verified_references().map(|fact| fact.span).collect();
         let assignment_spans =
             scalar_hir.verified_assignments().map(|fact| fact.span).collect();
-        Self { declarations, scalar_hir,
+        Self { declarations, scalar_hir, members,
             expression_spans, reference_spans, assignment_spans }
+    }
+
+    /// 公私共通 SourceIdentity 契約的私有 typed 成員核對。
+    /// 唯一真 Checker 從已核准型別收集的事實不可被移除、
+    /// 更改型別、冒充其它模式或虛構未出現的欄位/參數。
+    /// 不把欄位註記插入可借用的 Binding 來源表。
+    fn member_sources_are_consistent(
+        &self, structs: &HashMap<String, StructDecl>,
+        functions: &[Function], text: &str,
+    ) -> bool {
+        use crate::common_ir::{NodeRole, VerifiedTypedMember};
+        let mut expected = BTreeMap::new();
+        let mut add = |role, span, name: &str, name_span, ty: &str, type_span, mutable| {
+            let Some(fact) = VerifiedTypedMember::checked_private(
+                text, role, span, name, name_span, ty, type_span, mutable,
+            ) else { return false; };
+            expected.insert(fact.identity, fact).is_none()
+        };
+        let fields_valid = structs.values().all(|definition| {
+            definition.fields.iter().all(|field| add(
+                NodeRole::Field, field.declaration_span,
+                &field.name, field.name_span,
+                &field.ty, field.type_span, !field.immutable,
+            ))
+        });
+        if !fields_valid { return false; }
+        let params_valid = functions.iter().chain(
+            structs.values().flat_map(|def| def.methods.iter())
+        ).all(|fun| {
+            fun.params.iter().all(|parameter| add(
+                NodeRole::Parameter, parameter.declaration_span,
+                &parameter.name, parameter.name_span,
+                &parameter.ty, parameter.type_span, false,
+            ))
+        });
+        if !params_valid || self.members != expected
+            || !self.members.values().all(|fact| fact.source_is_consistent(text)) {
+            return false;
+        }
+        // 一般函式參數的詞彙 Binding 仍必須來自相同 Checker 的
+        // 已解析 DeclarationId；不准兩份型別表以相同名稱投票。
+        functions.iter().flat_map(|fun| fun.params.iter()).all(|parameter| {
+            self.declarations.typed_declaration(
+                DeclarationId(parameter.declaration_start),
+            ).is_some_and(|binding|
+                binding.ty == parameter.ty
+                    && !binding.mutable
+                    && binding.declaration.0 == parameter.declaration_span.start
+            )
+        })
     }
 
     /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
     /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
-    fn is_consistent(&self, structs: &HashMap<String, StructDecl>, text: &str) -> bool {
+    fn is_consistent(
+        &self, structs: &HashMap<String, StructDecl>, functions: &[Function],
+        text: &str,
+    ) -> bool {
         self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
             && self.declarations.evidence_is_consistent(structs, text)
+            && self.member_sources_are_consistent(structs, functions, text)
             && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
             && self.expression_spans == self.scalar_hir.verified_expressions()
                 .map(|fact| fact.span).collect::<Vec<_>>()
@@ -598,6 +660,14 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
+    if !checker.recorded_member_conflicts.borrow().is_empty() {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：私有欄位或參數名稱與型別來源證據衝突".into(),
+            span: None,
+        });
+    }
+    let members = checker.recorded_member_types.into_inner();
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
     let named_returns = checker.recorded_named_returns.into_inner();
@@ -610,8 +680,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     declarations.call_borrows = checker.recorded_call_borrows.into_inner();
     // 雙帳簿與 P16 來源橋接只能拿到整份通過同一交叉驗證的計畫。
     // 真正 Checker 的資訊由此單一所有權移入，不能傳遞獨立可換的兩本表。
-    let plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir);
-    if !plan.is_consistent(&structs, text) {
+    let plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir, members);
+    if !plan.is_consistent(&structs, &functions, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
             message: "P16：Checker 安全證據與宣告、型別 HIR 或資源權限不一致".into(),
