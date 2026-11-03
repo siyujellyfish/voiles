@@ -524,6 +524,20 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     if let Some(error) = tokens.diagnostics.into_iter().next() { return Err(error); }
     let (structs, functions) =
         Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file()?;
+    // F01：正式私有 Parser 的函式與區塊使用共同模式身分驗證，
+    // 來源跨度必須是真實 UTF-8 半開範圍；保留原私有安全語意。
+    if functions.iter().any(|fun|
+        fun.checked_identity(crate::common_ir::FrontendMode::PrivateVerified, text)
+            .is_none()
+        || fun.body.checked_identity(
+            crate::common_ir::FrontendMode::PrivateVerified, text).is_none()
+    ) {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "私有函式或區塊的原始來源身分不合法".into(),
+            span: None,
+        });
+    }
     let function_index = functions.iter().enumerate()
         .map(|(i, f)| (f.name.clone(), i)).collect();
     let checker = Checker {
