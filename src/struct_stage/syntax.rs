@@ -330,8 +330,10 @@ impl Parser<'_> {
         self.end_statement()?;
         Ok(Stmt { kind, start, end })
     }
-    fn body(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
-        Ok(crate::syntax_shared::parse_block(self)?.statements)
+    /// 正式 for／while 保留共通 Parser 交付的原始 UTF-8 區塊來源；
+    /// if 既有巢狀 CFG 仍依已核准語意單獨處理，不藉此擴張權限。
+    fn body(&mut self) -> Result<crate::syntax_shared::ParsedBlock<Stmt>, Diagnostic> {
+        crate::syntax_shared::parse_block(self)
     }
     fn function(&mut self) -> Result<Function, Diagnostic> {
         crate::syntax_shared::parse_function_decl(self)
@@ -614,7 +616,9 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
         self.take(')', "if 條件需要右括號")?;
         Ok(condition)
     }
-    fn if_body(&mut self) -> Result<Vec<Stmt>, Diagnostic> { self.body() }
+    fn if_body(&mut self) -> Result<Vec<Stmt>, Diagnostic> {
+        Ok(self.body()?.statements)
+    }
     fn maybe_else(&mut self) -> bool {
         let saved = self.cursor;
         self.lines();
@@ -675,4 +679,51 @@ impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
         crate::syntax_shared::parse_block(self)
     }
     fn function_last_end(&self) -> usize { self.tokens[self.cursor - 1].end }
+}
+
+#[cfg(test)]
+mod r02_f03_私有迴圈正式共通區塊來源 {
+    use super::*;
+
+    #[test]
+    fn 真正_for_while_ast_保留原始_utf8_區塊半開來源及唯一泛型型別() {
+        let code = "fn main()->int{\nfor i in 0..1{\nvar a:int = i\n}\nwhile(false){\nbreak\n}\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = crate::lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let (_, functions) = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
+        }.file().expect("真實私有文法應能保留共同 AST");
+        let body = &functions[0].body;
+        let StmtKind::ForRange { body: for_body, .. } = &body[0].kind else {
+            panic!("首句應為 for 範圍迴圈");
+        };
+        let StmtKind::While { body: while_body, .. } = &body[1].kind else {
+            panic!("次句應為 while 迴圈");
+        };
+        let _: &crate::syntax_shared::ParsedBlock<Stmt> = for_body;
+        let _: &crate::syntax_shared::ParsedBlock<Stmt> = while_body;
+        assert_eq!(&code[for_body.start..for_body.end], "{\nvar a:int = i\n}");
+        assert_eq!(&code[while_body.start..while_body.end], "{\nbreak\n}");
+        assert_eq!(for_body.statements.len(), 1);
+        assert_eq!(while_body.statements.len(), 1);
+    }
+
+    #[test]
+    fn 私有迴圈保留全形註解與多位元組來源跨度_不猜測字元長度() {
+        let code = "fn main()->int{\nfor i in 1..1{\n# 繁體註解\nreturn 0\n}\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = crate::lexer::scan(&source);
+        assert!(lexed.diagnostics.is_empty());
+        let (_, functions) = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
+        }.file().expect("來源文法應合法");
+        let StmtKind::ForRange { body, .. } = &functions[0].body[0].kind else {
+            panic!("應取得正式 for 的完整 ParsedBlock");
+        };
+        let expected_start = code.find("{\n# 繁體").unwrap();
+        let expected_end = code.find("\n}\nreturn 0").unwrap() + 2;
+        assert_eq!((body.start, body.end), (expected_start, expected_end));
+        assert_eq!(&code[body.start..body.end], "{\n# 繁體註解\nreturn 0\n}");
+    }
 }
