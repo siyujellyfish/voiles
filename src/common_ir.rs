@@ -138,6 +138,12 @@ impl<'a> SourceIdentityAudit<'a> {
         true
     }
     pub(crate) fn count(&self) -> usize { self.nodes.len() }
+    /// 直接取得本次真正 AST 走訪已建立的模式／角色來源身分，
+    /// 不以另一次字串掃描或新 AST 重造資料。
+    pub(crate) fn verified_roles(&self)
+        -> impl Iterator<Item = ModeNodeIdentity> + '_ {
+        self.nodes.iter().copied()
+    }
     pub(crate) fn contains(&self, identity: ModeNodeIdentity) -> bool {
         identity.mode == self.mode && self.nodes.contains(&identity)
     }
@@ -431,7 +437,41 @@ impl VerifiedScalarHir {
     pub(crate) fn source_spans_are_valid_for_mode(
         &self, mode: FrontendMode, source: &str,
     ) -> bool {
-        self.mode_is(mode) && self.source_spans_are_valid(source)
+        self.verified_roles_for_mode(mode, source).is_some()
+    }
+
+    /// A1/F01：真正 Checker 簽發的純值型別／讀取／賦值依模式
+    /// 形成唯一的角色身分集合；不能靠後端再造假 NodeId。
+    /// 只提供已檢查來源的唯讀身分，不表示資源或借用能力。
+    pub(crate) fn verified_roles_for_mode(
+        &self, mode: FrontendMode, source: &str,
+    ) -> Option<std::collections::BTreeSet<ModeNodeIdentity>> {
+        if !self.mode_is(mode) || !self.source_spans_are_valid(source) {
+            return None;
+        }
+        let mut facts = std::collections::BTreeSet::new();
+        for expr in self.verified_expressions() {
+            facts.insert(ModeNodeIdentity::checked(
+                mode, expr.span, NodeRole::Expression, source,
+            )?);
+        }
+        for (role, uses) in [
+            (NodeRole::Reference, self.verified_references().collect::<Vec<_>>()),
+            (NodeRole::Assignment, self.verified_assignments().collect::<Vec<_>>()),
+        ] {
+            for use_at in uses {
+                let id = use_at.resolved.declaration.0;
+                if id > use_at.span.start
+                    || id >= source.len()
+                    || !source.is_char_boundary(id) {
+                    return None;
+                }
+                facts.insert(ModeNodeIdentity::checked(
+                    mode, use_at.span, role, source,
+                )?);
+            }
+        }
+        Some(facts)
     }
     pub(crate) fn is_consistent(&self) -> bool { !self.conflicted }
 
