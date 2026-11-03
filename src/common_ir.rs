@@ -591,6 +591,33 @@ impl VerifiedScalarHir {
     }
 }
 
+/// A1/F01：直接核對真正 Parser 已驗證的角色與真正 Checker 簽出的
+/// Typed HIR 消費者。不能以 HIR 自己宣稱位置合法，就視為 AST
+/// 確實有那筆運算式或賦值；也不把這種同源核對授權為資源事件。
+pub(crate) fn syntax_covers_verified_scalar_hir(
+    ast_roles: &std::collections::BTreeSet<ModeNodeIdentity>,
+    hir: &VerifiedScalarHir, mode: FrontendMode, source: &str,
+) -> bool {
+    let Some(hir_roles) = hir.verified_roles_for_mode(mode, source) else {
+        return false;
+    };
+    hir_roles.into_iter().all(|fact| {
+        let syntax_role = match fact.node.role {
+            NodeRole::Expression | NodeRole::Reference => NodeRole::Expression,
+            NodeRole::Assignment => NodeRole::Statement,
+            _ => return false,
+        };
+        let counterpart = ModeNodeIdentity {
+            mode,
+            node: NodeIdentity {
+                span: fact.node.span,
+                role: syntax_role,
+            },
+        };
+        ast_roles.contains(&counterpart)
+    })
+}
+
 /// 公開純值 HIR 引用是共同語意引用的 int／bool 專用形式。
 pub(crate) type ResolvedScalarUse = ResolvedUse<ScalarType>;
 
