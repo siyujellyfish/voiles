@@ -178,7 +178,14 @@ impl Parser<'_> {
                             }
                         }
                         let end = self.tok().end; self.cursor += 1;
-                        (TermKind::Construct(s, args), end)
+                        // 只有明確欄位名 = 值才是確定的 Struct 建構。
+                        // 零引數 name() 必須延後至完整符號表可用時
+                        // 唯一判定，避免真 Parser 和 Checker 兩次改類別。
+                        (if args.is_empty() {
+                            TermKind::UnresolvedZeroArgs(s)
+                        } else {
+                            TermKind::Construct(s, args)
+                        }, end)
                     } else {
                         let (call, end) = crate::syntax_shared::parse_named_call(self, s)?;
                         (TermKind::Call(call), end)
