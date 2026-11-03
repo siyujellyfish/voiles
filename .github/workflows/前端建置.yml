@@ -81,6 +81,10 @@ jobs:
         run: |
           bash -n tools/核對-P14-P16-工程證據.sh
           bash tools/核對-P14-P16-工程證據.sh ./target/p13-accept/internal_tests target/p13-accept
+      - name: F00 擷取八條已核准私有來源的實際 P16 ResourceId 事件候選
+        run: |
+          python3 tools/鎖定F00八橋接.py --test-bin target/p13-accept/internal_tests --print
+
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
           python3 tools/產生規格測試.py
