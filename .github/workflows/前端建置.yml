@@ -86,6 +86,10 @@ jobs:
           test "$(./target/p02/p04_source_internal --list | grep -c 'a2_f02_suffix_')" -ge 3
           ./target/p02/p04_source_internal --test-threads=1 a2_f02_suffix_
 
+      - name: F02／A2 六子項共同 AST 與唯一可寫詞彙權威正式驗收
+        run: |
+          python3 tools/核對F02驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: P13 人工驗收輔助腳本的 Bash 語法檢查
         run: bash -n tools/人工驗收-P13.sh
       - name: P13 入口 B 與 D01 A／A 容器公開 CLI 隔離回歸
