@@ -124,7 +124,7 @@ impl<'a> Parser<'a> {
     fn first_version_return(&self, expr: &Expr) -> bool {
         match &expr.kind {
             ExprKind::Scalar(_) |
-            ExprKind::Name(_) | ExprKind::ZeroArgCall(_) => true,
+            ExprKind::Name(_) | ExprKind::Call(_) => true,
             ExprKind::Group(x) => self.first_version_return(x),
             ExprKind::BinaryInt(binary) =>
                 self.first_version_return(&binary.left) && self.first_version_return(&binary.right),
