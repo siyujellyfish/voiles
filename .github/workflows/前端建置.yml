@@ -2,6 +2,9 @@ name: Rust 前端建置與架構測試
 
 on:
   pull_request:
+  push:
+    branches:
+      - main
 
 permissions:
   contents: read
@@ -107,6 +110,14 @@ jobs:
       - name: F04／A4 五子項 Typed HIR、可達性與非純值 Checker 安全正式驗收
         run: |
           python3 tools/核對F04驗收.py --test-bin target/p02/p04_source_internal --check
+
+      - name: F05／A5 真 AST 可寫權威清除與五子項正反驗收
+        run: |
+          python3 tools/核對F05驗收.py --test-bin target/p02/p04_source_internal --check
+
+      - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
+        run: |
+          python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
 
       - name: P13 人工驗收輔助腳本的 Bash 語法檢查
         run: bash -n tools/人工驗收-P13.sh
