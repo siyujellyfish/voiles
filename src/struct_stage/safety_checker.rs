@@ -102,6 +102,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 此檢查不推定一般間接副作用、別名再借用或跨例外逃逸。
     fn term_moves_name(term: &Term, name: &str) -> bool {
         match &term.kind {
+            TermKind::Group(inner) => Self::term_moves_name(inner, name),
             TermKind::Move(source) => source == name,
             TermKind::Construct(_, args) =>
                 args.iter().any(|(_, t)| Self::term_moves_name(t, name)),
@@ -259,6 +260,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 漏掉未來引用造成提前解鎖；完整詞彙來源精細度留待 P15 驗收。
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
+            TermKind::Group(inner) => Self::term_mentions(inner, name),
             TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
@@ -291,6 +293,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         used: &mut BTreeSet<DeclarationId>,
     ) {
         match &term.kind {
+            TermKind::Group(inner) => Self::scan_future_term_uses(inner, visible, used),
             TermKind::Name(name) | TermKind::Move(name) | TermKind::Borrow(name)
             | TermKind::FieldRead(name, _) | TermKind::FieldMove(name, _) =>
                 Self::record_named_future_use(visible, used, name),
@@ -487,6 +490,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn method_pure_value_type(&self, owner: &str, method: &Function, term: &Term)
         -> Result<String, Diagnostic> {
         match &term.kind {
+            TermKind::Group(inner) => self.method_pure_value_type(owner, method, inner),
             TermKind::Scalar(atom) => Ok(atom.type_name().to_owned()),
             TermKind::Literal(ty) => Ok((*ty).to_string()),
             TermKind::Name(name) if name == "self" =>
@@ -597,6 +601,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 提前／最後 return 前只能使用已驗證的純 Copyable 語句。
     fn method_return_type(&self, owner: &str, method: &Function, term: &Term)
         -> Result<String, Diagnostic> {
+        if let TermKind::Group(inner) = &term.kind {
+            return self.method_return_type(owner, method, inner);
+        }
         if let TermKind::Move(name) = &term.kind {
             if name == "self" {
                 return Err(self.error("S15：方法不可消耗整個 self", term));
@@ -730,6 +737,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 再查核接收者仍有效。仍禁止未完成的再借用／巢狀呼叫資源副作用。
     fn method_argument_safe_before_borrow(term: &Term) -> bool {
         match &term.kind {
+            TermKind::Group(inner) =>
+                Self::method_argument_safe_before_borrow(inner),
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_) | TermKind::Move(_)
                 | TermKind::FieldRead(_, _) => true,
             TermKind::BinaryInt(binary) =>
@@ -766,6 +775,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     fn while_condition_nonconsuming(term: &Term) -> bool {
         match &term.kind {
+            TermKind::Group(inner) => Self::while_condition_nonconsuming(inner),
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_) | TermKind::FieldRead(_, _) => true,
             TermKind::BinaryInt(binary) =>
                 Self::while_condition_nonconsuming(&binary.left)
@@ -791,6 +801,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn evaluate_inner(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
+            TermKind::Group(inner) => self.evaluate(inner, vars),
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
             TermKind::BinaryInt(binary) => {
@@ -1752,6 +1763,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 方法借用完整合法性仍待 P14，不能藉此宣告方法可使用。
     fn reject_method_term(&self, term: &Term) -> Result<(), Diagnostic> {
         match &term.kind {
+            TermKind::Group(inner) => self.reject_method_term(inner),
             TermKind::Move(name) if name == "self" => {
                 let _ = struct_ownership::check_method_self(SelfAction::ConsumeWhole);
                 Err(self.error("S15：方法禁止消耗整個 self", term))
@@ -1857,6 +1869,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn check_default_term(&self, term: &Term, active: &mut HashSet<String>,
         checked: &mut HashSet<String>) -> Result<(), Diagnostic> {
         match &term.kind {
+            TermKind::Group(inner) => self.check_default_term(inner, active, checked)?,
             TermKind::Construct(name, args) => {
                 if active.contains(name) {
                     return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));

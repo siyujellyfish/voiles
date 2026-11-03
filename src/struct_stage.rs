@@ -103,6 +103,9 @@ crate::common_ir::define_shared_expression_kind!(
     TermKind, Term, [Debug, Clone], {
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
+        /// F02/F04：保留已核准括號內層真正來源節點，不能
+        /// 只把外括號的跨度覆寫到唯一內部 Term，導致 HIR 失真。
+        Group(Box<Term>),
         Construct(String, Vec<(String, Term)>),
         /// 函式具位置引數的獨立 P13 已核准語意。
         Call(crate::syntax_shared::ParsedNamedCall<Vec<Term>>),

@@ -71,15 +71,14 @@ mod p16_6_r02_2_共同語意樹驗證 {
     fn f04_公私_checker_待對齊差異有具體來源與可重現的精確跨度() {
         use crate::common_ir::{NodeSpan, VerifiedScalarExpression};
         let grouping = "fn main()->int{\nreturn (8 - 3) + 2\n}\n";
+        let (_, private_grouped) = checked(grouping);
         let at = grouping.find("8 - 3").unwrap();
-        assert_eq!(
-            public_only_hir(grouping),
-            vec![VerifiedScalarExpression {
-                span: NodeSpan::new(at, at + "8 - 3".len()),
-                ty: ScalarType::Int,
-            }],
-            "公開 Group 的內層算術被私有 Parser 消去，F02/F04 尚不得宣告完全等價",
-        );
+        let inner = NodeSpan::new(at, at + "8 - 3".len());
+        assert_eq!(private_grouped.plan.scalar_hir.expression(inner),
+            Some(VerifiedScalarExpression {span: inner, ty: ScalarType::Int}),
+            "私有 Checker 必須真的交付保留的 Group 內層算術證據");
+        assert!(public_only_hir(grouping).is_empty(),
+            "公私正式 Checker 的合法分組應已核對完整內外來源");
 
         let unreachable = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
         let at = unreachable.find("return 0").unwrap() + "return ".len();
