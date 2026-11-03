@@ -20,7 +20,10 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
             code.find("return n").unwrap() + "return ".len(),
             code.find("return n").unwrap() + "return n".len(),
         );
-        let mut hir = VerifiedScalarHir::default();
+        // 真正可被私有來源帳簿採用的單元 HIR 必須顯式攜帶
+        // PrivateVerified 模式；default() 只可用於未授權負例。
+        let mut hir = VerifiedScalarHir::for_mode(
+            crate::common_ir::FrontendMode::PrivateVerified);
         hir.record_reference(TypedUse::new(span, ResolvedUse::new(
             owner, ScalarType::Int)));
         hir.record_expression(span, ScalarType::Int);
