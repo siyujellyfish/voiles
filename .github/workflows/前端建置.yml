@@ -57,10 +57,10 @@ jobs:
           rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 src/main.rs -o target/p02/voiles
           rustup run stable rustc --edition=2021 --test --crate-name p02_smoke --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 tests/rust/p02_smoke.rs -o target/p02/p02_smoke
           VOILES_CLI=./target/p02/voiles ./target/p02/p02_smoke
-      - name: F00 擷取公開 49 份來源的真實位元組及完整診斷候選
+      - name: F00 嚴格核對已凍結 49 份來源位元組與完整公開診斷
         run: |
           rustup run stable rustc --edition=2021 --crate-name f00_probe --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 tests/rust/f00_probe.rs -o target/p02/f00_probe
-          python3 tools/鎖定F00基準.py --probe target/p02/f00_probe --print
+          python3 tools/鎖定F00基準.py --probe target/p02/f00_probe --check
 
       - name: P04 執行 Rust 核心內部 UTF-8 與原始座標測試
         run: |
