@@ -21,10 +21,8 @@ MATRIX = ROOT / "AI-build" / "P13-P16-原始24項正式驗收矩陣.md"
 EXPECTED_NO_PRIVATE = {
     "P14.1", "P16.1", "P16.2", "P16.4", "P16.5", "P16.6",
 }
-EXPECTED_P01 = {
-    *(f"P01-正{i:02d}" for i in range(1, 20)),
-    *(f"P01-反{i:02d}" for i in range(1, 31)),
-}
+EXPECTED_P01 = {f"P01-正{i:02d}" for i in range(1, 20)}
+EXPECTED_P01.update(f"P01-反{i:02d}" for i in range(1, 31))
 EXPECTED_PHASES = {
     f"P{phase}.{item}" for phase in range(13, 17) for item in range(1, 7)
 }
