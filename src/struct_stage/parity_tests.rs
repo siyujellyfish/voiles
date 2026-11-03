@@ -2,6 +2,181 @@
 // 不把私有結構語法偷開到公開入口，且兩路不同的錯誤文字不可假設相同。
 
 #[cfg(test)]
+mod a3_f03_五項正式驗收 {
+    use super::*;
+    use crate::DiagnosticKind;
+
+    fn parsed(code: &str) -> (Source, Vec<crate::lexer::Token>) {
+        let source = Source::new(code.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty(), "正反案例必須由原 Lexer 解析");
+        (source, scan.tokens)
+    }
+
+    #[test]
+    fn f03_01_合法函式與返回共用唯一真_ast() {
+        let code = "fn main()->int{\nreturn 7\n}\n";
+        let (source, tokens) = parsed(code);
+        let public = crate::parser::parse(&source, &tokens).unwrap();
+        let crate::parser::Item::Function(p) = &public.items[0]
+            else { panic!("公開函式須由 ParsedFunction 交付") };
+        let (_, private) = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap();
+        let q = &private[0];
+        assert_eq!((p.start, p.end), (q.start, q.end));
+        assert_eq!(&code[p.start..p.end], code.trim_end());
+        let crate::parser::StmtKind::Return(pr) = &p.body[0].kind
+            else { panic!("公開應保存共同返回 AST") };
+        let StmtKind::Return(qr) = &q.body[0].kind
+            else { panic!("私有應保存共同返回 AST") };
+        assert_eq!(pr.node_span(), qr.node_span());
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn f03_01_私有參數合法但公開拒絕_無表面語法擴張() {
+        let code = "fn helper(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn helper(3)\n}\n";
+        let (source, tokens) = parsed(code);
+        assert!(Parser { source: &source, tokens: &tokens, cursor: 0 }.file().is_ok());
+        assert!(inspect(code).is_ok(), "私有函式參數與返回不得退步");
+        assert!(crate::parser::parse(&source, &tokens).is_err(),
+            "公開 MVP-A 不得接受私有參數");
+        let invalid = "fn main()->int{\nreturn\n}\n";
+        let (source, tokens) = parsed(invalid);
+        assert!(crate::parser::parse(&source, &tokens).is_err());
+        assert!(Parser { source: &source, tokens: &tokens, cursor: 0 }.file().is_err());
+    }
+
+    #[test]
+    fn f03_02_局部宣告與賦值_真解析後同一來源範圍() {
+        let code = "fn main()->int{\nvar n:int = 1\nn = 2\nreturn n\n}\n";
+        let (source, tokens) = parsed(code);
+        let public = crate::parser::parse(&source, &tokens).unwrap();
+        let crate::parser::Item::Function(p) = &public.items[0]
+            else { panic!("公開函式不存在") };
+        let (_, private) = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap();
+        let q = &private[0];
+        let crate::parser::StmtKind::Binding(pd) = &p.body[0].kind
+            else { panic!("公開宣告須由共同 AST 提供") };
+        let StmtKind::Declare(qd) = &q.body[0].kind
+            else { panic!("私有宣告須由共同 AST 提供") };
+        assert_eq!((pd.start, pd.end), (qd.start, qd.end));
+        assert_eq!(pd.name, qd.name);
+        assert_eq!(pd.mutable, qd.mutable);
+        let crate::parser::StmtKind::Assignment(pa) = &p.body[1].kind
+            else { panic!("公開賦值須由共同 AST 提供") };
+        let StmtKind::Assign(qa) = &q.body[1].kind
+            else { panic!("私有賦值須由共同 AST 提供") };
+        assert_eq!(pa.name, qa.name);
+        assert_eq!(pa.expression.node_span(), qa.expression.node_span());
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn f03_02_非法宣告與私有欄位的模式守衛() {
+        let invalid = "fn main()->int{\nvar n int = 1\nreturn 0\n}\n";
+        let (source, tokens) = parsed(invalid);
+        let public = crate::parser::parse(&source, &tokens).unwrap_err();
+        let private = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap_err();
+        assert_eq!(public.kind, DiagnosticKind::Syntax);
+        assert_eq!(private.kind, DiagnosticKind::Syntax);
+        assert!(public.span.is_some() && private.span.is_some());
+        let private_field = "struct Holder{\nvar value:int = 1\n}\nfn main()->int{\nreturn 0\n}\n";
+        let (source, tokens) = parsed(private_field);
+        assert!(inspect(private_field).is_ok());
+        assert!(crate::parser::parse(&source, &tokens).is_err());
+    }
+
+    #[test]
+    fn f03_03_多層_else_if_else_真鏈與原私有合流() {
+        let code = "fn main()->int{\nvar n:int = 0\nif(true){\nn = 1\n}else if(false){\nn = 2\n}else{\nn = 3\n}\nreturn n\n}\n";
+        let (source, tokens) = parsed(code);
+        let public = crate::parser::parse(&source, &tokens).unwrap();
+        let crate::parser::Item::Function(p) = &public.items[0]
+            else { panic!("公開函式不存在") };
+        let crate::parser::StmtKind::IfChain(chain) = &p.body[1].kind
+            else { panic!("公開必須保存 ParsedIfChain") };
+        assert_eq!(chain.arms.len(), 2);
+        assert!(chain.otherwise.is_some());
+        let (_, private) = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap();
+        let StmtKind::If { no: Some(tail), .. } = &private[0].body[1].kind
+            else { panic!("私有必須保存 CFG if/else") };
+        let crate::syntax_shared::ParsedElse::ElseIf(nested) = tail
+            else { panic!("私有 else-if 須保存真正巢狀 AST") };
+        let StmtKind::If { no: Some(last), .. } = &nested.kind
+            else { panic!("最後 else 不得遺失") };
+        assert!(matches!(last, crate::syntax_shared::ParsedElse::Block(_)));
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn f03_03_缺少_else_區塊仍由兩真_parser_拒絕() {
+        let invalid = "fn main()->int{\nif(true){\nreturn 1\n}else\nreturn 0\n}\n";
+        let (source, tokens) = parsed(invalid);
+        let a = crate::parser::parse(&source, &tokens).unwrap_err();
+        let b = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap_err();
+        assert_eq!(a.kind, DiagnosticKind::Syntax);
+        assert_eq!(b.kind, DiagnosticKind::Syntax);
+        assert!(a.span.is_some() && b.span.is_some());
+    }
+
+    #[test]
+    fn f03_04_深層大括號區塊與真來源半開跨度() {
+        let code = "fn main()->int{\nif(true){\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n}\nreturn 3\n}\n";
+        let (source, tokens) = parsed(code);
+        let public = crate::parser::parse(&source, &tokens).unwrap();
+        let crate::parser::Item::Function(p) = &public.items[0]
+            else { panic!("公開函式不存在") };
+        let crate::parser::StmtKind::IfChain(outer) = &p.body[0].kind
+            else { panic!("公開外層 if 不存在") };
+        let inner = &outer.arms[0].branch.body;
+        assert_eq!(&code[inner.start..inner.start + 1], "{");
+        assert_eq!(&code[inner.end - 1..inner.end], "}");
+        let (_, private) = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap();
+        let StmtKind::If { branch, .. } = &private[0].body[0].kind
+            else { panic!("私有外層 if 不存在") };
+        assert_eq!((inner.start, inner.end), (branch.body.start, branch.body.end));
+        assert!(verified_private_syntax_tree(code, &HashMap::new(), &private));
+        assert!(inspect(code).is_ok());
+    }
+
+    #[test]
+    fn f03_04_缺失右大括號兩模式不得吞掉_eof() {
+        let invalid = "fn main()->int{\nif(true){\nreturn 1\n}\nreturn 0\n";
+        let (source, tokens) = parsed(invalid);
+        let a = crate::parser::parse(&source, &tokens).unwrap_err();
+        let b = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap_err();
+        assert_eq!(a.kind, DiagnosticKind::Syntax);
+        assert_eq!(b.kind, DiagnosticKind::Syntax);
+        assert!(a.span.is_some() && b.span.is_some());
+    }
+
+    #[test]
+    fn f03_05_真私有迴圈跳轉及公開模式隔離() {
+        let code = "fn main()->int{\nfor index in 0..1{\nbreak\n}\nwhile(false){\ncontinue\n}\nreturn 0\n}\n";
+        let (source, tokens) = parsed(code);
+        assert!(crate::parser::parse(&source, &tokens).is_err());
+        let (_, private) = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap();
+        assert!(matches!(private[0].body[0].kind, StmtKind::ForRange { .. }));
+        assert!(matches!(private[0].body[1].kind, StmtKind::While { .. }));
+        assert!(verified_private_syntax_tree(code, &HashMap::new(), &private));
+        assert!(inspect(code).is_ok(), "合法控制轉移須通過 P15 真 Checker");
+    }
+
+    #[test]
+    fn f03_05_迴圈外_break_continue_真_checker_拒絕且診斷不變() {
+        for keyword in ["break", "continue"] {
+            let code = format!("fn main()->int{{\n{keyword}\nreturn 0\n}}\n");
+            let (source, tokens) = parsed(&code);
+            assert!(crate::parser::parse(&source, &tokens).is_err());
+            assert!(Parser { source: &source, tokens: &tokens, cursor: 0 }.file().is_ok());
+            let error = inspect(&code).unwrap_err();
+            assert_eq!(&*error.message,
+                "P15：break／continue 只能位於已核准的 for／while 迴圈內");
+        }
+    }
+}
+
+#[cfg(test)]
 mod a3_f03_私有控制語句共同詞彙分類與可達安全守衛 {
     use super::*;
     use crate::common_ir::FrontendMode;
