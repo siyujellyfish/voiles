@@ -97,6 +97,55 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f01_正式區塊所有直接語句與私有方法來源皆保留共用模式身分() {
+        use crate::common_ir::FrontendMode;
+
+        let common = "fn main()->int{\nvar n:int = 1\nreturn n\n}\n";
+        assert_eq!(public_check(common), Ok(()));
+        assert!(inspect(common).is_ok());
+        let input = Source::new(common.as_bytes().to_vec());
+        let scanned = lexer::scan(&input);
+        let file = parser::parse(&input, &scanned.tokens).unwrap();
+        let parser::Item::Function(public_function) = &file.items[0]
+            else { panic!("公開正式函式節點缺失") };
+        assert!(public_function.body.checked_direct_statements(
+            FrontendMode::PublicMvpA, common));
+        let checked = verified_private_source(common).unwrap();
+        assert!(checked.functions[0].body.checked_direct_statements(
+            FrontendMode::PrivateVerified, common));
+        let mut forged = public_function.body.clone();
+        forged.statements[0].end = common.len() + 1;
+        assert!(!forged.checked_direct_statements(
+            FrontendMode::PublicMvpA, common),
+            "超出真實來源的語句不能因合法函式外殼而通過");
+        let mut crossed = public_function.body.clone();
+        crossed.statements[0].start = public_function.start;
+        assert!(!crossed.checked_direct_statements(
+            FrontendMode::PublicMvpA, common),
+            "子語句不得跨出真正解析的區塊範圍");
+
+        let private_source = "struct OnlyMethod{\nfn get()->int{\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(private_source).is_ok());
+        let input = Source::new(private_source.as_bytes().to_vec());
+        let scanned = lexer::scan(&input);
+        let (structs, _) = Parser {
+            source: &input, tokens: &scanned.tokens, cursor: 0,
+        }.file().unwrap();
+        let method = &structs["OnlyMethod"].methods[0];
+        assert!(method.checked_identity(
+            FrontendMode::PrivateVerified, private_source).is_some(),
+            "不能遺漏結構方法的完整來源節點身分");
+        assert!(method.body.checked_direct_statements(
+            FrontendMode::PrivateVerified, private_source),
+            "私有方法內的 return 必須具有真正來源跨度");
+        let mut forged_method = method.body.clone();
+        forged_method.statements[0].end = private_source.len() + 1;
+        assert!(!forged_method.checked_direct_statements(
+            FrontendMode::PrivateVerified, private_source),
+            "私有方法的合成越界語句不可冒充已經驗證的節點");
+    }
+
+    #[test]
     fn f05_公私正式_checker_相同已核准純值來源產生相同型別與半開位置證據() {
         let code = "fn main()->int{\nvar value:int = 3\nif(true){\nreturn value\n}\nreturn 0\n}\n";
         assert_eq!(public_check(code), Ok(()));
