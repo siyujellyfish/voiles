@@ -164,6 +164,25 @@ impl<S> ParsedBlock<S> {
     }
 }
 
+/// F01：正式兩模式區塊內的各個「直接語句」都必須是真正 Parser
+/// 建立的 UTF-8 半開跨度，不能只驗證函式或大括號而放過假造位置。
+/// 巢狀語句仍須由原有 Parser／Checker 負責其語法與安全合法性；
+/// 此函式不授權任何新型別、借用或控制流程。
+impl<K> ParsedBlock<crate::common_ir::SpannedNode<K>> {
+    pub(crate) fn checked_direct_statements(
+        &self, mode: crate::common_ir::FrontendMode, source: &str,
+    ) -> bool {
+        self.checked_identity(mode, source).is_some()
+            && self.statements.iter().all(|statement|
+                statement.checked_mode_identity(
+                    mode, crate::common_ir::NodeRole::Statement, source
+                ).is_some()
+                && statement.start >= self.start
+                && statement.end <= self.end
+            )
+    }
+}
+
 /// F03：原私有 Checker 已核准的唯讀區塊走訪仍可使用
 /// Vec<S> 的迭代、切片和索引介面，但必須讀取正式 Parser
 /// 唯一交付的 ParsedBlock，不得事後複製成第二本 body AST。
