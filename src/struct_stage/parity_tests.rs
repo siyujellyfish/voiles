@@ -146,6 +146,52 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f01_公私巢狀_ast_欄位_參數_所有節點皆由相同來源身分稽核() {
+        use crate::common_ir::{NodeSpan, SourceIdentityAudit, FrontendMode, NodeRole};
+        let common = "fn main()->int{\nvar item:int = 1\nif(true){\nvar nested:int = item\nreturn nested\n}else{\nreturn 0\n}\nreturn item\n}\n";
+        assert_eq!(public_check(common), Ok(()));
+        let source = Source::new(common.as_bytes().to_vec());
+        let scanned = lexer::scan(&source);
+        let ast = parser::parse(&source, &scanned.tokens).unwrap();
+        assert!(parser::verified_public_syntax_tree(&ast, common));
+        let checked = verified_private_source(common).unwrap();
+        assert!(verified_private_syntax_tree(
+            common, &checked.structs, &checked.functions
+        ));
+        let mut forged = ast.clone();
+        let parser::Item::Function(main) = &mut forged.items[0]
+            else { panic!("測試須取得正式函式") };
+        main.body.statements[0].end = common.len() + 1;
+        assert!(!parser::verified_public_syntax_tree(&forged, common),
+            "不能用表面函式、區塊正確的來源遮掩深層非法子語句");
+
+        let private_src = "struct Holder{\nvar amount:int = 1\nfn value(input:int)->int{\nif(true){\nreturn input\n}\nreturn self.amount\n}\n}\nfn main()->int{\nvar obj:Holder = Holder()\nreturn obj.value(1)\n}\n";
+        let parsed_source = Source::new(private_src.as_bytes().to_vec());
+        let tokens = lexer::scan(&parsed_source);
+        let (mut structs, functions) = Parser {
+            source: &parsed_source, tokens: &tokens.tokens, cursor: 0,
+        }.file().unwrap();
+        assert!(verified_private_syntax_tree(private_src, &structs, &functions));
+        let original = structs.get_mut("Holder").unwrap();
+        let stored = original.fields[0].declaration_span;
+        original.fields[0].declaration_span = NodeSpan::new(stored.start, private_src.len() + 1);
+        assert!(!verified_private_syntax_tree(private_src, &structs, &functions),
+            "私有 struct 欄位不可借用合法函式跨度偽造權限");
+        original.fields[0].declaration_span = stored;
+        original.methods[0].params[0].declaration_start = private_src.len() + 1;
+        assert!(!verified_private_syntax_tree(private_src, &structs, &functions),
+            "參數名字的 DeclarationId 必須是現存原始來源位置");
+
+        let mut audit = SourceIdentityAudit::new("A中B", FrontendMode::PrivateVerified);
+        assert!(audit.record(NodeRole::Expression, NodeSpan::new(0, 5), None));
+        assert!(audit.record(NodeRole::Expression, NodeSpan::new(0, 4), None),
+            "相同起點不同長度的真實嵌套運算式不可被誤殺");
+        assert_eq!(audit.count(), 2);
+        assert!(!audit.record(NodeRole::Expression, NodeSpan::new(1, 2), None),
+            "中英混合 UTF-8 不可把多位元組拆半");
+    }
+
+    #[test]
     fn f05_公私正式_checker_相同已核准純值來源產生相同型別與半開位置證據() {
         let code = "fn main()->int{\nvar value:int = 3\nif(true){\nreturn value\n}\nreturn 0\n}\n";
         assert_eq!(public_check(code), Ok(()));
