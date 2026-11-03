@@ -17,6 +17,8 @@ macro_rules! define_shared_expression_kind {
             Scalar(crate::syntax_shared::ScalarLiteral),
             Name(String),
             BinaryInt(crate::common_ir::ArithmeticNode<$node>),
+            /// F02：已核准公私共同群組節點的唯一 Rust 變體宣告。
+            Group(Box<$node>),
             $($specific)*
         }
     };
