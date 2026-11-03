@@ -53,6 +53,7 @@ struct Analyzer<'a> {
     /// 只記錄真正通過本次 P11 可達路徑驗證的原始來源跨度。
     /// 型別和詞彙 DeclarationId 仍只能唯讀取自 P10 同一 HIR。
     reached_expressions: RefCell<BTreeSet<NodeSpan>>,
+    reached_assignments: RefCell<BTreeSet<NodeSpan>>,
 }
 
 impl Analyzer<'_> {
@@ -151,6 +152,9 @@ impl Analyzer<'_> {
                         return Err(self.err("const 宣告不可再次賦值", statement.start, statement.end));
                     }
                     state.write(name).expect("已確認目標有名稱繫結").initialized = true;
+                    if self.typed.is_some() {
+                        self.reached_assignments.borrow_mut().insert(statement.node_span());
+                    }
                 }
                 StmtKind::Return(value) => {
                     self.read(value, state)?;
@@ -236,6 +240,7 @@ pub(crate) fn check_with_typed_hir(
 pub(crate) struct ReachableScalarHirView<'a> {
     hir: &'a VerifiedScalarHir,
     expressions: BTreeSet<NodeSpan>,
+    assignments: BTreeSet<NodeSpan>,
 }
 impl ReachableScalarHirView<'_> {
     pub(crate) fn verified_expressions(
@@ -250,6 +255,13 @@ impl ReachableScalarHirView<'_> {
     ) -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
         self.expressions.iter().filter_map(|span| self.hir.reference(*span))
     }
+    pub(crate) fn verified_assignments(
+        &self,
+    ) -> impl Iterator<Item = TypedUse<ScalarType>> + '_ {
+        self.assignments.iter().map(|span|
+            self.hir.assignment(*span)
+                .expect("P11 只從 P10 同一 HIR 交付已檢查可達賦值證據"))
+    }
 }
 
 /// 正式 P11 的同一條演算法產生來源可達性證據；不可由 P10
@@ -258,7 +270,7 @@ pub(crate) fn check_with_typed_hir_and_reachability<'a>(
     file: &File, source: &Source,
     names: &crate::common_ir::ResolvedNames, hir: &'a VerifiedScalarHir,
 ) -> Result<ReachableScalarHirView<'a>, Diagnostic> {
-    let expressions =
+    let (expressions, assignments) =
         check_with_names_internal(file, source, Some(names), Some(hir))?;
     if !hir.mode_is(FrontendMode::PublicMvpA) {
         return Err(Diagnostic {
@@ -267,17 +279,18 @@ pub(crate) fn check_with_typed_hir_and_reachability<'a>(
             span: None,
         });
     }
-    Ok(ReachableScalarHirView { hir, expressions })
+    Ok(ReachableScalarHirView { hir, expressions, assignments })
 }
 
 fn check_with_names_internal<'a>(
     file: &File, source: &'a Source,
     resolved: Option<&'a crate::common_ir::ResolvedNames>,
     typed: Option<&'a VerifiedScalarHir>,
-) -> Result<BTreeSet<NodeSpan>, Diagnostic> {
+) -> Result<(BTreeSet<NodeSpan>, BTreeSet<NodeSpan>), Diagnostic> {
     let analyzer = Analyzer {
         source, resolved, typed,
         reached_expressions: RefCell::new(BTreeSet::new()),
+        reached_assignments: RefCell::new(BTreeSet::new()),
     };
     let mut globals = Flow {
         scopes: vec![Rc::new(HashMap::new())],
@@ -297,7 +310,10 @@ fn check_with_names_internal<'a>(
             analyzer.block(&f.body, &mut state)?;
         }
     }
-    Ok(analyzer.reached_expressions.into_inner())
+    Ok((
+        analyzer.reached_expressions.into_inner(),
+        analyzer.reached_assignments.into_inner(),
+    ))
 }
 
 #[cfg(test)]
