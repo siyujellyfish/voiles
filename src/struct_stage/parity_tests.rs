@@ -31,7 +31,7 @@ mod p16_6_r02_公開私有前端交集契約 {
             FrontendMode, NodeSpan, ScalarType, VerifiedScalarHir,
             syntax_covers_verified_scalar_hir,
         };
-        let code = "fn main()->int{\nvar n:int = 1\nreturn n\n}\n";
+        let code = "fn main()->int{\nvar n:int = 1\nn = 2\nreturn n\n}\n";
         let source = Source::new(code.as_bytes().to_vec());
         let tokens = lexer::scan(&source);
         let ast = parser::parse(&source, &tokens.tokens).unwrap();
