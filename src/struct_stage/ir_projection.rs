@@ -51,6 +51,48 @@ mod p16_6_r02_2_共同語意樹驗證 {
         (public, private)
     }
 
+    /// 以真實 P09/P10 與私有 Checker 列出目前只由公開記錄的節點；
+    /// 不把不可達尾句、Group 內層證據錯認為可替代的正式 HIR。
+    fn public_only_hir(text: &str) -> Vec<common_ir::VerifiedScalarExpression> {
+        let source = Source::new(text.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let ast = parser::parse(&source, &lexed.tokens).unwrap();
+        let names = names::resolve_with_facts(&ast, &source).unwrap();
+        let public = types::check_with_names_and_hir(&ast, &source, &names).unwrap();
+        let private = verified_private_source(text).unwrap();
+        let private_facts: Vec<_> =
+            private.plan.scalar_hir.verified_expressions().collect();
+        public.verified_expressions()
+            .filter(|fact| !private_facts.contains(fact))
+            .collect()
+    }
+
+    #[test]
+    fn f04_公私_checker_待對齊差異有具體來源與可重現的精確跨度() {
+        use crate::common_ir::{NodeSpan, VerifiedScalarExpression};
+        let grouping = "fn main()->int{\nreturn (8 - 3) + 2\n}\n";
+        let at = grouping.find("8 - 3").unwrap();
+        assert_eq!(
+            public_only_hir(grouping),
+            vec![VerifiedScalarExpression {
+                span: NodeSpan::new(at, at + "8 - 3".len()),
+                ty: ScalarType::Int,
+            }],
+            "公開 Group 的內層算術被私有 Parser 消去，F02/F04 尚不得宣告完全等價",
+        );
+
+        let unreachable = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let at = unreachable.find("return 0").unwrap() + "return ".len();
+        assert_eq!(
+            public_only_hir(unreachable),
+            vec![VerifiedScalarExpression {
+                span: NodeSpan::new(at, at + 1),
+                ty: ScalarType::Int,
+            }],
+            "公開 P10 會型別檢查不可達 return，私有 Checker 的 CFG HIR 不會",
+        );
+    }
+
     #[test]
     fn 公開與私有正式運算式真正共用節點外殼與來源位置() {
         let code = "fn main()->int{\nreturn 2 + 3\n}\n";
