@@ -341,6 +341,7 @@ impl Parser<'_> {
         crate::syntax_shared::parse_function_decl(self)
     }
     fn strukt(&mut self) -> Result<(String, StructDecl), Diagnostic> {
+        let struct_start = self.tok().start;
         self.cursor += 1; // struct
         let name = self.name()?;
         self.take('{', "結構名稱後需要左大括號；泛型尚未開放")?;
@@ -371,6 +372,9 @@ impl Parser<'_> {
                 fields.push(Field {
                     name: parsed.name, ty: parsed.ty,
                     immutable: !parsed.mutable, default: parsed.initializer,
+                    declaration_span: crate::common_ir::NodeSpan::new(
+                        parsed.start, parsed.end
+                    ),
                 });
             }
             self.end_statement()?;
@@ -381,8 +385,12 @@ impl Parser<'_> {
         if fields.is_empty() && methods.is_empty() {
             return Err(self.syntax("K06：struct 至少需要一個欄位或方法"));
         }
+        let struct_end = self.tok().end;
         self.cursor += 1;
-        Ok((name, StructDecl::new(fields, methods)))
+        Ok((name, StructDecl::new(
+            fields, methods,
+            crate::common_ir::NodeSpan::new(struct_start, struct_end),
+        )))
     }
     fn file(mut self) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
         let mut structs = HashMap::new();

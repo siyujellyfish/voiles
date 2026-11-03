@@ -20,23 +20,30 @@ struct Field {
     ty: String,
     immutable: bool,
     default: Option<Term>,
+    /// 真正共通 ParsedDeclaration 的來源跨度，含 var/const。
+    declaration_span: crate::common_ir::NodeSpan,
 }
 
 #[derive(Debug, Clone)]
 struct StructDecl {
     fields: Vec<Field>,
     methods: Vec<Function>,
+    /// struct 宣告含左、右大括號的原始 UTF-8 半開跨度。
+    source_span: crate::common_ir::NodeSpan,
     // 解析期維持原宣告順序，另建只讀名稱索引以減少重複線性搜尋。
     field_index: HashMap<String, usize>,
     method_index: HashMap<String, usize>,
 }
 impl StructDecl {
-    fn new(fields: Vec<Field>, methods: Vec<Function>) -> Self {
+    fn new(
+        fields: Vec<Field>, methods: Vec<Function>,
+        source_span: crate::common_ir::NodeSpan,
+    ) -> Self {
         let field_index = fields.iter().enumerate()
             .map(|(index, field)| (field.name.clone(), index)).collect();
         let method_index = methods.iter().enumerate()
             .map(|(index, method)| (method.name.clone(), index)).collect();
-        Self { fields, methods, field_index, method_index }
+        Self { fields, methods, source_span, field_index, method_index }
     }
     fn field(&self, name: &str) -> Option<&Field> {
         self.field_index.get(name).and_then(|index| self.fields.get(*index))
@@ -516,6 +523,9 @@ struct VerifiedPrivateSource {
     plan: VerifiedSafetyPlan,
 }
 
+// F01：私有真正 Parser 產生後的所有來源角色身分均用相同契約。
+include!("struct_stage/source_identity.rs");
+
 fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<VerifiedPrivateSource, Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
@@ -537,6 +547,13 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
             message: "私有函式或區塊的原始來源身分不合法".into(),
+            span: None,
+        });
+    }
+    if !verified_private_syntax_tree(text, &structs, &functions) {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "私有 AST 的結構、欄位、參數或巢狀來源身分不一致".into(),
             span: None,
         });
     }

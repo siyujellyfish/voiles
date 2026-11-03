@@ -365,8 +365,21 @@ impl crate::syntax_shared::BlockSyntax for Parser<'_> {
     }
 }
 
+// 正式 AST 全遞迴來源身分稽核，僅消費 Parser 已產生的唯一 AST。
+include!("parser_source_identity.rs");
+
 pub(crate) fn parse(source: &Source, tokens: &[Token]) -> Result<File, Diagnostic> {
-    Parser { source, tokens, cursor: 0, allow_probe_move: false }.file()
+    let parsed = Parser { source, tokens, cursor: 0, allow_probe_move: false }.file()?;
+    if let Ok(text) = std::str::from_utf8(&source.bytes) {
+        if !verified_public_syntax_tree(&parsed, text) {
+            return Err(Diagnostic {
+                kind: DiagnosticKind::Static,
+                message: "公開解析器的 AST 原始來源身分或巢狀跨度不一致".into(),
+                span: None,
+            });
+        }
+    }
+    Ok(parsed)
 }
 
 /// 僅為 P13 內部測試解析最窄的具名來源 .move()：

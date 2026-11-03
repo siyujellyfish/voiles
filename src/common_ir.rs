@@ -53,6 +53,9 @@ pub(crate) enum NodeRole {
     Statement,
     Function,
     Block,
+    Struct,
+    Field,
+    Parameter,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -81,6 +84,41 @@ impl ModeNodeIdentity {
         mode: FrontendMode, span: NodeSpan, role: NodeRole, source: &str,
     ) -> Option<Self> {
         Some(Self { mode, node: NodeIdentity::checked(span, role, source)? })
+    }
+}
+
+/// F01：真正 Parser 已建構的節點，統一使用單一來源身分登錄契約。
+/// 僅有原始 UTF-8、模式與父節點包含關係都可證明時才交付；
+/// 不建立另一份 AST，也不把靜態 DeclarationId 當成執行期資源 ID。
+pub(crate) struct SourceIdentityAudit<'a> {
+    pub(crate) source: &'a str,
+    pub(crate) mode: FrontendMode,
+    nodes: std::collections::BTreeSet<ModeNodeIdentity>,
+}
+impl<'a> SourceIdentityAudit<'a> {
+    pub(crate) fn new(source: &'a str, mode: FrontendMode) -> Self {
+        Self { source, mode, nodes: std::collections::BTreeSet::new() }
+    }
+    /// 同一開始位置可能同時有不同長度的巢狀運算式；
+    /// 唯一鍵是整個 (mode, role, start, end)，不可只取 start。
+    pub(crate) fn record(
+        &mut self, role: NodeRole, span: NodeSpan, parent: Option<NodeSpan>,
+    ) -> bool {
+        let Some(identity) = ModeNodeIdentity::checked(
+            self.mode, span, role, self.source
+        ) else { return false; };
+        if let Some(parent) = parent {
+            if parent.checked(self.source).is_none()
+                || span.start < parent.start || span.end > parent.end {
+                return false;
+            }
+        }
+        self.nodes.insert(identity);
+        true
+    }
+    pub(crate) fn count(&self) -> usize { self.nodes.len() }
+    pub(crate) fn contains(&self, identity: ModeNodeIdentity) -> bool {
+        identity.mode == self.mode && self.nodes.contains(&identity)
     }
 }
 
