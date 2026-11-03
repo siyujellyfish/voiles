@@ -544,6 +544,15 @@ impl crate::syntax_shared::GroupSyntax for Parser<'_> {
         Ok(self.tokens[self.cursor - 1].end)
     }
     fn group_result(&mut self, mut expression: Term, start: usize, end: usize) -> Term {
+        // F02：已核准公私交集的算術括號直接保留共同 Group AST，
+        // 讓內層 BinaryInt 的 UTF-8 半開跨度與外層括號同時可見。
+        // 其他私有 move/borrow/struct/方法等非共有表達式保留舊
+        // 有透明括號的安全、詞彙身分與資源核准界線，不改其語意。
+        if matches!(expression.kind, TermKind::BinaryInt(_) | TermKind::Group(_)) {
+            return Term {
+                start, end, kind: TermKind::Group(Box::new(expression)),
+            };
+        }
         expression.start = start;
         expression.end = end;
         expression
