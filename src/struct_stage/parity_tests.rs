@@ -84,7 +84,7 @@ mod p16_6_r02_公開私有前端交集契約 {
             let method = &mut structs.get_mut("Meter").unwrap().methods[0];
             let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
                 else { panic!("必須有巢狀私有 if") };
-            let StmtKind::Declare(decl) = &mut branch.body.statements[0].kind
+            let StmtKind::Declare(decl) = &mut branch.branch.body.statements[0].kind
                 else { panic!("巢狀宣告缺失") };
             decl.name = "changed".into();
         }
@@ -94,7 +94,7 @@ mod p16_6_r02_公開私有前端交集契約 {
             let method = &mut structs.get_mut("Meter").unwrap().methods[0];
             let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
                 else { panic!("必須有巢狀私有 if") };
-            let StmtKind::Declare(decl) = &mut branch.body.statements[0].kind
+            let StmtKind::Declare(decl) = &mut branch.branch.body.statements[0].kind
                 else { panic!("巢狀宣告缺失") };
             decl.name = "inner".into();
         }
