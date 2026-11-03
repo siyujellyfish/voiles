@@ -1493,7 +1493,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 已知恰好一次迭代時不存在下一次本體；
                     // 不得將假想反向邊延長借用最後使用點。
                     if !one_iteration {
-                        after_loop.push((vars.len(), loop_body.clone()));
+                        after_loop.push((vars.len(), loop_body.statements.clone()));
                     }
                     after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_loop.extend_from_slice(continuation);
@@ -1570,7 +1570,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     };
                     let mut after_loop = Vec::with_capacity(continuation.len() + 3);
                     after_loop.push((vars.len() - 1, vec![condition_read]));
-                    after_loop.push((vars.len() - 1, loop_body.clone()));
+                    after_loop.push((vars.len() - 1, loop_body.statements.clone()));
                     after_loop.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_loop.extend_from_slice(continuation);
                     let can_repeat = self.statements_with_follow(
