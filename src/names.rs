@@ -142,8 +142,8 @@ pub(crate) fn resolve_with_facts(
                 if source_text.is_some_and(|text|
                     f.checked_identity(crate::common_ir::FrontendMode::PublicMvpA, text)
                         .is_none()
-                        || f.body.checked_identity(
-                            crate::common_ir::FrontendMode::PublicMvpA, text).is_none()
+                        || !f.body.checked_direct_statements(
+                            crate::common_ir::FrontendMode::PublicMvpA, text)
                 ) {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
