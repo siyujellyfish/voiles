@@ -1087,18 +1087,17 @@ mod r02_f02_正式具名呼叫單一變體與公開模式隔離 {
             &code[expression.expression.start..expression.expression.end], "helper()",
         );
 
-        // 零引數 helper() 在私有受限 Parser 中仍要先保持
-        // Construct/Call 的既有曖昧判定；不能把它改當所有權資源建構
-        // 或擅自打破 P13 之後依已知 struct 名稱決定的核准規則。
+        // 零引數 helper() 只保留「未分類」的真語法來源，
+        // 真正 Struct/Function 名稱優先序必須在 Checker 完整符號表
+        // 上唯一裁決；不得讓 Parser 假裝它已是資源建構式。
         let (_, private) = Parser {
             source: &source, tokens: &tokens.tokens, cursor: 0,
         }.file().unwrap();
         let StmtKind::Return(returned) = &private[1].body[0].kind
             else { panic!("缺少私有 main return") };
-        let TermKind::Construct(name, fields) = &returned.expression.kind
-            else { panic!("無參數呼叫仍須保留私有名稱消歧義的原 AST") };
+        let TermKind::UnresolvedZeroArgs(name) = &returned.expression.kind
+            else { panic!("無參數 name() 必須以未分類私有 AST 交付 Checker") };
         assert_eq!(name, "helper");
-        assert!(fields.is_empty());
         assert_eq!(inspect(code), Ok(()));
     }
 }
