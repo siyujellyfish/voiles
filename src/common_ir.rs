@@ -4,10 +4,6 @@
 // R02.2 此刻只由私有／公開差異回歸消耗；正式 Checker 遷移前，避免非測試編譯死碼警告。
 #![allow(dead_code)]
 
-#[cfg(test)]
-use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
-#[cfg(test)]
-use crate::parser::{self, Item, StmtKind as PublicStmtKind};
 use crate::ownership_ledger::DeclarationId;
 
 /// F02／F05：兩條真正 Parser 中同一核准語法交集的 AST 變體
@@ -602,127 +598,9 @@ pub(crate) fn scalar_return_is_ready(
 // parser::Type 現為此型別的同一個名稱，不再需要轉換兩套等價型別。
 
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) enum ScalarExpr {
-    Int(i64),
-    Bool(bool),
-    Name(String),
-    Binary { left: Box<ScalarExpr>, op: char, right: Box<ScalarExpr> },
-    CallZero(String),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) enum ScalarStmt {
-    Declare {
-        declaration: DeclarationId,
-        name: String,
-        ty: ScalarType,
-        mutable: bool,
-        init: Option<ScalarExpr>,
-    },
-    Assign { name: String, value: ScalarExpr },
-    If { condition: ScalarExpr, yes: Vec<ScalarStmt>, no: Option<Vec<ScalarStmt>> },
-    Return(ScalarExpr),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) struct ScalarFunction {
-    pub(crate) name: String,
-    pub(crate) result_ty: ScalarType,
-    pub(crate) body: Vec<ScalarStmt>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-#[cfg(test)]
-pub(crate) struct SharedAst {
-    pub(crate) functions: Vec<ScalarFunction>,
-}
-
-#[cfg(test)]
-fn public_expression(expr: &PublicExpr) -> Option<ScalarExpr> {
-    let result = match &expr.kind {
-        PublicExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =>
-            ScalarExpr::Int(crate::syntax_shared::integer_i64(raw).ok()?),
-        PublicExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) =>
-            ScalarExpr::Bool(*value),
-        PublicExprKind::Name(value) => ScalarExpr::Name(value.clone()),
-        PublicExprKind::BinaryInt(binary) =>
-            ScalarExpr::Binary {
-                left: Box::new(public_expression(&binary.left)?),
-                op: binary.operator,
-                right: Box::new(public_expression(&binary.right)?),
-            },
-        PublicExprKind::Group(inner) => return public_expression(inner),
-        PublicExprKind::ZeroArgCall(call) => ScalarExpr::CallZero(call.name.clone()),
-        _ => return None,
-    };
-    Some(result)
-}
-
-#[cfg(test)]
-fn public_statements(stmts: &[parser::Stmt]) -> Option<Vec<ScalarStmt>> {
-    stmts.iter().map(|statement| {
-        let value = match &statement.kind {
-            PublicStmtKind::Binding(binding) => ScalarStmt::Declare {
-                declaration: DeclarationId(binding.start),
-                name: binding.name.clone(),
-                ty: binding.ty,
-                mutable: binding.mutable,
-                init: map_optional(binding.initializer.as_ref(), public_expression)?,
-            },
-            PublicStmtKind::Assignment(assignment) => ScalarStmt::Assign {
-                name: assignment.name.clone(),
-                value: public_expression(&assignment.expression)?,
-            },
-            PublicStmtKind::IfChain(chain) => {
-                // P01 直接消費共同 ParsedIfChain，保留每個分支跨度；
-                // 私有 P13 歷史差異測試仍核對巢狀 if 的等價順序。
-                if chain.arms.is_empty() { return None; }
-                let mut tail = map_optional(chain.otherwise.as_ref(),
-                    |block| public_statements(&block.statements))?;
-                for arm in chain.arms.iter().rev() {
-                    tail = Some(vec![ScalarStmt::If {
-                        condition: public_expression(&arm.branch.condition)?,
-                        yes: public_statements(&arm.branch.body.statements)?,
-                        no: tail,
-                    }]);
-                }
-                tail?.into_iter().next()?
-            }
-            PublicStmtKind::Return(value) => ScalarStmt::Return(public_expression(value)?),
-        };
-        Some(value)
-    }).collect()
-}
-
-/// 僅供已驗證 P01 MVP-A 的 AST 做無副作用投影；未支援者回傳 None。
-#[cfg(test)]
-pub(crate) fn from_public(file: &parser::File) -> Option<SharedAst> {
-    let functions = file.items.iter().map(|item| {
-        let Item::Function(fun) = item else { return None };
-        Some(ScalarFunction {
-            name: fun.name.clone(),
-            result_ty: fun.result_ty,
-            body: public_statements(&fun.body.statements)?,
-        })
-    }).collect::<Option<Vec<_>>>()?;
-    Some(SharedAst { functions })
-}
-
-// 外層 Option 表示投影成功／失敗；內層 Option 才表示語法原本不存在。
-// 不可把缺少 initializer 或缺少 else 誤當成「無法投影」。
-#[cfg(test)]
-fn map_optional<T, U>(
-    source: Option<&T>, project: impl FnOnce(&T) -> Option<U>,
-) -> Option<Option<U>> {
-    match source {
-        Some(value) => Some(Some(project(value)?)),
-        None => Some(None),
-    }
-}
+// F05：已移除舊的測試期 SharedAst／ScalarExpr／ScalarStmt
+// 二次投影權威。公私差異測試現在直接比對真正 Parser AST
+// 與兩個正式 Checker 的 Typed HIR；不再有第三份語意樹。
 
 #[cfg(test)]
 mod f04_正式_p10_交付給_p11_的具型別存取證據 {
