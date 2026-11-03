@@ -606,12 +606,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok(function.result_ty.clone())
             }
-            TermKind::UnresolvedZeroArgs(name)
-                if !self.structs.contains_key(name) => {
-                // helper() 與 Struct() 共用解析分支，只有已存在的
-                // 零參數一般函式可以作為純 Copyable 方法值來源。
-                let function = self.find_function(name)
-                    .ok_or_else(|| self.error("方法內零參數函式不存在", term))?;
+            TermKind::UnresolvedZeroArgs(name) => {
+                // 方法也使用單一完整符號決議；同名 struct 仍不可冒充
+                // 可獨立求值的零參數函式回傳值。
+                let function = match self.resolve_empty_call(name) {
+                    ZeroArgResolution::Function(function) => function,
+                    ZeroArgResolution::Structure => return Err(self.error(
+                        "方法值來源尚未證明可安全獨立求值", term)),
+                    ZeroArgResolution::Missing => return Err(self.error(
+                        "方法內零參數函式不存在", term)),
+                };
                 if !function.params.is_empty() {
                     return Err(self.error("方法內零參數函式實際需傳入引數", term));
                 }
@@ -681,7 +685,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         let ordinary_call: Option<(&str, &[Term])> = match &term.kind {
             TermKind::Call(call) => Some((call.name.as_str(), call.arguments.as_slice())),
             TermKind::UnresolvedZeroArgs(name)
-                if !self.structs.contains_key(name) => Some((name.as_str(), &[])),
+                if !matches!(self.resolve_empty_call(name), ZeroArgResolution::Structure) =>
+                Some((name.as_str(), &[])),
             _ => None,
         };
         if let Some((name, args)) = ordinary_call {
@@ -1372,7 +1377,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             Some(TermKind::Construct(actual, args)) =>
                                 Some((actual, args.as_slice())),
                             Some(TermKind::UnresolvedZeroArgs(actual))
-                                if self.structs.contains_key(actual) =>
+                                if matches!(self.resolve_empty_call(actual),
+                                    ZeroArgResolution::Structure) =>
                                 Some((actual, &[])),
                             _ => None,
                         };
@@ -1977,7 +1983,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     self.check_default_term(value, active, checked)?;
                 }
             }
-            TermKind::UnresolvedZeroArgs(name) if self.structs.contains_key(name) => {
+            TermKind::UnresolvedZeroArgs(name)
+                if matches!(self.resolve_empty_call(name), ZeroArgResolution::Structure) => {
                 if active.contains(name) {
                     return Err(self.error("結構欄位預設建構形成循環，無法安全完成初始化", term));
                 }
