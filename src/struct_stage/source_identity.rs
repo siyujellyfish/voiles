@@ -18,6 +18,7 @@ fn verified_private_syntax_tree(
             TermKind::BinaryInt(binary) =>
                 term(&binary.left, span, audit)
                     && term(&binary.right, span, audit),
+            TermKind::Group(inner) => term(inner, span, audit),
             TermKind::Construct(_, arguments) =>
                 arguments.iter().all(|(_, expression)| term(expression, span, audit)),
             TermKind::Call(call) =>
