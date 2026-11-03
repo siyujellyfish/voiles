@@ -85,9 +85,9 @@ jobs:
         run: |
           python3 tools/鎖定F00八橋接.py --test-bin target/p13-accept/internal_tests --check
 
-      - name: F00 擷取 P13～P16 原始 24 項各自的實際 Rust 來源證據候選
+      - name: F00 嚴格核對 P13～P16 原始 24 項的逐項 Rust 來源快照
         run: |
-          python3 tools/鎖定F00原始24項.py --test-bin target/p13-accept/internal_tests --print
+          python3 tools/鎖定F00原始24項.py --test-bin target/p13-accept/internal_tests --check
 
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
