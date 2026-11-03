@@ -649,6 +649,25 @@ pub(crate) fn take_scalar_literal(
         .expect("相同純值字面值不需附加模式驗證")
 }
 
+/// A2／F02：公私真實運算式解析器消費**同一份 Lexer token**
+/// 判斷名稱後方的唯一詞彙後綴類別。這只描述符號，不授權
+/// 呼叫實參、索引有效期、方法、移動、借用或結構建立語意。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NameSuffixHead {
+    Bare,
+    Call,
+    Member,
+    Index,
+}
+pub(crate) fn name_suffix_head(tokens: &[Token], cursor: usize) -> NameSuffixHead {
+    match tokens.get(cursor).map(|token| &token.kind) {
+        Some(TokenKind::Symbol('(')) => NameSuffixHead::Call,
+        Some(TokenKind::Symbol('.')) => NameSuffixHead::Member,
+        Some(TokenKind::Symbol('[')) => NameSuffixHead::Index,
+        _ => NameSuffixHead::Bare,
+    }
+}
+
 /// F02：兩套正式 Parser 的無後綴具名原子直接由單一 AST 產生器
 /// 建構 SpannedNode<K>。先以共通名稱讀取預覽下一個 token，遇到
 /// 可能含函式呼叫／方法／索引等模式專屬後綴時不消耗游標；
@@ -658,10 +677,7 @@ pub(crate) fn parse_bare_name<K>(
 ) -> Option<crate::common_ir::SpannedNode<K>> {
     let mut following = *cursor;
     let name = take_spanned_name(tokens, &mut following)?;
-    if matches!(
-        tokens.get(following).map(|token| &token.kind),
-        Some(TokenKind::Symbol('(' | '.' | '['))
-    ) {
+    if name_suffix_head(tokens, following) != NameSuffixHead::Bare {
         return None;
     }
     *cursor = following;
