@@ -133,7 +133,7 @@ struct Parser<'a> {
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
     active: bool,
@@ -155,7 +155,7 @@ struct Binding {
 
 /// F08/B05：唯一真正可寫 Binding 的**唯讀**靜態安全狀態視圖。
 /// 此視圖借用現有資料而不複製所有權或借用票據；不能建立平行帳簿。
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct SafetyStateView<'a> {
     declaration: DeclarationId,
     ty: &'a str,
