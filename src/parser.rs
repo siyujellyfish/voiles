@@ -126,7 +126,7 @@ impl<'a> Parser<'a> {
             ExprKind::Scalar(_) |
             ExprKind::Name(_) | ExprKind::ZeroArgCall(_) => true,
             ExprKind::Group(x) => self.first_version_return(x),
-            ExprKind::Add(binary) | ExprKind::Subtract(binary) =>
+            ExprKind::BinaryInt(binary) =>
                 self.first_version_return(&binary.left) && self.first_version_return(&binary.right),
             ExprKind::ZeroArgMethod(inner, method) => self.allow_probe_move
                 && method == "move" && matches!(inner.kind, ExprKind::Name(_)),
