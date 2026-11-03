@@ -289,9 +289,14 @@ fn check_with_hir_internal<'a>(
     // P10 公開與私有 P13 檢查器現在共用完整 UTF-8 來源跨度、
     // 已驗證具名引用及對應運算式型別一致性的同一 HIR 閘門。
     let source_text = std::str::from_utf8(&source.bytes).ok();
-    if !source_text.is_some_and(|text| verified_hir.source_spans_are_valid_for_mode(
-        crate::common_ir::FrontendMode::PublicMvpA, text
-    )) {
+    if !source_text.is_some_and(|text| {
+        let mode = crate::common_ir::FrontendMode::PublicMvpA;
+        crate::parser::verified_public_syntax_roles(file, text)
+            .is_some_and(|roles|
+                crate::common_ir::syntax_covers_verified_scalar_hir(
+                    &roles, &verified_hir, mode, text,
+                ))
+    }) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
             message: "P10：相同來源位置的已驗證型別或宣告身分證據衝突".into(),

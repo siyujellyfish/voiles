@@ -576,6 +576,12 @@ impl VerifiedSafetyPlan {
             && self.declarations.evidence_is_consistent(structs, text)
             && self.member_sources_are_consistent(structs, functions, text)
             && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
+            && verified_private_syntax_roles(text, structs, functions)
+                .is_some_and(|roles|
+                    crate::common_ir::syntax_covers_verified_scalar_hir(
+                        &roles, &self.scalar_hir,
+                        crate::common_ir::FrontendMode::PrivateVerified, text,
+                    ))
             && self.expression_spans == self.scalar_hir.verified_expressions()
                 .map(|fact| fact.span).collect::<Vec<_>>()
             && self.reference_spans == self.scalar_hir.verified_references()

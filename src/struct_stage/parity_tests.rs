@@ -26,6 +26,74 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn a1_f01_真_ast_來源與_具型別_hir_不得由合法字元範圍單獨偽造() {
+        use crate::common_ir::{
+            FrontendMode, NodeSpan, ScalarType, VerifiedScalarHir,
+            syntax_covers_verified_scalar_hir,
+        };
+        let code = "fn main()->int{\nvar n:int = 1\nn = 2\nreturn n\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let ast = parser::parse(&source, &tokens.tokens).unwrap();
+        let names = names::resolve_with_facts(&ast, &source).unwrap();
+        let typed = types::check_with_names_and_hir(&ast, &source, &names).unwrap();
+        let public_roles = parser::verified_public_syntax_roles(&ast, code).unwrap();
+        assert!(syntax_covers_verified_scalar_hir(
+            &public_roles, &typed, FrontendMode::PublicMvpA, code,
+        ));
+        let private = verified_private_source(code).unwrap();
+        let private_roles = verified_private_syntax_roles(
+            code, &private.structs, &private.functions).unwrap();
+        assert!(syntax_covers_verified_scalar_hir(
+            &private_roles, &private.plan.scalar_hir,
+            FrontendMode::PrivateVerified, code,
+        ));
+        // 使用真的 Name Expression 節點，但把詞彙 DeclarationId
+        // 偷換成前方存在的 fn 名稱位元組；單靠位置與角色不足以識破。
+        let real_read = code.rfind("return n").unwrap() + "return ".len();
+        let real_read_span = NodeSpan::new(real_read, real_read + 1);
+        let mut forged_declaration = VerifiedScalarHir::for_mode(FrontendMode::PublicMvpA);
+        forged_declaration.record_expression(real_read_span, ScalarType::Int);
+        forged_declaration.record_reference(crate::common_ir::TypedUse::new(
+            real_read_span, crate::common_ir::ResolvedUse::new(
+                DeclarationId(code.find("main").unwrap()), ScalarType::Int,
+            ),
+        ));
+        assert!(forged_declaration.source_spans_are_valid_for_mode(
+            FrontendMode::PublicMvpA, code,
+        ), "原先僅靠 byte span 合法與先後順序仍可被詞彙身分偽造");
+        assert!(!syntax_covers_verified_scalar_hir(
+            &public_roles, &forged_declaration, FrontendMode::PublicMvpA, code,
+        ), "真正 HIR 的 DeclarationId 必須在 AST 中是宣告或參數，而非函式名稱");
+        let fake = code.find("main").unwrap();
+        let forged_span = NodeSpan::new(fake, fake + "main".len());
+        let mut forged = VerifiedScalarHir::for_mode(FrontendMode::PublicMvpA);
+        forged.record_expression(forged_span, ScalarType::Int);
+        assert!(forged.source_spans_are_valid_for_mode(
+            FrontendMode::PublicMvpA, code),
+            "偽造 name 的原始跨度合法，但並不是真正 AST 的 Expression",
+        );
+        assert!(!syntax_covers_verified_scalar_hir(
+            &public_roles, &forged, FrontendMode::PublicMvpA, code,
+        ), "不能只憑 UTF-8 位置合法就授權一個 AST 沒有的型別表達式");
+        let mut fake_assignment = VerifiedScalarHir::for_mode(
+            FrontendMode::PrivateVerified);
+        fake_assignment.record_assignment(crate::common_ir::TypedUse::new(
+            forged_span, crate::common_ir::ResolvedUse::new(
+                DeclarationId(0), ScalarType::Int,
+            )));
+        assert!(fake_assignment.source_spans_are_valid_for_mode(
+            FrontendMode::PrivateVerified, code),
+            "單一 HIR 只能證明此引用位於檔案內，並不足以證明 AST 有賦值語句");
+        assert!(!syntax_covers_verified_scalar_hir(
+            &private_roles, &fake_assignment, FrontendMode::PrivateVerified, code,
+        ), "不存在的 private 賦值不得以合法字元範圍冒充正式 AST 角色");
+        assert!(!syntax_covers_verified_scalar_hir(
+            &private_roles, &typed, FrontendMode::PrivateVerified, code,
+        ), "同一合法來源也不准把公開 P10 型別表當私有安全計畫");
+    }
+
+    #[test]
     fn a1_f01_所有已核准角色由真_ast_token_與_checker_hir_生成且禁止假宣告() {
         use crate::common_ir::{
             FrontendMode, NodeRole, NodeSpan, ScalarType, SourceIdentityAudit,
