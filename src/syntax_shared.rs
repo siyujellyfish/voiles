@@ -99,6 +99,18 @@ pub(crate) struct ParsedFunction<P, R, B> {
     pub(crate) end: usize,
 }
 
+impl<P, R, B> ParsedFunction<P, R, B> {
+    /// 從共用正式解析產物取得整個函式原始跨度及入口模式。
+    pub(crate) fn checked_identity(
+        &self, mode: crate::common_ir::FrontendMode, source: &str,
+    ) -> Option<crate::common_ir::ModeNodeIdentity> {
+        crate::common_ir::ModeNodeIdentity::checked(
+            mode, crate::common_ir::NodeSpan::new(self.start, self.end),
+            crate::common_ir::NodeRole::Function, source,
+        )
+    }
+}
+
 /// 唯一正式函式宣告組構順序：fn→名稱→(參數)→回傳箭號→型別→本體。
 pub(crate) trait FunctionSyntax {
     type Params;
@@ -138,6 +150,18 @@ pub(crate) struct ParsedBlock<S> {
     pub(crate) statements: Vec<S>,
     pub(crate) start: usize,
     pub(crate) end: usize,
+}
+
+impl<S> ParsedBlock<S> {
+    /// 區塊含真正左右大括號，而非僅依子語句反推的合成跨度。
+    pub(crate) fn checked_identity(
+        &self, mode: crate::common_ir::FrontendMode, source: &str,
+    ) -> Option<crate::common_ir::ModeNodeIdentity> {
+        crate::common_ir::ModeNodeIdentity::checked(
+            mode, crate::common_ir::NodeSpan::new(self.start, self.end),
+            crate::common_ir::NodeRole::Block, source,
+        )
+    }
 }
 
 /// F03：原私有 Checker 已核准的唯讀區塊走訪仍可使用
@@ -235,6 +259,17 @@ pub(crate) struct ParsedDeclaration<T, E> {
     pub(crate) start: usize,
     pub(crate) end: usize,
 }
+impl<T, E> ParsedDeclaration<T, E> {
+    pub(crate) fn checked_identity(
+        &self, mode: crate::common_ir::FrontendMode, source: &str,
+    ) -> Option<crate::common_ir::ModeNodeIdentity> {
+        crate::common_ir::ModeNodeIdentity::checked(
+            mode, crate::common_ir::NodeSpan::new(self.start, self.end),
+            crate::common_ir::NodeRole::Declaration, source,
+        )
+    }
+}
+
 pub(crate) trait DeclarationSyntax {
     type Type;
     type Expression;
