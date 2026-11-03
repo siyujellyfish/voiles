@@ -3,6 +3,12 @@
 pub(crate) fn verified_public_source_tokens(
     file: &File, source: &str, tokens: &[Token],
 ) -> bool {
+    verified_public_token_roles(file, source, tokens).is_some()
+}
+/// 真 Parser 宣告標頭及全部巢狀 name/type token 的唯讀身分輸出。
+pub(crate) fn verified_public_token_roles(
+    file: &File, source: &str, tokens: &[Token],
+) -> Option<std::collections::BTreeSet<crate::common_ir::ModeNodeIdentity>> {
     use crate::common_ir::{FrontendMode, NodeRole, NodeSpan, SourceIdentityAudit};
 
     fn decl(
@@ -26,8 +32,8 @@ pub(crate) fn verified_public_source_tokens(
         })
     }
     let mut audit = SourceIdentityAudit::new(source, FrontendMode::PublicMvpA);
-    if file.start != 0 || file.end != source.len() { return false; }
-    file.items.iter().all(|item| match item {
+    if file.start != 0 || file.end != source.len() { return None; }
+    let valid = file.items.iter().all(|item| match item {
         Item::Function(fun) => {
             let result_type = match fun.result_ty {
                 Type::Int => "int", Type::Bool => "bool",
@@ -46,5 +52,6 @@ pub(crate) fn verified_public_source_tokens(
             }
             decl(value, &mut audit, tokens)
         }
-    })
+    });
+    valid.then(|| audit.verified_roles().collect())
 }
