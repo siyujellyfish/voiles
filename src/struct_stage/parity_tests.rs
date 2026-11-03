@@ -48,6 +48,23 @@ mod p16_6_r02_公開私有前端交集契約 {
             &private_roles, &private.plan.scalar_hir,
             FrontendMode::PrivateVerified, code,
         ));
+        // 使用真的 Name Expression 節點，但把詞彙 DeclarationId
+        // 偷換成前方存在的 fn 名稱位元組；單靠位置與角色不足以識破。
+        let real_read = code.rfind("return n").unwrap() + "return ".len();
+        let real_read_span = NodeSpan::new(real_read, real_read + 1);
+        let mut forged_declaration = VerifiedScalarHir::for_mode(FrontendMode::PublicMvpA);
+        forged_declaration.record_expression(real_read_span, ScalarType::Int);
+        forged_declaration.record_reference(crate::common_ir::TypedUse::new(
+            real_read_span, crate::common_ir::ResolvedUse::new(
+                DeclarationId(code.find("main").unwrap()), ScalarType::Int,
+            ),
+        ));
+        assert!(forged_declaration.source_spans_are_valid_for_mode(
+            FrontendMode::PublicMvpA, code,
+        ), "原先僅靠 byte span 合法與先後順序仍可被詞彙身分偽造");
+        assert!(!syntax_covers_verified_scalar_hir(
+            &public_roles, &forged_declaration, FrontendMode::PublicMvpA, code,
+        ), "真正 HIR 的 DeclarationId 必須在 AST 中是宣告或參數，而非函式名稱");
         let fake = code.find("main").unwrap();
         let forged_span = NodeSpan::new(fake, fake + "main".len());
         let mut forged = VerifiedScalarHir::for_mode(FrontendMode::PublicMvpA);
