@@ -364,17 +364,26 @@ impl Parser<'_> {
                 if !self.keyword("var") && !self.keyword("const") {
                     return Err(self.syntax("結構僅接受 var、const 欄位及 fn 方法"));
                 }
+                // F01：由本次真正 DeclarationSyntax 消耗的 token
+                // 直接取來源身分，不依名稱／型別文字在原檔搜尋位置。
+                let mut field_parser = StructFieldDeclaration {
+                    parser: self, declared_names: &mut names,
+                    name_span: None, type_span: None,
+                };
                 let parsed = crate::syntax_shared::parse_declaration(
-                    &mut StructFieldDeclaration {
-                        parser: self, declared_names: &mut names,
-                    },
+                    &mut field_parser,
                 )?;
+                let name_span = field_parser.name_span
+                    .expect("成功的共同欄位宣告必定消耗名稱 token");
+                let type_span = field_parser.type_span
+                    .expect("成功的共同欄位宣告必定消耗型別 token");
                 fields.push(Field {
                     name: parsed.name, ty: parsed.ty,
                     immutable: !parsed.mutable, default: parsed.initializer,
                     declaration_span: crate::common_ir::NodeSpan::new(
                         parsed.start, parsed.end
                     ),
+                    name_span, type_span,
                 });
             }
             self.end_statement()?;
@@ -428,6 +437,8 @@ impl Parser<'_> {
 struct StructFieldDeclaration<'p, 'src> {
     parser: &'p mut Parser<'src>,
     declared_names: &'p mut HashSet<String>,
+    name_span: Option<crate::common_ir::NodeSpan>,
+    type_span: Option<crate::common_ir::NodeSpan>,
 }
 impl crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_> {
     type Type = String;
@@ -444,7 +455,11 @@ impl crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_> 
         Ok(mutable)
     }
     fn declaration_name(&mut self) -> Result<String, Diagnostic> {
+        let start = self.parser.tok().start;
         let name = self.parser.name()?;
+        self.name_span = Some(crate::common_ir::NodeSpan::new(
+            start, self.parser.tokens[self.parser.cursor - 1].end,
+        ));
         // 保留原行為：名稱消耗後、型別及初始化解析之前就檢查重複。
         if !self.declared_names.insert(name.clone()) {
             return Err(self.parser.syntax("同一結構不可重複欄位名稱"));
@@ -454,7 +469,14 @@ impl crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_> 
     fn declaration_colon(&mut self) -> Result<(), Diagnostic> {
         self.parser.take(':', "結構欄位必須標註型別")
     }
-    fn declaration_type(&mut self) -> Result<String, Diagnostic> { self.parser.name() }
+    fn declaration_type(&mut self) -> Result<String, Diagnostic> {
+        let start = self.parser.tok().start;
+        let ty = self.parser.name()?;
+        self.type_span = Some(crate::common_ir::NodeSpan::new(
+            start, self.parser.tokens[self.parser.cursor - 1].end,
+        ));
+        Ok(ty)
+    }
     fn declaration_has_initializer(&self) -> bool { self.parser.symbol('=') }
     fn declaration_equals(&mut self) { self.parser.cursor += 1; }
     fn declaration_expression(&mut self) -> Result<Term, Diagnostic> { self.parser.term() }
@@ -665,12 +687,25 @@ impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
         while !self.symbol(')') {
             let declaration_start = self.tok().start;
             let parameter = self.name()?;
+            let name_span = crate::common_ir::NodeSpan::new(
+                declaration_start, self.tokens[self.cursor - 1].end,
+            );
             if !seen.insert(parameter.clone()) {
                 return Err(self.syntax("函式參數名稱不得重複"));
             }
             self.take(':', "函式參數需要明確型別")?;
+            let ty_start = self.tok().start;
             let ty = self.name()?;
-            params.push(Parameter { name: parameter, ty, declaration_start });
+            let type_span = crate::common_ir::NodeSpan::new(
+                ty_start, self.tokens[self.cursor - 1].end,
+            );
+            params.push(Parameter {
+                name: parameter, ty, declaration_start,
+                declaration_span: crate::common_ir::NodeSpan::new(
+                    declaration_start, type_span.end,
+                ),
+                name_span, type_span,
+            });
             if self.symbol(',') { self.cursor += 1; }
             else if !self.symbol(')') {
                 return Err(self.syntax("函式參數之間需要逗號"));
