@@ -26,6 +26,33 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f01_f04_真正公私_checker_簽出不可跨模式冒用的完整_typed_hir() {
+        use crate::common_ir::FrontendMode;
+        let code = "fn main()->int{\nvar n:int = 3\nreturn n + 1\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let parsed = parser::parse(&source, &tokens.tokens).unwrap();
+        let resolved = names::resolve_with_facts(&parsed, &source).unwrap();
+        let public = types::check_with_names_and_hir(&parsed, &source, &resolved)
+            .expect("真正 P09→P10 應交付公開帶模式 HIR");
+        let private = verified_private_source(code)
+            .expect("真正 P13 Checker 應交付私有帶模式 HIR");
+        assert!(public.source_spans_are_valid_for_mode(FrontendMode::PublicMvpA, code));
+        assert!(private.plan.scalar_hir.source_spans_are_valid_for_mode(
+            FrontendMode::PrivateVerified, code));
+        assert!(!public.source_spans_are_valid_for_mode(FrontendMode::PrivateVerified, code),
+            "公開純值即使同來源同型別，不能偽冒私有資源安全計畫");
+        assert!(!private.plan.scalar_hir.source_spans_are_valid_for_mode(
+            FrontendMode::PublicMvpA, code),
+            "私有 Checker 的型別事實不得冒用公開 P10 授權");
+        let pub_expr: Vec<_> = public.verified_expressions().collect();
+        let priv_expr: Vec<_> = private.plan.scalar_hir.verified_expressions().collect();
+        assert_eq!(pub_expr, priv_expr,
+            "核准共同純值的型別／半開位置仍須完全一致");
+        assert!(private.plan.is_consistent(&private.structs, code));
+    }
+
+    #[test]
     fn f01_公私正式共同函式與宣告維持相同跨度但模式身分互不混淆() {
         use crate::common_ir::{FrontendMode, ModeNodeIdentity, NodeIdentity, NodeRole, NodeSpan};
         let code = "fn main()->int{\nvar value:int = 1\nreturn value\n}\n";
