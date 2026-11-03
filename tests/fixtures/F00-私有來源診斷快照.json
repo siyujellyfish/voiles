@@ -1,0 +1,1690 @@
+{
+  "format_version": 1,
+  "source_baseline_head": "caea4b5b3de423a16d5640d7bd3a2487bf40081a",
+  "category": "由現有 24 項真正 Rust 驗收來源產生的私有 Checker 精確診斷",
+  "cases": [
+    {
+      "compiled_tests_passed": 3,
+      "id": "P13.1",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "struct Leaf{\nvar amount:float = 1.0\n}\nstruct Middle{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar middle:Middle = Middle()\n}\nfn main()->int{\nvar first:Root = Root()\nvar second:Root = first\nvar third:Root = first\nreturn 0\n}\n",
+          "source_sha256": "feb4a69505a9ecc850a9daa4523ef12e0dfc41c31fac0c71032b782fb127f59c",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                12,
+                24
+              ],
+              "start": [
+                12,
+                19
+              ]
+            }
+          },
+          "source": "struct Leaf{\nvar title:str = \"文字\"\n}\nstruct Middle{\nvar leaf:Leaf = Leaf()\n}\nstruct Root{\nvar middle:Middle = Middle()\n}\nfn main()->int{\nvar first:Root = Root()\nvar second:Root = first\nreturn 0\n}\n",
+          "source_sha256": "9b77521154114306a4b3b8c584449ff66cbec48f7daa0f47ea3993f0a29ddd0e",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p13_1_正式來源閉包::"
+    },
+    {
+      "compiled_tests_passed": 7,
+      "id": "P13.2",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar a:int = 4\nvar b:int = a\nb = a\nvar flag:bool = true\nvar another:bool = flag\nanother = flag\nvar measure:float = 1.0\nvar measure_copy:float = measure\nmeasure_copy = measure\nreturn b\n}\n",
+          "source_sha256": "fdd14dbb14cbb0ad4868340d9c2d6919474deb91a807edd9efa0e3c275f16078",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar source:str = \"原始\"\nsource = \"新值\"\nreturn 0\n}\n",
+          "source_sha256": "251e8e2d96aa5c5ddb376f84b21ec8a327775755eefdb22d664bdb0f0dd9a6d6",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Boxed{\nvar count:int = 1\nfn choose(value:int)->int{\nreturn value\n}\n}\nfn echo(value:int)->int{\nreturn value\n}\nfn main()->int{\nvar amount:int = 3\nvar receiver:Boxed = Boxed()\nvar first:int = echo(amount)\nvar second:int = receiver.choose(amount)\nreturn first + second + amount\n}\n",
+          "source_sha256": "16e0a2edc9f064e8f5805ea0ea998ac5dd1d2fbb2fb2002dcf1d5113930efeaf",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Inner{\nvar count:int = 1\n}\nstruct Outer{\nvar inner:Inner = Inner()\n}\nfn main()->int{\nvar first:Outer = Outer()\nvar second:Outer = first\nsecond = first\nreturn 0\n}\n",
+          "source_sha256": "a9f146654d287a5ffa48a6263df3aa47c216c47d4859936e6101ba30df8378af",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P16：此型別／右值的既有資源覆寫尚未完成端到端清理證明",
+            "span": {
+              "end": [
+                4,
+                16
+              ],
+              "start": [
+                4,
+                10
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:str = \"原始\"\nvar target:str = \"目標\"\ntarget = source\nreturn 0\n}\n",
+          "source_sha256": "c5c2863262f956217580d3cd093bc85c22f3a7947b761ae811de20c2b6a0d558",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "來源尚未完成初始化，不可使用",
+            "span": {
+              "end": [
+                3,
+                27
+              ],
+              "start": [
+                3,
+                21
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:int\nvar duplicate:int = source\nreturn duplicate\n}\n",
+          "source_sha256": "018dcc4f9e326e410be45e27f79e26a1e33f8fd16b49c138dba169a28e0106cb",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                3,
+                27
+              ],
+              "start": [
+                3,
+                21
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:str = \"字串\"\nvar duplicate:str = source\nreturn 0\n}\n",
+          "source_sha256": "bb960c6d0e331a87c988eb8c8ffc4836f99dba1858ade7711df2e04b012b43a4",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p13_2_一般賦值正式來源閉包::"
+    },
+    {
+      "compiled_tests_passed": 6,
+      "id": "P13.3",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn relay(source:str)->str{\nreturn source.move()\n}\nfn main()->int{\nvar source:str = \"中文\"\nvar result:str = relay(source.move())\nreturn 0\n}\n",
+          "source_sha256": "83acfdfa840334343bf1d40854a7c6286f4475119da163897ce24032c158c890",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Box{\nvar content:str = \"內容\"\n}\nfn main()->int{\nvar source:Box = Box()\nvar destination:Box = source.move()\nreturn 0\n}\n",
+          "source_sha256": "7809d6d2bd619f7e722594a6a63965585b438f9216194f5fd032ee5a72130a66",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Box{\nvar content:str = \"預設\"\n}\nfn main()->int{\nvar source:str = \"獨立\"\nvar destination:Box = Box(content=source.move())\nreturn 0\n}\n",
+          "source_sha256": "363230f554f641c97145faf8a42deedbc4e4a426137980384cbdf078360dd83c",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                4,
+                30
+              ],
+              "start": [
+                4,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nvar moved:int = source.move()\nreturn alias\n}\n",
+          "source_sha256": "3386e52abc6082c26f28fe058bae9f50c1e069bcea724aeebde24466cacba374",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "S21：結構欄位不能單獨移動",
+            "span": {
+              "end": [
+                6,
+                35
+              ],
+              "start": [
+                6,
+                17
+              ]
+            }
+          },
+          "source": "struct Box{\nvar content:str = \"文字\"\n}\nfn main()->int{\nvar box:Box = Box()\nvar moved:str = box.content.move()\nreturn 0\n}\n",
+          "source_sha256": "31ac762262ba8c6c1c4b9f66e45979bf3bbebb6615cb159b8cf5ba65b351e484",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用別名不是所有者，不能 .move()",
+            "span": {
+              "end": [
+                4,
+                29
+              ],
+              "start": [
+                4,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nvar moved:int = alias.move()\nreturn 0\n}\n",
+          "source_sha256": "4f2960c982cead326c1d2a70b68e9e2bb600a09b60f18b713a838b558563671c",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "來源已移動，禁止再次使用",
+            "span": {
+              "end": [
+                7,
+                30
+              ],
+              "start": [
+                7,
+                17
+              ]
+            }
+          },
+          "source": "struct Box{\nvar content:str = \"預設\"\n}\nfn main()->int{\nvar source:str = \"獨立\"\nvar destination:Box = Box(content=source.move())\nvar again:str = source.move()\nreturn 0\n}\n",
+          "source_sha256": "2e5458c3402767ece771443daa6349da552ee4c915da0e6f4441a7e1eed11fbe",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                6,
+                29
+              ],
+              "start": [
+                6,
+                23
+              ]
+            }
+          },
+          "source": "struct Box{\nvar content:str = \"內容\"\n}\nfn main()->int{\nvar source:Box = Box()\nvar destination:Box = source\nreturn 0\n}\n",
+          "source_sha256": "9df2e746efa874b8fed07df87efe89e1ca104c524a0f5cce5dadab23d984d54a",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p13_3_所有權移動來源閉包::"
+    },
+    {
+      "compiled_tests_passed": 7,
+      "id": "P13.4",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn choose(flag:bool)->int{\nvar text:str = \"原始\"\nif(flag){\nif(flag){\nvar gone:str = text.move()\nreturn 1\n}else{\nvar gone:str = text.move()\nreturn 2\n}\n}\nvar retained:str = text.move()\nreturn 3\n}\nfn main()->int{\nreturn choose(false)\n}\n",
+          "source_sha256": "321d192912c75de61aa3ef07bc2ba4f9a954bdc851274cbfe65915aeea2152e5",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn choose(flag:bool)->int{\nvar text:str = \"原始\"\nif(flag){\nvar gone:str = text.move()\nreturn 1\n}\nvar retained:str = text.move()\nreturn 2\n}\nfn main()->int{\nreturn choose(true)\n}\n",
+          "source_sha256": "2c9be22b23fdaea9bd006263f227f0aa11440b58705ed550459598d946ec95e8",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar item:str = \"原值\"\nif(true){\nvar taken:str = item.move()\nitem = \"甲\"\n}else{\nvar taken:str = item.move()\nitem = \"乙\"\n}\nvar final_item:str = item.move()\nreturn 0\n}\n",
+          "source_sha256": "7da37c8edac6d3748f17fed8c5941ff6d0773203aed48beb38976971793bda89",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar item:str = \"外層\"\nif(true){\nvar item:str = \"內層\"\nvar taken:str = item.move()\n}\nvar retained:str = item.move()\nreturn 0\n}\n",
+          "source_sha256": "ddb11f3fe43b623247f9a03b7dd242bc5e23d29793a0e47095e5f6d8f3ddb883",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "存在可達路徑使來源可能無效",
+            "span": {
+              "end": [
+                6,
+                28
+              ],
+              "start": [
+                6,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar item:str = \"原值\"\nif(true){\nvar taken:str = item.move()\n}\nvar again:str = item.move()\nreturn 0\n}\n",
+          "source_sha256": "91f4c2aefe8b76be572e29e85a29e0c3f94f420e160269ae6a6ffe26406ed399",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "存在可達路徑使來源可能無效",
+            "span": {
+              "end": [
+                9,
+                33
+              ],
+              "start": [
+                9,
+                22
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar item:str = \"原值\"\nif(true){\nvar taken:str = item.move()\nitem = \"甲\"\n}else{\nvar taken:str = item.move()\n}\nvar final_item:str = item.move()\nreturn 0\n}\n",
+          "source_sha256": "33e29260e405b4c80be8666f99e2efbff1f7897925a9e88360edbc09df97c715",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "找不到原始來源宣告",
+            "span": {
+              "end": [
+                5,
+                35
+              ],
+              "start": [
+                5,
+                19
+              ]
+            }
+          },
+          "source": "fn main()->int{\nif(true){\nvar temporary:str = \"內層\"\n}\nvar escaped:str = temporary.move()\nreturn 0\n}\n",
+          "source_sha256": "5613c4f2396dc40cba72a5b25b6cb3fe85056eb354727b8cfa3dbde06dfa29e1",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p13_4_正式來源閉包::"
+    },
+    {
+      "compiled_tests_passed": 3,
+      "id": "P13.5",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar resource:str = \"first\"\nvar first:str = resource.move()\nresource = \"second\"\nvar second:str = resource.move()\nreturn 0\n}\n",
+          "source_sha256": "42f840fb1ca53a73e99a64e2b2bf10b082e91c1016188f147cb45b0fec791a0c",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar resource:str = \"resource\"\nvar transferred:str = resource.move()\nreturn 0\n}\n",
+          "source_sha256": "ea1bead2b718c3b0b17cc348297b3577617d044223bbfe77e44f6e0a091a3e89",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar source:int = 3\nvar copied:int = source\nreturn source\n}\n",
+          "source_sha256": "c4db7a0f0f3e0aa2b13007d25880beee7bbb5ac1f29b39327b648ed5300051ed",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "來源已移動，禁止再次使用",
+            "span": {
+              "end": [
+                4,
+                14
+              ],
+              "start": [
+                4,
+                8
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:int = 3\nvar transferred:int = source.move()\nreturn source\n}\n",
+          "source_sha256": "bf3d30bc00bce59888213abcde1fc2d0f41fa0e79c3d96cd0a7fc851aa12e148",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                3,
+                30
+              ],
+              "start": [
+                3,
+                22
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar resource:str = \"resource\"\nvar duplicated:str = resource\nreturn 0\n}\n",
+          "source_sha256": "7b28ced230107aee64ab3569028249da28f963f53d9fc0dde394898255f79733",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p13_5_資源與可複製值來源對照矩陣::"
+    },
+    {
+      "compiled_tests_passed": 2,
+      "id": "P13.6",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "struct S{\nvar n:int = 1\nconst flag:bool = true\n}\nfn main()->int{\nvar original:S = S()\nvar copy:S = original\nreturn original.n\n}\n",
+          "source_sha256": "6fa9bde79bb31c93bf276985af53f6f57a79d53b8eddb5c46414e9a4732a6858",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "S21：結構欄位不能單獨移動",
+            "span": {
+              "end": [
+                6,
+                35
+              ],
+              "start": [
+                6,
+                18
+              ]
+            }
+          },
+          "source": "struct S{\nvar text:str = \"resource\"\n}\nfn main()->int{\nvar owner:S = S()\nvar stolen:str = owner.text.move()\nreturn 0\n}\n",
+          "source_sha256": "234ab1d5ac25acdf58281db9a3b8330c918d567b9e0a59031e0c74fa4925bab1",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                7,
+                22
+              ],
+              "start": [
+                7,
+                14
+              ]
+            }
+          },
+          "source": "struct S{\nvar n:int = 1\nvar text:str = \"resource\"\n}\nfn main()->int{\nvar original:S = S()\nvar copy:S = original\nreturn 0\n}\n",
+          "source_sha256": "da90b58fbeb80430bed7d49bd1a069a634a4ad8b70620378e26cb51ba618edb7",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p13_s19_s21_結構所有權來源矩陣::"
+    },
+    {
+      "compiled_tests_passed": 17,
+      "id": "P14.1",
+      "private_source_coverage": "no_private_entry_in_selected_tests",
+      "sources": [],
+      "test_filter": "borrow_safety::tests::"
+    },
+    {
+      "compiled_tests_passed": 7,
+      "id": "P14.2",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nconst source:int = 1\nconst first:int = source.borrow()\nconst second:int = source.borrow()\nvar sum:int = first + second\nreturn source\n}\n",
+          "source_sha256": "1d0ce39235e3fe6249cd32aca2939604bbdecfbd03040607d8e19255add67d91",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar left:int = 1\nvar right:int = 2\nvar left_alias:int = left.borrow()\nvar right_alias:int = right.borrow()\nreturn left_alias + right_alias\n}\n",
+          "source_sha256": "a341563098d0498c06e59804c0f0751fc8c55b5c66f8e9a0ed248f17b2c80968",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                4,
+                24
+              ],
+              "start": [
+                4,
+                18
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nvar copied:int = source\nreturn alias\n}\n",
+          "source_sha256": "39a4d318b54d160ed57d71906effd7b080df3247448cf39997bfcb83dd0a358c",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：共享／獨占借用與現有別名衝突",
+            "span": {
+              "end": [
+                4,
+                33
+              ],
+              "start": [
+                4,
+                18
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:int = 1\nvar first:int = source.borrow()\nvar second:int = source.borrow()\nreturn first + second\n}\n",
+          "source_sha256": "5c904be522f83bf64e0df46b69ecf12786a983936b38abf5b07363db82966a07",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P14：由借用再次借用尚未有完整別名證明",
+            "span": {
+              "end": [
+                4,
+                34
+              ],
+              "start": [
+                4,
+                20
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nconst nested:int = alias.borrow()\nreturn nested\n}\n",
+          "source_sha256": "3ff7b082e23d65f861205d10d5bdd90c171eafe520fe4a3cd1db39c00c7d031e",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用別名不是所有者，不能 .move()",
+            "span": {
+              "end": [
+                4,
+                29
+              ],
+              "start": [
+                4,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:str = \"原始\"\nvar alias:str = source.borrow()\nvar taken:str = alias.move()\nreturn 0\n}\n",
+          "source_sha256": "e59d5c254f4fc633babc8aa29ca8974af8202d570a14a3d4185bacb40e465e50",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用變數的 var／const 權限必須跟隨來源",
+            "span": {
+              "end": [
+                3,
+                32
+              ],
+              "start": [
+                3,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst source:int = 1\nvar alias:int = source.borrow()\nreturn alias\n}\n",
+          "source_sha256": "cab0c8ee43312802a2b1724ebae01d4dab1b934547f148e399b6a8598e3395a6",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "來源已移動，禁止再次使用",
+            "span": {
+              "end": [
+                4,
+                32
+              ],
+              "start": [
+                4,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:str = \"原始\"\nvar taken:str = source.move()\nvar alias:str = source.borrow()\nreturn 0\n}\n",
+          "source_sha256": "de73c8adce2a1b33c33d4ef12450610851d01de3d14d5ad8c5905d8f37f74633",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::"
+    },
+    {
+      "compiled_tests_passed": 12,
+      "id": "P14.3",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nconst owner:int = 1\nconst first:int = owner.borrow()\nconst second:int = owner.borrow()\nvar read:int = first\nreturn second\n}\n",
+          "source_sha256": "ccb56c37f7480fdf7bc2a54594e031a8459d95550b7ea72f97378830694466aa",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nif (true){\nvar alias:int = owner.borrow()\nvar copy:int = alias\n}else{\nvar other:int = 2\n}\nreturn owner\n}\n",
+          "source_sha256": "9643ebe15695a6fca0eeb1f67ac84962aa0a171a4d624fb972143f058a7632e5",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nreturn alias\n}\n",
+          "source_sha256": "b301be842da62fec86b7f89a0860107e798b8c1e3901bc442b1fed68c3093e3d",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar copy:int = alias\nreturn owner\n}\n",
+          "source_sha256": "a8bc4a9ea50776033c445c7e2acc1cb8c27233a46b4bbbc67968fcd2c42e61dd",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct S{\nvar n:int = 1\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nconst owner:S = S()\nconst alias:S = owner.borrow()\nvar independent:int = alias.get()\nreturn owner.get()\n}\n",
+          "source_sha256": "241edce7c62a347516af3df0c181cf1b738be58349b1cb281e0116b34e849398",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct S{\nvar n:int = 1\nfn update()->int{\nself.n = 2\nreturn self.n\n}\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nvar owner:S = S()\nvar alias:S = owner.borrow()\nvar independent:int = alias.update()\nreturn owner.get()\n}\n",
+          "source_sha256": "71fcd4f12d75b1e6d14fd9ff4393c1f17c33bf87dce41e071479ed296d5f2346",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                4,
+                24
+              ],
+              "start": [
+                4,
+                19
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar illegal:int = owner\nreturn alias\n}\n",
+          "source_sha256": "06a78959f673ab641be6b8a494eba6a66b28d7cd13f4b53485eeaf5acff2fcae",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                4,
+                30
+              ],
+              "start": [
+                4,
+                18
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nvar stolen:str = owner.move()\nvar copy:str = alias\nreturn 0\n}\n",
+          "source_sha256": "82101cd9ae05a9b32b545551254fe7887def842c3208764ce851d1181f22091a",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：共享／獨占借用與現有別名衝突",
+            "span": {
+              "end": [
+                4,
+                32
+              ],
+              "start": [
+                4,
+                18
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar second:int = owner.borrow()\nreturn first\n}\n",
+          "source_sha256": "0dbb002af401f92acc2b53296895b2897af18b3a08edc6d83bd4e92eb9b32a2d",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P14：由借用再次借用尚未有完整別名證明",
+            "span": {
+              "end": [
+                4,
+                33
+              ],
+              "start": [
+                4,
+                19
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst owner:int = 1\nconst alias:int = owner.borrow()\nconst twice:int = alias.borrow()\nreturn twice\n}\n",
+          "source_sha256": "ab72e7b53fa8d5ecd455177f5222728b27d3704dfd0a4cd780091be4070eb6b2",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用別名不是所有者，不能 .move()",
+            "span": {
+              "end": [
+                4,
+                29
+              ],
+              "start": [
+                4,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar moved:int = alias.move()\nreturn owner\n}\n",
+          "source_sha256": "20347e27a3df976d3693428acce2f947abc3db5ac55639e433d92b10d6fbbad6",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用變數的 var／const 權限必須跟隨來源",
+            "span": {
+              "end": [
+                3,
+                31
+              ],
+              "start": [
+                3,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst owner:int = 1\nvar alias:int = owner.borrow()\nreturn 0\n}\n",
+          "source_sha256": "93bf75c82b8a73cfc5fe0c37cb2f7868d140fa8ea967dc05a9677a5383c69d95",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用變數的 var／const 權限必須跟隨來源",
+            "span": {
+              "end": [
+                3,
+                33
+              ],
+              "start": [
+                3,
+                19
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nconst alias:int = owner.borrow()\nreturn 0\n}\n",
+          "source_sha256": "b798059ab91a9ba4bcfae0d7467aaef0df3b83f77841aeda2a3e1c63848f6748",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14／VA15：.borrow() 僅可直接綁定到合法 var／const；回傳與逃逸保守拒絕",
+            "span": {
+              "end": [
+                3,
+                22
+              ],
+              "start": [
+                3,
+                8
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nreturn owner.borrow()\n}\n",
+          "source_sha256": "9b7f77fb6fd1a8aef6a702ef49daa3950631c405d5641228b18a8227ece9ebd9",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                4,
+                13
+              ],
+              "start": [
+                4,
+                8
+              ]
+            }
+          },
+          "source": "fn get_str()->str{\nvar owner:str = \"str\"\nvar alias:str = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn 0\n}\n",
+          "source_sha256": "0029acbd8f02dbf17466baa9158bc7af3591717152d7b5c1e5132a50e20e0d44",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::va14_va15_borrow_source_tests::"
+    },
+    {
+      "compiled_tests_passed": 2,
+      "id": "P14.4",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nconst source:int = 9\nconst alias:int = source.borrow()\nvar copied:int = alias\nreturn copied + source\n}\n",
+          "source_sha256": "5b6ac5ded81dfb709c1d02906e625f929fc5486ac3cb1a63d133b4b70100f715",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                4,
+                23
+              ],
+              "start": [
+                4,
+                18
+              ]
+            }
+          },
+          "source": "fn main()->int{\nconst source:str = \"來源\"\nconst alias:str = source.borrow()\nvar copied:str = alias\nreturn 0\n}\n",
+          "source_sha256": "232c425a17cccc0e22fefc51cf71efbfaede08882fafc6272122c447a60e53ed",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p14_4_借用別名複製能力來源::"
+    },
+    {
+      "compiled_tests_passed": 6,
+      "id": "P14.5",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nconst item:Item = Item()\nconst alias:Item = item.borrow()\nreturn relay(relay(alias.read()))\n}\n",
+          "source_sha256": "01ee171b7381a45373ecc7aeb8799c31c2a86eedda703ffc83b3f6337ebbacf6",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nvar item:Item = Item()\nvar alias:Item = item.borrow()\nvar computed:int = relay(alias.set(2))\nvar transferred:Item = item.move()\nreturn computed\n}\n",
+          "source_sha256": "fe213ae54568736f21da222b7119fe7182c39ef21b000ab1d53958eedbd3df68",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                17,
+                35
+              ],
+              "start": [
+                17,
+                24
+              ]
+            }
+          },
+          "source": "fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nconst item:Item = Item()\nconst alias:Item = item.borrow()\nvar result:int = relay(item.read())\nreturn relay(alias.read())\n}\n",
+          "source_sha256": "7568ad32eb7f589eddf9dc64353593811d9a4cf20b0786dc1b6d28445991af3f",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                17,
+                35
+              ],
+              "start": [
+                17,
+                24
+              ]
+            }
+          },
+          "source": "fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nvar item:Item = Item()\nvar alias:Item = item.borrow()\nvar result:int = relay(item.set(4))\nreturn relay(alias.read())\n}\n",
+          "source_sha256": "1d6f4dcda08f6ea8ea1b4a54f5c678c02deb037e005ea91380741abf2b21af36",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "S18：const 結構實例不能呼叫會修改 self 欄位的方法",
+            "span": {
+              "end": [
+                17,
+                20
+              ],
+              "start": [
+                17,
+                8
+              ]
+            }
+          },
+          "source": "fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nconst item:Item = Item()\nconst alias:Item = item.borrow()\nreturn alias.set(2)\n}\n",
+          "source_sha256": "200af83749a2af537a984dd7efb9e5d3422c6f8ca3822bfe680d70341554976f",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用別名不是所有者，不能 .move()",
+            "span": {
+              "end": [
+                17,
+                33
+              ],
+              "start": [
+                17,
+                21
+              ]
+            }
+          },
+          "source": "fn relay(value:int)->int{\nreturn value\n}\nstruct Item{\nvar count:int = 1\nfn read()->int{\nreturn self.count\n}\nfn set(value:int)->int{\nself.count = value\nreturn self.count\n}\n}\nfn main()->int{\nvar item:Item = Item()\nvar alias:Item = item.borrow()\nvar consumed:Item = alias.move()\nreturn 0\n}\n",
+          "source_sha256": "c4d0168e0aa444cd05bce3445436880cea94a0b6bbd6c17e77fa7fdd3dd51c9e",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::"
+    },
+    {
+      "compiled_tests_passed": 7,
+      "id": "P14.6",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "struct Counter{\nvar value:int = 1\nconst enabled:bool = true\nfn set()->int{\nself.value = 3\nreturn self.value\n}\nfn get()->int{\nreturn self.value\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nvar x:int = counter.get()\nvar y:int = counter.set()\nvar z:int = counter.get()\nvar moved:Counter = counter.move()\nreturn z\n}\n",
+          "source_sha256": "14e4ffc14114e1b24b5c9718f59ed0992488906b83a806895559751b33dcda49",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct X{\nvar n:int = 1\n}\nfn main()->int{\nvar x:X = X()\nx.n = 2\nreturn 0\n}\n",
+          "source_sha256": "90871390c61a2ec6a57f844e9bb99bf95f0838633fa33facaacab729ffa63227",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "S18：const 欄位禁止透過方法寫入",
+            "span": {
+              "end": [
+                4,
+                15
+              ],
+              "start": [
+                4,
+                14
+              ]
+            }
+          },
+          "source": "struct Counter{\nconst value:int = 1\nfn set()->int{\nself.value = 3\nreturn self.value\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nreturn counter.set()\n}\n",
+          "source_sha256": "8425e1431e7edc4fe40e331e13c527e382ac81d6d289cead3a73791eafef2c5b",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "S18：const 結構實例不能呼叫會修改 self 欄位的方法",
+            "span": {
+              "end": [
+                10,
+                21
+              ],
+              "start": [
+                10,
+                8
+              ]
+            }
+          },
+          "source": "struct Counter{\nvar value:int = 1\nfn set()->int{\nself.value = 3\nreturn self.value\n}\n}\nfn main()->int{\nconst counter:Counter = Counter()\nreturn counter.set()\n}\n",
+          "source_sha256": "cff6438c20de6a4bdde9ef633c2438e3d6f69c8e9de8bf7534427af731b2cbec",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "來源已移動，禁止再次使用",
+            "span": {
+              "end": [
+                11,
+                21
+              ],
+              "start": [
+                11,
+                8
+              ]
+            }
+          },
+          "source": "struct Counter{\nvar value:int = 1\nfn set()->int{\nself.value = 3\nreturn self.value\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nvar saved:Counter = counter.move()\nreturn counter.set()\n}\n",
+          "source_sha256": "723a9282ceb0db26ddd70fce586f3b33510e32ddfd00ceaf370f833f6cb65540",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "方法 if 條件必須為可複製的 bool",
+            "span": {
+              "end": [
+                4,
+                11
+              ],
+              "start": [
+                4,
+                5
+              ]
+            }
+          },
+          "source": "struct X{\nvar n:int = 1\nfn set()->int{\nif (self.n){\nself.n = 2\n}\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n",
+          "source_sha256": "3f5b9aa7c01477eb377a5a396943a31580bf248a0d1a001b47befe4ff3bdbd8d",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "方法值來源尚未證明可安全獨立求值",
+            "span": {
+              "end": [
+                4,
+                17
+              ],
+              "start": [
+                4,
+                10
+              ]
+            }
+          },
+          "source": "struct X{\nvar n:int = 1\nfn set()->int{\nself.n = other.n\nreturn 0\n}\n}\nfn main()->int{\nreturn 0\n}\n",
+          "source_sha256": "8010608dcba7e51485cea77dfbe8b762a5812917dd90364b7d30321abee88953",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "方法欄位賦值型別與宣告不一致",
+            "span": {
+              "end": [
+                4,
+                19
+              ],
+              "start": [
+                4,
+                14
+              ]
+            }
+          },
+          "source": "struct Counter{\nvar value:int = 1\nfn set()->int{\nself.value = false\nreturn self.value\n}\n}\nfn main()->int{\nvar counter:Counter = Counter()\nreturn counter.set()\n}\n",
+          "source_sha256": "8e711a4c03fac6074d0e068b5804af7b5679363c3fad92ad7567e100ecfbca24",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::automatic_self_borrow_tests::"
+    },
+    {
+      "compiled_tests_passed": 2,
+      "id": "P15.1",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar source:int = 1\nconst alias:int = 99\nif(true){\nvar alias:int = source.borrow()\nvar copied:int = alias\nvar after:int = source\n}\nreturn alias\n}\n",
+          "source_sha256": "d5798edf22607268e59d0ba74d8be9f26d264e69179f81d8a53cc17f5e12f2d5",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                5,
+                25
+              ],
+              "start": [
+                5,
+                19
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar source:int = 1\nvar alias:int = source.borrow()\nif(true){\nvar another:int = source\n}\nreturn alias\n}\n",
+          "source_sha256": "6d9015a4cc28acca6187904a5848590e9f695e2706c74aaa3647da0e917dda6f",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p15_1_父區塊後繼與內層宣告身分::"
+    },
+    {
+      "compiled_tests_passed": 7,
+      "id": "P15.2",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn copied()->int{\nconst owner:int = 1\nconst alias:int = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn copied()\n}\n",
+          "source_sha256": "af2c7198b06b2bbce86a15234d1e417428eb4a56b836ebbd2aab89fcf1213dba",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nif(true){\nvar alias:int = owner.borrow()\nreturn alias\n}\nreturn owner\n}\n",
+          "source_sha256": "e4d23afc3dda526fa1870bb0928260af5d1f2fe6961a197186ee7c5e669b2f7b",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                4,
+                35
+              ],
+              "start": [
+                4,
+                23
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nvar transferred:str = owner.move()\nvar illegal:str = alias.move()\nreturn 0\n}\n",
+          "source_sha256": "ec6ee4e1acacc35336705d36e1d8dbcbada004bc20f97b797a4d28dda8ddd55e",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14-01：借用別名不是所有者，不能 .move()",
+            "span": {
+              "end": [
+                4,
+                20
+              ],
+              "start": [
+                4,
+                8
+              ]
+            }
+          },
+          "source": "fn escape()->str{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nreturn alias.move()\n}\nfn main()->int{\nreturn 0\n}\n",
+          "source_sha256": "7a29d99c67b44ec936381efe3b86900a14bb523618a4fcf73b9a6d1c36523900",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "VA14／VA15：.borrow() 僅可直接綁定到合法 var／const；回傳與逃逸保守拒絕",
+            "span": {
+              "end": [
+                3,
+                22
+              ],
+              "start": [
+                3,
+                8
+              ]
+            }
+          },
+          "source": "fn escape()->str{\nvar owner:str = \"資源\"\nreturn owner.borrow()\n}\nfn main()->int{\nreturn 0\n}\n",
+          "source_sha256": "3a9a12ac94c8dfa0cf5ed1ecfe5aa81d1897103e5bc38b5e311da96603ff735f",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                4,
+                13
+              ],
+              "start": [
+                4,
+                8
+              ]
+            }
+          },
+          "source": "fn escape()->str{\nvar owner:str = \"資源\"\nvar alias:str = owner.borrow()\nreturn alias\n}\nfn main()->int{\nreturn 0\n}\n",
+          "source_sha256": "c9d70efe86baea9c2b1161fee6093cfa69faf47b793aa1c0c6ec37424fe8d929",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "型別 Copyable 已明確禁止，拒絕隱含複製",
+            "span": {
+              "end": [
+                6,
+                14
+              ],
+              "start": [
+                6,
+                9
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar outer:str\nif(true){\nvar owner:str = \"局部\"\nvar alias:str = owner.borrow()\nouter = alias\n}else{\nvar dummy:int = 0\n}\nreturn 0\n}\n",
+          "source_sha256": "ca3c4368cbc7e17ec280a2ee270f466b71c5a954cec9006fd1f0048e11de46cb",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p15_2_借用回傳與逃逸正式來源::"
+    },
+    {
+      "compiled_tests_passed": 10,
+      "id": "P15.3",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nconst owner:str = \"資源\"\nif(true){\nif(true){\nvar a:int = see(owner)\n}\nvar b:int = see(owner)\n}\nreturn see(owner)\n}\n",
+          "source_sha256": "aaf91f36ce74bd0cb1a69338eab93b26e6dbbcc795b20e9610c46f323a985b91",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"外層\"\nfor i in 0..1{\nvar owner:str = \"內層\"\nvar observed:int = see(owner)\n}\nvar moved:str = owner.move()\nreturn 0\n}\n",
+          "source_sha256": "c1a3d05fb03d398ab5c1a0ac876585d6afb76afca69df0cd5b05c7ce04c3eec2",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nfor i in 0..1{\nvar observed:int = see(owner)\ncontinue\n}\nvar moved:str = owner.move()\nreturn 0\n}\n",
+          "source_sha256": "6543fad70bdbd2441c8cabda550776dfd810f31346de08ebf0c8cfe6512b954b",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nfor i in 1..4{\nvar observed:int = see(owner)\n}\nvar moved:str = owner.move()\nreturn 0\n}\n",
+          "source_sha256": "46582cc5e947a62118d834326aa8218c0dd8c35cfc1cb9c39592f95b4d30ee1e",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nif(true){\nvar a:int = see(owner)\n}else{\nvar b:int = see(owner)\n}\nvar moved:str = owner.move()\nreturn 0\n}\n",
+          "source_sha256": "311a4f546bb6cae39813675602a9840e1945b847147acb6b4db9fde00a2dfdd7",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn view(a:str,b:str)->int{\nreturn 3\n}\nfn main()->int{\nconst text:str = \"共用🪼\"\nvar n:int = view(text,text)\nvar moved:str = text.move()\nreturn n\n}\n",
+          "source_sha256": "847c98b5a814aa3127731420ec7482450ab78ffbd7ef25a67e2e84c75d455062",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Holder{\nvar count:int = 1\nfn read(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst text:str = \"共用🪼\"\nvar receiver:Holder = Holder()\nvar value:int = receiver.read(text,text)\nreturn value + receiver.count\n}\n",
+          "source_sha256": "a60e938643d95838ade85d694adc48c7b82db7a857dca1cb11b56f7c9a7a54c4",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Holder{\nvar count:int = 1\nfn see(value:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar resource:str = \"資源\"\nconst receiver:Holder = Holder()\nwhile(true){\nvar observed:int = receiver.see(resource)\nbreak\n}\nvar moved:str = resource.move()\nreturn 0\n}\n",
+          "source_sha256": "fd0c9ac2392ad215559228971f4b0392ab3f1918529c6fe414200f9513e0a758",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：函式參數借用與仍有效別名衝突",
+            "span": {
+              "end": [
+                12,
+                29
+              ],
+              "start": [
+                12,
+                24
+              ]
+            }
+          },
+          "source": "struct Resource{\nvar text:str = \"資源\"\nvar count:int = 1\n}\nfn see(value:Resource)->int{\nreturn value.count\n}\nfn main()->int{\nvar owner:Resource = Resource()\nvar alias:Resource = owner.borrow()\nif(true){\nvar observed:int = see(owner)\n}\nreturn alias.count\n}\n",
+          "source_sha256": "00996abb32986589f24a6614151a192a19858dd3558b0b9cdab6ed859d573c7c",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：同一方法呼叫的參數借用衝突",
+            "span": {
+              "end": [
+                10,
+                40
+              ],
+              "start": [
+                10,
+                36
+              ]
+            }
+          },
+          "source": "struct Holder{\nvar count:int = 1\nfn read(a:str,b:str)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar text:str = \"共用🪼\"\nvar receiver:Holder = Holder()\nvar value:int = receiver.read(text,text)\nreturn value + receiver.count\n}\n",
+          "source_sha256": "112b2ebfa82c9562e98e53957b0639ff67f3bdb494bab71e29361b4c78566fd3",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P15：for 反向邊來源狀態不穩定，不可跨迭代沿用借用／所有權",
+            "span": {
+              "end": [
+                9,
+                2
+              ],
+              "start": [
+                6,
+                1
+              ]
+            }
+          },
+          "source": "fn see(value:str)->int{\nreturn 1\n}\nfn main()->int{\nvar owner:str = \"資源\"\nfor i in 1..4{\nvar observed:int = see(owner)\nvar moved:str = owner.move()\n}\nreturn 0\n}\n",
+          "source_sha256": "5451cfc3e24e753cd5a6afe82562321bb28354fe191d39da3810dec1856b19fe",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::"
+    },
+    {
+      "compiled_tests_passed": 5,
+      "id": "P15.4",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar copied:int = alias\nreturn owner\n}\n",
+          "source_sha256": "0362e724692aac6f6738c169ee1453ffaf94b3719b0a7fb15d03b4165d683171",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Sample{\nvar count:int = 2\n}\nfn main()->int{\nvar owner:Sample = Sample()\nvar copied:int = owner.count\nreturn copied\n}\n",
+          "source_sha256": "6811c373c9985aac654e64796de38aebcb78c0223c13d0be4cb9dc0b08a43307",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P15.4：直接借用結構欄位尚無獨立來源身分與有效期證明，保守拒絕",
+            "span": {
+              "end": [
+                6,
+                37
+              ],
+              "start": [
+                6,
+                17
+              ]
+            }
+          },
+          "source": "struct Sample{\nvar count:int = 2\n}\nfn main()->int{\nvar owner:Sample = Sample()\nvar alias:int = owner.count.borrow()\nreturn alias\n}\n",
+          "source_sha256": "3376f07209cee677bd7fd7b0d05bdf356b30d20e824ffc6542f9cd2e7addb037",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P15.4：直接借用結構欄位尚無獨立來源身分與有效期證明，保守拒絕",
+            "span": {
+              "end": [
+                6,
+                37
+              ],
+              "start": [
+                6,
+                17
+              ]
+            }
+          },
+          "source": "struct Sample{\nvar title:str = \"文字\"\n}\nfn main()->int{\nvar owner:Sample = Sample()\nvar alias:str = owner.title.borrow()\nreturn 0\n}\n",
+          "source_sha256": "ad0677e7a529e1861fc2a5617d14d2ba1fcaa32622cdd3fb60a7d594fe052689",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Syntax",
+            "message": "P15.4：索引元素的借用／別名有效期尚未證明，私有所有權前端保守拒絕",
+            "span": {
+              "end": [
+                3,
+                23
+              ],
+              "start": [
+                3,
+                22
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:str = \"甲乙\"\nvar alias:str = owner[0].borrow()\nreturn 0\n}\n",
+          "source_sha256": "85a753dc4434ffce25560834d9a1bc0fc7672d05371e06da025c53201a5a368f",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p15_4_欄位索引與容器借用界線::"
+    },
+    {
+      "compiled_tests_passed": 6,
+      "id": "P15.5",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nif (true){\nvar scoped:int = owner.borrow()\nvar value:int = scoped\n}\nvar second:int = owner.borrow()\nvar copied:int = second\nreturn owner\n}\n",
+          "source_sha256": "f28dde251415ef2a44f75f61813b2d4b46788601467d9db2603f597eca501bf2",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar copy:int = first\nvar direct:int = owner\nvar second:int = owner.borrow()\nvar another:int = second\nreturn owner\n}\n",
+          "source_sha256": "f54e239e388db1c14d01750f7b1d7c1ea73a2fb9c612b8a27506435cf122f9b2",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                4,
+                29
+              ],
+              "start": [
+                4,
+                17
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar moved:int = owner.move()\nreturn alias\n}\n",
+          "source_sha256": "10af6e592bebce67a7891d5896362393f4dee386411a510af5035d728398c918",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：共享／獨占借用與現有別名衝突",
+            "span": {
+              "end": [
+                4,
+                32
+              ],
+              "start": [
+                4,
+                18
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar first:int = owner.borrow()\nvar second:int = owner.borrow()\nreturn first\n}\n",
+          "source_sha256": "0dbb002af401f92acc2b53296895b2897af18b3a08edc6d83bd4e92eb9b32a2d",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "P14：由借用再次借用尚未有完整別名證明",
+            "span": {
+              "end": [
+                4,
+                33
+              ],
+              "start": [
+                4,
+                19
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar invalid:int = alias.borrow()\nreturn invalid\n}\n",
+          "source_sha256": "9fc059237abb3545ef7c7cf9639c356b3b9fc0a2319b50a8d321aadf5acac571",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "找不到原始來源宣告",
+            "span": {
+              "end": [
+                7,
+                13
+              ],
+              "start": [
+                7,
+                8
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nif (true){\nvar alias:int = owner.borrow()\nvar copy:int = alias\n}\nreturn alias\n}\n",
+          "source_sha256": "0a6c2168838a5fbe969c316e1836f3cc429ec9d0a75f3a0452ab8352b3cab318",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p15_5_懸空與合法重新借用來源::"
+    },
+    {
+      "compiled_tests_passed": 6,
+      "id": "P15.6",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nvar owner:int = 3\nvar alias:int = owner.borrow()\nvar copy:int = identity(alias)\nvar direct:int = owner\nreturn copy + direct\n}\n",
+          "source_sha256": "804185c6277acf63b7e5c9cd5fb1fafdd0d5d391db65f00d06b5a24795ea0879",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nvar snapshot:int = alias\nvar direct:int = owner\nreturn direct\n}\n",
+          "source_sha256": "d13b1bfcdb40b22aaf8cb42451b31c837ca731a2af20b80440f62c292b07d24d",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Holder{\nvar count:int = 1\nfn view()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:Holder = Holder()\nvar observed:int = owner.view()\nvar moved:Holder = owner.move()\nreturn observed\n}\n",
+          "source_sha256": "ef14940cadf126e609faa0733a6b15e58cb4a76c3937a8d3e41fda50f04e5ba3",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "HC14：來源借用仍有效，禁止直接讀寫、複製或明確移動",
+            "span": {
+              "end": [
+                10,
+                31
+              ],
+              "start": [
+                10,
+                19
+              ]
+            }
+          },
+          "source": "struct Holder{\nvar count:int = 1\nfn view()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar owner:Holder = Holder()\nvar alias:Holder = owner.borrow()\nvar invalid:int = owner.view()\nreturn alias.view()\n}\n",
+          "source_sha256": "e4a7c0926c93d1e7172023e914b5f3063d2dfc8d6e9b5018274348382cf70eb3",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Syntax",
+            "message": "此階段具名語句必須為賦值",
+            "span": {
+              "end": [
+                4,
+                12
+              ],
+              "start": [
+                4,
+                7
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\nawait alias\nreturn alias\n}\n",
+          "source_sha256": "e4605c5a6b19e50f89e78e557e5db9b9bd363a88c0ef832dd9974a4de5ff28bf",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Syntax",
+            "message": "需要合法的名稱或型別名稱",
+            "span": {
+              "end": [
+                4,
+                4
+              ],
+              "start": [
+                4,
+                1
+              ]
+            }
+          },
+          "source": "fn main()->int{\nvar owner:int = 1\nvar alias:int = owner.borrow()\ntry{\nreturn alias\n}\nreturn 0\n}\n",
+          "source_sha256": "14dcb29f90654698a20d1cffed2649101dd86128f0752a3b7dbfeb79f1ea18ce",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p15_6_最後使用點與_self_退出邊界來源::"
+    },
+    {
+      "compiled_tests_passed": 16,
+      "id": "P16.1",
+      "private_source_coverage": "no_private_entry_in_selected_tests",
+      "sources": [],
+      "test_filter": "owned_str_runtime::tests::"
+    },
+    {
+      "compiled_tests_passed": 10,
+      "id": "P16.2",
+      "private_source_coverage": "no_private_entry_in_selected_tests",
+      "sources": [],
+      "test_filter": "struct_initialization::p16_真實持續存活結構值資源責任::"
+    },
+    {
+      "compiled_tests_passed": 5,
+      "id": "P16.3",
+      "private_source_coverage": "captured",
+      "sources": [
+        {
+          "diagnostic": null,
+          "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(false){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n",
+          "source_sha256": "c2a7e090d879c2619ec8594bfd4e306626223e9101871ccb07f201454f48a84f",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(true){\nvar inner:Holder = Holder(text=\"內層\")\nreturn 0\n}\nreturn 0\n}\n",
+          "source_sha256": "8b000842765ab18d6a8b1695152cca2fe5e8ddb441d63f78acc3878fff7377ec",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": null,
+          "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(true){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n",
+          "source_sha256": "aea3dc4eddd10e9316eae377d26755bd937bb42b91ef0bd14f7eeb6a304a75d6",
+          "status": "Passed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Static",
+            "message": "if 條件必須是已初始化 bool",
+            "span": {
+              "end": [
+                6,
+                5
+              ],
+              "start": [
+                6,
+                4
+              ]
+            }
+          },
+          "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(1){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n",
+          "source_sha256": "54f59c98b29417b1e594ec2c7fc1734764a46ccfaded8a8b11363949f4846b4f",
+          "status": "Failed"
+        },
+        {
+          "diagnostic": {
+            "kind": "Syntax",
+            "message": "if 條件需要右括號",
+            "span": {
+              "end": [
+                6,
+                6
+              ],
+              "start": [
+                6,
+                5
+              ]
+            }
+          },
+          "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(1==1){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n",
+          "source_sha256": "ae3a09a2cef70de7e4736bb34188a70e4b4e31ee49784f4218b83fbaf2d419b6",
+          "status": "Failed"
+        }
+      ],
+      "test_filter": "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::"
+    },
+    {
+      "compiled_tests_passed": 5,
+      "id": "P16.4",
+      "private_source_coverage": "no_private_entry_in_selected_tests",
+      "sources": [],
+      "test_filter": "owned_str_runtime::p16_4_資源事件身分逐筆稽核::"
+    },
+    {
+      "compiled_tests_passed": 1,
+      "id": "P16.5",
+      "private_source_coverage": "no_private_entry_in_selected_tests",
+      "sources": [],
+      "test_filter": "resource_obligation_audit::tests::p16_未清理責任須明確偵測不可倚賴_rust_drop_或_gc"
+    },
+    {
+      "compiled_tests_passed": 5,
+      "id": "P16.6",
+      "private_source_coverage": "no_private_entry_in_selected_tests",
+      "sources": [],
+      "test_filter": "struct_eval_plan::tests::vb16_"
+    }
+  ]
+}
