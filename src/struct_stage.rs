@@ -397,6 +397,63 @@ impl VerifiedDeclarationFacts {
         })
     }
 
+    /// A4/F04-04：已經由 Checker 簽出型別與安全前置的資源操作，
+    /// 在最終計畫交付時還必須能對回「同一份真正 Parser AST」的操作形狀。
+    /// 本稽核只讀取現有 AST 以排除偽造／錯配的操作位置，絕不藉由
+    /// AST 自行推論來源持有者、借用票據或執行期 ResourceId。
+    fn operations_match_verified_ast(
+        &self, structs: &HashMap<String, StructDecl>, functions: &[Function],
+    ) -> bool {
+        fn visit(
+            statements: &[Stmt],
+            direct_targets: &mut BTreeSet<DeclarationId>,
+            named_returns: &mut BTreeSet<usize>,
+            field_writes: &mut BTreeSet<(usize, String)>,
+        ) {
+            for statement in statements {
+                match &statement.kind {
+                    StmtKind::Declare(declaration) => {
+                        if matches!(declaration.initializer.as_ref().map(|term| &term.kind),
+                            Some(TermKind::Move(_))) {
+                            direct_targets.insert(DeclarationId(statement.start));
+                        }
+                    }
+                    StmtKind::Return(term) => {
+                        if matches!(&term.kind, TermKind::Move(_)) {
+                            named_returns.insert(term.start);
+                        }
+                    }
+                    StmtKind::FieldAssign { field, .. } => {
+                        field_writes.insert((statement.start, field.clone()));
+                    }
+                    StmtKind::If { branch, no } => {
+                        visit(&branch.body, direct_targets, named_returns, field_writes);
+                        if let Some(otherwise) = no {
+                            visit(otherwise.as_slice(), direct_targets, named_returns, field_writes);
+                        }
+                    }
+                    StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } => {
+                        visit(body, direct_targets, named_returns, field_writes);
+                    }
+                    StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
+                }
+            }
+        }
+
+        let mut direct_targets = BTreeSet::new();
+        let mut named_returns = BTreeSet::new();
+        let mut field_writes = BTreeSet::new();
+        for function in functions.iter().chain(
+            structs.values().flat_map(|definition| definition.methods.iter())
+        ) {
+            visit(&function.body, &mut direct_targets, &mut named_returns, &mut field_writes);
+        }
+        self.direct_moves.iter().all(|(_, target)| direct_targets.contains(target))
+            && self.named_returns.iter().all(|(_, at)| named_returns.contains(at))
+            && self.field_writes.iter().all(|(_, at, field)|
+                field_writes.contains(&(*at, field.clone())))
+    }
+
     /// F11：已成功型別檢查的所有純值 HIR 必須與同一 Checker 的
     /// 宣告／var-const 權威完全一致；只讀交叉稽核，不從 AST 猜測
     /// 動態資源實例、所有權或尚未核准的完整 CFG。
@@ -578,6 +635,7 @@ impl VerifiedSafetyPlan {
     ) -> bool {
         self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
             && self.declarations.evidence_is_consistent(structs, text)
+            && self.declarations.operations_match_verified_ast(structs, functions)
             && self.member_sources_are_consistent(structs, functions, text)
             && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
             && verified_private_syntax_roles(text, structs, functions)

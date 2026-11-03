@@ -1,3 +1,71 @@
+// A4/F04-04：正式 Checker 的非純值轉移證據必須能對回真 Parser AST。
+#[cfg(test)]
+mod a4_f04_真實資源操作不得由另一份型別位置冒充 {
+    use super::*;
+
+    const SOURCE: &str = "struct Holder{\nvar name:str = \"原值\"\n}\n\
+fn provide()->Holder{\nvar result:Holder = Holder()\nreturn result.move()\n}\n\
+fn main()->int{\nvar owner:Holder = Holder()\nowner.name = \"新值🪼\"\nvar migrated:Holder = owner.move()\nvar independent:Holder = Holder()\nreturn 0\n}\n";
+
+    fn checked() -> VerifiedPrivateSource {
+        verified_private_source(SOURCE).expect("受限 P16 真實來源本來可安全執行")
+    }
+
+    fn duplicate(verified: &VerifiedPrivateSource) -> VerifiedDeclarationFacts {
+        let facts = &verified.plan.declarations;
+        VerifiedDeclarationFacts::from_checker(
+            facts.by_source.clone(), facts.direct_moves.clone(),
+            facts.named_returns.clone(), facts.field_writes.clone(),
+        )
+    }
+
+    #[test]
+    fn 真實_checker_移動_返回_覆寫_都具有原始_ast_逐筆來源() {
+        let verified = checked();
+        let facts = &verified.plan.declarations;
+        assert!(facts.evidence_is_consistent(&verified.structs, SOURCE));
+        assert!(facts.operations_match_verified_ast(&verified.structs, &verified.functions),
+            "同一真正 Checker 完成的三種非純值靜態操作須存在原 AST 中");
+        assert!(verified.plan.is_consistent(&verified.structs, &verified.functions, SOURCE));
+        assert_eq!(facts.direct_moves.len(), 1);
+        assert_eq!(facts.named_returns.len(), 1);
+        assert_eq!(facts.field_writes.len(), 1);
+    }
+
+    #[test]
+    fn 同型別但沒有_move_的目標不得冒充另一筆已核准移動() {
+        let verified = checked();
+        let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let moved = DeclarationId(main.body[2].start);
+        let no_move = DeclarationId(main.body[3].start);
+        let mut forged = duplicate(&verified);
+        assert!(forged.direct_moves.insert((moved, no_move)));
+        assert!(forged.evidence_is_consistent(&verified.structs, SOURCE),
+            "此負例刻意讓舊型別及順序驗證通過，測試新增 AST 形狀守衛");
+        assert!(!forged.operations_match_verified_ast(&verified.structs, &verified.functions));
+    }
+
+    #[test]
+    fn 非_return_move_以及非欄位寫入來源不得偽造資源責任() {
+        let verified = checked();
+        let main = verified.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let independent = DeclarationId(main.body[3].start);
+        let last = &main.body[4];
+        let StmtKind::Return(term) = &last.kind else { panic!("原最後語句應為 return") };
+        let mut fake_return = duplicate(&verified);
+        assert!(fake_return.named_returns.insert((independent, term.start)));
+        assert!(fake_return.evidence_is_consistent(&verified.structs, SOURCE));
+        assert!(!fake_return.operations_match_verified_ast(&verified.structs, &verified.functions),
+            "純值 return 0 不能成為非純值 .move() 已驗證返回");
+
+        let mut fake_write = duplicate(&verified);
+        assert!(fake_write.field_writes.insert((independent, last.start, "name".into())));
+        assert!(fake_write.evidence_is_consistent(&verified.structs, SOURCE));
+        assert!(!fake_write.operations_match_verified_ast(&verified.structs, &verified.functions),
+            "既有欄位型別、var 與原始位置都合法，也不等於該位置真的寫了欄位");
+    }
+}
+
 // P16.6-R03：以單一已驗證來源，核對真實 UTF-8 事件與抽象所有權／資源帳簿。
 // 此處僅覆蓋已核准的直線 str 建立、具名整筆移交與最終清理，非一般 P17 執行器。
 
