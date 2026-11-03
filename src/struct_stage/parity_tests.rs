@@ -26,6 +26,75 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn a1_f01_原始位元組與_lexer_token_一致性防止符號種類被偽造() {
+        let code = "fn main()->int{\nconst item:int = 1\nreturn item\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let scanned = lexer::scan(&source);
+        let ast = parser::parse(&source, &scanned.tokens).unwrap();
+        assert!(parser::verified_public_source_tokens(&ast, code, &scanned.tokens));
+        let bad_arrow = code.replacen("->", "=>", 1);
+        assert_eq!(bad_arrow.len(), code.len());
+        assert!(!parser::verified_public_source_tokens(
+            &ast, &bad_arrow, &scanned.tokens),
+            "Lexer 原記號種類正確也不得容忍已被替換的箭號原始 bytes");
+        let bad_colon = code.replacen("item:int", "item;int", 1);
+        assert_eq!(bad_colon.len(), code.len());
+        assert!(!parser::verified_public_source_tokens(
+            &ast, &bad_colon, &scanned.tokens),
+            "原來的冒號 token 必須核對 UTF-8 真正內容");
+        let bad_keyword = code.replacen("const", "while", 1);
+        assert_eq!(bad_keyword.len(), code.len());
+        assert!(!parser::verified_public_source_tokens(
+            &ast, &bad_keyword, &scanned.tokens),
+            "有效長度但不同關鍵字不可冒充已解析 var/const 宣告");
+        let bad_open = code.replacen("main()", "main[]", 1);
+        assert_eq!(bad_open.len(), code.len());
+        assert!(!parser::verified_public_source_tokens(
+            &ast, &bad_open, &scanned.tokens),
+            "函式標頭的圓括號不許用相同長度的錯誤符號偽造");
+    }
+
+    #[test]
+    fn a1_f01_私有成員與方法參數必須有相同_lexer_token_及正確模式() {
+        use crate::common_ir::{FrontendMode, SourceIdentityAudit};
+        let code = "# 型別🪼\r\nstruct Boxed{\r\nconst text:str = \"海洋🪼\"\r\nfn get(value:int)->int{\r\nreturn value\r\n}\r\n}\r\nfn main()->int{\r\nreturn 1\r\n}\r\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty());
+        let (structs, funcs) = Parser {
+            source: &source, tokens: &scan.tokens, cursor: 0,
+        }.file().unwrap();
+        assert!(verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
+        let field = &structs["Boxed"].fields[0];
+        assert_eq!(&code[field.type_span.start..field.type_span.end], "str");
+        let mut public_audit = SourceIdentityAudit::new(code, FrontendMode::PublicMvpA);
+        assert!(!crate::syntax_shared::checked_typed_member_tokens(
+            &field.name, field.name_span, &field.ty, field.type_span,
+            field.declaration_span, &scan.tokens, &mut public_audit,
+        ), "只有 PrivateVerified 的已解析欄位可簽發私有成員 token 證據");
+        let mut changed = scan.tokens.clone();
+        let idx = changed.iter().position(|tok|
+            tok.start == field.type_span.start
+        ).unwrap();
+        changed[idx].kind = crate::lexer::TokenKind::Name("int".into());
+        assert!(!verified_private_source_tokens(code, &changed, &structs, &funcs),
+            "原始 str 欄位 token 不得偽造為 Copyable int");
+        let mut changed = scan.tokens.clone();
+        let param = &structs["Boxed"].methods[0].params[0];
+        let idx = changed.iter().position(|tok|
+            tok.start == param.name_span.start
+        ).unwrap();
+        changed[idx].kind = crate::lexer::TokenKind::Name("other".into());
+        assert!(!verified_private_source_tokens(code, &changed, &structs, &funcs),
+            "方法參數的詞彙名稱不可與 Checker 來源身分分離");
+        let bad_colon = code.replacen("value:int", "value;int", 1);
+        assert!(!verified_private_source_tokens(
+            &bad_colon, &scan.tokens, &structs, &funcs),
+            "私有參數 type token 前必須有真實原始冒號");
+        assert!(verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
+    }
+
+    #[test]
     fn a1_f01_真正公開_parser_函式與所有宣告名稱型別_token_正反驗證() {
         let code = "# 註記🪼\r\nconst global:int = 4\r\nfn main()->int{\r\nvar item:int = global\r\nif(true){\r\nvar nested:int = 2\r\nreturn nested\r\n}else{\r\nreturn item\r\n}\r\nreturn item\r\n}\r\n";
         let source = Source::new(code.as_bytes().to_vec());

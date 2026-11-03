@@ -45,7 +45,15 @@ fn verified_private_source_tokens(
         crate::syntax_shared::checked_function_header_tokens(
             fun.start, fun.end, fun.body.start,
             &fun.name, &fun.result_ty, tokens, audit,
-        ) && block(&fun.body, tokens, audit)
+        ) && fun.params.iter().all(|parameter| {
+            audit.record(NodeRole::Parameter, parameter.declaration_span,
+                Some(NodeSpan::new(fun.start, fun.end)))
+                && crate::syntax_shared::checked_typed_member_tokens(
+                    &parameter.name, parameter.name_span,
+                    &parameter.ty, parameter.type_span,
+                    parameter.declaration_span, tokens, audit,
+                )
+        }) && block(&fun.body, tokens, audit)
     }
 
     let mut audit = SourceIdentityAudit::new(text, FrontendMode::PrivateVerified);
@@ -63,6 +71,22 @@ fn verified_private_source_tokens(
                 NodeSpan::new(named.start, named.end), Some(definition.source_span))
             && text.get(keyword.start..keyword.end) == Some("struct")
             && text.get(named.start..named.end) == Some(name.as_str())
+            && definition.fields.iter().all(|field| {
+                let Some(index) = tokens.binary_search_by_key(
+                    &field.declaration_span.start, |token| token.start,
+                ).ok() else { return false; };
+                let Some(keyword) = tokens.get(index) else { return false; };
+                let expected = if field.immutable { "const" } else { "var" };
+                matches!(&keyword.kind, TokenKind::Keyword(word) if word == expected)
+                    && text.get(keyword.start..keyword.end) == Some(expected)
+                    && audit.record(NodeRole::Field, field.declaration_span,
+                        Some(definition.source_span))
+                    && crate::syntax_shared::checked_typed_member_tokens(
+                        &field.name, field.name_span,
+                        &field.ty, field.type_span,
+                        field.declaration_span, tokens, &mut audit,
+                    )
+            })
             && definition.methods.iter().all(|fun| function(fun, tokens, &mut audit))
     });
     structs_ok && functions.iter().all(|fun| function(fun, tokens, &mut audit))

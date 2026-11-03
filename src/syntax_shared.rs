@@ -376,7 +376,12 @@ pub(crate) fn checked_declaration_tokens<T, E>(
         || !matches!(colon.kind, TokenKind::Symbol(':'))
         || !matches!(&typed.kind, TokenKind::Name(name) if name == annotated_type)
         || typed.end > declaration.end
-        || keyword.start != declaration.start {
+        || keyword.start != declaration.start
+        || keyword.end > named.start
+        || named.end > colon.start
+        || colon.end > typed.start
+        || audit.source.get(keyword.start..keyword.end) != Some(keyword_expected)
+        || audit.source.get(colon.start..colon.end) != Some(":") {
         return false;
     }
     audit.record(NodeRole::Name,
@@ -402,9 +407,14 @@ pub(crate) fn checked_function_header_tokens(
     let Some(keyword) = tokens.get(index) else { return false; };
     let Some(named) = tokens.get(index + 1) else { return false; };
     let span = NodeSpan::new(function_start, function_end);
+    let Some(open) = tokens.get(index + 2) else { return false; };
     if !matches!(&keyword.kind, TokenKind::Keyword(word) if word == "fn")
         || !matches!(&named.kind, TokenKind::Name(actual) if actual == name)
+        || !matches!(open.kind, TokenKind::Symbol('('))
         || keyword.start != function_start
+        || keyword.end > named.start || named.end > open.start
+        || audit.source.get(keyword.start..keyword.end) != Some("fn")
+        || audit.source.get(open.start..open.end) != Some("(")
         || body_start >= function_end {
         return false;
     }
@@ -413,8 +423,18 @@ pub(crate) fn checked_function_header_tokens(
         .find(|(_, token)| matches!(token.kind, TokenKind::Arrow))
     else { return false; };
     let Some(typed) = tokens.get(arrow + 1) else { return false; };
+    let Some(closing) = tokens.get(arrow - 1) else { return false; };
+    let Some(arrow_token) = tokens.get(arrow) else { return false; };
+    let Some(brace) = tokens.get(arrow + 2) else { return false; };
     if !matches!(&typed.kind, TokenKind::Name(actual) if actual == result_type)
-        || typed.end > body_start {
+        || !matches!(closing.kind, TokenKind::Symbol(')'))
+        || !matches!(brace.kind, TokenKind::Symbol('{'))
+        || closing.end > arrow_token.start
+        || arrow_token.end > typed.start || typed.end > brace.start
+        || brace.start != body_start || typed.end > body_start
+        || audit.source.get(closing.start..closing.end) != Some(")")
+        || audit.source.get(arrow_token.start..arrow_token.end) != Some("->")
+        || audit.source.get(brace.start..brace.end) != Some("{") {
         return false;
     }
     audit.record(NodeRole::Name,
@@ -423,6 +443,38 @@ pub(crate) fn checked_function_header_tokens(
             NodeSpan::new(typed.start, typed.end), Some(span))
         && audit.source.get(named.start..named.end) == Some(name)
         && audit.source.get(typed.start..typed.end) == Some(result_type)
+}
+
+/// F01：私有參數與結構欄位名稱／型別的單一 Lexer token 證據。
+/// 呼叫者必須從正式 Parser／Checker 的同一 AST 傳入原始已保存
+/// name/type Span；本方法只證明字元與 token 相等，不核准任何資源。
+pub(crate) fn checked_typed_member_tokens(
+    name: &str, name_span: crate::common_ir::NodeSpan,
+    ty: &str, type_span: crate::common_ir::NodeSpan,
+    parent: crate::common_ir::NodeSpan, tokens: &[Token],
+    audit: &mut crate::common_ir::SourceIdentityAudit<'_>,
+) -> bool {
+    use crate::common_ir::{NodeRole, NodeSpan};
+    let Some(i) = tokens.binary_search_by_key(
+        &name_span.start, |token| token.start,
+    ).ok() else { return false; };
+    let Some(named) = tokens.get(i) else { return false; };
+    let Some(colon) = tokens.get(i + 1) else { return false; };
+    let Some(typed) = tokens.get(i + 2) else { return false; };
+    if audit.mode != crate::common_ir::FrontendMode::PrivateVerified
+        || !matches!(&named.kind, TokenKind::Name(word) if word == name)
+        || !matches!(colon.kind, TokenKind::Symbol(':'))
+        || !matches!(&typed.kind, TokenKind::Name(word) if word == ty)
+        || NodeSpan::new(named.start, named.end) != name_span
+        || NodeSpan::new(typed.start, typed.end) != type_span
+        || name_span.end > colon.start || colon.end > type_span.start
+        || audit.source.get(name_span.start..name_span.end) != Some(name)
+        || audit.source.get(colon.start..colon.end) != Some(":")
+        || audit.source.get(type_span.start..type_span.end) != Some(ty) {
+        return false;
+    }
+    audit.record(NodeRole::Name, name_span, Some(parent))
+        && audit.record(NodeRole::Type, type_span, Some(parent))
 }
 
 /// F03：正式公私 Parser 唯一的共同語句前綴分類。
