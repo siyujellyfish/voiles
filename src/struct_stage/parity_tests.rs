@@ -2,6 +2,85 @@
 // 不把私有結構語法偷開到公開入口，且兩路不同的錯誤文字不可假設相同。
 
 #[cfg(test)]
+mod a3_f03_私有控制語句共同詞彙分類與可達安全守衛 {
+    use super::*;
+    use crate::common_ir::FrontendMode;
+    use crate::syntax_shared::{statement_head, StatementHead};
+
+    #[test]
+    fn 真_lexer_四類私有控制字唯一起源且公開模式不得接受() {
+        let code = "# 控制🪼\r\nfor while break continue\r\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        for (word, head) in [
+            ("for", StatementHead::ForRange),
+            ("while", StatementHead::WhileLoop),
+            ("break", StatementHead::Break),
+            ("continue", StatementHead::Continue),
+        ] {
+            let i = tokens.tokens.iter().position(|token| {
+                matches!(&token.kind, crate::lexer::TokenKind::Keyword(s) if s == word)
+            }).unwrap();
+            assert_eq!(&code[tokens.tokens[i].start..tokens.tokens[i].end], word);
+            assert_eq!(statement_head(&tokens.tokens, i, FrontendMode::PrivateVerified),
+                Some(head), "私有模式不得重新猜測控制轉移詞彙類別");
+            assert_eq!(statement_head(&tokens.tokens, i, FrontendMode::PublicMvpA), None,
+                "正式公開 MVP-A 不得接受私有迴圈或跳出語句");
+        }
+    }
+
+    #[test]
+    fn 真私有_parser_迴圈和巢狀_while_保留唯一_parsedblock_來源() {
+        let code = "fn main()->int{\nfor index in 0..1{\nwhile(false){\nbreak\n}\ncontinue\n}\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        assert!(crate::parser::parse(&source, &tokens.tokens).is_err(),
+            "公開入口仍不得因共同控制詞彙分類而接受 for/while");
+        let (_, functions) = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0,
+        }.file().unwrap();
+        let [main] = functions.as_slice() else {panic!("應該只有 main")};
+        let StmtKind::ForRange { body: outer, .. } = &main.body[0].kind
+            else {panic!("私有 for 應直接保存真正 ParsedBlock")};
+        assert_eq!(&code[outer.start..outer.start + 1], "{");
+        assert_eq!(&code[outer.end - 1..outer.end], "}");
+        let StmtKind::While { body: inner, .. } = &outer[0].kind
+            else {panic!("私有 while 應直接保存另一個真 ParsedBlock")};
+        assert!(matches!(inner[0].kind, StmtKind::Break));
+        assert!(matches!(outer[1].kind, StmtKind::Continue));
+        assert!(inner.start > outer.start && inner.end < outer.end,
+            "巢狀的真 UTF-8 半開父子來源不應因統一分類被改寫");
+        assert!(verified_private_syntax_tree(code, &HashMap::new(), &functions));
+    }
+
+    #[test]
+    fn 真診斷維持私有_in_右括號及外部_break_安全拒絕() {
+        let missing_in = "fn main()->int{\nfor index over 0..1{\nreturn 0\n}\nreturn 0\n}\n";
+        let source = Source::new(missing_in.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let err = Parser {source:&source,tokens:&tokens.tokens,cursor:0}.file().unwrap_err();
+        assert_eq!(&*err.message, "for 區間迭代變數後需要 in");
+
+        let missing_paren = "fn main()->int{\nwhile(true{\nbreak\n}\nreturn 0\n}\n";
+        let source = Source::new(missing_paren.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let err = Parser {source:&source,tokens:&tokens.tokens,cursor:0}.file().unwrap_err();
+        assert_eq!(&*err.message, "while 條件需要右括號");
+
+        let no_loop = "fn main()->int{\nbreak\nreturn 0\n}\n";
+        let source = Source::new(no_loop.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(crate::parser::parse(&source,&tokens.tokens).is_err());
+        assert!(Parser {source:&source,tokens:&tokens.tokens,cursor:0}.file().is_ok());
+        let err = verified_private_source(no_loop).err().unwrap();
+        assert_eq!(&*err.message,
+            "P15：break／continue 只能位於已核准的 for／while 迴圈內");
+    }
+}
+
+#[cfg(test)]
 mod a2_f02_suffix_原詞彙後綴共同分類與模式防護 {
     use super::*;
     use crate::syntax_shared::{name_suffix_head, NameSuffixHead};

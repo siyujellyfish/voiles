@@ -485,7 +485,11 @@ pub(crate) enum StatementHead {
     Conditional,
     Return,
     Named,
-    ModeSpecific,
+    /// 僅 PrivateVerified 可辨識的原有控制轉移，公共入口返回 None。
+    ForRange,
+    WhileLoop,
+    Break,
+    Continue,
 }
 pub(crate) fn statement_head(
     tokens: &[Token], cursor: usize, mode: crate::common_ir::FrontendMode,
@@ -501,9 +505,15 @@ pub(crate) fn statement_head(
         TokenKind::Name(_) => Some(StatementHead::Named),
         // 僅讓私有 Parser 辨識已核准的延伸語句種類，權限
         // 依然由原 P13 Parser + Checker 判斷，不放寬公用入口。
-        TokenKind::Keyword(word) if mode == crate::common_ir::FrontendMode::PrivateVerified
-            && matches!(word.as_str(), "for" | "while" | "break" | "continue") =>
-            Some(StatementHead::ModeSpecific),
+        TokenKind::Keyword(word)
+            if mode == crate::common_ir::FrontendMode::PrivateVerified =>
+                match word.as_str() {
+                    "for" => Some(StatementHead::ForRange),
+                    "while" => Some(StatementHead::WhileLoop),
+                    "break" => Some(StatementHead::Break),
+                    "continue" => Some(StatementHead::Continue),
+                    _ => None,
+                },
         _ => None,
     }
 }
@@ -1190,13 +1200,18 @@ mod r02_f01_f03_模式隔離及共同賦值分類 {
                 statement_head(&tokens, 0, FrontendMode::PublicMvpA),
                 statement_head(&tokens, 0, FrontendMode::PrivateVerified));
         }
-        for word in ["for", "while", "break", "continue"] {
+        for (word, expected) in [
+            ("for", StatementHead::ForRange),
+            ("while", StatementHead::WhileLoop),
+            ("break", StatementHead::Break),
+            ("continue", StatementHead::Continue),
+        ] {
             let tokens = [Token {
                 kind: TokenKind::Keyword(word.into()), start: 0, end: word.len(),
             }];
             assert_eq!(statement_head(&tokens, 0, FrontendMode::PublicMvpA), None);
             assert_eq!(statement_head(&tokens, 0, FrontendMode::PrivateVerified),
-                Some(StatementHead::ModeSpecific));
+                Some(expected));
         }
     }
 
