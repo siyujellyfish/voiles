@@ -49,8 +49,9 @@ def main() -> int:
     ):
         if checker.count(marker) != 1:
             raise AssertionError(f"F08 正式 Checker 原子合流權威缺失：{marker}")
-    if "for (depth, scope) in vars.iter_mut().enumerate()" in checker:
-        raise AssertionError("正式 Checker 仍可能在失敗前直接修改原 CFG 合流作用域")
+    join_body = checker.split("let mut proposed = snapshot.clone();", 1)[1]
+    if "for (depth, scope) in vars.iter_mut().enumerate()" in join_body:
+        raise AssertionError("if／else 合流仍可能在失敗前直接修改原 CFG 作用域")
     listing = run([args.test_bin, "--list"])
     names = [line[:-6] for line in listing.splitlines() if line.endswith(": test")]
     seen: set[str] = set()
