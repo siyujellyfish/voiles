@@ -1,329 +1,250 @@
-// P16.6-R02.2：既有私有 AST 對已核准 scalar 交集的投影。
-// 不建立公開解析入口、不改私有 Checker、不用 AST 投影反向放寬接受條件。
-
-fn private_scalar_expression(term: &Term, text: &str)
-    -> Option<crate::common_ir::ScalarExpr> {
-    use crate::common_ir::ScalarExpr;
-    match &term.kind {
-        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =>
-            ScalarExpr::Int(crate::syntax_shared::integer_i64(raw).ok()?),
-        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) =>
-            ScalarExpr::Bool(*value),
-        // 僅供既有測試手動建構的 AST；正式 Parser 皆使用 Scalar。
-        TermKind::Literal("int") => ScalarExpr::Int(
-            crate::syntax_shared::integer_i64(text.get(term.start..term.end)?).ok()?
-        ),
-        TermKind::Literal("bool") => ScalarExpr::Bool(
-            match text.get(term.start..term.end)? {
-                "true" => true, "false" => false, _ => return None,
-            }
-        ),
-        TermKind::Name(name) => ScalarExpr::Name(name.clone()),
-        TermKind::BinaryInt(binary)
-            if matches!(binary.operator, '+' | '-') => ScalarExpr::Binary {
-            left: Box::new(private_scalar_expression(&binary.left, text)?),
-            op: binary.operator,
-            right: Box::new(private_scalar_expression(&binary.right, text)?),
-        },
-        // 既有私有 Parser 以 Construct(name, []) 表示 name() 的
-        // 無位置引數形式，須先確定沒有同名結構才可投影一般函式呼叫。
-        TermKind::Call(call) if call.arguments.is_empty() =>
-            ScalarExpr::CallZero(call.name.clone()),
-        TermKind::Construct(name, args) if args.is_empty() =>
-            ScalarExpr::CallZero(name.clone()),
-        _ => return None,
-    }.into()
-}
-
-fn private_scalar_statements(stmts: &[Stmt], text: &str)
-    -> Option<Vec<crate::common_ir::ScalarStmt>> {
-    use crate::common_ir::{ScalarStmt, ScalarType};
-    stmts.iter().map(|statement| Some(match &statement.kind {
-        StmtKind::Declare(declaration) => ScalarStmt::Declare {
-            declaration: DeclarationId(statement.start),
-            name: declaration.name.clone(),
-            ty: ScalarType::from_name(&declaration.ty)?,
-            mutable: declaration.mutable,
-            init: match &declaration.initializer {
-                Some(value) => Some(private_scalar_expression(value, text)?),
-                None => None,
-            },
-        },
-        StmtKind::Assign(assignment) => ScalarStmt::Assign {
-            name: assignment.name.clone(),
-            value: private_scalar_expression(&assignment.expression, text)?,
-        },
-        StmtKind::If { branch, no } => ScalarStmt::If {
-            condition: private_scalar_expression(&branch.condition, text)?,
-            yes: private_scalar_statements(&branch.body, text)?,
-            no: match no {
-                Some(branch) => Some(private_scalar_statements(branch, text)?),
-                None => None,
-            },
-        },
-        StmtKind::Return(expr) =>
-            ScalarStmt::Return(private_scalar_expression(expr, text)?),
-        _ => return None,
-    })).collect()
-}
-
-/// 只包含未涉及所有權／借用／結構的標量交集；不作 P13 全語法投影。
-fn private_to_common_ast(
-    structs: &HashMap<String, StructDecl>, functions: &[Function], text: &str,
-) -> Option<crate::common_ir::SharedAst> {
-    use crate::common_ir::{ScalarFunction, ScalarType, SharedAst};
-    if !structs.is_empty() { return None; }
-    let functions = functions.iter().map(|function| {
-        if !function.params.is_empty() { return None; }
-        let result_ty = ScalarType::from_name(&function.result_ty)?;
-        Some(ScalarFunction {
-            name: function.name.clone(),
-            result_ty,
-            body: private_scalar_statements(&function.body, text)?,
-        })
-    }).collect::<Option<Vec<_>>>()?;
-    Some(SharedAst { functions })
-}
-
+// F05：舊 ScalarExpr／ScalarStmt／SharedAst 兩次「投影」已刪除。
+// 下列回歸直接消費真正公開／私有 Parser AST 與 Checker HIR，
+// 不建構第三棵語意樹，也不推定任何私有資源事件。
 #[cfg(test)]
 mod p16_6_r02_2_共同語意樹驗證 {
     use super::*;
-    use crate::{common_ir, parser};
+    use crate::{common_ir, flow, functions, names, parser, types};
+    use crate::common_ir::{FrontendMode, ScalarType};
 
-    fn compare(text: &str) -> common_ir::SharedAst {
-        assert!(inspect(text).is_ok(), "私有 P13 安全來源仍須先通過 Checker");
-        let source = Source::new(text.as_bytes().to_vec());
-        let tokens = lexer::scan(&source);
-        assert!(tokens.diagnostics.is_empty());
-        let public = parser::parse(&source, &tokens.tokens)
-            .expect("公開 MVP-A 文法應解析共同交集");
-        let (structs, functions) =
-            Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }
-                .file().expect("私有受限文法應解析共同交集");
-        let actual = private_to_common_ast(&structs, &functions, text)
-            .expect("私有必須可以表達已核准交集");
-        let expected = common_ir::from_public(&public)
-            .expect("公開必須可以表達已核准交集");
-        assert_eq!(actual, expected, "不得因不同 parser 產生不同語意樹");
-        actual
+    fn checked(code: &str) -> (parser::File, VerifiedPrivateSource) {
+        let input = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&input);
+        assert!(lexed.diagnostics.is_empty(), "測試須使用有效 UTF-8 詞彙來源");
+        let public = parser::parse(&input, &lexed.tokens)
+            .expect("公開 MVP-A 真正 Parser 應接受核准共同來源");
+        let names = names::resolve_with_facts(&public, &input)
+            .expect("公開 P09 名稱解析必須成功");
+        let public_hir = types::check_with_names_and_hir(&public, &input, &names)
+            .expect("真正公開 P10 必須交付來源型別 HIR");
+        flow::check_with_typed_hir(&public, &input, &names, &public_hir)
+            .expect("公開 P11 可達與初始化檢查須成功");
+        functions::check(&public, &input)
+            .expect("公開原始函式契約須成功");
+        let private = verified_private_source(code)
+            .expect("私有真正 Checker 須接受同一核准交集");
+        assert!(public_hir.source_spans_are_valid_for_mode(
+            FrontendMode::PublicMvpA, code));
+        assert!(private.plan.scalar_hir.source_spans_are_valid_for_mode(
+            FrontendMode::PrivateVerified, code));
+        assert_eq!(
+            public_hir.verified_expressions().collect::<Vec<_>>(),
+            private.plan.scalar_hir.verified_expressions().collect::<Vec<_>>(),
+            "共同純值完整 HIR 不容許兩個正式 Checker 獨立改變來源跨度或型別"
+        );
+        assert_eq!(
+            public_hir.verified_references().collect::<Vec<_>>(),
+            private.plan.scalar_hir.verified_references().collect::<Vec<_>>(),
+            "同名遮蔽須由兩個正式 Checker 交付相同 DeclarationId"
+        );
+        (public, private)
     }
 
     #[test]
-    fn 公開與私有運算式確實使用同一通用節點外殼並保存原位置() {
-        let public: crate::expr::Expr = crate::common_ir::SpannedNode {
-            kind: crate::expr::ExprKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(true)), start: 3, end: 7,
-        };
-        let private: Term = crate::common_ir::SpannedNode {
-            kind: TermKind::Literal("bool"), start: 3, end: 7,
-        };
+    fn 公開與私有正式運算式真正共用節點外殼與來源位置() {
+        let code = "fn main()->int{\nreturn 2 + 3\n}\n";
+        let (file, checked) = checked(code);
+        let parser::Item::Function(fun) = &file.items[0] else { panic!("公開函式不存在") };
+        let public = &fun.body.statements[0];
+        let private = &checked.functions[0].body[0];
         assert_eq!(public.node_span(), private.node_span());
-        assert_eq!(private.start, 3);
-        assert_eq!(public.end, 7);
+        assert_eq!(public.start, code.find("return").unwrap());
     }
 
     #[test]
-    fn 公私正式語句節點使用相同來源跨度契約() {
-        let src = "fn main()->int{\nvar n:int = 5\nreturn n\n}\n";
-        let source = Source::new(src.as_bytes().to_vec());
-        let tokens = lexer::scan(&source);
-        let public = parser::parse(&source, &tokens.tokens).unwrap();
-        let (private_structs, private_funcs) =
-            Parser { source: &source, tokens: &tokens.tokens, cursor: 0 }.file().unwrap();
-        assert!(private_structs.is_empty());
-        let parser::Item::Function(fun) = &public.items[0] else {
-            panic!("公開函式必須存在");
-        };
-        assert_eq!(fun.body.statements.len(), private_funcs[0].body.len());
-        for (public, private) in fun.body.statements.iter().zip(private_funcs[0].body.iter()) {
-            assert_eq!(public.node_span(), private.node_span());
-        }
-    }
-
-    #[test]
-    fn scalar_int64_與分支合流的共同宣告身分及語法樹完全一致() {
+    fn 共同宣告身分與真正已驗證純值型別一致() {
         let code = "fn main()->int{\nvar n:int = 0x2a\nif(true){\nn = 1\n}else{\nn = 2\n}\nreturn n\n}\n";
-        let tree = compare(code);
-        assert_eq!(tree.functions.len(), 1);
-        let common_ir::ScalarStmt::Declare { declaration, .. } =
-            &tree.functions[0].body[0] else { panic!("第一個結點必須是宣告"); };
-        assert_eq!(code.as_bytes()[declaration.0], b'v');
+        let (file, private) = checked(code);
+        let parser::Item::Function(fun) = &file.items[0] else { panic!("無公開函式") };
+        let parser::StmtKind::Binding(decl) = &fun.body.statements[0].kind
+            else { panic!("首項須為正式宣告") };
+        let StmtKind::Declare(other) = &private.functions[0].body[0].kind
+            else { panic!("私有缺少正式宣告") };
+        assert_eq!((decl.name.as_str(), decl.start), (other.name.as_str(), other.start));
+        assert_eq!(private.plan.declarations.typed_declaration(DeclarationId(other.start))
+            .unwrap().ty, "int");
+        assert_eq!(crate::common_ir::ScalarType::from_name(&other.ty), Some(ScalarType::Int));
     }
 
     #[test]
-    fn 多個無參數函式的共同結點順序一致() {
-        compare("fn helper()->int{\nreturn 2\n}\nfn main()->int{\nreturn helper()\n}\n");
+    fn 多個無參數函式仍保留原始順序及結果() {
+        let code = "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nreturn helper()\n}\n";
+        let (file, private) = checked(code);
+        assert_eq!(file.items.len(), private.functions.len());
+        let parser::Item::Function(helper) = &file.items[0] else { panic!("必須有 helper") };
+        assert_eq!(helper.name, private.functions[0].name);
+        assert_eq!(&private.functions[1].name, "main");
     }
 
     #[test]
-    fn else_if_多分支與單一_if_巢狀表示應完全一致() {
-        let source = "fn main()->int{\nvar n:int = 0\nif(false){\nn = 1\n}else if(true){\nn = 2\n}else if(false){\nn = 3\n}else{\nn = 4\n}\nreturn n\n}\n";
-        let ast = compare(source);
-        let crate::common_ir::ScalarStmt::If { no: Some(else_chain), .. } =
-            &ast.functions[0].body[1] else { panic!("第一分支必須存在下一個 else-if"); };
-        let [crate::common_ir::ScalarStmt::If { no: Some(third), .. }] =
-            else_chain.as_slice() else { panic!("else-if 第二分支需延續"); };
-        let [crate::common_ir::ScalarStmt::If { no: Some(last), .. }] =
-            third.as_slice() else { panic!("else-if 第三分支需延續"); };
-        assert!(matches!(last.as_slice(), [crate::common_ir::ScalarStmt::Assign { .. }]));
-    }
-
-    #[test]
-    fn 沒有_else_之_else_if_需保留所有可達後繼分支() {
-        let source = "fn main()->int{\nvar n:int = 0\nif(false){\nn = 1\n}else if(true){\nn = 2\n}\nreturn n\n}\n";
-        let tree = compare(source);
-        let crate::common_ir::ScalarStmt::If { no: Some(else_branch), .. } =
-            &tree.functions[0].body[1] else { panic!("第二 if 應在 else 內"); };
-        assert!(matches!(else_branch.as_slice(), [
-            crate::common_ir::ScalarStmt::If { no: None, .. }
-        ]));
-    }
-
-    #[test]
-    fn 未初始化_var_須投影為_init_none_而非讓整個_ast_失敗() {
-        let source = "fn main()->int{\nvar value:int\nvalue = 1\nreturn value\n}\n";
-        let tree = compare(source);
-        assert!(matches!(&tree.functions[0].body[0],
-            crate::common_ir::ScalarStmt::Declare { init: None, .. }));
-    }
-
-    #[test]
-    fn 巢狀遮蔽宣告即使同名也必須保留不同_declaration_id() {
-        let source = "fn main()->int{\nvar value:int = 1\nif(true){\nvar value:int = 2\n}\nreturn value\n}\n";
-        let tree = compare(source);
-        let crate::common_ir::ScalarStmt::Declare { declaration: outer, .. } =
-            &tree.functions[0].body[0] else { panic!("外層來源不應消失"); };
-        let crate::common_ir::ScalarStmt::If { yes, .. } =
-            &tree.functions[0].body[1] else { panic!("應保留分支"); };
-        let [crate::common_ir::ScalarStmt::Declare { declaration: inner, .. }] =
-            yes.as_slice() else { panic!("內層宣告應完整保留"); };
-        assert_ne!(outer, inner, "詞彙名稱相同也不可視為同一所有權宣告");
-        assert_eq!(&source[outer.0..outer.0 + 3], "var");
-        assert_eq!(&source[inner.0..inner.0 + 3], "var");
-    }
-
-    #[test]
-    fn 非純值宣告即使沒有右值也不得投影成共同標量_ast() {
-        for src in [
-            "fn main()->int{\nvar text:str\nreturn 0\n}\n",
-            "fn main()->int{\nvar data:list\nreturn 0\n}\n",
-        ] {
-            let source = Source::new(src.as_bytes().to_vec());
-            let tokens = lexer::scan(&source);
-            let (structs, funcs) = Parser {
-                source: &source, tokens: &tokens.tokens, cursor: 0
-            }.file().expect("此處只測解析後 AST 投影是否拒絕非純值型別");
-            assert!(private_to_common_ast(&structs, &funcs, src).is_none(),
-                "不得把 str 或容器錯認為可安全共用的 int/bool AST");
+    fn 真正_else_if_分支直接保存共有解析器的順序及位置() {
+        let code = "fn main()->int{\nvar n:int = 0\nif(false){\nn = 1\n}else if(true){\nn = 2\n}else if(false){\nn = 3\n}else{\nn = 4\n}\nreturn n\n}\n";
+        let (file, private) = checked(code);
+        let parser::Item::Function(main) = &file.items[0] else { panic!("缺 main") };
+        let parser::StmtKind::IfChain(chain) = &main.body.statements[1].kind
+            else { panic!("公用必須是正式 ParsedIfChain") };
+        assert_eq!(chain.arms.len(), 3);
+        let mut current = &private.functions[0].body[1];
+        for arm in &chain.arms {
+            let StmtKind::If { branch, no } = &current.kind
+                else { panic!("私有只可沿用真正巢狀 ParsedIfArm") };
+            assert_eq!(branch.start, arm.start);
+            assert_eq!(branch.body.start, arm.branch.body.start);
+            assert_eq!(branch.body.end, arm.branch.body.end);
+            match no {
+                Some(crate::syntax_shared::ParsedElse::ElseIf(next)) => current = next,
+                Some(crate::syntax_shared::ParsedElse::Block(otherwise)) => {
+                    assert_eq!(otherwise.start, chain.otherwise.as_ref().unwrap().start);
+                    assert_eq!(otherwise.end, chain.otherwise.as_ref().unwrap().end);
+                    break;
+                }
+                _ => break,
+            }
         }
+        assert!(matches!(
+            &current.kind, StmtKind::If {no:Some(crate::syntax_shared::ParsedElse::Block(_)),..}
+        ), "最後一條巢狀 if 須保留原始 else 大括號");
     }
 
     #[test]
-    fn 非純值函式回傳型別不能由通用字串假冒共同_ast() {
-        let src = "fn create()->str{\nreturn \"字串\"\n}\n";
-        let source = Source::new(src.as_bytes().to_vec());
-        let tokens = lexer::scan(&source);
-        let (structs, funcs) = Parser {
-            source: &source, tokens: &tokens.tokens, cursor: 0
-        }.file().expect("私有受限語法可解析 str 返回");
-        assert!(private_to_common_ast(&structs, &funcs, src).is_none());
+    fn 沒有_else_之_else_if_仍保留完整可達後繼() {
+        let code = "fn main()->int{\nvar n:int = 0\nif(false){\nn = 1\n}else if(true){\nn = 2\n}\nreturn n\n}\n";
+        let (file, private) = checked(code);
+        let parser::Item::Function(fun) = &file.items[0] else { panic!("缺函式") };
+        let parser::StmtKind::IfChain(chain) = &fun.body.statements[1].kind
+            else { panic!("應有公開分支鏈") };
+        assert_eq!(chain.arms.len(), 2);
+        let StmtKind::If { no:Some(crate::syntax_shared::ParsedElse::ElseIf(next)),.. } =
+            &private.functions[0].body[1].kind else {panic!("缺真正 else-if")};
+        let StmtKind::If { no:None,.. } = &next.kind else {panic!("多造了 else")};
     }
 
     #[test]
-    fn 三套_parser_共同括號消耗保留合法算術及缺括號的原診斷位置() {
-        compare("fn main()->int{\nreturn (8 - 3) + 2\n}\n");
-        let code="fn main()->int{\nreturn (8 - 3\n}\n";
-        let source=Source::new(code.as_bytes().to_vec());
-        let tokens=lexer::scan(&source);
-        assert!(tokens.diagnostics.is_empty());
-        let public=parser::parse(&source,&tokens.tokens).unwrap_err();
-        let private=Parser {
-            source:&source,tokens:&tokens.tokens,cursor:0,
+    fn 未初始化的_var_仍由原本正式_ast_保持_none() {
+        let code = "fn main()->int{\nvar value:int\nvalue = 1\nreturn value\n}\n";
+        let (file, private) = checked(code);
+        let parser::Item::Function(fun) = &file.items[0] else { panic!("缺函式") };
+        let parser::StmtKind::Binding(binding) = &fun.body.statements[0].kind
+            else { panic!("公開缺宣告") };
+        let StmtKind::Declare(other) = &private.functions[0].body[0].kind
+            else { panic!("私有缺宣告") };
+        assert!(binding.initializer.is_none());
+        assert!(other.initializer.is_none());
+    }
+
+    #[test]
+    fn 同名遮蔽的兩個來源宣告必須是不同身份() {
+        let code = "fn main()->int{\nvar value:int = 1\nif(true){\nvar value:int = 2\n}\nreturn value\n}\n";
+        let (file, private) = checked(code);
+        let parser::Item::Function(fun) = &file.items[0] else { panic!("缺函式") };
+        let parser::StmtKind::Binding(outer) = &fun.body.statements[0].kind
+            else { panic!("外層宣告遺失") };
+        let parser::StmtKind::IfChain(chain) = &fun.body.statements[1].kind
+            else { panic!("缺分支") };
+        let parser::StmtKind::Binding(inner) = &chain.arms[0].branch.body[0].kind
+            else { panic!("內層宣告遺失") };
+        assert_ne!(DeclarationId(outer.start), DeclarationId(inner.start));
+        assert!(private.plan.declarations.typed_declaration(DeclarationId(outer.start)).is_some());
+        assert!(private.plan.declarations.typed_declaration(DeclarationId(inner.start)).is_some());
+    }
+
+    #[test]
+    fn 真正括號來源保留相同半開位置及不同語法診斷() {
+        checked("fn main()->int{\nreturn (8 - 3) + 2\n}\n");
+        let code = "fn main()->int{\nreturn (8 - 3\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let public = parser::parse(&source, &lexed.tokens).unwrap_err();
+        let private = Parser {
+            source: &source, tokens: &lexed.tokens, cursor: 0,
         }.file().unwrap_err();
-        assert_eq!(public.kind,DiagnosticKind::Syntax);
-        assert_eq!(private.kind,DiagnosticKind::Syntax);
-        assert_eq!(&*public.message,"算術分組缺少右圓括號");
-        assert_eq!(&*private.message,"括號運算式缺少右括號");
-        assert_eq!(public.span,private.span,"缺符號時不能越過原錯誤 token");
+        assert_eq!(public.kind, DiagnosticKind::Syntax);
+        assert_eq!(private.kind, DiagnosticKind::Syntax);
+        assert_eq!(&*public.message, "算術分組缺少右圓括號");
+        assert_eq!(&*private.message, "括號運算式缺少右括號");
+        assert_eq!(public.span, private.span);
     }
 
     #[test]
-    fn 雙解析器合法名稱與非法位置診斷不跳過_token() {
-        compare("fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = 3\nreturn helper() + n\n}\n");
-        let text = "fn ()->int{\nreturn 0\n}\n";
-        let source = Source::new(text.as_bytes().to_vec());
+    fn 公私真正名稱解析診斷不吞掉錯誤_token() {
+        checked("fn helper()->int{\nreturn 2\n}\nfn main()->int{\nvar n:int = 3\nreturn helper() + n\n}\n");
+        let code = "fn ()->int{\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
         let tokens = lexer::scan(&source);
-        assert!(tokens.diagnostics.is_empty());
         let public = parser::parse(&source,&tokens.tokens).unwrap_err();
         let private = Parser {
-            source:&source,tokens:&tokens.tokens,cursor:0
+            source: &source, tokens: &tokens.tokens, cursor: 0,
         }.file().unwrap_err();
-        assert_eq!(public.kind,DiagnosticKind::Syntax);
-        assert_eq!(private.kind,DiagnosticKind::Syntax);
-        assert_eq!(&*public.message,"缺少合法名稱");
-        assert_eq!(&*private.message,"需要合法的名稱或型別名稱");
-        assert_eq!(public.span,private.span,
-            "同一個不合法名稱 token 的定位不因共用讀取原語而移動");
+        assert_eq!(&*public.message, "缺少合法名稱");
+        assert_eq!(&*private.message, "需要合法的名稱或型別名稱");
+        assert_eq!(public.span, private.span);
     }
 
     #[test]
-    fn 雙_parser_語句分隔含緊鄰結束大括號且拒絕缺少換行() {
-        compare("fn main()->int{\nvar n:int = 3\nreturn n}\n");
-        let invalid="fn main()->int{\nvar n:int = 3 return n\n}\n";
-        let source=Source::new(invalid.as_bytes().to_vec());
-        let lexed=lexer::scan(&source);
-        assert!(lexed.diagnostics.is_empty());
-        let public=parser::parse(&source,&lexed.tokens).unwrap_err();
-        let private=Parser {source:&source,tokens:&lexed.tokens,cursor:0}
-            .file().unwrap_err();
-        assert_eq!(&*public.message,"語句之間必須以換行分隔");
-        assert_eq!(&*private.message,"語句之間必須換行");
-        assert_eq!(public.span,private.span,
-            "雙 Parser 都必須停在尚未以換行分隔的 return token");
-    }
-
-    #[test]
-    fn 多行及布林_if_條件在公開與私有解析器投影結果相同() {
-        let src = "\n\nfn main()->int{\n\nvar flag:bool = true\n\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n\nreturn 0\n}\n";
-        let tree = compare(src);
-        assert_eq!(tree.functions.len(), 1);
-        assert!(matches!(&tree.functions[0].body[0],
-            crate::common_ir::ScalarStmt::Declare {ty:crate::common_ir::ScalarType::Bool,init:Some(crate::common_ir::ScalarExpr::Bool(true)),..}));
-        assert!(matches!(&tree.functions[0].body[1],
-            crate::common_ir::ScalarStmt::If {condition:crate::common_ir::ScalarExpr::Bool(false),no:Some(_),..}));
-    }
-
-    #[test]
-    fn 三重加減混合及巢狀分組的共同左結合樹不得因解析器而分歧() {
-        let src = "fn main()->int{\nreturn 10 - 3 + 2 - (1 + 4)\n}\n";
-        let ast = compare(src);
-        let crate::common_ir::ScalarStmt::Return(expr) = &ast.functions[0].body[0]
-            else {panic!("必須保留返回運算式")};
-        let crate::common_ir::ScalarExpr::Binary {op:'-',left,right} = expr
-            else {panic!("最外層應為最後的減法")};
-        assert!(matches!(&**left,crate::common_ir::ScalarExpr::Binary{op:'+',..}));
-        assert!(matches!(&**right,crate::common_ir::ScalarExpr::Binary{op:'+',..}));
-    }
-
-    #[test]
-    fn 公開與私有解析器真正共用的加減運算維持左結合及括號次序() {
-        let src = "fn main()->int{\nvar n:int = 10\nreturn n - 3 + (2 - 1)\n}\n";
-        let ast = compare(src);
-        let crate::common_ir::ScalarStmt::Return(expr) =
-            &ast.functions[0].body[1] else {panic!("應保留 return 表達式");};
-        let crate::common_ir::ScalarExpr::Binary {left,op:'+',right} = expr
-            else {panic!("最外層應是最後一個加號運算");};
-        assert!(matches!(&**left,crate::common_ir::ScalarExpr::Binary {op:'-',..}));
-        assert!(matches!(&**right,crate::common_ir::ScalarExpr::Binary {op:'-',..}));
-    }
-
-    #[test]
-    fn 非共有的資源語法不得冒充共同標量_ir() {
-        let text = "fn main()->int{\nvar text:str = \"中文\"\nreturn 0\n}\n";
-        let source = Source::new(text.as_bytes().to_vec());
+    fn 真正 Parser 語句分隔仍分別保留模式原診斷() {
+        checked("fn main()->int{\nvar n:int = 3\nreturn n}\n");
+        let invalid = "fn main()->int{\nvar n:int = 3 return n\n}\n";
+        let source = Source::new(invalid.as_bytes().to_vec());
         let lexed = lexer::scan(&source);
-        let (structs, funs) = Parser {
+        let public = parser::parse(&source, &lexed.tokens).unwrap_err();
+        let private = Parser {
             source: &source, tokens: &lexed.tokens, cursor: 0
-        }.file().unwrap();
-        assert!(private_to_common_ast(&structs, &funs, text).is_none());
+        }.file().unwrap_err();
+        assert_eq!(&*public.message, "語句之間必須以換行分隔");
+        assert_eq!(&*private.message, "語句之間必須換行");
+        assert_eq!(public.span, private.span);
+    }
+
+    #[test]
+    fn 多行布林 if_條件兩路真正 Checker 交付同一 HIR() {
+        let code = "\n\nfn main()->int{\n\nvar flag:bool = true\n\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n\nreturn 0\n}\n";
+        let (file, private) = checked(code);
+        let parser::Item::Function(fun) = &file.items[0] else {panic!("缺函式")};
+        let parser::StmtKind::Binding(decl) = &fun.body.statements[0].kind
+            else {panic!("缺旗標宣告")};
+        assert_eq!(decl.ty, ScalarType::Bool);
+        let parser::StmtKind::IfChain(chain) = &fun.body.statements[1].kind
+            else {panic!("缺分支")};
+        let expr = &chain.arms[0].branch.condition;
+        assert_eq!(private.plan.scalar_hir.expression(expr.node_span()).unwrap().ty,
+            ScalarType::Bool);
+    }
+
+    #[test]
+    fn 三重加減巢狀括號直接比對真正 AST 運算子及 HIR() {
+        for code in [
+            "fn main()->int{\nreturn 10 - 3 + 2 - (1 + 4)\n}\n",
+            "fn main()->int{\nvar n:int = 10\nreturn n - 3 + (2 - 1)\n}\n",
+        ] {
+            let (file, private) = checked(code);
+            let parser::Item::Function(fun) = &file.items[0] else {panic!("缺函式")};
+            let ret = fun.body.statements.last().unwrap();
+            let parser::StmtKind::Return(value) = &ret.kind else {panic!("缺返回")};
+            let crate::expr::ExprKind::BinaryInt(binary) = &value.expression.kind
+                else {panic!("公私必須使用唯一 BinaryInt AST")};
+            assert!(matches!(binary.operator, '+'|'-'));
+            assert!(private.plan.scalar_hir.arithmetic(value.expression.node_span()).is_some());
+        }
+    }
+
+    #[test]
+    fn 未核准私有資源類型不能成為公開純值解析授權() {
+        for code in [
+            "fn main()->int{\nvar text:str = \"中文字串\"\nreturn 0\n}\n",
+            "fn main()->int{\nvar data:list\nreturn 0\n}\n",
+        ] {
+            let source = Source::new(code.as_bytes().to_vec());
+            let tokens = lexer::scan(&source);
+            assert!(parser::parse(&source, &tokens.tokens).is_err(),
+                "MVP-A 不可因共用 AST 擴張 str/list 語法");
+            assert!(crate::common_ir::ScalarType::from_name("str").is_none());
+            assert!(crate::common_ir::ScalarType::from_name("list").is_none());
+        }
+        let checked = verified_private_source(
+            "fn main()->int{\nvar value:str = \"中文\"\nreturn 0\n}\n"
+        ).unwrap();
+        assert!(checked.plan.scalar_hir.verified_expressions().all(
+            |fact| fact.ty == ScalarType::Int || fact.ty == ScalarType::Bool
+        ), "非 Copyable 私有資源不得冒充公開純值 HIR");
     }
 }
