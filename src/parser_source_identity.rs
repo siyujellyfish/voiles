@@ -1,7 +1,7 @@
 // F01：正式公開 Parser 產物的完整節點身分盤點。
 // 僅由原解析器建構的 AST 正向讀取；不作第二次 Token 解析、
 // 不改變公開 MVP-A 的核准語法或診斷來源。
-fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
+pub(crate) fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
     use crate::common_ir::{FrontendMode, NodeRole, NodeSpan, SourceIdentityAudit};
 
     fn expression(
