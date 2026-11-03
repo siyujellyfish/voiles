@@ -81,9 +81,13 @@ jobs:
         run: |
           bash -n tools/核對-P14-P16-工程證據.sh
           bash tools/核對-P14-P16-工程證據.sh ./target/p13-accept/internal_tests target/p13-accept
-      - name: F00 擷取八條已核准私有來源的實際 P16 ResourceId 事件候選
+      - name: F00 嚴格核對八條已凍結私有來源的逐 ResourceId 事件
         run: |
-          python3 tools/鎖定F00八橋接.py --test-bin target/p13-accept/internal_tests --print
+          python3 tools/鎖定F00八橋接.py --test-bin target/p13-accept/internal_tests --check
+
+      - name: F00 擷取 P13～P16 原始 24 項各自的實際 Rust 來源證據候選
+        run: |
+          python3 tools/鎖定F00原始24項.py --test-bin target/p13-accept/internal_tests --print
 
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
