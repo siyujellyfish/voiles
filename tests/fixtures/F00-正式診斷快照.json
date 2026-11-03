@@ -1,0 +1,791 @@
+{
+  "case_definition": "P01 19 正＋30 反＝49 原始來源；另有 1 項素材路徑測試",
+  "cases": [
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "首版單檔來源缺少合法的 fn main()",
+          "span": null
+        }
+      ],
+      "id": "P01-反01",
+      "path": "tests/fixtures/voiles/P01-反01.voil",
+      "source_sha256": "46000a1b4389bcb0050134398455f1e20506992be883e791ba7ce1c635569fa5",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "首版入口 fn main() 必須標註 -> int",
+          "span": {
+            "end": [
+              3,
+              2
+            ],
+            "start": [
+              1,
+              1
+            ]
+          }
+        }
+      ],
+      "id": "P01-反02",
+      "path": "tests/fixtures/voiles/P01-反02.voil",
+      "source_sha256": "9b8d98d2ed2eeda49d2da34a6da4adee4e1f0cd409f64bb6ff49185b7e6f9c9b",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版函式不得有參數",
+          "span": {
+            "end": [
+              1,
+              12
+            ],
+            "start": [
+              1,
+              11
+            ]
+          }
+        }
+      ],
+      "id": "P01-反03",
+      "path": "tests/fixtures/voiles/P01-反03.voil",
+      "source_sha256": "33e2dd8cea971f2b9d246b19021bcf28a24c8ed44f9897ab26f24ed6cd9d597d",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版頂層只接受 fn、const、var 宣告",
+          "span": {
+            "end": [
+              1,
+              6
+            ],
+            "start": [
+              1,
+              1
+            ]
+          }
+        }
+      ],
+      "id": "P01-反04",
+      "path": "tests/fixtures/voiles/P01-反04.voil",
+      "source_sha256": "be1f5ffb4665ab37672cf480f8708ff06f6620b310808b2c09d0f71aa8844fd2",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "一般變數宣告必須標註型別",
+          "span": {
+            "end": [
+              2,
+              12
+            ],
+            "start": [
+              2,
+              11
+            ]
+          }
+        }
+      ],
+      "id": "P01-反05",
+      "path": "tests/fixtures/voiles/P01-反05.voil",
+      "source_sha256": "d0e30cdd5fa2a88c21e51a9105a33def2d75569e33bfa7375bcc681eaa3a11e7",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "const 宣告時必須立即初始化",
+          "span": {
+            "end": [
+              3,
+              1
+            ],
+            "start": [
+              2,
+              16
+            ]
+          }
+        }
+      ],
+      "id": "P01-反06",
+      "path": "tests/fixtures/voiles/P01-反06.voil",
+      "source_sha256": "a2fa7eb809e0628a1cc7ec501df752eceb5bde11bfcfb2254a983d0a18c92e11",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "變數在所有可達路徑完成初始化前不可讀取",
+          "span": {
+            "end": [
+              3,
+              13
+            ],
+            "start": [
+              3,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反07",
+      "path": "tests/fixtures/voiles/P01-反07.voil",
+      "source_sha256": "51cb6f8a96cd5ac998956905f51e8a4d5c05e64f0ba5975dc47b0847ea4ddba7",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "回傳值型別與函式標註不一致",
+          "span": {
+            "end": [
+              2,
+              16
+            ],
+            "start": [
+              2,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反08",
+      "path": "tests/fixtures/voiles/P01-反08.voil",
+      "source_sha256": "2e2c4776768145a58d5cc92f81da463e7ac7b6a9ea7a3fc96c17b039b5a3e523",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "語句區塊至少必須有一條語句",
+          "span": {
+            "end": [
+              1,
+              17
+            ],
+            "start": [
+              1,
+              16
+            ]
+          }
+        }
+      ],
+      "id": "P01-反09",
+      "path": "tests/fixtures/voiles/P01-反09.voil",
+      "source_sha256": "aa35e91c93688e1102b5daf1c1f6e330dd02d47ee200cf7ad07e5c3ea45c7b29",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "語句之間必須以換行分隔",
+          "span": {
+            "end": [
+              2,
+              15
+            ],
+            "start": [
+              2,
+              14
+            ]
+          }
+        }
+      ],
+      "id": "P01-反10",
+      "path": "tests/fixtures/voiles/P01-反10.voil",
+      "source_sha256": "be2d92134968a461df305ea594b194c61bdf660eeb43f3f4d9535626bf626ec1",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "回傳值型別與函式標註不一致",
+          "span": {
+            "end": [
+              2,
+              13
+            ],
+            "start": [
+              2,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反11",
+      "path": "tests/fixtures/voiles/P01-反11.voil",
+      "source_sha256": "1d9a9c9f68907c53460170b643f546a1ca8c80d1d588b104fdf1d3b585465703",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "同一作用域重複宣告變數",
+          "span": {
+            "end": [
+              3,
+              18
+            ],
+            "start": [
+              3,
+              5
+            ]
+          }
+        }
+      ],
+      "id": "P01-反12",
+      "path": "tests/fixtures/voiles/P01-反12.voil",
+      "source_sha256": "4f274b70079fb9e9b461c58919baf5e6f76ddbad53a3efaac431fe7d5440236b",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "找不到已宣告且可讀取的具名變數",
+          "span": {
+            "end": [
+              2,
+              19
+            ],
+            "start": [
+              2,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反13",
+      "path": "tests/fixtures/voiles/P01-反13.voil",
+      "source_sha256": "11599b7d892619bcd8feb968d1700aea91bfd7a0abff5a18778289fbcd17eb04",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "找不到已宣告且可讀取的具名變數",
+          "span": {
+            "end": [
+              1,
+              24
+            ],
+            "start": [
+              1,
+              19
+            ]
+          }
+        }
+      ],
+      "id": "P01-反14",
+      "path": "tests/fixtures/voiles/P01-反14.voil",
+      "source_sha256": "36f01f21f130164bca79ac339c7c63b1cb94e04571e4a75d8a09c47d550741fe",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "const 宣告不可再次賦值",
+          "span": {
+            "end": [
+              3,
+              10
+            ],
+            "start": [
+              3,
+              5
+            ]
+          }
+        }
+      ],
+      "id": "P01-反15",
+      "path": "tests/fixtures/voiles/P01-反15.voil",
+      "source_sha256": "4a52536cb10e50f6e04027d3b5885d8a538e5b699131ba2ca49aeab0f27e01ac",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "if 與 else if 條件須有完整圓括號",
+          "span": {
+            "end": [
+              2,
+              12
+            ],
+            "start": [
+              2,
+              8
+            ]
+          }
+        }
+      ],
+      "id": "P01-反16",
+      "path": "tests/fixtures/voiles/P01-反16.voil",
+      "source_sha256": "c07bc9b0e354737c47705d3b788ed250b84f06a0a6feb5f92ed0d8ec52cb5461",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "if 條件必須具有 bool 型別",
+          "span": {
+            "end": [
+              3,
+              10
+            ],
+            "start": [
+              3,
+              9
+            ]
+          }
+        }
+      ],
+      "id": "P01-反17",
+      "path": "tests/fixtures/voiles/P01-反17.voil",
+      "source_sha256": "89b29f36f5aee0daff88650846da53806b3a3c2fec3bd11c1abc98727b3d4848",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "if 與 else if 條件缺少右圓括號",
+          "span": {
+            "end": [
+              2,
+              17
+            ],
+            "start": [
+              2,
+              14
+            ]
+          }
+        }
+      ],
+      "id": "P01-反18",
+      "path": "tests/fixtures/voiles/P01-反18.voil",
+      "source_sha256": "b967c82d584676c58ff947342fc7f1701cc9f52f4f34c5b6ce54bf6527970d5b",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "if 與 else if 條件須有完整圓括號",
+          "span": {
+            "end": [
+              4,
+              18
+            ],
+            "start": [
+              4,
+              14
+            ]
+          }
+        }
+      ],
+      "id": "P01-反19",
+      "path": "tests/fixtures/voiles/P01-反19.voil",
+      "source_sha256": "12f848c32998615a4daaf33bc04d258b1399f4ae21a1b82a985b0ec72caee48d",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "整數加減右運算元必須為 int",
+          "span": {
+            "end": [
+              2,
+              20
+            ],
+            "start": [
+              2,
+              16
+            ]
+          }
+        }
+      ],
+      "id": "P01-反20",
+      "path": "tests/fixtures/voiles/P01-反20.voil",
+      "source_sha256": "dc01659a0cd291f7d180f1c1ca751ef4ca441a134ff694f17fae5099babf74b0",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版宣告初始化僅接受相符型別常值或合法具名變數",
+          "span": {
+            "end": [
+              3,
+              1
+            ],
+            "start": [
+              2,
+              22
+            ]
+          }
+        }
+      ],
+      "id": "P01-反21",
+      "path": "tests/fixtures/voiles/P01-反21.voil",
+      "source_sha256": "cee8d3f0623479f36a846307629e28b096ce09f2d615258114494eced1f06c17",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版 var 賦值只接受同型別常值或合法具名變數",
+          "span": {
+            "end": [
+              4,
+              1
+            ],
+            "start": [
+              3,
+              14
+            ]
+          }
+        }
+      ],
+      "id": "P01-反22",
+      "path": "tests/fixtures/voiles/P01-反22.voil",
+      "source_sha256": "b441b5d3ef6d08d7508f45da531dd70222acc820dc073a8aec0610d3dc696d4e",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版 var 賦值只接受同型別常值或合法具名變數",
+          "span": {
+            "end": [
+              4,
+              1
+            ],
+            "start": [
+              3,
+              14
+            ]
+          }
+        }
+      ],
+      "id": "P01-反23",
+      "path": "tests/fixtures/voiles/P01-反23.voil",
+      "source_sha256": "f5544dd7a1d13851718134089dbfb40cbc246b957f4e9fd5214197df3daa43cd",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "變數在所有可達路徑完成初始化前不可讀取",
+          "span": {
+            "end": [
+              6,
+              13
+            ],
+            "start": [
+              6,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反24",
+      "path": "tests/fixtures/voiles/P01-反24.voil",
+      "source_sha256": "304b54dc96dffe391debc82949d380d483799ef331cecc952ceb444c9fdca92f",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版零引數函式呼叫必須為空引數列表",
+          "span": {
+            "end": [
+              6,
+              20
+            ],
+            "start": [
+              6,
+              19
+            ]
+          }
+        }
+      ],
+      "id": "P01-反25",
+      "path": "tests/fixtures/voiles/P01-反25.voil",
+      "source_sha256": "6feb8b241ae0353bab595791d9fcb9e034b9d7ca4a6e91dc0711a1f190516c9f",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "函式最外層最後一條語句必須為明確 return",
+          "span": {
+            "end": [
+              4,
+              1
+            ],
+            "start": [
+              3,
+              2
+            ]
+          }
+        }
+      ],
+      "id": "P01-反26",
+      "path": "tests/fixtures/voiles/P01-反26.voil",
+      "source_sha256": "51f487ef9e5d5361b42cef85f794924b6f5d28b03e3a08c6a5b5d706fcd6aa7b",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "語句之間必須以換行分隔",
+          "span": {
+            "end": [
+              2,
+              14
+            ],
+            "start": [
+              2,
+              13
+            ]
+          }
+        }
+      ],
+      "id": "P01-反27",
+      "path": "tests/fixtures/voiles/P01-反27.voil",
+      "source_sha256": "e3c64ff9014bfee9fb029732b7c482a29c02fb559d86cdcb0908ea1f2d24b822",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Syntax",
+          "message": "首版不接受的語句或未核准語法",
+          "span": {
+            "end": [
+              2,
+              10
+            ],
+            "start": [
+              2,
+              5
+            ]
+          }
+        }
+      ],
+      "id": "P01-反28",
+      "path": "tests/fixtures/voiles/P01-反28.voil",
+      "source_sha256": "a9d96221176b8c67ffb5a77d9aedb4a88348635e02bf2706fd4e3d106e7a08a0",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "整數字面值超出有號 64 位元範圍",
+          "span": {
+            "end": [
+              2,
+              31
+            ],
+            "start": [
+              2,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反29",
+      "path": "tests/fixtures/voiles/P01-反29.voil",
+      "source_sha256": "9db44145f243c6dd5e4bc0f30e367241b0ed051491910a9e0764ce29aee7a1fc",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [
+        {
+          "kind": "Static",
+          "message": "已確定的整數運算超出有號 64 位元範圍",
+          "span": {
+            "end": [
+              2,
+              35
+            ],
+            "start": [
+              2,
+              12
+            ]
+          }
+        }
+      ],
+      "id": "P01-反30",
+      "path": "tests/fixtures/voiles/P01-反30.voil",
+      "source_sha256": "f403d73cc2b23e0147aa36138f0c3970af91fa91c5784f663af1072affb4fe0f",
+      "status": "Failed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正01",
+      "path": "tests/fixtures/voiles/P01-正01.voil",
+      "source_sha256": "e279f1ad8413e9b164f868439dace7f28006bbab149678651195e7c5abd39bd2",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正02",
+      "path": "tests/fixtures/voiles/P01-正02.voil",
+      "source_sha256": "4a2b0bf8dfff48e4cfd0ce2954ceb12314392228aa37080efb9250f54a68e043",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正03",
+      "path": "tests/fixtures/voiles/P01-正03.voil",
+      "source_sha256": "657e87bc570cf79f33e5f16693a2432d5ca5c7c7db898b04690dae2b0593d769",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正04",
+      "path": "tests/fixtures/voiles/P01-正04.voil",
+      "source_sha256": "877a32e10b1ad8492501b1a4160e3f80111d1024eec3651c079878fe0bcec7c6",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正05",
+      "path": "tests/fixtures/voiles/P01-正05.voil",
+      "source_sha256": "a91b0f89ef127cbd47064b8f8621aad79adeb6f7e4ca3b3cf71cd4668bb26f82",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正06",
+      "path": "tests/fixtures/voiles/P01-正06.voil",
+      "source_sha256": "2618c6e298646127b8fc0c21f9ad02f1f58d58813de9ceba64a2c8716a78723c",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正07",
+      "path": "tests/fixtures/voiles/P01-正07.voil",
+      "source_sha256": "53323409e3be56cdcf4230d46001e4808121f97f6ab5240475b5abadee5cc8e1",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正08",
+      "path": "tests/fixtures/voiles/P01-正08.voil",
+      "source_sha256": "94bb23b850df6cef9b1cc32d2e50e3e5000ab1f6ef0b7a390f5118f6ac09849a",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正09",
+      "path": "tests/fixtures/voiles/P01-正09.voil",
+      "source_sha256": "b6440c8705f37b179399c0e3f12c3981f512b6533c9d4e3eafd737b4a209f298",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正10",
+      "path": "tests/fixtures/voiles/P01-正10.voil",
+      "source_sha256": "0e532adba31eb8ebe10299a6cee95f9d72b8831dd13183a6ac1ed94f920a0602",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正11",
+      "path": "tests/fixtures/voiles/P01-正11.voil",
+      "source_sha256": "c629463e6b234e00de51835d25f21c2a1b87d6898026afac92f964f39d1fbaae",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正12",
+      "path": "tests/fixtures/voiles/P01-正12.voil",
+      "source_sha256": "627fe80264d030f8b255d18d3674597e2eecc373440e0a124febbda3e03d2e34",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正13",
+      "path": "tests/fixtures/voiles/P01-正13.voil",
+      "source_sha256": "37b26d6ea1d9b78220ff1554fd5c9c47d04ade087b34fd8bdf593ad5b582397f",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正14",
+      "path": "tests/fixtures/voiles/P01-正14.voil",
+      "source_sha256": "699a16da68b1a7466b315c96c7d1efc92515004097f118d66bf619477672d52b",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正15",
+      "path": "tests/fixtures/voiles/P01-正15.voil",
+      "source_sha256": "b11bf4911a11937bde97c1558cf313fbc23876925551f56a8f383fc6194b05ad",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正16",
+      "path": "tests/fixtures/voiles/P01-正16.voil",
+      "source_sha256": "5e70781d834b4e861f12a13ae1dfd491174bc8a0359b4e13b3453a86d47a3fda",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正17",
+      "path": "tests/fixtures/voiles/P01-正17.voil",
+      "source_sha256": "3e8f799cda18987269750bbd36292fc5f53746befe3ba5fcbe0936b5aba56a5e",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正18",
+      "path": "tests/fixtures/voiles/P01-正18.voil",
+      "source_sha256": "ec18d12e7034020f072a05d271d2736ec21963825359698f1d18158c329c5c99",
+      "status": "Passed"
+    },
+    {
+      "diagnostics": [],
+      "id": "P01-正19",
+      "path": "tests/fixtures/voiles/P01-正19.voil",
+      "source_sha256": "12200c4f57f9d31223e3fbcdd5773d165e89c6725b54136df511140243ca5ac2",
+      "status": "Passed"
+    }
+  ],
+  "format_version": 1,
+  "source_baseline_head": "57d0fc7b011165f14eaa5c2c1537a2b6cc5fe302"
+}
