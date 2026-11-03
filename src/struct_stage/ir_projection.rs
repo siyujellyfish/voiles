@@ -17,8 +17,9 @@ mod p16_6_r02_2_共同語意樹驗證 {
             .expect("公開 P09 名稱解析必須成功");
         let public_hir = types::check_with_names_and_hir(&public, &input, &names)
             .expect("真正公開 P10 必須交付來源型別 HIR");
-        flow::check_with_typed_hir(&public, &input, &names, &public_hir)
-            .expect("公開 P11 可達與初始化檢查須成功");
+        let reachable = flow::check_with_typed_hir_and_reachability(
+            &public, &input, &names, &public_hir,
+        ).expect("公開 P11 必須從真正 CFG 交付可達 Typed HIR 視圖");
         functions::check(&public, &input)
             .expect("公開原始函式契約須成功");
         let private = verified_private_source(code)
@@ -27,27 +28,24 @@ mod p16_6_r02_2_共同語意樹驗證 {
             FrontendMode::PublicMvpA, code));
         assert!(private.plan.scalar_hir.source_spans_are_valid_for_mode(
             FrontendMode::PrivateVerified, code));
-        // F04 尚未整包閉合的真實差異，不應用絕對等量作假簽核：
-        // 公開 P10 會記錄「兩側都 return」後的不可達尾句，
-        // 公開 Group 另外記錄內層 expression，私有 Parser 將
-        // 括號原始範圍直接附在同一 Term 上。
-        // 對兩條 Checker 都正式交付的每一來源身分，型別／跨度
-        // 及 DeclId 必須完全一致；公開單方面證據另有負例明列，
-        // 保留 F02/F04/G1/G2 未通過，不虛稱完整雙向等價。
-        let public_expressions: Vec<_> = public_hir.verified_expressions().collect();
-        let private_expressions: Vec<_> =
-            private.plan.scalar_hir.verified_expressions().collect();
-        for fact in &private_expressions {
-            assert!(public_expressions.contains(fact),
-                "私有正式 Checker 不得創造公開同源 HIR 沒有的型別或跨度：{fact:?}");
-        }
-        let public_references: Vec<_> = public_hir.verified_references().collect();
-        let private_references: Vec<_> =
-            private.plan.scalar_hir.verified_references().collect();
-        for fact in &private_references {
-            assert!(public_references.contains(fact),
-                "同一原碼的私有來源／遮蔽 DeclarationId 不得與公開 P09 矛盾：{fact:?}");
-        }
+        // 公開 P10 仍對原始 AST 所有語句保留既有型別診斷；
+        // 僅 P11 的真正可達 CFG 為同源 Checker 比對範圍。
+        // 不建第二份型別表、不自動推論任何未執行資源事件。
+        assert_eq!(
+            reachable.verified_expressions().collect::<Vec<_>>(),
+            private.plan.scalar_hir.verified_expressions().collect::<Vec<_>>(),
+            "同源可達純值的真實 Checker HIR 型別與 UTF-8 跨度必須逐筆一致",
+        );
+        assert_eq!(
+            reachable.verified_references().collect::<Vec<_>>(),
+            private.plan.scalar_hir.verified_references().collect::<Vec<_>>(),
+            "同源可達名稱必須保留相同詞彙宣告來源與型別",
+        );
+        assert_eq!(
+            reachable.verified_assignments().collect::<Vec<_>>(),
+            private.plan.scalar_hir.verified_assignments().collect::<Vec<_>>(),
+            "同源可達賦值必須從相同 P09/Checker 來源位置與型別交付",
+        );
         (public, private)
     }
 
