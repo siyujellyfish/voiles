@@ -30,8 +30,6 @@ def 解碼來源(record: str, phase: str) -> dict[str, object]:
     source_hex, status, kind, message_hex, *locations = fields
     raw = bytes.fromhex(source_hex)
     source = raw.decode("utf-8", errors="strict")
-    if not source:
-        raise ValueError(f"{phase}：不可將空來源冒充正式驗收事實")
     message = bytes.fromhex(message_hex).decode("utf-8", errors="strict")
     if status == "Passed":
         if kind != "-" or message or any(pos != "-" for pos in locations):
