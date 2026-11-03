@@ -1,0 +1,428 @@
+{
+  "cases": [
+    {
+      "failed": 0,
+      "id": "P13.1",
+      "ignored": 0,
+      "original_requirement": "確認 Copyable 適用範圍與能力表達方式",
+      "passed": 3,
+      "requirement_sha256": "fc0305809b6f57e27d97df23ec1f8477b94f9b76d6d0babb08aebbafaaa46f02",
+      "test_filter": "struct_stage::p13_1_正式來源閉包::",
+      "tests": [
+        "struct_stage::p13_1_正式來源閉包::三層結構內含字串時整體確定禁止隱含複製",
+        "struct_stage::p13_1_正式來源閉包::全部欄位可複製的三層結構可實際隱含複製",
+        "struct_stage::p13_1_正式來源閉包::容器未決與未知型別不誤報為永久不可複製"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P13.2",
+      "ignored": 0,
+      "original_requirement": "確定一般 = 複製及不支援複製的拒絕規則",
+      "passed": 7,
+      "requirement_sha256": "95e77d34c616cd1afd1b1d4a2f2027cc461447683c346b03e40e3739b01ea91c",
+      "test_filter": "struct_stage::p13_2_一般賦值正式來源閉包::",
+      "tests": [
+        "struct_stage::p13_2_一般賦值正式來源閉包::copyable_函式參數與回傳以及方法參數可重用同一來源",
+        "struct_stage::p13_2_一般賦值正式來源閉包::copyable_巢狀結構可以複製給不同變數及覆寫並讀取欄位",
+        "struct_stage::p13_2_一般賦值正式來源閉包::int_bool_float_名稱複製與一般重新賦值均保持來源有效",
+        "struct_stage::p13_2_一般賦值正式來源閉包::str_獨立新建值可合法重新賦值且不偷渡隱含移動",
+        "struct_stage::p13_2_一般賦值正式來源閉包::已繫結_str_不能經一般宣告複製",
+        "struct_stage::p13_2_一般賦值正式來源閉包::已繫結_str_不能經一般賦值隱含複製",
+        "struct_stage::p13_2_一般賦值正式來源閉包::未初始化_copyable_值依然不能複製"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P13.3",
+      "ignored": 0,
+      "original_requirement": "在安全規則核准後追蹤 `.move()` 的所有權轉移；結構禁止僅移動個別欄位",
+      "passed": 6,
+      "requirement_sha256": "02318a19ef482fbddc6e1b19b830399a6aac9b862aaa27866f2f393e72e24388",
+      "test_filter": "struct_stage::p13_3_所有權移動來源閉包::",
+      "tests": [
+        "struct_stage::p13_3_所有權移動來源閉包::str_資源經函式引數及回傳可連續明確轉交",
+        "struct_stage::p13_3_所有權移動來源閉包::具名欄位建立式明確轉交資源不得重複使用舊來源",
+        "struct_stage::p13_3_所有權移動來源閉包::含資源結構可整筆移動但不可隱含複製",
+        "struct_stage::p13_3_所有權移動來源閉包::有效借用未歸還前不得移動原持有者",
+        "struct_stage::p13_3_所有權移動來源閉包::移動借用別名不得偷轉成所有者",
+        "struct_stage::p13_3_所有權移動來源閉包::結構單欄位移動即使資源型別也不被接受"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P13.4",
+      "ignored": 0,
+      "original_requirement": "檢查移動後使用、再次初始化及多路徑狀態",
+      "passed": 7,
+      "requirement_sha256": "aaf75ef91f5269db3f6400e78221746cd7e492d0e6eb2531a11174e687919eb3",
+      "test_filter": "struct_stage::p13_4_正式來源閉包::",
+      "tests": [
+        "struct_stage::p13_4_正式來源閉包::內層同名資源移動不得污染外層宣告",
+        "struct_stage::p13_4_正式來源閉包::兩側資源移動後重新初始化可在合流後再移交",
+        "struct_stage::p13_4_正式來源閉包::分支局部宣告不能跨作用域逃逸",
+        "struct_stage::p13_4_正式來源閉包::只有一側重新初始化不可在合流後當成有效資源",
+        "struct_stage::p13_4_正式來源閉包::巢狀兩側均提前回傳時不允許錯誤合流來源",
+        "struct_stage::p13_4_正式來源閉包::提前回傳分支的移動不污染唯一可達的後續路徑",
+        "struct_stage::p13_4_正式來源閉包::無_else_單側移動後必須拒絕合流再使用"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P13.5",
+      "ignored": 0,
+      "original_requirement": "加入可複製與資源型別的正向／負向案例",
+      "passed": 3,
+      "requirement_sha256": "06f8f5d95271e3cae8af2cfaeef74815ba0954c3bda20591e048842eb36f8eca",
+      "test_filter": "struct_stage::p13_5_資源與可複製值來源對照矩陣::",
+      "tests": [
+        "struct_stage::p13_5_資源與可複製值來源對照矩陣::p13_5_可複製值_允許複製與明確移動_移動後來源失效",
+        "struct_stage::p13_5_資源與可複製值來源對照矩陣::p13_5_資源_str_允許明確整筆移動_但不允許隱含複製",
+        "struct_stage::p13_5_資源與可複製值來源對照矩陣::p13_5_資源重新初始化後可再次明確移動"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P13.6",
+      "ignored": 0,
+      "original_requirement": "驗證 S19 整值複製、S21 單欄位移動禁令、S15 方法不可消耗 self",
+      "passed": 2,
+      "requirement_sha256": "060d13c695a64565cfb42da4774cf61c1e84559e5e7358d4213bd76bd328c300",
+      "test_filter": "struct_stage::p13_s19_s21_結構所有權來源矩陣::",
+      "tests": [
+        "struct_stage::p13_s19_s21_結構所有權來源矩陣::p13_6_禁止從結構個別欄位明確移動",
+        "struct_stage::p13_s19_s21_結構所有權來源矩陣::p13_6_結構整體複製僅在全部欄位可複製時合法"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P14.1",
+      "ignored": 0,
+      "original_requirement": "依 `.borrow()` 與 `self` 方法借用的既定語意建立借用紀錄；可變借用權限仍待決定",
+      "passed": 17,
+      "requirement_sha256": "c4d934568bff3950d86f6440b690304bf04558c6936c8aff98bea2d19280cb34",
+      "test_filter": "borrow_safety::tests::",
+      "tests": [
+        "borrow_safety::tests::f06_f09_已解析快照與真實票據不符時批次歸還無副作用",
+        "borrow_safety::tests::f06_正式靜態快照合流與真實票據來源權限一致且不可造假",
+        "borrow_safety::tests::f06_靜態快照須與真實票據的來源權限及共享重數完全相等",
+        "borrow_safety::tests::f08_失效合流快照不可對無關來源發放新借用或直接操作授權",
+        "borrow_safety::tests::f08_靜態合流與新借用及直接讀寫都引用同一宣告身分快照",
+        "borrow_safety::tests::hc14_不同追蹤器的借用票據即使宣告位置與序號相同也不能互換",
+        "borrow_safety::tests::hc14_函式或方法離開時歸還_但不臆定一般生命週期",
+        "borrow_safety::tests::hc14_可變借用互斥_不可同時讀讀寫或寫寫",
+        "borrow_safety::tests::hc14_同來源兩個共享唯讀借用可並存_但來源不得直接使用",
+        "borrow_safety::tests::hc14_同名字串不同宣告來源不會產生假的借用衝突",
+        "borrow_safety::tests::hc14_批次中混入跨追蹤器票據不得部分解除其餘借用",
+        "borrow_safety::tests::hc14_批次歸還發現無效票據時不得提前解除其他來源",
+        "borrow_safety::tests::hc14_重複票據與錯誤種類不會在批次結束途中解鎖",
+        "borrow_safety::tests::hc14_錯誤或重複票據不可提前解除真實借用限制",
+        "borrow_safety::tests::分支合流活躍借用快照以來源身分檢查共享及獨占一致性",
+        "borrow_safety::tests::真實票據與靜態借用事實共用同一來源身分及權限型別",
+        "borrow_safety::tests::靜態來源活躍旗標與真正票據的直接存取規則必須相同"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P14.2",
+      "ignored": 0,
+      "original_requirement": "待核准同時借用／可變借用的別名限制後，檢查合法與非法借用衝突",
+      "passed": 7,
+      "requirement_sha256": "cc29224bbd6a5c50998ff0ba820488844ba4ab5c53931cc26448a80b193a3475",
+      "test_filter": "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::",
+      "tests": [
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::const_來源不能冒充可變來源建立獨占別名",
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::const_來源兩個共享別名可以同時讀取且歸還後使用原來源",
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::不同持有者可各自保有獨占借用而不互相衝突",
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::同一持有者的兩個獨占借用不得重疊",
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::已存在借用別名不得在缺乏父子證明時再次借用",
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::已移動資源不允許借用或憑別名建立第二所有者",
+        "struct_stage::p14_1_p14_2_真實來源與衝突矩陣::有效獨占借用期間不得直接讀取原來源"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P14.3",
+      "ignored": 0,
+      "original_requirement": "拒絕借用有效期間的不合法移動與變更",
+      "passed": 12,
+      "requirement_sha256": "d49149fcccc1409f62a131924e303d540d89eff136b9479c123d889c70616682",
+      "test_filter": "struct_stage::va14_va15_borrow_source_tests::",
+      "tests": [
+        "struct_stage::va14_va15_borrow_source_tests::va14_const_共享借用可同時存在",
+        "struct_stage::va14_va15_borrow_source_tests::va14_var_獨占借用不可重疊",
+        "struct_stage::va14_va15_borrow_source_tests::va14_var_獨占借用可呼叫合法可寫方法且原來源於最後使用後恢復",
+        "struct_stage::va14_va15_borrow_source_tests::va14_來源借用尚有效時不得直接隱含複製",
+        "struct_stage::va14_va15_borrow_source_tests::va14_來源與借用宣告可變性不符必須拒絕",
+        "struct_stage::va14_va15_borrow_source_tests::va14_借用原非_copyable_資源期間不能偷偷移動來源",
+        "struct_stage::va14_va15_borrow_source_tests::va14_借用接收者合法唯讀方法且最後使用後解除封鎖",
+        "struct_stage::va14_va15_borrow_source_tests::va14_再借用_在缺乏別名關係證明前保守拒絕",
+        "struct_stage::va14_va15_borrow_source_tests::va14_非擁有借用不得被明確_move_轉換成所有者",
+        "struct_stage::va14_va15_borrow_source_tests::va15_借用回傳沒有獨立存活證明時拒絕_但_copyable_值可獨立複製",
+        "struct_stage::va14_va15_borrow_source_tests::va15_分支內借用於分支最後使用後歸還外層來源",
+        "struct_stage::va14_va15_borrow_source_tests::va15_合法最後使用後來源恢復可用_不必等區塊出口"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P14.4",
+      "ignored": 0,
+      "original_requirement": "確認借用綁定、重新借用及由借用複製之規則",
+      "passed": 2,
+      "requirement_sha256": "bc0cb719c1c4e7fd0b1b2d22e04dabc8891d73035a73c3e22eac028db23f9ad6",
+      "test_filter": "struct_stage::p14_4_借用別名複製能力來源::",
+      "tests": [
+        "struct_stage::p14_4_借用別名複製能力來源::已核准_copyable_借用值可建立真正獨立複本",
+        "struct_stage::p14_4_借用別名複製能力來源::資源借用別名不得藉一般名稱轉為新擁有者"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P14.5",
+      "ignored": 0,
+      "original_requirement": "加入衝突矩陣和巢狀呼叫案例",
+      "passed": 6,
+      "requirement_sha256": "491ad81de8968e420b0c86b969c38400a137e07ae7a6de786c1baa312b919574",
+      "test_filter": "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::",
+      "tests": [
+        "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::const_共享別名不能呼叫會寫入_self_的方法",
+        "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::const_共享別名透過巢狀函式與唯讀方法可取得獨立值",
+        "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::var_借用期間不得以嵌套方法直接再次使用原持有者",
+        "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::var_獨占別名可以呼叫寫入方法並於最後使用後歸還",
+        "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::巢狀函式不得在共享別名仍使用時直接操作原持有者",
+        "struct_stage::p14_5_p14_6_巢狀呼叫及_self_權限::非擁有別名永遠不能藉_move_成為完整資源持有者"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P14.6",
+      "ignored": 0,
+      "original_requirement": "對結構 `self` 僅可借用、方法結束歸還與欄位合法讀寫建立安全測試；可變借用授權與別名衝突仍待裁決",
+      "passed": 7,
+      "requirement_sha256": "cf34bb275720b3364eadad837194c10c29ccabdf3e303a9d444c9628e8db48f6",
+      "test_filter": "struct_stage::automatic_self_borrow_tests::",
+      "tests": [
+        "struct_stage::automatic_self_borrow_tests::s18_const_實例不得呼叫自動推導的獨占方法",
+        "struct_stage::automatic_self_borrow_tests::s18_const_欄位不得被方法修改",
+        "struct_stage::automatic_self_borrow_tests::一般函式在完整持有來源上可合法寫入已核准_copyable_var_欄位",
+        "struct_stage::automatic_self_borrow_tests::不推定不同方法重入與運算式寫入的借用生命週期",
+        "struct_stage::automatic_self_borrow_tests::已移動來源不得藉可變方法存取",
+        "struct_stage::automatic_self_borrow_tests::方案_a_依欄位寫入推導方法共享或獨占借用",
+        "struct_stage::automatic_self_borrow_tests::方法對_self_欄位的錯誤型別必須拒絕"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P15.1",
+      "ignored": 0,
+      "original_requirement": "確認生命週期分析範圍及作用域結束定義",
+      "passed": 2,
+      "requirement_sha256": "019e9d53674255a646588ca5fe97ca69e42db727a8bc0322765719a7eec3a32f",
+      "test_filter": "struct_stage::p15_1_父區塊後繼與內層宣告身分::",
+      "tests": [
+        "struct_stage::p15_1_父區塊後繼與內層宣告身分::父區塊引用外層同名變數不可延長內層借用有效期",
+        "struct_stage::p15_1_父區塊後繼與內層宣告身分::父區塊真正再次引用外層借用仍應封鎖分支內原來源"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P15.2",
+      "ignored": 0,
+      "original_requirement": "檢查回傳借用、逃逸借用與擁有者提早消失",
+      "passed": 7,
+      "requirement_sha256": "904602cff0036a3b967f622a608f7606bd7df0b3a88e562ca5ab8d6379a11346",
+      "test_filter": "struct_stage::p15_2_借用回傳與逃逸正式來源::",
+      "tests": [
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::copyable_借用值轉成獨立回傳值仍安全合法",
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::借用別名不可透過_move_偷換成跨作用域所有者",
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::借用運算式不可直接當函式回傳值",
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::巢狀區塊局部資源借用不得存入外層擁有者",
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::巢狀區塊純值回傳不應誤判為借用逃逸",
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::活躍借用跨移動原來源必須拒絕",
+        "struct_stage::p15_2_借用回傳與逃逸正式來源::非_copyable_來源的借用別名不得跨函式回傳"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P15.3",
+      "ignored": 0,
+      "original_requirement": "處理分支、迴圈與函式呼叫間的借用有效期",
+      "passed": 10,
+      "requirement_sha256": "3a4f7a7de9c62fbb11aa6ec95f07a9b5e56347ba6958b72d462cde21d9bab7e8",
+      "test_filter": "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::",
+      "tests": [
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::while_內方法參數借用後_break_只退出目前迴圈",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::分支內仍活躍的獨占借用不能因函式呼叫提前釋放",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::多次_for_函式借用穩定返回且最後可移動",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::巢狀條件中的函式借用退出後仍可再次借用同來源",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::正式函式多個共享預設借用在呼叫出口可全數歸還",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::正式方法_self_與兩個共享字串參數使用同一追蹤器並可全數歸還",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::確定單次_for_函式借用與_continue_不錯把來源移走",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::迭代區域內同名資源遮蔽不應轉移外層持有者",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::迴圈內借用後再明確移動資源仍須拒絕不穩定反向邊",
+        "struct_stage::p15_3_函式預設借用跨分支迴圈交叉驗證::雙分支各自借用非_copyable_來源後可於合流移動"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P15.4",
+      "ignored": 0,
+      "original_requirement": "釐清容器元素、欄位與索引借用的保守策略",
+      "passed": 5,
+      "requirement_sha256": "8599f460d4ecbecbff41ca7dc23b87d3561d006bf7698ff25301ae9b57b455fe",
+      "test_filter": "struct_stage::p15_4_欄位索引與容器借用界線::",
+      "tests": [
+        "struct_stage::p15_4_欄位索引與容器借用界線::可複製的結構欄位直接讀取仍合法且非借用",
+        "struct_stage::p15_4_欄位索引與容器借用界線::已核准的完整具名借用仍保持合法",
+        "struct_stage::p15_4_欄位索引與容器借用界線::直接借用結構欄位不應偷建未驗證的子來源別名",
+        "struct_stage::p15_4_欄位索引與容器借用界線::索引元素不得在沒有別名存活證明前被當作借用來源",
+        "struct_stage::p15_4_欄位索引與容器借用界線::非_copyable_字串欄位不得借用逃逸"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P15.5",
+      "ignored": 0,
+      "original_requirement": "以懸空借用、錯誤釋放與合法重借用建立測試",
+      "passed": 6,
+      "requirement_sha256": "8304d21ea3bd8f318a93d1eded69f748b13a827c75b46e822c23ab2a6eca500b",
+      "test_filter": "struct_stage::p15_5_懸空與合法重新借用來源::",
+      "tests": [
+        "struct_stage::p15_5_懸空與合法重新借用來源::借用別名再次借用仍保持_vb14_階段性拒絕",
+        "struct_stage::p15_5_懸空與合法重新借用來源::前一筆借用最後使用後可重新借用同一原持有者",
+        "struct_stage::p15_5_懸空與合法重新借用來源::局部借用不能逃逸作用域成為懸空名稱",
+        "struct_stage::p15_5_懸空與合法重新借用來源::巢狀區塊的借用歸還不應污染外層再次借用",
+        "struct_stage::p15_5_懸空與合法重新借用來源::未來仍會使用的借用不得允許原持有者先移動",
+        "struct_stage::p15_5_懸空與合法重新借用來源::第二筆借用不可與仍有未來使用的獨占借用重疊"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P15.6",
+      "ignored": 0,
+      "original_requirement": "區分一般 `.borrow()` 最後使用點、函式參數／方法 `self` 離開作用域才歸還；跨例外、跨 `await` 與借用逃逸規則未決前不得擴大可接受範圍",
+      "passed": 6,
+      "requirement_sha256": "3275c184477b26b1d948d1c94a97306bfa8ab5865e822c5ea638e7d9edbf6e4f",
+      "test_filter": "struct_stage::p15_6_最後使用點與_self_退出邊界來源::",
+      "tests": [
+        "struct_stage::p15_6_最後使用點與_self_退出邊界來源::self_借用於唯讀方法返回後才歸還並允許接收者整筆移動",
+        "struct_stage::p15_6_最後使用點與_self_退出邊界來源::self_方法不可在仍活躍的原來源借用期間偷拿新接收者",
+        "struct_stage::p15_6_最後使用點與_self_退出邊界來源::一般借用不必等函式區塊出口即可歸還",
+        "struct_stage::p15_6_最後使用點與_self_退出邊界來源::函式接受已核准_copyable_借用值的獨立複製不造成參數逃逸",
+        "struct_stage::p15_6_最後使用點與_self_退出邊界來源::尚未建立_await_執行期證明前不得放行有效別名跨越語法邊界",
+        "struct_stage::p15_6_最後使用點與_self_退出邊界來源::尚未建立_例外_歸還證明前不得將錯誤邊界當成合法來源"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P16.1",
+      "ignored": 0,
+      "original_requirement": "確認值的執行期表示及資源建立與析構責任",
+      "passed": 16,
+      "requirement_sha256": "a51af09ce4d203485f7699216dc1881cad4c04e3f0a29973f92478975b2c5c8d",
+      "test_filter": "owned_str_runtime::tests::",
+      "tests": [
+        "owned_str_runtime::tests::p13_k_已移動資源不得藉第二次轉移形成重複持有者",
+        "owned_str_runtime::tests::p13_k_跨函式語意的整筆轉移只保留單一資源持有者",
+        "owned_str_runtime::tests::va16_move_不複製字串緩衝區_來源失效且只清理一次",
+        "owned_str_runtime::tests::va16_scope_成功初始化相反順序清理",
+        "owned_str_runtime::tests::va16_utf8_緩衝區實際保存中文和表情字素",
+        "owned_str_runtime::tests::va16_不可寫目標拒絕後來源字串仍有效且不得提前清理",
+        "owned_str_runtime::tests::va16_不可從已移動來源覆寫既有目標",
+        "owned_str_runtime::tests::va16_右值失敗保留舊值並清理僅建立的暫存資源",
+        "owned_str_runtime::tests::va16_同一名稱自身轉交覆寫拒絕且資源保持可用",
+        "owned_str_runtime::tests::va16_已核准來源整筆移動覆寫_釋放舊值且新資源責任只有一次",
+        "owned_str_runtime::tests::va16_已轉交資源絕不因離開原詞彙區塊提前釋放",
+        "owned_str_runtime::tests::va16_移動到相同範圍已存在名稱時原始所有權不損毀",
+        "owned_str_runtime::tests::va16_若返回資源未交接必須偵測責任缺口",
+        "owned_str_runtime::tests::va16_覆寫後以新的完成初始化時點反向清理",
+        "owned_str_runtime::tests::va16_返回值轉交呼叫端_原作用域不能釋放",
+        "owned_str_runtime::tests::va16_重複名稱和_const_覆寫在建立新資源前被拒絕"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P16.2",
+      "ignored": 0,
+      "original_requirement": "實作所有權轉移、複製操作與錯誤清理路徑",
+      "passed": 10,
+      "requirement_sha256": "2193de2be80715b0f84916326be32c72743c3f1a4016ca563eb78513b3d46560",
+      "test_filter": "struct_initialization::p16_真實持續存活結構值資源責任::",
+      "tests": [
+        "struct_initialization::p16_真實持續存活結構值資源責任::內層結構先釋放_外層結構持有者依然有效",
+        "struct_initialization::p16_真實持續存活結構值資源責任::具名和預設順序中的失敗必須只回滾本次成功取得的欄位",
+        "struct_initialization::p16_真實持續存活結構值資源責任::已移動整體來源重移動或撞到目的名稱都不能破壞持有者",
+        "struct_initialization::p16_真實持續存活結構值資源責任::成功建立後資源保持存活_直到持有者作用域退出才反序釋放",
+        "struct_initialization::p16_真實持續存活結構值資源責任::接收返回值遭遇同名衝突_不得丟失原值或返回資源責任",
+        "struct_initialization::p16_真實持續存活結構值資源責任::整筆結構轉移不分割欄位_各資源身分和_utf8_緩衝區皆保留",
+        "struct_initialization::p16_真實持續存活結構值資源責任::沒有真實求值步驟的失敗切點拒絕且不會配置資源",
+        "struct_initialization::p16_真實持續存活結構值資源責任::結構整筆返回後原函式退出不能釋放_由呼叫端負責清理",
+        "struct_initialization::p16_真實持續存活結構值資源責任::重名及錯誤求值計畫須在任何配置與移動前拒絕",
+        "struct_initialization::p16_真實持續存活結構值資源責任::非_copyable_字串結構不得隱含整體複製"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P16.3",
+      "ignored": 0,
+      "original_requirement": "定義離開區塊、函式返回與失敗時的清理順序",
+      "passed": 5,
+      "requirement_sha256": "3e4991ba4ac16028138c76d703c2f8ff20931683c6ee31ada807fafa777d0f8c",
+      "test_filter": "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::",
+      "tests": [
+        "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::f04_f12_完整_checker_成功後才將_已驗證_bool_hir_交予真正作用域資源橋接",
+        "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::未知條件不能假裝已執行內層資源路徑",
+        "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::真正_if_false_沒有_else_只由外層負責清理",
+        "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::真正_if_true_內層釋放先於外層_資源事件和宣告身分一致",
+        "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::真正分支內提前_return_及欄位建立失敗依然先清理內層"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P16.4",
+      "ignored": 0,
+      "original_requirement": "驗證不重複釋放、不洩漏及無懸空存取",
+      "passed": 5,
+      "requirement_sha256": "72deaad509714602727a06d9d59978ff42301b558e98908bba865f0d56278c04",
+      "test_filter": "owned_str_runtime::p16_4_資源事件身分逐筆稽核::",
+      "tests": [
+        "owned_str_runtime::p16_4_資源事件身分逐筆稽核::合法多次轉交和原子覆寫皆僅釋放一次",
+        "owned_str_runtime::p16_4_資源事件身分逐筆稽核::建立和釋放身分不一致即使數量相同仍要拒絕",
+        "owned_str_runtime::p16_4_資源事件身分逐筆稽核::未建立的身分不可移動或回傳",
+        "owned_str_runtime::p16_4_資源事件身分逐筆稽核::計數相等仍不得掩蓋同一身分重複釋放",
+        "owned_str_runtime::p16_4_資源事件身分逐筆稽核::釋放後仍有轉移事件不得被視為有效所有權"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P16.5",
+      "ignored": 0,
+      "original_requirement": "建立不依賴垃圾回收掩蓋所有權錯誤的驗證樣本",
+      "passed": 1,
+      "requirement_sha256": "1650329d8d74cdebbf87ca92b5c3c4559862c1104fe0cc0056d965815969ff9d",
+      "test_filter": "resource_obligation_audit::tests::p16_未清理責任須明確偵測不可倚賴_rust_drop_或_gc",
+      "tests": [
+        "resource_obligation_audit::tests::p16_未清理責任須明確偵測不可倚賴_rust_drop_或_gc"
+      ]
+    },
+    {
+      "failed": 0,
+      "id": "P16.6",
+      "ignored": 0,
+      "original_requirement": "在求值順序／資源清理正式核准後檢查每個結構實例的預設值求值、整體複製／移動及錯誤路徑資源責任",
+      "passed": 5,
+      "requirement_sha256": "87cf1bad9093d739b029557b060e06d784dd1de045161c34d5ef569f573af85c",
+      "test_filter": "struct_eval_plan::tests::vb16_",
+      "tests": [
+        "struct_eval_plan::tests::vb16_const_欄位未有宣告時預設違反_f01",
+        "struct_eval_plan::tests::vb16_先依來源具名參數順序再依欄位宣告順序評估未覆蓋預設",
+        "struct_eval_plan::tests::vb16_已具名覆寫欄位不評估其預設",
+        "struct_eval_plan::tests::vb16_缺失的_var_欄位留下未初始化證明不偽造資源",
+        "struct_eval_plan::tests::vb16_錯誤具名引數在任何求值開始前拒絕"
+      ]
+    }
+  ],
+  "category": "P13～P16 已核准私有受限原始 24 項各自非零來源測試",
+  "format_version": 1,
+  "source_baseline_head": "ce173af5810d008a40bc54f7624989acc6c0bbe2"
+}
