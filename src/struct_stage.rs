@@ -111,6 +111,10 @@ crate::common_ir::define_shared_expression_kind!(
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
         Construct(String, Vec<(String, Term)>),
+        /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct
+        /// 或前向宣告的零參數 fn。正式 AST 明示待語意解析，
+        /// 只有 Checker 的符號權威可一次分類；不得猜測新語法。
+        UnresolvedZeroArgs(String),
         /// 函式具位置引數的獨立 P13 已核准語意。
         Move(String),
         Borrow(String),
