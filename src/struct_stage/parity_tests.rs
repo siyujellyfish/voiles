@@ -18,7 +18,8 @@ mod a2_f02_零參數語意唯一分類權威 {
             else { panic!("須有真正 return 節點") };
         assert!(matches!(&ret.expression.kind,
             TermKind::UnresolvedZeroArgs(name) if name == "helper"));
-        let start = code.find("helper()").unwrap();
+        // 前段 fn helper() 是宣告，真正 return helper() 位於檔案後方。
+        let start = code.rfind("helper()").unwrap();
         assert_eq!(ret.expression.node_span(),
             crate::common_ir::NodeSpan::new(start, start + "helper()".len()));
         assert!(verified_private_source(code).is_ok(),
