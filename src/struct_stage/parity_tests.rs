@@ -39,10 +39,14 @@ mod p16_6_r02_公開私有前端交集契約 {
         fun.name = "other".into();
         assert!(!parser::verified_public_source_tokens(&forged, code, &scan.tokens),
             "函式 AST 名稱不得冒充原始 token");
+        let parser::Item::Function(fun) = &mut forged.items[1]
+            else { panic!("必須從真 Parser 取得完整函式") };
         fun.name = "main".into();
         fun.result_ty = crate::common_ir::ScalarType::Bool;
         assert!(!parser::verified_public_source_tokens(&forged, code, &scan.tokens),
             "回傳型別原始 token 不得在 Parser 成功後換成另一種型別");
+        let parser::Item::Function(fun) = &mut forged.items[1]
+            else { panic!("必須從真 Parser 取得完整函式") };
         fun.result_ty = crate::common_ir::ScalarType::Int;
         let parser::StmtKind::IfChain(chain) = &mut fun.body.statements[1].kind
             else { panic!("必須有巢狀 if") };
@@ -76,15 +80,24 @@ mod p16_6_r02_公開私有前端交集契約 {
         assert!(!verified_private_source_tokens(code, &scan.tokens, &structs, &funcs),
             "私有方法不得把原始 int 返回 token 改成 bool");
         structs.get_mut("Meter").unwrap().methods[0].result_ty = original;
-        let method = &mut structs.get_mut("Meter").unwrap().methods[0];
-        let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
-            else { panic!("必須有巢狀私有 if") };
-        let StmtKind::Declare(decl) = &mut branch.body.statements[0].kind
-            else { panic!("巢狀宣告缺失") };
-        decl.name = "changed".into();
+        {
+            let method = &mut structs.get_mut("Meter").unwrap().methods[0];
+            let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
+                else { panic!("必須有巢狀私有 if") };
+            let StmtKind::Declare(decl) = &mut branch.body.statements[0].kind
+                else { panic!("巢狀宣告缺失") };
+            decl.name = "changed".into();
+        }
         assert!(!verified_private_source_tokens(code, &scan.tokens, &structs, &funcs),
             "巢狀私有原始名稱被修改應拒絕");
-        decl.name = "inner".into();
+        {
+            let method = &mut structs.get_mut("Meter").unwrap().methods[0];
+            let StmtKind::If { branch, .. } = &mut method.body.statements[0].kind
+                else { panic!("必須有巢狀私有 if") };
+            let StmtKind::Declare(decl) = &mut branch.body.statements[0].kind
+                else { panic!("巢狀宣告缺失") };
+            decl.name = "inner".into();
+        }
         assert!(verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
         funcs[0].name = "forged".into();
         assert!(!verified_private_source_tokens(code, &scan.tokens, &structs, &funcs));
