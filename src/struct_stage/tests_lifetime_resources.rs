@@ -2608,3 +2608,23 @@ mod r02_f04_方法純值算術與一般_checker_同一語意入口 {
         }
     }
 }
+
+#[cfg(test)]
+mod f06_b05_真實私有借用別名身分 {
+    use super::inspect;
+    use crate::DiagnosticKind;
+
+    #[test]
+    fn f06_b05_真正私有來源的同名遮蔽不應延長外層借用() {
+        let source = "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nif(true){\nvar alias:int = 2\nvar copy:int = source\nreturn alias\n}\nreturn 0\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+
+    #[test]
+    fn f06_b05_真正私有來源仍引用外層借用不得提前解除封鎖() {
+        let source = "fn main()->int{\nconst source:int = 1\nconst alias:int = source.borrow()\nif(true){\nvar copy:int = source\nreturn alias\n}\nreturn 0\n}\n";
+        let error = inspect(source).expect_err("活躍別名未退出之前禁止操作來源");
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("借用"));
+    }
+}
