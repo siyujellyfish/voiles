@@ -49,7 +49,7 @@ impl<'a> Resolver<'a> {
                 self.facts.references.insert(e.start, declaration.declaration);
                 Ok(())
             }
-            ExprKind::ZeroArgCall(call) => {
+            ExprKind::Call(call) => {
                 if self.functions.contains_key(&call.name) {
                     Ok(())
                 } else {
