@@ -86,6 +86,20 @@ fn verified_private_syntax_tree(
         }
     }
 
+    /// F01：名稱與型別的真正來源 token 必須精確包含原字串，
+    /// 而非在方法或欄位文字內用 find(name) 猜一個表面合法的位置。
+    fn typed_member_tokens(
+        name: &str, name_span: NodeSpan,
+        ty: &str, type_span: NodeSpan,
+        parent: NodeSpan, audit: &mut SourceIdentityAudit<'_>,
+    ) -> bool {
+        name_span.end <= type_span.start
+            && audit.record(NodeRole::Name, name_span, Some(parent))
+            && audit.record(NodeRole::Type, type_span, Some(parent))
+            && audit.source.get(name_span.start..name_span.end) == Some(name)
+            && audit.source.get(type_span.start..type_span.end) == Some(ty)
+    }
+
     fn function(
         value: &Function, parent: NodeSpan, audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
@@ -94,13 +108,16 @@ fn verified_private_syntax_tree(
             return false;
         }
         value.params.iter().all(|parameter| {
-            let end = match parameter.declaration_start.checked_add(parameter.name.len()) {
-                Some(end) => end, None => return false,
-            };
-            let pspan = NodeSpan::new(parameter.declaration_start, end);
-            audit.record(NodeRole::Parameter, pspan, Some(span))
-                && audit.source.get(parameter.declaration_start..end)
-                    == Some(parameter.name.as_str())
+            let pspan = parameter.declaration_span;
+            parameter.declaration_start == pspan.start
+                && parameter.name_span.start == pspan.start
+                && parameter.type_span.end == pspan.end
+                && audit.record(NodeRole::Parameter, pspan, Some(span))
+                && typed_member_tokens(
+                    &parameter.name, parameter.name_span,
+                    &parameter.ty, parameter.type_span,
+                    pspan, audit,
+                )
         }) && block(&value.body, span, audit)
     }
 
@@ -111,6 +128,17 @@ fn verified_private_syntax_tree(
         audit.record(NodeRole::Struct, span, Some(full))
             && definition.fields.iter().all(|field| {
                 audit.record(NodeRole::Field, field.declaration_span, Some(span))
+                    && field.declaration_span.start < field.name_span.start
+                    && field.type_span.end <= field.declaration_span.end
+                    && audit.source.get(field.declaration_span.start..field.declaration_span.end)
+                        .is_some_and(|raw| raw.starts_with(
+                            if field.immutable { "const" } else { "var" }
+                        ))
+                    && typed_member_tokens(
+                        &field.name, field.name_span,
+                        &field.ty, field.type_span,
+                        field.declaration_span, &mut audit,
+                    )
                     && field.default.as_ref().is_none_or(|expression|
                         term(expression, field.declaration_span, &mut audit)
                     )

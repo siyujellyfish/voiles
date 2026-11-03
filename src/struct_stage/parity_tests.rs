@@ -220,6 +220,56 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f01_欄位與方法參數型別必須逐_token_證明原始來源不可竄換() {
+        use crate::common_ir::NodeSpan;
+        let text = "struct Holder{\nvar amount:int = 1\nfn value(input:int)->int{\nreturn input\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let source = Source::new(text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let (mut structs, functions) = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0,
+        }.file().unwrap();
+        assert!(verified_private_syntax_tree(text, &structs, &functions));
+        let field = &structs["Holder"].fields[0];
+        assert_eq!(&text[field.name_span.start..field.name_span.end], "amount");
+        assert_eq!(&text[field.type_span.start..field.type_span.end], "int");
+        assert!(field.declaration_span.start < field.name_span.start);
+        assert!(field.name_span.end < field.type_span.start);
+        let param = &structs["Holder"].methods[0].params[0];
+        assert_eq!(&text[param.name_span.start..param.name_span.end], "input");
+        assert_eq!(&text[param.type_span.start..param.type_span.end], "int");
+        assert_eq!(param.declaration_start, param.declaration_span.start);
+        assert_eq!(param.declaration_span.end, param.type_span.end);
+
+        let original_name = field.name_span;
+        let original_type = structs["Holder"].fields[0].type_span;
+        structs.get_mut("Holder").unwrap().fields[0].name_span = original_type;
+        assert!(!verified_private_syntax_tree(text, &structs, &functions),
+            "欄位名稱不得假借有效型別 token 的位置");
+        structs.get_mut("Holder").unwrap().fields[0].name_span = original_name;
+        structs.get_mut("Holder").unwrap().fields[0].type_span = original_name;
+        assert!(!verified_private_syntax_tree(text, &structs, &functions),
+            "欄位型別不得用相同檔案中的名稱 token 偽造");
+        structs.get_mut("Holder").unwrap().fields[0].type_span = original_type;
+
+        let original_param_type = structs["Holder"].methods[0].params[0].type_span;
+        structs.get_mut("Holder").unwrap().methods[0].params[0].type_span =
+            NodeSpan::new(original_param_type.start, text.len() + 1);
+        assert!(!verified_private_syntax_tree(text, &structs, &functions),
+            "參數型別不許越過 UTF-8 原始檔 EOF");
+        structs.get_mut("Holder").unwrap().methods[0].params[0].type_span =
+            original_param_type;
+        let original_param_name = structs["Holder"].methods[0].params[0].name_span;
+        structs.get_mut("Holder").unwrap().methods[0].params[0].name_span =
+            original_param_type;
+        assert!(!verified_private_syntax_tree(text, &structs, &functions),
+            "名稱與型別即使同樣是合法 token 也不能交換角色來源");
+        structs.get_mut("Holder").unwrap().methods[0].params[0].name_span =
+            original_param_name;
+        assert!(verified_private_syntax_tree(text, &structs, &functions),
+            "恢復真正 Parser token 後不得留下多餘的拒絕狀態");
+    }
+
+    #[test]
     fn f05_公私正式_checker_相同已核准純值來源產生相同型別與半開位置證據() {
         let code = "fn main()->int{\nvar value:int = 3\nif(true){\nreturn value\n}\nreturn 0\n}\n";
         assert_eq!(public_check(code), Ok(()));

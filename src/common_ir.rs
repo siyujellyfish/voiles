@@ -71,6 +71,9 @@ pub(crate) enum NodeRole {
     Struct,
     Field,
     Parameter,
+    /// 由真正 Parser token 決定的名稱／型別跨度；不以 find() 猜測。
+    Name,
+    Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
