@@ -104,6 +104,10 @@ jobs:
           test "$(./target/p02/p04_source_internal --list | grep -c 'a4_f04_')" -ge 3
           ./target/p02/p04_source_internal --test-threads=1 a4_f04_
 
+      - name: F04／A4 五子項 Typed HIR、可達性與非純值 Checker 安全正式驗收
+        run: |
+          python3 tools/核對F04驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: P13 人工驗收輔助腳本的 Bash 語法檢查
         run: bash -n tools/人工驗收-P13.sh
       - name: P13 入口 B 與 D01 A／A 容器公開 CLI 隔離回歸
