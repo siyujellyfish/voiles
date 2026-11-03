@@ -691,6 +691,48 @@ mod r02_f03_私有_else_直接使用共同_parser_區塊 {
 }
 
 #[cfg(test)]
+mod r02_f02_公私正式算術結點唯一變體與_operator_權威 {
+    use super::*;
+    use crate::{expr, parser};
+
+    #[test]
+    fn 雙正式_parser_皆以_binaryint_與同一原始跨度記錄左結合加減() {
+        let source_text = "fn main()->int{\nvar n:int = 2\nreturn n + 4 - 1\n}\n";
+        let source = Source::new(source_text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let public = parser::parse(&source, &tokens.tokens).unwrap();
+        let parser::Item::Function(fun) = &public.items[0]
+            else { panic!("缺少公開函式") };
+        let parser::StmtKind::Return(returned) = &fun.body.statements[1].kind
+            else { panic!("缺少公開算術返回") };
+        let expr::ExprKind::BinaryInt(public_outer) = &returned.expression.kind
+            else { panic!("公開算術不能重複分成 Add/Sub AST 權威") };
+        let expr::ExprKind::BinaryInt(public_inner) = &public_outer.left.kind
+            else { panic!("左結合應直接保存單一內層二元 AST") };
+        assert_eq!((public_outer.operator, public_inner.operator), ('-', '+'));
+
+        let private = verified_private_source(source_text).unwrap();
+        let StmtKind::Return(private_return) = &private.functions[0].body[1].kind
+            else { panic!("缺少私有算術返回") };
+        let TermKind::BinaryInt(private_outer) = &private_return.expression.kind
+            else { panic!("私有仍須使用共通 ArithmeticNode") };
+        let TermKind::BinaryInt(private_inner) = &private_outer.left.kind
+            else { panic!("私有內層同樣遵守左結合") };
+        assert_eq!(public_outer.operator, private_outer.operator);
+        assert_eq!(public_inner.operator, private_inner.operator);
+        for (left, right) in [
+            (public_outer.left.node_span(), private_outer.left.node_span()),
+            (public_outer.right.node_span(), private_outer.right.node_span()),
+            (public_inner.left.node_span(), private_inner.left.node_span()),
+            (public_inner.right.node_span(), private_inner.right.node_span()),
+        ] {
+            assert_eq!(left, right, "不容許獨立 Parser 重造另一份跨度");
+        }
+        assert!(public_check(source_text).is_ok());
+    }
+}
+
+#[cfg(test)]
 mod r02_f02_真正公私_scalar_literal_ast_同一節點種類 {
     use super::*;
     use crate::{expr,parser};
