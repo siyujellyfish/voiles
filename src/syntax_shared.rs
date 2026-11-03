@@ -369,8 +369,9 @@ pub(crate) fn checked_declaration_tokens<T, E>(
     let Some(colon) = tokens.get(index + 2) else { return false; };
     let Some(typed) = tokens.get(index + 3) else { return false; };
     let decl_span = NodeSpan::new(declaration.start, declaration.end);
+    let keyword_expected = if declaration.mutable { "var" } else { "const" };
     if !matches!(&keyword.kind, TokenKind::Keyword(word)
-        if word == if declaration.mutable { "var" } else { "const" })
+        if word == keyword_expected)
         || !matches!(&named.kind, TokenKind::Name(name) if name == &declaration.name)
         || !matches!(colon.kind, TokenKind::Symbol(':'))
         || !matches!(&typed.kind, TokenKind::Name(name) if name == annotated_type)
