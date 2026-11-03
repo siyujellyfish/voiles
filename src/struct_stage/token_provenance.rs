@@ -5,6 +5,13 @@ fn verified_private_source_tokens(
     text: &str, tokens: &[Token],
     structs: &HashMap<String, StructDecl>, functions: &[Function],
 ) -> bool {
+    verified_private_token_roles(text, tokens, structs, functions).is_some()
+}
+/// 真私有 Parser／Checker 入口的所有標頭、成員及深層 name/type token。
+fn verified_private_token_roles(
+    text: &str, tokens: &[Token],
+    structs: &HashMap<String, StructDecl>, functions: &[Function],
+) -> Option<std::collections::BTreeSet<crate::common_ir::ModeNodeIdentity>> {
     use crate::common_ir::{FrontendMode, NodeRole, NodeSpan, SourceIdentityAudit};
 
     fn block(
@@ -89,5 +96,7 @@ fn verified_private_source_tokens(
             })
             && definition.methods.iter().all(|fun| function(fun, tokens, &mut audit))
     });
-    structs_ok && functions.iter().all(|fun| function(fun, tokens, &mut audit))
+    let valid = structs_ok && functions.iter().all(|fun|
+        function(fun, tokens, &mut audit));
+    valid.then(|| audit.verified_roles().collect())
 }
