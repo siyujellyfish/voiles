@@ -91,6 +91,36 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
+    fn f04_公開_p11_可達_hir_不將不可達型別事實冒充已執行且拒絕私有簽章() {
+        use crate::common_ir::{NodeSpan, FrontendMode};
+        let code = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let lexed = lexer::scan(&source);
+        let ast = parser::parse(&source, &lexed.tokens).unwrap();
+        let resolved = names::resolve_with_facts(&ast, &source).unwrap();
+        let public = types::check_with_names_and_hir(&ast, &source, &resolved).unwrap();
+        let view = flow::check_with_typed_hir_and_reachability(
+            &ast, &source, &resolved, &public,
+        ).expect("P11 真正 CFG 檢查須能產生唯讀可達 HIR");
+        let at = code.find("return 0").unwrap() + "return ".len();
+        let unreachable = NodeSpan::new(at, at + 1);
+        assert!(public.expression(unreachable).is_some(),
+            "P10 原本應對不可達尾句執行型別檢查，不能變更既有診斷規格");
+        assert!(!view.verified_expressions().any(|fact| fact.span == unreachable),
+            "P11 唯讀可達證據不能把確定未執行的 return 當合法 CFG 後繼");
+        let private = verified_private_source(code).unwrap();
+        assert!(private.plan.scalar_hir.mode_is(FrontendMode::PrivateVerified));
+        let error = match flow::check_with_typed_hir_and_reachability(
+            &ast, &source, &resolved, &private.plan.scalar_hir,
+        ) {
+            Ok(_) => panic!("私有 Checker 的同型別 HIR 不得冒充公開 P11 授權"),
+            Err(error) => error,
+        };
+        assert_eq!(&*error.message,
+            "P11：可達來源證據必須由正式公開 P10 Checker 簽發");
+    }
+
+    #[test]
     fn 公開與私有正式運算式真正共用節點外殼與來源位置() {
         let code = "fn main()->int{\nreturn 2 + 3\n}\n";
         let (file, checked) = checked(code);
