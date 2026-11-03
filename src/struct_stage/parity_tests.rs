@@ -728,7 +728,11 @@ mod r02_f02_公私正式算術結點唯一變體與_operator_權威 {
         ] {
             assert_eq!(left, right, "不容許獨立 Parser 重造另一份跨度");
         }
-        assert!(public_check(source_text).is_ok());
+        let bindings = crate::names::resolve_with_facts(&public, &source).unwrap();
+        let typed = crate::types::check_with_names_and_hir(&public, &source, &bindings).unwrap();
+        assert!(crate::flow::check_with_typed_hir(
+            &public, &source, &bindings, &typed).is_ok(),
+            "此項必須通過 P09→P10 Typed HIR→P11 正式語意路徑");
     }
 }
 
