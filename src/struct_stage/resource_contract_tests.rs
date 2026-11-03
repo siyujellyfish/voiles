@@ -80,7 +80,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
     fn f11_正式計畫整體驗證禁止以另一份_hir_偷換_checker_來源證據() {
         let src = "fn main()->int{\nvar n:int = 1\nreturn n\n}\n";
         let checked = verified_private_source(src).expect("合法 Checker 應生成完整計畫");
-        assert!(checked.plan.is_consistent(&checked.structs, src));
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, src));
         let mut forged = VerifiedSafetyPlan::from_checker(
             VerifiedDeclarationFacts::from_checker(
                 checked.plan.declarations.by_source.clone(),
@@ -89,6 +89,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
                 checked.plan.declarations.field_writes.clone(),
             ),
             crate::common_ir::VerifiedScalarHir::default(),
+            checked.plan.members.clone(),
         );
         forged.declarations.call_borrows = checked.plan.declarations.call_borrows.clone();
         // 不可在已建立的正式計畫內偷換空 HIR，仍使用 Checker
@@ -97,7 +98,7 @@ mod p16_6_r03_來源身分與資源帳簿交叉驗證 {
         forged.reference_spans = checked.plan.reference_spans.clone();
         forged.assignment_spans = checked.plan.assignment_spans.clone();
         assert!(checked.plan.scalar_hir.verified_expressions().count() > 0);
-        assert!(!forged.is_consistent(&checked.structs, src),
+        assert!(!forged.is_consistent(&checked.structs, &checked.functions, src),
             "不得刪除正式 Checker 已驗證的 HIR 證據後仍宣稱計畫閉合");
     }
 
