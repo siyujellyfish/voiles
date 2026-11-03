@@ -150,6 +150,10 @@ jobs:
         run: |
           python3 tools/核對F00總驗收.py
 
+      - name: A6 同一 GitHub SHA 的 G0 F01～F05 G1／G2 正式獨立總驗收
+        run: |
+          python3 tools/核對A6主線總驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: P12 產生 49 個真正執行的 P01 正反語意測試並核對 struct 阻塞清單
         run: |
           python3 tools/產生規格測試.py
