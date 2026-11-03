@@ -624,6 +624,10 @@ include!("struct_stage/parity_tests.rs");
 #[cfg(test)]
 include!("struct_stage/resource_contract_tests.rs");
 
+// F00：只在內部測試建置採集八條真正私有來源的資源事件基準。
+#[cfg(test)]
+include!("struct_stage/f00_resource_capture.rs");
+
 // F05：歷史共通 ScalarExpr／SharedAst 的 AST 事後投影只做
 // 獨立公私差異回歸；正式內部 Checker 與 P16 橋接僅使用
 // parser 直接建構的 AST＋VerifiedScalarHir／VerifiedSafetyPlan。

@@ -1,0 +1,340 @@
+{
+  "cases": [
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Created",
+          "resource_id": 3
+        },
+        {
+          "kind": "Released",
+          "resource_id": 3
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "01_建構_成功",
+      "source": "struct Message{\nvar first:str = \"甲預設\"\nvar second:str = \"乙預設\"\nvar third:str = \"丙預設\"\n}\nfn main()->int{\nvar item:Message = Message(second=\"乙具名\",first=\"甲具名\")\nreturn 0\n}\n",
+      "source_sha256": "1226f139d2ef97c9eee0c36ab828986dff9a103fa721e271b6c09c1f0a47b6c4"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "01_建構_中途失敗",
+      "source": "struct Message{\nvar first:str = \"甲預設\"\nvar second:str = \"乙預設\"\nvar third:str = \"丙預設\"\n}\nfn main()->int{\nvar item:Message = Message(second=\"乙具名\",first=\"甲具名\")\nreturn 0\n}\n",
+      "source_sha256": "1226f139d2ef97c9eee0c36ab828986dff9a103fa721e271b6c09c1f0a47b6c4"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Moved",
+          "resource_id": 1
+        },
+        {
+          "kind": "Moved",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "02_結構移動_成功",
+      "source": "struct Message{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar original:Message = Message(title=\"繁體中文\")\nvar transferred:Message = original.move()\nreturn 0\n}\n",
+      "source_sha256": "e3f4ce5b674650114bbd4a21b5655fec0fa9b86c179bf783de8a19603ea9b8e0"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "02_結構移動_建構失敗",
+      "source": "struct Message{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar original:Message = Message(title=\"繁體中文\")\nvar transferred:Message = original.move()\nreturn 0\n}\n",
+      "source_sha256": "e3f4ce5b674650114bbd4a21b5655fec0fa9b86c179bf783de8a19603ea9b8e0"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Returned",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "03_字串返回_成功",
+      "source": "fn create()->str{\nvar payload:str = \"繁體中文🪼\"\nreturn payload.move()\n}\nfn main()->int{\nvar received:str = create()\nreturn 0\n}\n",
+      "source_sha256": "41d483d1e0116e36a5bfdadbe26c5a4b00df28307da89ff1b8e1e6a49c1c680f"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Created",
+          "resource_id": 3
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 3
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        }
+      ],
+      "id": "04_欄位覆寫_成功",
+      "source": "struct Holder{\nvar title:str = \"舊值\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新值🪼\"\nreturn 0\n}\n",
+      "source_sha256": "9f22d1016b4d940432570abe3ccda9051dd35185618a791242f461532969ee20"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Created",
+          "resource_id": 3
+        },
+        {
+          "kind": "Released",
+          "resource_id": 3
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "04_欄位覆寫_右值失敗",
+      "source": "struct Holder{\nvar title:str = \"舊值\"\nconst id:str = \"固定🪼\"\n}\nfn main()->int{\nvar owner:Holder = Holder()\nowner.title = \"新值🪼\"\nreturn 0\n}\n",
+      "source_sha256": "9f22d1016b4d940432570abe3ccda9051dd35185618a791242f461532969ee20"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Moved",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "05_混合結構_成功",
+      "source": "struct Mixed{\nvar num:int = 3\nvar text:str = \"舊值\"\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Mixed = Mixed(text=\"繁體中文🪼\",num=7)\nvar target:Mixed = original.move()\nreturn 0\n}\n",
+      "source_sha256": "086261c1063b97e9e617ce3a07c292f38518c14711fc95025d95da3c0da48cdb"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "05_混合結構_求值失敗",
+      "source": "struct Mixed{\nvar num:int = 3\nvar text:str = \"舊值\"\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Mixed = Mixed(text=\"繁體中文🪼\",num=7)\nvar target:Mixed = original.move()\nreturn 0\n}\n",
+      "source_sha256": "086261c1063b97e9e617ce3a07c292f38518c14711fc95025d95da3c0da48cdb"
+    },
+    {
+      "events": [],
+      "id": "05_純值結構_無資源",
+      "source": "struct Plain{\nvar num:int = 3\nconst flag:bool = true\n}\nfn main()->int{\nvar original:Plain = Plain(num=9)\nvar target:Plain = original\nreturn 0\n}\n",
+      "source_sha256": "8d6b3a9d860144e0ecb2cf85f37113551163911a2ee5a373a0a952ba41ca0f68"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "06_作用域_成立分支",
+      "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(true){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n",
+      "source_sha256": "aea3dc4eddd10e9316eae377d26755bd937bb42b91ef0bd14f7eeb6a304a75d6"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "06_作用域_未成立分支",
+      "source": "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(false){\nvar inner:Holder = Holder(text=\"內層\")\n}\nreturn 0\n}\n",
+      "source_sha256": "c2a7e090d879c2619ec8594bfd4e306626223e9101871ccb07f201454f48a84f"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Returned",
+          "resource_id": 1
+        },
+        {
+          "kind": "Returned",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "07_結構返回_成功",
+      "source": "struct Bundle{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn provide()->Bundle{\nvar local:Bundle = Bundle(title=\"繁體中文\")\nreturn local.move()\n}\nfn main()->int{\nvar received:Bundle = provide()\nreturn 0\n}\n",
+      "source_sha256": "fbc02074ef47d2ac22498d4f1769b168d034409d398c0207f238e694fda3899b"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Created",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 2
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "07_結構返回_建構失敗",
+      "source": "struct Bundle{\nvar title:str = \"預設\"\nconst id:str = \"固定🪼\"\n}\nfn provide()->Bundle{\nvar local:Bundle = Bundle(title=\"繁體中文\")\nreturn local.move()\n}\nfn main()->int{\nvar received:Bundle = provide()\nreturn 0\n}\n",
+      "source_sha256": "fbc02074ef47d2ac22498d4f1769b168d034409d398c0207f238e694fda3899b"
+    },
+    {
+      "events": [
+        {
+          "kind": "Created",
+          "resource_id": 1
+        },
+        {
+          "kind": "Moved",
+          "resource_id": 1
+        },
+        {
+          "kind": "Released",
+          "resource_id": 1
+        }
+      ],
+      "id": "08_具名字串移動_成功",
+      "source": "fn main()->int{\nvar owner:str = \"繁體中文 🌊\"\nvar target:str = owner.move()\nreturn 0\n}\n",
+      "source_sha256": "acfb916bc0453254c2bc52a02c79c451320f4788abf454db7357a9e362e5f928"
+    }
+  ],
+  "category": "已核准 P16 真正來源之八條受限資源橋接與失敗切點",
+  "format_version": 1,
+  "source_baseline_head": "ce173af5810d008a40bc54f7624989acc6c0bbe2",
+  "test_filter": "f00_八橋接真正資源事件基準::從真正已驗證來源採集八條橋接及其成功失敗事件"
+}
