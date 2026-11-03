@@ -461,7 +461,8 @@ pub(crate) fn checked_typed_member_tokens(
     let Some(named) = tokens.get(i) else { return false; };
     let Some(colon) = tokens.get(i + 1) else { return false; };
     let Some(typed) = tokens.get(i + 2) else { return false; };
-    if !matches!(&named.kind, TokenKind::Name(word) if word == name)
+    if audit.mode != crate::common_ir::FrontendMode::PrivateVerified
+        || !matches!(&named.kind, TokenKind::Name(word) if word == name)
         || !matches!(colon.kind, TokenKind::Symbol(':'))
         || !matches!(&typed.kind, TokenKind::Name(word) if word == ty)
         || NodeSpan::new(named.start, named.end) != name_span
