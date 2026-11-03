@@ -2,6 +2,12 @@
 // 僅由原解析器建構的 AST 正向讀取；不作第二次 Token 解析、
 // 不改變公開 MVP-A 的核准語法或診斷來源。
 pub(crate) fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
+    verified_public_syntax_roles(file, source).is_some()
+}
+/// A1：由原正式 Parser AST 全遞迴稽核直接輸出已驗證角色清冊。
+pub(crate) fn verified_public_syntax_roles(
+    file: &File, source: &str,
+) -> Option<std::collections::BTreeSet<crate::common_ir::ModeNodeIdentity>> {
     use crate::common_ir::{FrontendMode, NodeRole, NodeSpan, SourceIdentityAudit};
 
     fn expression(
@@ -69,7 +75,7 @@ pub(crate) fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
     let mut audit = SourceIdentityAudit::new(source, FrontendMode::PublicMvpA);
     let root = NodeSpan::new(file.start, file.end);
     if audit.source.len() != file.end || file.start != 0 {
-        return false;
+        return None;
     }
     let valid = file.items.iter().all(|item| match item {
         Item::Function(function) => {
@@ -85,5 +91,5 @@ pub(crate) fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
                 )
         }
     });
-    valid && audit.count() > 0
+    (valid && audit.count() > 0).then(|| audit.verified_roles().collect())
 }

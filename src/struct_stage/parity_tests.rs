@@ -26,6 +26,90 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn a1_f01_所有已核准角色由真_ast_token_與_checker_hir_生成且禁止假宣告() {
+        use crate::common_ir::{
+            FrontendMode, NodeRole, NodeSpan, ScalarType, SourceIdentityAudit,
+            TypedUse, VerifiedScalarHir, ResolvedUse,
+        };
+        use std::collections::BTreeSet;
+
+        let public_src = "fn main()->int{\nvar value:int = 1\nvalue = 2\nreturn value\n}\n";
+        let pub_source = Source::new(public_src.as_bytes().to_vec());
+        let pub_tokens = lexer::scan(&pub_source);
+        let public_ast = parser::parse(&pub_source, &pub_tokens.tokens).unwrap();
+        let public_names = names::resolve_with_facts(&public_ast, &pub_source).unwrap();
+        let public_hir = types::check_with_names_and_hir(
+            &public_ast, &pub_source, &public_names,
+        ).unwrap();
+        flow::check_with_typed_hir(
+            &public_ast, &pub_source, &public_names, &public_hir,
+        ).unwrap();
+        let ast_pub = parser::verified_public_syntax_roles(
+            &public_ast, public_src).unwrap();
+        let tokens_pub = parser::verified_public_token_roles(
+            &public_ast, public_src, &pub_tokens.tokens).unwrap();
+        let hir_pub = public_hir.verified_roles_for_mode(
+            FrontendMode::PublicMvpA, public_src).unwrap();
+        let all_public: BTreeSet<_> = ast_pub.iter()
+            .chain(tokens_pub.iter()).chain(hir_pub.iter()).copied().collect();
+        for role in [
+            NodeRole::Expression, NodeRole::Reference, NodeRole::Assignment,
+            NodeRole::Declaration, NodeRole::Statement, NodeRole::Function,
+            NodeRole::Block, NodeRole::Name, NodeRole::Type,
+        ] {
+            assert!(all_public.iter().any(|fact| fact.node.role == role),
+                "真正公開 Parser/P09/P10 應建立這項已核准角色 {role:?}");
+        }
+        assert!(all_public.iter().all(|fact| fact.mode == FrontendMode::PublicMvpA));
+
+        let private_src = "struct Holder{\nconst text:str = \"海洋🪼\"\nfn echo(value:int)->int{\nreturn value\n}\n}\nfn main()->int{\nvar item:int = 1\nitem = 2\nreturn item\n}\n";
+        let priv_source = Source::new(private_src.as_bytes().to_vec());
+        let priv_tokens = lexer::scan(&priv_source);
+        let (structs, functions) = Parser {
+            source: &priv_source, tokens: &priv_tokens.tokens, cursor: 0,
+        }.file().unwrap();
+        let checked = verified_private_source(private_src).unwrap();
+        let ast_priv = verified_private_syntax_roles(
+            private_src, &structs, &functions).unwrap();
+        let tokens_priv = verified_private_token_roles(
+            private_src, &priv_tokens.tokens, &structs, &functions).unwrap();
+        let hir_priv = checked.plan.scalar_hir.verified_roles_for_mode(
+            FrontendMode::PrivateVerified, private_src).unwrap();
+        let all_private: BTreeSet<_> = ast_priv.iter()
+            .chain(tokens_priv.iter()).chain(hir_priv.iter()).copied().collect();
+        for role in [
+            NodeRole::Expression, NodeRole::Reference, NodeRole::Assignment,
+            NodeRole::Declaration, NodeRole::Statement, NodeRole::Function,
+            NodeRole::Block, NodeRole::Struct, NodeRole::Field,
+            NodeRole::Parameter, NodeRole::Name, NodeRole::Type,
+        ] {
+            assert!(all_private.iter().any(|fact| fact.node.role == role),
+                "真正私有 Parser/Checker 應建立已核准角色 {role:?}");
+        }
+        assert!(all_private.iter().all(|fact| fact.mode == FrontendMode::PrivateVerified));
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, private_src));
+        let mut invalid = VerifiedScalarHir::for_mode(FrontendMode::PrivateVerified);
+        let at = private_src.rfind("return item").unwrap() + "return ".len();
+        let span = NodeSpan::new(at, at + "item".len());
+        invalid.record_expression(span, ScalarType::Int);
+        invalid.record_reference(TypedUse::new(
+            span, ResolvedUse::new(DeclarationId(private_src.len()+1), ScalarType::Int),
+        ));
+        assert!(invalid.source_spans_are_valid(private_src),
+            "舊的局部型別／跨度條件本身不足以證明詞彙宣告身分");
+        assert!(invalid.verified_roles_for_mode(
+            FrontendMode::PrivateVerified, private_src).is_none(),
+            "超出 EOF 的 DeclarationId 不能以合法 NodeRole 冒充正式 Checker 來源");
+        assert!(!invalid.source_spans_are_valid_for_mode(
+            FrontendMode::PrivateVerified, private_src));
+        assert!(invalid.verified_roles_for_mode(
+            FrontendMode::PublicMvpA, private_src).is_none(),
+            "私有 HIR 不得重新標記為公開模式");
+        let mut public_mode = SourceIdentityAudit::new(private_src, FrontendMode::PublicMvpA);
+        assert!(!public_mode.contains(*all_private.iter().next().unwrap()));
+    }
+
+    #[test]
     fn a1_f01_原始位元組與_lexer_token_一致性防止符號種類被偽造() {
         let code = "fn main()->int{\nconst item:int = 1\nreturn item\n}\n";
         let source = Source::new(code.as_bytes().to_vec());
