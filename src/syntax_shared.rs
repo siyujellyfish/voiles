@@ -352,6 +352,76 @@ pub(crate) fn parse_declaration<P: DeclarationSyntax>(
     Ok(ParsedDeclaration { name, ty, mutable, initializer, start, end })
 }
 
+/// F01：對已經由同一份真 Lexer token 序列建構成功的正式
+/// ParsedDeclaration 逐 token 驗證名稱及型別，不重建第二個 AST。
+/// 不決定語言新型別，單純拒絕 AST 與原始宣告來源不一致。
+pub(crate) fn checked_declaration_tokens<T, E>(
+    declaration: &ParsedDeclaration<T, E>,
+    annotated_type: &str, tokens: &[Token],
+    audit: &mut crate::common_ir::SourceIdentityAudit<'_>,
+) -> bool {
+    use crate::common_ir::{NodeRole, NodeSpan};
+    let Some(index) = tokens.binary_search_by_key(
+        &declaration.start, |token| token.start,
+    ).ok() else { return false; };
+    let Some(keyword) = tokens.get(index) else { return false; };
+    let Some(named) = tokens.get(index + 1) else { return false; };
+    let Some(colon) = tokens.get(index + 2) else { return false; };
+    let Some(typed) = tokens.get(index + 3) else { return false; };
+    let decl_span = NodeSpan::new(declaration.start, declaration.end);
+    if !matches!(&keyword.kind, TokenKind::Keyword(word)
+        if word == if declaration.mutable { "var" } else { "const" })
+        || !matches!(&named.kind, TokenKind::Name(name) if name == &declaration.name)
+        || !matches!(colon.kind, TokenKind::Symbol(':'))
+        || !matches!(&typed.kind, TokenKind::Name(name) if name == annotated_type)
+        || typed.end > declaration.end {
+        return false;
+    }
+    audit.record(NodeRole::Name,
+        NodeSpan::new(named.start, named.end), Some(decl_span))
+        && audit.record(NodeRole::Type,
+            NodeSpan::new(typed.start, typed.end), Some(decl_span))
+        && audit.source.get(named.start..named.end) == Some(declaration.name.as_str())
+        && audit.source.get(typed.start..typed.end) == Some(annotated_type)
+}
+
+/// F01：函式與方法已由公私唯一的 parse_function_decl 正式建立；
+/// 在原本 Lexer 的 token 上核對函式名稱及回傳型別的真實位置。
+/// 私有參數的名字及型別則由原 FunctionSyntax 已存的 token 檢查。
+pub(crate) fn checked_function_header_tokens(
+    function_start: usize, function_end: usize, body_start: usize,
+    name: &str, result_type: &str, tokens: &[Token],
+    audit: &mut crate::common_ir::SourceIdentityAudit<'_>,
+) -> bool {
+    use crate::common_ir::{NodeRole, NodeSpan};
+    let Some(index) = tokens.binary_search_by_key(
+        &function_start, |token| token.start,
+    ).ok() else { return false; };
+    let Some(keyword) = tokens.get(index) else { return false; };
+    let Some(named) = tokens.get(index + 1) else { return false; };
+    let span = NodeSpan::new(function_start, function_end);
+    if !matches!(&keyword.kind, TokenKind::Keyword(word) if word == "fn")
+        || !matches!(&named.kind, TokenKind::Name(actual) if actual == name)
+        || body_start >= function_end {
+        return false;
+    }
+    let Some((arrow, _)) = tokens.iter().enumerate()
+        .skip(index + 2).take_while(|(_, token)| token.start < body_start)
+        .find(|(_, token)| matches!(token.kind, TokenKind::Arrow))
+    else { return false; };
+    let Some(typed) = tokens.get(arrow + 1) else { return false; };
+    if !matches!(&typed.kind, TokenKind::Name(actual) if actual == result_type)
+        || typed.end > body_start {
+        return false;
+    }
+    audit.record(NodeRole::Name,
+        NodeSpan::new(named.start, named.end), Some(span))
+        && audit.record(NodeRole::Type,
+            NodeSpan::new(typed.start, typed.end), Some(span))
+        && audit.source.get(named.start..named.end) == Some(name)
+        && audit.source.get(typed.start..typed.end) == Some(result_type)
+}
+
 /// F03：正式公私 Parser 唯一的共同語句前綴分類。
 /// 僅識別原有交集及私有延伸的外形，絕不替任何前端核准語意。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
