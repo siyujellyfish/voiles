@@ -181,7 +181,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
-    fn 真正 Parser 語句分隔仍分別保留模式原診斷() {
+    fn 真正_parser_語句分隔仍分別保留模式原診斷() {
         checked("fn main()->int{\nvar n:int = 3\nreturn n}\n");
         let invalid = "fn main()->int{\nvar n:int = 3 return n\n}\n";
         let source = Source::new(invalid.as_bytes().to_vec());
@@ -196,7 +196,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
-    fn 多行布林 if_條件兩路真正 Checker 交付同一 HIR() {
+    fn 多行布林_if_條件兩路真正_checker_交付同一_hir() {
         let code = "\n\nfn main()->int{\n\nvar flag:bool = true\n\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n\nreturn 0\n}\n";
         let (file, private) = checked(code);
         let parser::Item::Function(fun) = &file.items[0] else {panic!("缺函式")};
@@ -211,7 +211,7 @@ mod p16_6_r02_2_共同語意樹驗證 {
     }
 
     #[test]
-    fn 三重加減巢狀括號直接比對真正 AST 運算子及 HIR() {
+    fn 三重加減巢狀括號直接比對真正_ast_運算子及_hir() {
         for code in [
             "fn main()->int{\nreturn 10 - 3 + 2 - (1 + 4)\n}\n",
             "fn main()->int{\nvar n:int = 10\nreturn n - 3 + (2 - 1)\n}\n",
