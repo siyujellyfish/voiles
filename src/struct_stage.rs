@@ -98,27 +98,21 @@ enum StmtKind {
 /// 私有受限運算式與公開 Expr 使用同一 AST 外殼，仍保留私有節點種類。
 type Term = crate::common_ir::SpannedNode<TermKind>;
 
-#[derive(Debug, Clone)]
-enum TermKind {
-    /// F02：正式私有 Parser 與公開 Parser 共用完整 int/bool 常值 AST。
-    Scalar(crate::syntax_shared::ScalarLiteral),
-    /// 保留私有 float、str 與既有內部手造 AST 的相容入口。
-    Literal(&'static str),
-    Name(String),
-    /// P01 已核准的 int 加減；計算前必須依序驗證兩端所有權。
-    BinaryInt(crate::common_ir::ArithmeticNode<Term>),
-    Construct(String, Vec<(String, Term)>),
-    /// 一般函式位置引數；呼叫端所有權資料流完成前不得接受。
-    Call(crate::syntax_shared::ParsedNamedCall<Vec<Term>>),
-    Move(String),
-    /// VA14-01-A：只於具型別 var／const 直接初始化時建立非擁有借用。
-    Borrow(String),
-    FieldMove(String, String),
-    /// 只讀欄位值的複製；需另外通過已初始化與 HA13/S19 Copyable 檢查。
-    FieldRead(String, String),
-    /// S16 已核准的 instance.method() 零參數子集；此處不推定其他簽章。
-    MethodCall(String, String, Vec<Term>),
-}
+// F02：本 enum 的已核准公私交集由 common_ir 唯一宣告產生。
+crate::common_ir::define_shared_expression_kind!(
+    TermKind, Term, [Debug, Clone], {
+        /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
+        Literal(&'static str),
+        Construct(String, Vec<(String, Term)>),
+        /// 函式具位置引數的獨立 P13 已核准語意。
+        Call(crate::syntax_shared::ParsedNamedCall<Vec<Term>>),
+        Move(String),
+        Borrow(String),
+        FieldMove(String, String),
+        FieldRead(String, String),
+        MethodCall(String, String, Vec<Term>),
+    }
+);
 
 struct Parser<'a> {
     source: &'a Source,

@@ -10,6 +10,23 @@ use crate::expr::{Expr as PublicExpr, ExprKind as PublicExprKind};
 use crate::parser::{self, Item, StmtKind as PublicStmtKind};
 use crate::ownership_ledger::DeclarationId;
 
+/// F02／F05：兩條真正 Parser 中同一核准語法交集的 AST 變體
+/// 由這一個 Rust 宣告來源產生；模式特有變體仍由呼叫端明示。
+/// 與只在測試中將雙樹投影成 SharedAst 不同，此巨集直接建立
+/// 正式公私 ExprKind／TermKind 的 enum，不允許同一純值分別加新變體。
+macro_rules! define_shared_expression_kind {
+    ($name:ident, $node:ty, [$($derive:ident),+], { $($specific:tt)* }) => {
+        #[derive($($derive),+)]
+        pub(crate) enum $name {
+            Scalar(crate::syntax_shared::ScalarLiteral),
+            Name(String),
+            BinaryInt(crate::common_ir::ArithmeticNode<$node>),
+            $($specific)*
+        }
+    };
+}
+pub(crate) use define_shared_expression_kind;
+
 /// 原始 UTF-8 位元組半開範圍，供共同解析核心與各模式正式 AST 使用。
 /// 此型別不是已換算為一基行列的公開診斷位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
