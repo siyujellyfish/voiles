@@ -22,6 +22,9 @@ struct Field {
     default: Option<Term>,
     /// 真正共通 ParsedDeclaration 的來源跨度，含 var/const。
     declaration_span: crate::common_ir::NodeSpan,
+    /// 由原始 Parser 消耗的兩個具名 token 直接取得，不以字串搜尋推算。
+    name_span: crate::common_ir::NodeSpan,
+    type_span: crate::common_ir::NodeSpan,
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +68,10 @@ struct Parameter {
     name: String,
     ty: String,
     declaration_start: usize,
+    /// 由真正 Parser 在名稱與型別 token 消耗時原位記錄。
+    declaration_span: crate::common_ir::NodeSpan,
+    name_span: crate::common_ir::NodeSpan,
+    type_span: crate::common_ir::NodeSpan,
 }
 
 /// 私有安全語句 AST 共用相同具位置的節點外殼。
