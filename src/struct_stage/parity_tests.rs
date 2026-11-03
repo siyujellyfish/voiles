@@ -270,6 +270,52 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f01_f04_欄位及方法與函式參數的型別證據來自唯一_checker_且不能授權資源() {
+        use crate::common_ir::{FrontendMode, NodeRole};
+        let code = "struct Holder{\nconst text:str = \"中文🪼\"\nfn echo(value:int)->int{\nreturn value\n}\n}\nfn plus(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn plus(1)\n}\n";
+        let mut checked = verified_private_source(code)
+            .expect("合法含非 Copyable 欄位與 Copyable 方法參數的真正 Checker 應通過");
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, code));
+        let members = &checked.plan.members;
+        assert_eq!(members.len(), 3, "一個真實欄位、方法參數及一般函式參數皆須有證據");
+        assert!(members.keys().all(|key| key.mode == FrontendMode::PrivateVerified));
+        assert!(members.values().all(|fact| fact.source_is_consistent(code)));
+        let field = members.values().find(|fact|
+            fact.identity.node.role == NodeRole::Field
+        ).expect("缺少真正結構欄位 token 的型別註記");
+        assert_eq!(field.declaration.ty, "str");
+        assert!(!field.declaration.mutable, "const 欄位不可假造 var 權限");
+        assert!(checked.plan.declarations.typed_declaration(
+            field.declaration.declaration,
+        ).is_none(), "欄位型別來源絕不能被當成獨立可借用 Binding 持有者");
+
+        let keys: Vec<_> = checked.plan.members.keys().copied().collect();
+        let field_id = field.identity;
+        let original = checked.plan.members[&field_id].clone();
+        checked.plan.members.get_mut(&field_id).unwrap().declaration.ty = "int".into();
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, code),
+            "原始來源仍是 str 的欄位不得憑修改另一份型別表就變成 Copyable int");
+        checked.plan.members.insert(field_id, original);
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, code));
+
+        let method_param = keys.into_iter().find(|key|
+            key.node.role == NodeRole::Parameter
+                && checked.plan.members[key].name == "value"
+                && key.node.span.start < code.find("fn plus").unwrap()
+        ).expect("私有方法參數的原始型別 token 應存在");
+        let removed = checked.plan.members.remove(&method_param).unwrap();
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, code),
+            "任何一筆真正通過 Checker 的方法參數證據都不可刪除");
+        checked.plan.members.insert(method_param, removed);
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, code));
+
+        let invalid = code.replace("fn echo(value:int)", "fn echo(value:UnknownType)");
+        let err = verified_private_source(&invalid).err()
+            .expect("私有方法參數未知型別必須拒絕");
+        assert_eq!(&*err.message, "P13：方法參數使用不存在的型別");
+    }
+
+    #[test]
     fn f05_公私正式_checker_相同已核准純值來源產生相同型別與半開位置證據() {
         let code = "fn main()->int{\nvar value:int = 3\nif(true){\nreturn value\n}\nreturn 0\n}\n";
         assert_eq!(public_check(code), Ok(()));
