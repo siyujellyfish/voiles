@@ -234,6 +234,12 @@ struct Checker<'a, C> {
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
+    /// F01：真正私有 Checker 已驗證的欄位／方法及函式參數
+    /// 名稱、型別 token 來源身分。唯讀型別註記，不是資源持有者。
+    recorded_member_types: RefCell<BTreeMap<
+        crate::common_ir::ModeNodeIdentity, crate::common_ir::VerifiedTypedMember
+    >>,
+    recorded_member_conflicts: RefCell<BTreeSet<usize>>,
     /// F11：相同 AST 宣告被不同路徑檢查時若型別／可變權限不一致，
     /// 不能以覆寫表項掩藏衝突，也不能只靠 debug_assert 保護。
     recorded_declaration_conflicts: RefCell<BTreeSet<DeclarationId>>,
@@ -565,6 +571,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         function_index, ability,
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
+        recorded_member_types: RefCell::new(BTreeMap::new()),
+        recorded_member_conflicts: RefCell::new(BTreeSet::new()),
         recorded_declaration_conflicts: RefCell::new(BTreeSet::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
         recorded_field_writes: RefCell::new(BTreeSet::new()),
