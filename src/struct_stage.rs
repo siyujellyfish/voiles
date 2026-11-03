@@ -73,10 +73,15 @@ enum StmtKind {
         no: Option<Vec<Stmt>>,
     },
     /// P15：只在能證明反向邊的所有權狀態不變時接受的 while 子集。
-    While { condition: Term, body: Vec<Stmt> },
+    While {
+        condition: Term,
+        body: crate::syntax_shared::ParsedBlock<Stmt>,
+    },
     /// D04 右端點不含的整數常值區間；P15 僅建構靜態借用證據。
     ForRange { iterator: String, iterator_start: usize,
-        lower: String, upper: String, body: Vec<Stmt> },
+        lower: String, upper: String,
+        body: crate::syntax_shared::ParsedBlock<Stmt>,
+    },
     Return(crate::syntax_shared::ParsedReturn<Term>),
     /// 既有 for／while 的最內層控制轉移；無迴圈時必須拒絕。
     Break,
