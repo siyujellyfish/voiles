@@ -337,17 +337,17 @@ mod tests {
             TypedDeclaration::new(DeclarationId(inner.start), inner.ty, inner.mutable));
         let inner_id = resolver.binding_for_reference("n", function.end, &scopes).unwrap();
         assert_ne!(outer_id, inner_id, "H06／AH04 遮蔽不能覆蓋來源身分");
-        // 與 R02 共通 AST、P13/P16 的安全資源帳簿共用 DeclarationId，
-        // 而非只比較 P09 私有位置整數或相同詞彙名稱。
-        let shared = crate::common_ir::from_public(&file).unwrap();
-        let crate::common_ir::ScalarStmt::Declare { declaration: shared_outer, .. } =
-            &shared.functions[0].body[0] else { panic!("共用 AST 缺少外層宣告"); };
-        let crate::common_ir::ScalarStmt::If { yes, .. } =
-            &shared.functions[0].body[1] else { panic!("共用 AST 缺少 if"); };
-        let [crate::common_ir::ScalarStmt::Declare { declaration: shared_inner, .. }] =
-            yes.as_slice() else { panic!("共用 AST 缺少內層同名宣告"); };
-        assert_eq!(&outer_id.declaration, shared_outer);
-        assert_eq!(&inner_id.declaration, shared_inner);
+        // F05：直接核對真正 P07 Parser AST 和 P09 正式來源身分，
+        // 不再為了測試而重新投影出第三棵 ScalarStmt 語意樹。
+        let facts = super::resolve_with_facts(&file, &source).unwrap();
+        let outer_proof = facts.declaration(outer_id.declaration)
+            .expect("公開正式 P09 必須保留外層宣告");
+        let inner_proof = facts.declaration(inner_id.declaration)
+            .expect("公開正式 P09 必須保留遮蔽宣告");
+        assert_eq!(outer_proof.declaration, DeclarationId(outer.start));
+        assert_eq!(inner_proof.declaration, DeclarationId(inner.start));
+        assert_eq!(outer_proof.ty, outer.ty);
+        assert_eq!(inner_proof.ty, inner.ty);
 
         assert_eq!(inner_id.declaration.0, inner.start);
         scopes.pop();
