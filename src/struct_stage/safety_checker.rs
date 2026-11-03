@@ -24,8 +24,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
     /// F04：真正私有 Checker 所有函式、方法、欄位與區塊宣告
     /// 共用唯一型別名稱存在性裁決；不改任何既有錯誤優先順序。
+    /// A4/F04-05：共通 int／bool 型別名稱只由 ScalarType::from_name
+    /// 唯一決定；float、str、struct 專屬私有核准能力仍保留原判斷。
     fn known_type(&self, ty: &str) -> bool {
-        matches!(ty, "int" | "bool" | "float" | "str")
+        crate::common_ir::ScalarType::from_name(ty).is_some()
+            || matches!(ty, "float" | "str")
             || self.structs.contains_key(ty)
     }
 
