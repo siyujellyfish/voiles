@@ -516,7 +516,7 @@ struct VerifiedPrivateSource {
     plan: VerifiedSafetyPlan,
 }
 
-fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
+fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
     -> Result<VerifiedPrivateSource, Diagnostic> {
     let source = Source::new(text.as_bytes().to_vec());
     if let Some(error) = source.lexical_diagnostics().into_iter().next() { return Err(error); }
@@ -576,6 +576,52 @@ fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermissi
         });
     }
     Ok(VerifiedPrivateSource { source, structs, functions, plan })
+}
+
+/// F00：唯一的正式私有來源入口維持原樣；只有內部測試開啟
+/// 明確環境標記時，才輸出原始 UTF-8 來源、實際核准或拒絕的完整診斷。
+/// 不在正常建置產生副作用，也不據此建構 AST／資源事件。
+fn verify_source_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
+    -> Result<VerifiedPrivateSource, Diagnostic> {
+    let result = verify_source_core_with_ability(text, ability);
+    #[cfg(test)]
+    if std::env::var_os("VOILES_F00_PRIVATE_CAPTURE").is_some() {
+        f00_記錄私有實際診斷(text, &result);
+    }
+    result
+}
+
+#[cfg(test)]
+fn f00_記錄私有實際診斷(
+    source: &str, result: &Result<VerifiedPrivateSource, Diagnostic>,
+) {
+    fn hex(bytes: &[u8]) -> String {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    }
+    let (state, kind, message, span): (&str, &str, &str, Option<crate::SourceSpan>) =
+        match result {
+            Ok(_) => ("Passed", "-", "", None),
+            Err(diagnostic) => {
+                let type_name = match diagnostic.kind {
+                    DiagnosticKind::Lexical => "Lexical",
+                    DiagnosticKind::Syntax => "Syntax",
+                    DiagnosticKind::Static => "Static",
+                };
+                ("Failed", type_name, diagnostic.message.as_ref(), diagnostic.span)
+            }
+        };
+    let (line1, col1, line2, col2) = match span {
+        Some(value) => (
+            value.start.line.to_string(), value.start.column.to_string(),
+            value.end.line.to_string(), value.end.column.to_string(),
+        ),
+        None => ("-".into(), "-".into(), "-".into(), "-".into()),
+    };
+    println!(
+        "F00_PRIVATE_SOURCE={}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+        hex(source.as_bytes()), state, kind, hex(message.as_bytes()),
+        line1, col1, line2, col2,
+    );
 }
 
 #[cfg(test)]
