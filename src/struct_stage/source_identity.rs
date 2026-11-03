@@ -15,6 +15,7 @@ fn verified_private_syntax_tree(
             return false;
         }
         match &value.kind {
+            TermKind::Group(inner) => term(inner, span, audit),
             TermKind::BinaryInt(binary) =>
                 term(&binary.left, span, audit)
                     && term(&binary.right, span, audit),
