@@ -2628,3 +2628,103 @@ mod f06_b05_真實私有借用別名身分 {
         assert!(error.message.contains("借用"));
     }
 }
+
+#[cfg(test)]
+mod r03_b05_f08_靜態狀態原子合流 {
+    use super::*;
+    use crate::borrow_safety::BorrowSafetyError;
+
+    fn binding(id: usize, source: Option<usize>, kind: BorrowKind) -> Binding {
+        Binding {
+            declaration_start: DeclarationId(id),
+            ty: "int".to_owned(), mutable: true,
+            value: ValueSlot::initialized(CopyPermission::Allowed),
+            pending_fields: None,
+            loan: source.map(|id| LoanBinding {
+                fact: BorrowFact::new(DeclarationId(id), kind), active: true,
+            }),
+        }
+    }
+
+    #[test]
+    fn f08_b05_同一安全視圖比較所有權借用與宣告能力且不複製帳簿() {
+        let original = binding(100, Some(90), BorrowKind::SharedRead);
+        assert!(original.same_safety_state(&original.clone()));
+        let view = original.safety_state();
+        assert_eq!(view.declaration, DeclarationId(100));
+        assert_eq!(view.ty, "int");
+        assert_eq!(view.value.state(), ValueState::Available);
+        assert_eq!(view.loan.unwrap().fact.source, DeclarationId(90));
+        let mut moved = original.clone();
+        moved.value.move_whole().unwrap();
+        assert_ne!(view, moved.safety_state());
+        let mut changed_loan = original.clone();
+        changed_loan.loan.as_mut().unwrap().active = false;
+        assert_ne!(view, changed_loan.safety_state());
+        assert_eq!(view, original.safety_state());
+    }
+
+    #[test]
+    fn f08_b05_非法借用來源合流拒絕且不修改入口作用域任何欄位() {
+        let owner = binding(200, None, BorrowKind::SharedRead);
+        let alias = binding(201, Some(200), BorrowKind::SharedRead);
+        let original: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".to_owned(), owner), ("alias".to_owned(), alias),
+        ]))];
+        let mut current = original.clone();
+        let mut proposed = current.clone();
+        // 重複認領同一別名宣告，即使共享相容也屬失效來源證據。
+        let duplicate = binding(201, Some(200), BorrowKind::SharedRead);
+        Rc::make_mut(&mut proposed[0]).insert("forged".to_owned(), duplicate);
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::commit_reachable_safety_join(
+                &mut current, proposed,
+            ),
+            Err(BorrowSafetyError::SnapshotMismatch),
+        );
+        assert!(Rc::ptr_eq(&current[0], &original[0]));
+        assert_eq!(current[0]["owner"].value.state(), ValueState::Available);
+        assert!(current[0]["alias"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f08_b05_合法分支候選完成全部驗證後才一次提交() {
+        let original: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".to_owned(), binding(300, None, BorrowKind::SharedRead)),
+            ("alias".to_owned(), binding(301, Some(300), BorrowKind::SharedRead)),
+        ]))];
+        let mut current = original.clone();
+        let mut proposed = current.clone();
+        Rc::make_mut(&mut proposed[0]).get_mut("alias").unwrap()
+            .loan.as_mut().unwrap().active = false;
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::commit_reachable_safety_join(
+                &mut current, proposed,
+            ), Ok(())
+        );
+        assert!(!Rc::ptr_eq(&current[0], &original[0]));
+        assert!(!current[0]["alias"].loan.as_ref().unwrap().active);
+        assert!(original[0]["alias"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f08_b05_無效獨占共享合流不得污染已驗證的其它宣告() {
+        let original: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".to_owned(), binding(400, None, BorrowKind::SharedRead)),
+            ("shared".to_owned(), binding(401, Some(400), BorrowKind::SharedRead)),
+        ]))];
+        let mut current = original.clone();
+        let mut proposed = current.clone();
+        Rc::make_mut(&mut proposed[0]).insert(
+            "exclusive".to_owned(),
+            binding(402, Some(400), BorrowKind::ExclusiveWrite),
+        );
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::commit_reachable_safety_join(
+                &mut current, proposed,
+            ), Err(BorrowSafetyError::BorrowConflict)
+        );
+        assert!(Rc::ptr_eq(&current[0], &original[0]));
+        assert_eq!(current[0]["owner"].value.state(), ValueState::Available);
+    }
+}
