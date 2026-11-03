@@ -11,7 +11,7 @@ use crate::ownership_ledger::DeclarationId;
 /// 與只在測試中將雙樹投影成 SharedAst 不同，此巨集直接建立
 /// 正式公私 ExprKind／TermKind 的 enum，不允許同一純值分別加新變體。
 macro_rules! define_shared_expression_kind {
-    ($name:ident, $node:ty, [$($derive:ident),+], { $($specific:tt)* }) => {
+    ($name:ident, $node:ty, $call_args:ty, [$($derive:ident),+], { $($specific:tt)* }) => {
         #[derive($($derive),+)]
         pub(crate) enum $name {
             Scalar(crate::syntax_shared::ScalarLiteral),
@@ -19,6 +19,9 @@ macro_rules! define_shared_expression_kind {
             BinaryInt(crate::common_ir::ArithmeticNode<$node>),
             /// F02：已核准公私共同群組節點的唯一 Rust 變體宣告。
             Group(Box<$node>),
+            /// F02：公私真正具名呼叫唯一 enum 變體，模式各自傳入
+            /// 已核准參數型別；公開為 ()，私有為 Vec<Term>。
+            Call(crate::syntax_shared::ParsedNamedCall<$call_args>),
             $($specific)*
         }
     };
