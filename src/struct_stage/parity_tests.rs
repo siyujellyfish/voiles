@@ -49,7 +49,7 @@ mod p16_6_r02_公開私有前端交集契約 {
         let priv_expr: Vec<_> = private.plan.scalar_hir.verified_expressions().collect();
         assert_eq!(pub_expr, priv_expr,
             "核准共同純值的型別／半開位置仍須完全一致");
-        assert!(private.plan.is_consistent(&private.structs, code));
+        assert!(private.plan.is_consistent(&private.structs, &private.functions, code));
     }
 
     #[test]
