@@ -44,7 +44,7 @@ FILTERS = {
     "P16.2": "struct_initialization::p16_真實持續存活結構值資源責任::",
     "P16.3": "struct_stage::p16_6_r03_10_單層布林分支與作用域資源清理::",
     "P16.4": "owned_str_runtime::p16_4_資源事件身分逐筆稽核::",
-    "P16.5": "owned_str_runtime::p16_4_資源事件身分逐筆稽核::",
+    "P16.5": "resource_obligation_audit::tests::p16_未清理責任須明確偵測不可倚賴_rust_drop_或_gc",
     "P16.6": "struct_eval_plan::tests::vb16_",
 }
 
