@@ -123,7 +123,10 @@ mod tests {
         assert_eq!(group.end.column,19);
         assert!(positions.iter().any(|n|n.kind=="Subtract"));
         assert!(positions.iter().any(|n|n.kind=="Return"));
-        assert!(format!("{file:#?}").contains("Subtract"));
+        assert!(format!("{file:#?}").contains("BinaryInt"),
+            "正式 AST 已改用公私共通算術變體");
+        assert!(positions.iter().filter(|n| n.kind == "Subtract").count() >= 2,
+            "P08 原有減法觀測標籤及兩層左結合仍須保留");
     }
 
     #[test]
