@@ -4,27 +4,23 @@ use crate::{Diagnostic, DiagnosticKind};
 use crate::lexer::{Token, TokenKind};
 use crate::source::Source;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExprKind {
-    /// R02 F02：真正公開與私有 Parser 均直接保留同一 ScalarLiteral。
-    Scalar(crate::syntax_shared::ScalarLiteral),
-    DecimalLiteral(String),
-    StringLiteral(String),
-    Name(String),
-    ZeroArgCall(crate::syntax_shared::ParsedNamedCall<()>),
-    /// F02：與正式私有 Term 完全相同的單一加減 AST 權威。
-    /// 實際運算子只存 ArithmeticNode.operator，不再由兩份變體名稱決定。
-    BinaryInt(crate::common_ir::ArithmeticNode<Expr>),
-    Group(Box<Expr>),
-    /// 僅為完整語言字串索引語法的內部準備；MVP-A 不接受。
-    IndexAccess(Box<Expr>, Box<Expr>),
-    /// 對已確認完整語言方法／move／borrow 的語法辨識；不核准所有權語意。
-    ZeroArgMethod(Box<Expr>, String),
-    /// 專用的字串第一層索引寫入運算式，不能泛化為其他賦值表達式。
-    // 完整語言保留的私有辨識結點，MVP-A parser 尚不建構。
-    #[allow(dead_code)]
-    FirstIndexWrite(Box<Expr>, Box<Expr>),
-}
+// F02：公私真正 Parser 的 Scalar／Name／BinaryInt 三種節點
+// 在 common_ir 中只有一份 enum 變體宣告。其餘為模式專屬子集。
+crate::common_ir::define_shared_expression_kind!(
+    ExprKind, Expr, [Debug, Clone, PartialEq, Eq], {
+        DecimalLiteral(String),
+        StringLiteral(String),
+        ZeroArgCall(crate::syntax_shared::ParsedNamedCall<()>),
+        Group(Box<Expr>),
+        /// 僅為完整語言字串索引語法的內部準備；MVP-A 不接受。
+        IndexAccess(Box<Expr>, Box<Expr>),
+        /// 對已確認完整語言方法／move／borrow 的語法辨識；不核准所有權語意。
+        ZeroArgMethod(Box<Expr>, String),
+        /// 專用字串第一層索引寫入，MVP-A 正式 parser 尚不建構。
+        #[allow(dead_code)]
+        FirstIndexWrite(Box<Expr>, Box<Expr>),
+    }
+);
 
 /// 公開 MVP-A 運算式實際共用的 AST 外殼；節點種類維持公開核准子集。
 pub(crate) type Expr = crate::common_ir::SpannedNode<ExprKind>;
