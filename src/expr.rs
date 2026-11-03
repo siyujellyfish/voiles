@@ -7,10 +7,9 @@ use crate::source::Source;
 // F02：公私真正 Parser 的 Scalar／Name／BinaryInt 三種節點
 // 在 common_ir 中只有一份 enum 變體宣告。其餘為模式專屬子集。
 crate::common_ir::define_shared_expression_kind!(
-    ExprKind, Expr, [Debug, Clone, PartialEq, Eq], {
+    ExprKind, Expr, (), [Debug, Clone, PartialEq, Eq], {
         DecimalLiteral(String),
         StringLiteral(String),
-        ZeroArgCall(crate::syntax_shared::ParsedNamedCall<()>),
         /// 僅為完整語言字串索引語法的內部準備；MVP-A 不接受。
         IndexAccess(Box<Expr>, Box<Expr>),
         /// 對已確認完整語言方法／move／borrow 的語法辨識；不核准所有權語意。
@@ -145,7 +144,7 @@ impl<'a> ExprParser<'a> {
                 let (call, end) =
                     crate::syntax_shared::parse_named_call(self, name.kind)?;
                 return Ok(Expr {
-                    kind: ExprKind::ZeroArgCall(call),
+                    kind: ExprKind::Call(call),
                     start: name.start, end,
                 });
             } else {
@@ -253,7 +252,7 @@ mod tests {
         match e.kind {
             ExprKind::BinaryInt(binary) => {
                 assert_eq!(binary.operator, '+');
-                assert!(matches!(binary.left.kind, ExprKind::ZeroArgCall(ref n) if n.name=="helper"));
+                assert!(matches!(binary.left.kind, ExprKind::Call(ref n) if n.name=="helper"));
             },
             _ => panic!("缺少合法函式運算元"),
         }
@@ -264,7 +263,7 @@ mod tests {
         let call = parse("helper()");
         assert_eq!(call.start, 0);
         assert_eq!(call.end, "helper()".len());
-        assert!(matches!(call.kind, ExprKind::ZeroArgCall(ref call) if call.name == "helper"));
+        assert!(matches!(call.kind, ExprKind::Call(ref call) if call.name == "helper"));
         let nested = parse("helper() + 2");
         assert!(matches!(nested.kind, ExprKind::BinaryInt(ref binary) if binary.operator == '+'));
     }
@@ -343,7 +342,7 @@ mod r02_f02_公私共同正式函式呼叫_ast_模型 {
         let scanned = crate::lexer::scan(&source);
         let mut parser = ExprParser::new(&source, &scanned.tokens, 0);
         let expr = parser.expression().unwrap();
-        let ExprKind::ZeroArgCall(call) = &expr.kind else {panic!("呼叫 AST 不合法");};
+        let ExprKind::Call(call) = &expr.kind else {panic!("呼叫 AST 不合法");};
         let _: &crate::syntax_shared::ParsedNamedCall<()> = call;
         assert_eq!(call.name, "helper");
         assert_eq!(call.arguments, ());
