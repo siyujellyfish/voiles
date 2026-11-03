@@ -2309,12 +2309,16 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         let cond = Term { kind: TermKind::Literal("bool"), start: 40, end: 44 };
         let only_shadow = stmt(StmtKind::If {
             branch: crate::syntax_shared::ParsedIfArm { start: 50, branch: crate::common_ir::ConditionalBranch::new(
-                cond.clone(), yes.clone()) },
+                cond.clone(), crate::syntax_shared::ParsedBlock {
+                    statements: yes.clone(), start: 50, end: 80,
+                }) },
             no: Some(vec![declare("alias", 50, None), read("alias")]),
         }, 50);
         assert!(!mentions(&[only_shadow], outer));
         let sibling_uses_outer = stmt(StmtKind::If {
-            branch: crate::syntax_shared::ParsedIfArm { start: 60, branch: crate::common_ir::ConditionalBranch::new(cond, yes) },
+            branch: crate::syntax_shared::ParsedIfArm { start: 60, branch: crate::common_ir::ConditionalBranch::new(cond, crate::syntax_shared::ParsedBlock {
+                statements: yes, start: 60, end: 80,
+            }) },
             no: Some(no),
         }, 60);
         assert!(mentions(&[sibling_uses_outer], outer));
@@ -2433,7 +2437,9 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
         let both = stmt(StmtKind::If {
             branch: crate::syntax_shared::ParsedIfArm { start: 10, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 11, end: 15 },
-                vec![read("first", 30)]) },
+                crate::syntax_shared::ParsedBlock {
+                    statements: vec![read("first", 30)], start: 15, end: 35,
+                }) },
             no: Some(vec![read("second", 40)]),
         }, 10);
         let uses = used(&[both.clone(), read("alias", 80)]);
@@ -2457,7 +2463,9 @@ mod p16_6_f07_f10_確定出口與詞彙後繼使用 {
         ] {
             let guarded = stmt(StmtKind::If {
                 branch: crate::syntax_shared::ParsedIfArm { start: 9, branch: crate::common_ir::ConditionalBranch::new(
-                    condition.clone(), vec![read("first", 40)]) },
+                    condition.clone(), crate::syntax_shared::ParsedBlock {
+                        statements: vec![read("first", 40)], start: 15, end: 45,
+                    }) },
                 no: alternative,
             }, 9);
             assert!(!Checker::<fn(&str) -> CopyPermission>::future_stmt_must_exit(
@@ -2514,7 +2522,10 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
         statement(StmtKind::If {
             branch: crate::syntax_shared::ParsedIfArm { start: 8, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 10, end: 14 },
-                vec![result_statement(left, 20)]) },
+                crate::syntax_shared::ParsedBlock {
+                    statements: vec![result_statement(left, 20)],
+                    start: 15, end: 25,
+                }) },
             no: Some(vec![result_statement(right, 30)]),
         }, 8)
     }
@@ -2546,7 +2557,10 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
         let nested = statement(StmtKind::If {
             branch: crate::syntax_shared::ParsedIfArm { start: 49, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 50, end: 54 },
-                vec![conditional(FlowState::Returned, FlowState::Break)]) },
+                crate::syntax_shared::ParsedBlock {
+                    statements: vec![conditional(FlowState::Returned, FlowState::Break)],
+                    start: 54, end: 75,
+                }) },
             no: Some(vec![result_statement(FlowState::Continue, 80)]),
         }, 49);
         let classified = Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(
@@ -2556,7 +2570,10 @@ mod p16_6_f10_後繼活性與正式_checker_共用出口分類 {
         let no_else = statement(StmtKind::If {
             branch: crate::syntax_shared::ParsedIfArm { start: 89, branch: crate::common_ir::ConditionalBranch::new(
                 Term { kind: TermKind::Literal("bool"), start: 90, end: 94 },
-                vec![result_statement(FlowState::Returned, 95)]) },
+                crate::syntax_shared::ParsedBlock {
+                    statements: vec![result_statement(FlowState::Returned, 95)],
+                    start: 94, end: 97,
+                }) },
             no: None,
         }, 89);
         assert_eq!(Checker::<fn(&str) -> CopyPermission>::future_stmt_exit(
