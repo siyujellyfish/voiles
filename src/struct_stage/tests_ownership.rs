@@ -27,7 +27,9 @@ mod tests {
             let mk = |kind| Stmt { kind, start: 0, end: 4 };
             let conditional = mk(StmtKind::If {
                 branch: crate::syntax_shared::ParsedIfArm { start: 0, branch: crate::common_ir::ConditionalBranch::new(
-                    cond, vec![mk(left)],
+                    cond, crate::syntax_shared::ParsedBlock {
+                        statements: vec![mk(left)], start: 0, end: 4,
+                    },
                 ) },
                 no: Some(vec![mk(right)]),
             });
