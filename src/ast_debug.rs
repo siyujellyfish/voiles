@@ -27,7 +27,7 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
         ExprKind::DecimalLiteral(_) => "DecimalLiteral",
         ExprKind::StringLiteral(_) => "StringLiteral",
         ExprKind::Name(_) => "NameRef",
-        ExprKind::ZeroArgCall(_) => "ZeroArgCall",
+        ExprKind::Call(_) => "ZeroArgCall",
         // P08 的既有觀測文字保留，AST 正式值則只存共同 operator。
         ExprKind::BinaryInt(binary) if binary.operator == '+' => "Add",
         ExprKind::BinaryInt(binary) if binary.operator == '-' => "Subtract",

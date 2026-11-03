@@ -107,12 +107,11 @@ type Term = crate::common_ir::SpannedNode<TermKind>;
 
 // F02：本 enum 的已核准公私交集由 common_ir 唯一宣告產生。
 crate::common_ir::define_shared_expression_kind!(
-    TermKind, Term, [Debug, Clone], {
+    TermKind, Term, Vec<Term>, [Debug, Clone], {
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
         Construct(String, Vec<(String, Term)>),
         /// 函式具位置引數的獨立 P13 已核准語意。
-        Call(crate::syntax_shared::ParsedNamedCall<Vec<Term>>),
         Move(String),
         Borrow(String),
         FieldMove(String, String),

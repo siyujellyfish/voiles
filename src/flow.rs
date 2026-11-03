@@ -100,7 +100,7 @@ impl Analyzer<'_> {
                 self.read(b, state)?;
             }
             ExprKind::Scalar(_) |
-            ExprKind::ZeroArgCall(_) | ExprKind::DecimalLiteral(_) |
+            ExprKind::Call(_) | ExprKind::DecimalLiteral(_) |
             ExprKind::StringLiteral(_) => {}
         }
         if self.typed.is_some() {

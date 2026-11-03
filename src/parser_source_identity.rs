@@ -20,7 +20,7 @@ pub(crate) fn verified_public_syntax_tree(file: &File, source: &str) -> bool {
             ExprKind::IndexAccess(owner, index)
             | ExprKind::FirstIndexWrite(owner, index) =>
                 expression(owner, span, audit) && expression(index, span, audit),
-            ExprKind::Scalar(_) | ExprKind::Name(_) | ExprKind::ZeroArgCall(_)
+            ExprKind::Scalar(_) | ExprKind::Name(_) | ExprKind::Call(_)
             | ExprKind::DecimalLiteral(_) | ExprKind::StringLiteral(_) => true,
         }
     }
