@@ -642,6 +642,45 @@ mod r02_f02_私有真正位置引數呼叫_ast_同一資料模型 {
 }
 
 #[cfg(test)]
+mod r02_f02_正式具名呼叫單一變體與公開模式隔離 {
+    use super::*;
+    use crate::{expr, parser};
+
+    #[test]
+    fn 共同_ParsedNamedCall_由唯一_enum_宣告生成_保留不同模式引數權限() {
+        let code = "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nreturn helper()\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        let public = parser::parse(&source, &tokens.tokens).unwrap();
+        let parser::Item::Function(main) = &public.items[1]
+            else { panic!("缺少公開 main") };
+        let parser::StmtKind::Return(expression) = &main.body.statements[0].kind
+            else { panic!("公開 main 必須回傳真正具名呼叫") };
+        let expr::ExprKind::Call(public_call) = &expression.expression.kind
+            else { panic!("公開正式 ExprKind 必須使用共同 Call 變體") };
+        let _: &crate::syntax_shared::ParsedNamedCall<()> = public_call;
+        assert_eq!(public_call.name, "helper");
+        assert_eq!(
+            &code[expression.expression.start..expression.expression.end], "helper()",
+        );
+
+        // 零引數 helper() 在私有受限 Parser 中仍要先保持
+        // Construct/Call 的既有曖昧判定；不能把它改當所有權資源建構
+        // 或擅自打破 P13 之後依已知 struct 名稱決定的核准規則。
+        let (_, private) = Parser {
+            source: &source, tokens: &tokens.tokens, cursor: 0,
+        }.file().unwrap();
+        let StmtKind::Return(returned) = &private[1].body[0].kind
+            else { panic!("缺少私有 main return") };
+        let TermKind::Construct(name, fields) = &returned.expression.kind
+            else { panic!("無參數呼叫仍須保留私有名稱消歧義的原 AST") };
+        assert_eq!(name, "helper");
+        assert!(fields.is_empty());
+        assert_eq!(inspect(code), Ok(()));
+    }
+}
+
+#[cfg(test)]
 mod r02_f03_私有真正函式區塊使用共同_parser_ast {
     use super::*;
 
