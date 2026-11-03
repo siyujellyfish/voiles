@@ -3,6 +3,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn find_function(&self, name: &str) -> Option<&Function> {
         self.function_index.get(name).and_then(|index| self.functions.get(*index))
     }
+    /// F04：真正私有 Checker 所有函式、方法、欄位與區塊宣告
+    /// 共用唯一型別名稱存在性裁決；不改任何既有錯誤優先順序。
+    fn known_type(&self, ty: &str) -> bool {
+        matches!(ty, "int" | "bool" | "float" | "str")
+            || self.structs.contains_key(ty)
+    }
+
     /// F04：已核准 int/bool 使用與公開 P10 唯一共同返回裁決。
     /// float、str、struct 只維持原本的精確型別字串一致性和 ready
     /// 條件；其獨立所有權、借用及回傳資源證據仍由其他安全檢查證明。
@@ -48,6 +55,42 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             existing.insert(id, fact);
         }
     }
+    /// F01/F04：這是由真正 Checker 已確認型別名稱的宣告
+    /// 交付的來源註記，和 Binding/借用來源表完全隔離。
+    fn record_checked_member(
+        &self, role: crate::common_ir::NodeRole,
+        declaration_span: crate::common_ir::NodeSpan,
+        name: &str, name_span: crate::common_ir::NodeSpan,
+        ty: &str, type_span: crate::common_ir::NodeSpan,
+        mutable: bool,
+    ) {
+        let source = match std::str::from_utf8(&self.source.bytes) {
+            Ok(source) => source,
+            Err(_) => {
+                self.recorded_member_conflicts.borrow_mut()
+                    .insert(declaration_span.start);
+                return;
+            }
+        };
+        let Some(fact) = crate::common_ir::VerifiedTypedMember::checked_private(
+            source, role, declaration_span, name, name_span,
+            ty, type_span, mutable,
+        ) else {
+            self.recorded_member_conflicts.borrow_mut()
+                .insert(declaration_span.start);
+            return;
+        };
+        let mut recorded = self.recorded_member_types.borrow_mut();
+        if let Some(previous) = recorded.get(&fact.identity) {
+            if previous != &fact {
+                self.recorded_member_conflicts.borrow_mut()
+                    .insert(declaration_span.start);
+            }
+        } else {
+            recorded.insert(fact.identity, fact);
+        }
+    }
+
     fn error(&self, text: &str, term: &Term) -> Diagnostic {
         Diagnostic {
             kind: DiagnosticKind::Static,
@@ -710,8 +753,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "S15：方法不得宣告遮蔽 self 的參數".into(), span: None });
             }
-            if !["int", "bool", "float", "str"].contains(&parameter.ty.as_str())
-                && !self.structs.contains_key(&parameter.ty) {
+            if !self.known_type(&parameter.ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：方法參數使用不存在的型別".into(), span: None });
             }
@@ -1255,8 +1297,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             message: "此受限子集不接受同作用域重複宣告".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
-                    if !["int", "bool", "float", "str"].contains(&ty.as_str())
-                        && !self.structs.contains_key(ty) {
+                    if !self.known_type(ty) {
                         return Err(Diagnostic { kind: DiagnosticKind::Static,
                             message: "宣告使用不存在的型別".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
@@ -1734,8 +1775,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         for parameter in &fun.params {
             let name = &parameter.name;
             let ty = &parameter.ty;
-            if !["int", "bool", "float", "str"].contains(&ty.as_str())
-                && !self.structs.contains_key(ty) {
+            if !self.known_type(ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
             }
@@ -1916,16 +1956,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 所有函式與方法簽章須先封閉型別名稱，不能只檢查參數或
         // 等待 return 運算式碰巧揭露不存在的回傳型別。
         for function in funcs {
-            if !["int", "bool", "float", "str"].contains(&function.result_ty.as_str())
-                && !self.structs.contains_key(&function.result_ty) {
+            if !self.known_type(&function.result_ty) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式回傳型別不存在".into(), span: None });
             }
         }
         for definition in self.structs.values() {
             for method in &definition.methods {
-                if !["int", "bool", "float", "str"].contains(&method.result_ty.as_str())
-                    && !self.structs.contains_key(&method.result_ty) {
+                if !self.known_type(&method.result_ty) {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P13：方法回傳型別不存在".into(), span: None });
                 }
@@ -1934,8 +1972,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.check_default_constructor_cycles()?;
         for (struct_name, definition) in self.structs.iter() {
             for field in &definition.fields {
-                if !["int", "bool", "float", "str"].contains(&field.ty.as_str())
-                    && !self.structs.contains_key(&field.ty) {
+                if !self.known_type(&field.ty) {
                     return Err(Diagnostic {
                         kind: DiagnosticKind::Static,
                         message: "結構欄位使用不存在的型別".into(),
