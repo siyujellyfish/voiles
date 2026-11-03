@@ -402,8 +402,9 @@ impl VerifiedDeclarationFacts {
         // 由同一個公私正式 Typed HIR 閘門驗證來源 UTF-8、
         // 三類 NodeIdentity 與已讀取運算式的型別一致性。
         // 本層僅額外核對私有宣告所有權與 var/const 授權。
-        hir.source_spans_are_valid(text)
-            && hir.verified_references().all(|entry| {
+        hir.source_spans_are_valid_for_mode(
+            crate::common_ir::FrontendMode::PrivateVerified, text,
+        ) && hir.verified_references().all(|entry| {
                 self.typed_declaration(entry.resolved.declaration)
                         .is_some_and(|decl| decl.declaration.0 <= entry.span.start
                             && crate::common_ir::ScalarType::from_name(decl.ty)
