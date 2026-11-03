@@ -140,9 +140,16 @@ mod a3_f03_五項正式驗收 {
     }
 
     #[test]
-    fn f03_04_缺失右大括號兩模式不得吞掉_eof() {
-        let invalid = "fn main()->int{\nif(true){\nreturn 1\n}\nreturn 0\n";
-        let (source, tokens) = parsed(invalid);
+    fn f03_04_不完整區塊先經原_lexer_再由雙_parser_拒絕() {
+        // 未封閉大括號本來就是原 Lexer 應首先拒絕的來源，不能冒充 Parser 診斷。
+        let missing_close = "fn main()->int{\nif(true){\nreturn 1\n}\nreturn 0\n";
+        let source = Source::new(missing_close.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(!scan.diagnostics.is_empty(), "缺少大括號不可被 Lexer 靜默接受");
+        assert!(scan.diagnostics.iter().all(|diagnostic| diagnostic.span.is_some()));
+        // 括號完整但 if 後沒有合法區塊，必須由兩個正式 Parser 各自拒絕。
+        let invalid_body = "fn main()->int{\nif(true) return 1\nreturn 0\n}\n";
+        let (source, tokens) = parsed(invalid_body);
         let a = crate::parser::parse(&source, &tokens).unwrap_err();
         let b = Parser { source: &source, tokens: &tokens, cursor: 0 }.file().unwrap_err();
         assert_eq!(a.kind, DiagnosticKind::Syntax);
