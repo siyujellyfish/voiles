@@ -2849,9 +2849,13 @@ mod f07_全後繼詞彙使用身分計畫 {
             kind: StmtKind::ForRange {
                 iterator: "alias".to_owned(), iterator_start: iterator.0,
                 lower: "0".to_owned(), upper: "2".to_owned(),
-                body: vec![Stmt {
-                    start: 113, end: 124, kind: StmtKind::Return(crate::syntax_shared::ParsedReturn::new(t)),
-                }],
+                body: crate::syntax_shared::ParsedBlock {
+                    statements: vec![Stmt {
+                        start: 113, end: 124,
+                        kind: StmtKind::Return(crate::syntax_shared::ParsedReturn::new(t)),
+                    }],
+                    start: 98, end: 130,
+                },
             },
         }];
         let mut visible = HashMap::from([("alias".to_owned(), outer)]);
