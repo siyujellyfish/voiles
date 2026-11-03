@@ -28,8 +28,10 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
         ExprKind::StringLiteral(_) => "StringLiteral",
         ExprKind::Name(_) => "NameRef",
         ExprKind::ZeroArgCall(_) => "ZeroArgCall",
-        ExprKind::Add(_) => "Add",
-        ExprKind::Subtract(_) => "Subtract",
+        // P08 的既有觀測文字保留，AST 正式值則只存共同 operator。
+        ExprKind::BinaryInt(binary) if binary.operator == '+' => "Add",
+        ExprKind::BinaryInt(binary) if binary.operator == '-' => "Subtract",
+        ExprKind::BinaryInt(_) => "InvalidArithmetic",
         ExprKind::Group(_) => "ArithmeticGroup",
         ExprKind::IndexAccess(_, _) => "IndexAccess",
         ExprKind::ZeroArgMethod(_, _) => "ZeroArgMethod",
@@ -37,7 +39,7 @@ fn expression(out: &mut Vec<NodeLocation>, source: &Source, expr: &Expr) {
     };
     record(out, source, name, expr.start, expr.end);
     match &expr.kind {
-        ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+        ExprKind::BinaryInt(binary) => {
             expression(out, source, &binary.left);
             expression(out, source, &binary.right);
         }
