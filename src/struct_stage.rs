@@ -69,7 +69,7 @@ enum StmtKind {
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
     FieldAssign { receiver: String, field: String, value: Term },
     If {
-        branch: crate::syntax_shared::ParsedIfArm<Term, Vec<Stmt>>,
+        branch: crate::syntax_shared::ParsedIfArm<Term, crate::syntax_shared::ParsedBlock<Stmt>>,
         no: Option<Vec<Stmt>>,
     },
     /// P15：只在能證明反向邊的所有權狀態不變時接受的 while 子集。
