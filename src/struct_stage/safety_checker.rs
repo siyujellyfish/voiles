@@ -757,6 +757,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：方法參數使用不存在的型別".into(), span: None });
             }
+            self.record_checked_member(
+                crate::common_ir::NodeRole::Parameter,
+                parameter.declaration_span,
+                &parameter.name, parameter.name_span,
+                &parameter.ty, parameter.type_span, false,
+            );
         }
         self.reject_method_statements(&method.body)?;
         let Some(Stmt { kind: StmtKind::Return(return_value), .. }) = method.body.last() else {
@@ -1779,6 +1785,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式參數使用不存在的型別".into(), span: None });
             }
+            self.record_checked_member(
+                crate::common_ir::NodeRole::Parameter,
+                parameter.declaration_span,
+                name, parameter.name_span,
+                ty, parameter.type_span, false,
+            );
             Rc::make_mut(&mut vars[0]).insert(name.clone(), Binding {
                 declaration_start: DeclarationId(parameter.declaration_start),
                 ty: ty.clone(), mutable: false,
@@ -1979,6 +1991,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         span: None,
                     });
                 }
+                self.record_checked_member(
+                    crate::common_ir::NodeRole::Field,
+                    field.declaration_span,
+                    &field.name, field.name_span,
+                    &field.ty, field.type_span, !field.immutable,
+                );
                 if let Some(default) = &field.default {
                     let (ty, initialized) =
                         self.evaluate(default, &mut vec![Rc::new(HashMap::new())])?;
