@@ -77,7 +77,7 @@ enum StmtKind {
     FieldAssign { receiver: String, field: String, value: Term },
     If {
         branch: crate::syntax_shared::ParsedIfArm<Term, crate::syntax_shared::ParsedBlock<Stmt>>,
-        no: Option<Vec<Stmt>>,
+        no: Option<crate::syntax_shared::ParsedElse<Stmt>>,
     },
     /// P15：只在能證明反向邊的所有權狀態不變時接受的 while 子集。
     While {
