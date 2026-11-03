@@ -106,7 +106,7 @@ impl<'a> TypeChecker<'a> {
             ExprKind::ZeroArgMethod(inner, method) if self.probe_move
                 && method == "move" && matches!(inner.kind, ExprKind::Name(_)) =>
                 self.expression(inner, scopes),
-            ExprKind::Add(binary) | ExprKind::Subtract(binary) => {
+            ExprKind::BinaryInt(binary) => {
                 let lhs = self.expression(&binary.left, scopes)?;
                 let rhs = self.expression(&binary.right, scopes)?;
                 if !crate::common_ir::arithmetic_operand_is_ready(Some(lhs.ty), true) {
