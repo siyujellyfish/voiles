@@ -543,10 +543,11 @@ impl crate::syntax_shared::GroupSyntax for Parser<'_> {
         self.take(')', "括號運算式缺少右括號")?;
         Ok(self.tokens[self.cursor - 1].end)
     }
-    fn group_result(&mut self, mut expression: Term, start: usize, end: usize) -> Term {
-        expression.start = start;
-        expression.end = end;
-        expression
+    fn group_result(&mut self, expression: Term, start: usize, end: usize) -> Term {
+        // 公開正式 Expr::Group 已保留內外兩份來源跨度；
+        // 私有正式 Term 必須保留相同已解析 inner AST，
+        // 才能在真正 Checker 成功後分別簽出兩個 Typed HIR。
+        Term { kind: TermKind::Group(Box::new(expression)), start, end }
     }
 }
 
