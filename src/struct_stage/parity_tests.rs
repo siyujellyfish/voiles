@@ -26,6 +26,77 @@ mod p16_6_r02_公開私有前端交集契約 {
     }
 
     #[test]
+    fn f01_公私正式共同函式與宣告維持相同跨度但模式身分互不混淆() {
+        use crate::common_ir::{FrontendMode, ModeNodeIdentity, NodeIdentity, NodeRole, NodeSpan};
+        let code = "fn main()->int{\nvar value:int = 1\nreturn value\n}\n";
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        let public = parser::parse(&source, &tokens.tokens).unwrap();
+        let parser::Item::Function(public_function) = &public.items[0]
+            else { panic!("必須由公開正式 Parser 產生函式") };
+        let private = verified_private_source(code).unwrap();
+        let private_function = &private.functions[0];
+
+        let public_id = public_function.checked_identity(FrontendMode::PublicMvpA, code)
+            .expect("公開函式應交付共用的合法來源身分");
+        let private_id = private_function.checked_identity(FrontendMode::PrivateVerified, code)
+            .expect("私有函式應交付共用的合法來源身分");
+        assert_eq!(public_id.node, private_id.node);
+        assert_eq!(public_id.node.role, NodeRole::Function);
+        assert_ne!(public_id, private_id, "不同入口模式不能用相同身分授權");
+
+        let public_body = public_function.body.checked_identity(FrontendMode::PublicMvpA, code)
+            .expect("公開區塊由正式共同解析器產生");
+        let private_body = private_function.body.checked_identity(
+            FrontendMode::PrivateVerified, code).expect("私有區塊由正式共同解析器產生");
+        assert_eq!(public_body.node, private_body.node);
+        assert_eq!(public_body.node.role, NodeRole::Block);
+        assert_ne!(public_body, private_body);
+
+        let parser::StmtKind::Binding(public_decl) =
+            &public_function.body.statements[0].kind
+            else { panic!("公開共同宣告節點缺失") };
+        let StmtKind::Declare(private_decl) =
+            &private_function.body.statements[0].kind
+            else { panic!("私有共同宣告節點缺失") };
+        let public_decl_id = public_decl.checked_identity(FrontendMode::PublicMvpA, code)
+            .expect("公開宣告跨度有效");
+        let private_decl_id = private_decl.checked_identity(FrontendMode::PrivateVerified, code)
+            .expect("私有宣告跨度有效");
+        assert_eq!(public_decl_id.node, private_decl_id.node);
+        assert_eq!(public_decl_id.node.role, NodeRole::Declaration);
+        assert_ne!(public_decl_id, private_decl_id);
+
+        let public_stmt = public_function.body.statements[0]
+            .checked_mode_identity(FrontendMode::PublicMvpA, NodeRole::Statement, code)
+            .unwrap();
+        let private_stmt = private_function.body.statements[0]
+            .checked_mode_identity(FrontendMode::PrivateVerified, NodeRole::Statement, code)
+            .unwrap();
+        assert_eq!(public_stmt.node, private_stmt.node);
+        assert_ne!(public_stmt, private_stmt);
+
+        let unicode = "A中🪼B";
+        let real = NodeSpan::new(1, 8);
+        assert_eq!(
+            ModeNodeIdentity::checked(FrontendMode::PrivateVerified, real,
+                NodeRole::Expression, unicode).unwrap().node,
+            NodeIdentity::checked(real, NodeRole::Expression, unicode).unwrap(),
+        );
+        assert!(ModeNodeIdentity::checked(
+            FrontendMode::PublicMvpA, NodeSpan::new(1, 2),
+            NodeRole::Expression, unicode).is_none(),
+            "UTF-8 中文字元中間的位元組不能冒充已驗證節點",
+        );
+        assert!(ModeNodeIdentity::checked(
+            FrontendMode::PrivateVerified, NodeSpan::new(0, unicode.len() + 1),
+            NodeRole::Block, unicode).is_none(),
+            "不能使用 EOF 以後的來源節點",
+        );
+    }
+
+    #[test]
     fn f05_公私正式_checker_相同已核准純值來源產生相同型別與半開位置證據() {
         let code = "fn main()->int{\nvar value:int = 3\nif(true){\nreturn value\n}\nreturn 0\n}\n";
         assert_eq!(public_check(code), Ok(()));

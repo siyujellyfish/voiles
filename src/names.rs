@@ -133,9 +133,24 @@ pub(crate) fn resolve_with_facts(
     let mut functions = HashMap::new();
     let mut globals = HashMap::new();
     let mut facts = crate::common_ir::ResolvedNames::default();
+    // F01：已核准公開 AST 的函式／區塊／宣告跨度採用唯一
+    // ModeNodeIdentity 驗證器；不另造第二份宣告身分。
+    let source_text = std::str::from_utf8(&source.bytes).ok();
     for item in &file.items {
         match item {
             Item::Function(f) => {
+                if source_text.is_some_and(|text|
+                    f.checked_identity(crate::common_ir::FrontendMode::PublicMvpA, text)
+                        .is_none()
+                        || f.body.checked_identity(
+                            crate::common_ir::FrontendMode::PublicMvpA, text).is_none()
+                ) {
+                    return Err(Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "公開函式或區塊的原始來源身分不合法".into(),
+                        span: None,
+                    });
+                }
                 if functions.insert(f.name.clone(), f.result_ty).is_some() {
                     // 首版只有零引數、單一簽章；不推導完整語言的多載政策。
                     return Err(Diagnostic {
@@ -146,6 +161,14 @@ pub(crate) fn resolve_with_facts(
                 }
             }
             Item::Binding(b) => {
+                if source_text.is_some_and(|text| b.checked_identity(
+                    crate::common_ir::FrontendMode::PublicMvpA, text).is_none()) {
+                    return Err(Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "公開宣告原始來源身分不合法".into(),
+                        span: None,
+                    });
+                }
                 let declaration = TypedDeclaration::new(
                     DeclarationId(b.start), b.ty, b.mutable);
                 if globals.insert(b.name.clone(), declaration).is_some() {
