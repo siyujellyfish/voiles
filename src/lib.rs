@@ -22,7 +22,7 @@ mod borrow_ownership_gate;
 mod borrow_lifetime_probe;
 mod resource_obligation_audit;
 mod resource_borrow_pipeline;
-#[cfg(test)]
+// P17-C：原本僅測試的安全計畫接入非公開的真資源求值。
 mod verified_resource_ir;
 mod owned_str_runtime;
 mod ownership_ledger;
