@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對四十七項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對五十二項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -45,7 +45,12 @@ from pathlib import Path
     "p18_b_正式連續兩個_else_if_先假後真只建立單一資源",
     "p18_b_正式_else_if_全部不成立由_else_建立唯一資源",
     "p18_b_巢狀_else_if_中真返回先清理其餘外層持有者",
-    "p18_b_未接通的_else_if_具名條件即使_checker_合法仍拒絕執行",
+    "p18_b_原具名_else_if_負例現依正式型別身分執行",
+    "p18_b_具名_false_else_if_只走最終_else_並逆序清理",
+    "p18_b_巢狀具名_bool_true_真返回依宣告身分逐層清理",
+    "p18_b_巢狀名稱被_str_遮蔽不得拿外層_bool_宣告身分誤授權",
+    "p18_e_具名_else_if_失敗注入只計真選中的分支資源",
+    "p18_b_具名_else_if_經驗證後來源竄改仍不得開始執行",
     "p18_b_具名_bool_條件由真宣告身分決定實際資源分支",
     "p18_b_具名_bool_false_未選分支永不產生_utf8_資源",
     "p18_b_來源為_bool_但是由字串同名冒充條件須事前拒絕",

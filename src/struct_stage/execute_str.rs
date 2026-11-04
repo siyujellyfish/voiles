@@ -52,7 +52,7 @@ struct PrivateStrLocalLiteral {
 enum PrivateStrLocalAction {
     Declare(PrivateStrLocalLiteral),
     NestedLiteralBranch {
-        condition: bool,
+        condition: PrivateBoolCondition,
         when_true: PrivateStrBranchBody,
         when_false: PrivateStrBranchBody,
     },
@@ -66,42 +66,72 @@ fn branch_has_resource(body: &PrivateStrBranchBody) -> bool {
     })
 }
 
-/// 僅對真私有 Parser 來源中已核准的 bool 常值判斷建立執行分支。
-/// 具名 bool 在最外層仍由既有 PrivateBoolCondition::Bound 經宣告身分解讀，
-/// 尚未證明的內層具名條件不以原始字串冒認為執行權限。
-fn verified_literal_bool(
+/// 以正式私有 Checker 的 TypedHIR 引用與原 Lexer token 證明
+/// 真 if/else-if/nested 條件必須指向相同的已初始化 bool 宣告。
+/// 名稱解析和型別不是執行器自行推測；嵌套 str 遮蔽時會因
+/// HIR 的 DeclarationId 不符而被拒絕。
+fn verified_nested_bool(
     term: &Term, verified: &VerifiedPrivateSource,
-) -> Result<bool, PrivateStrPrepareError> {
-    let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) =
-        &term.kind else {
-        return Err(PrivateStrPrepareError::Unsupported(
-            "巢狀及 else-if 資源分支仍只接受已驗證 bool 常值",
-        ));
-    };
-    let text = std::str::from_utf8(&verified.source.bytes)
-        .map_err(|_| PrivateStrPrepareError::SourceChanged)?;
-    let expected = if *value { "true" } else { "false" };
-    if text.get(term.start..term.end) != Some(expected) {
-        return Err(PrivateStrPrepareError::Unsupported(
-            "巢狀或 else-if 條件與原 Lexer 詞彙不一致",
-        ));
+    bool_bindings: &BTreeMap<String, DeclarationId>,
+) -> Result<PrivateBoolCondition, PrivateStrPrepareError> {
+    match &term.kind {
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) => {
+            let text = std::str::from_utf8(&verified.source.bytes)
+                .map_err(|_| PrivateStrPrepareError::SourceChanged)?;
+            let expected = if *value { "true" } else { "false" };
+            if text.get(term.start..term.end) != Some(expected) {
+                return Err(PrivateStrPrepareError::Unsupported(
+                    "巢狀 bool 常值與原 Lexer 來源不一致",
+                ));
+            }
+            Ok(PrivateBoolCondition::Constant(*value))
+        }
+        TermKind::Name(name) => {
+            let identity = bool_bindings.get(name).copied().ok_or(
+                PrivateStrPrepareError::Unsupported(
+                    "巢狀條件只支援原函式已驗證的具名 bool",
+                ),
+            )?;
+            let span = crate::common_ir::NodeSpan::new(term.start, term.end);
+            let verified_use = verified.plan.scalar_hir.reference(span).ok_or(
+                PrivateStrPrepareError::Unsupported(
+                    "條件名稱缺少正式 Checker 已繫結引用",
+                ),
+            )?;
+            if verified_use.resolved.declaration != identity
+                || verified_use.resolved.ty != crate::common_ir::ScalarType::Bool
+                || verified.plan.declarations.typed_declaration(identity)
+                    .is_none_or(|fact| fact.ty != "bool")
+                || !verified.tokens.iter().any(|token|
+                    token.start == term.start && token.end == term.end
+                    && matches!(&token.kind, TokenKind::Name(lexed) if lexed == name)
+                ) {
+                return Err(PrivateStrPrepareError::Unsupported(
+                    "巢狀 bool 引用、真 Lexer 或 Checker 宣告身分不一致",
+                ));
+            }
+            Ok(PrivateBoolCondition::Bound(identity))
+        }
+        _ => Err(PrivateStrPrepareError::Unsupported(
+            "巢狀條件的此種運算式尚未授權執行",
+        )),
     }
-    Ok(*value)
 }
 
 /// 正式私有 Parser 將 else-if 保存為單個真正 StmtKind::If 節點，
 /// 僅將該 AST 真結構投影成安全執行計畫；不再次解析或猜字串。
 fn prepare_private_else_if(
     statement: &Stmt, verified: &VerifiedPrivateSource,
+    bool_bindings: &BTreeMap<String, DeclarationId>,
 ) -> Result<PrivateStrBranchBody, PrivateStrPrepareError> {
     let StmtKind::If { branch, no } = &statement.kind else {
         return Err(PrivateStrPrepareError::Unsupported(
             "else-if 須為正式 Parser 的 If 節點",
         ));
     };
-    let condition = verified_literal_bool(&branch.branch.condition, verified)?;
-    let when_true = prepare_str_literal_branch(&branch.branch.body, verified)?;
-    let when_false = prepare_private_else_body(no.as_ref(), verified)?;
+    let condition = verified_nested_bool(&branch.branch.condition, verified, bool_bindings)?;
+    let when_true = prepare_str_literal_branch(&branch.branch.body, verified, bool_bindings)?;
+    let when_false = prepare_private_else_body(no.as_ref(), verified, bool_bindings)?;
     Ok(PrivateStrBranchBody {
         actions: vec![PrivateStrLocalAction::NestedLiteralBranch {
             condition, when_true, when_false,
@@ -113,13 +143,14 @@ fn prepare_private_else_if(
 fn prepare_private_else_body(
     no: Option<&crate::syntax_shared::ParsedElse<Stmt>>,
     verified: &VerifiedPrivateSource,
+    bool_bindings: &BTreeMap<String, DeclarationId>,
 ) -> Result<PrivateStrBranchBody, PrivateStrPrepareError> {
     match no {
         None => Ok(PrivateStrBranchBody::default()),
         Some(crate::syntax_shared::ParsedElse::Block(otherwise)) =>
-            prepare_str_literal_branch(otherwise, verified),
+            prepare_str_literal_branch(otherwise, verified, bool_bindings),
         Some(crate::syntax_shared::ParsedElse::ElseIf(arm)) =>
-            prepare_private_else_if(arm, verified),
+            prepare_private_else_if(arm, verified, bool_bindings),
         #[cfg(test)]
         Some(crate::syntax_shared::ParsedElse::SyntheticTest(_)) =>
             Err(PrivateStrPrepareError::Unsupported(
@@ -133,6 +164,7 @@ fn prepare_private_else_body(
 fn prepare_str_literal_branch(
     block: &crate::syntax_shared::ParsedBlock<Stmt>,
     verified: &VerifiedPrivateSource,
+    bool_bindings: &BTreeMap<String, DeclarationId>,
 ) -> Result<PrivateStrBranchBody, PrivateStrPrepareError> {
     let mut names = BTreeSet::new();
     let mut actions = Vec::new();
@@ -181,11 +213,15 @@ fn prepare_str_literal_branch(
                 }));
             }
             StmtKind::If { branch, no } => {
-                let condition = verified_literal_bool(
-                    &branch.branch.condition, verified,
+                let condition = verified_nested_bool(
+                    &branch.branch.condition, verified, bool_bindings,
                 )?;
-                let when_true = prepare_str_literal_branch(&branch.branch.body, verified)?;
-                let when_false = prepare_private_else_body(no.as_ref(), verified)?;
+                let when_true = prepare_str_literal_branch(
+                    &branch.branch.body, verified, bool_bindings,
+                )?;
+                let when_false = prepare_private_else_body(
+                    no.as_ref(), verified, bool_bindings,
+                )?;
                 // 真正跨層 return 僅限原 Checker 已驗證的 int 常值；
                 // 由 Runtime 以 Option<i64> 逐層退出，原 P16 資源作用域逐層清理。
                 actions.push(PrivateStrLocalAction::NestedLiteralBranch {
@@ -203,6 +239,7 @@ fn prepare_str_literal_branch(
 fn execute_str_literal_branch(
     resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
     branch: &PrivateStrBranchBody,
+    bool_values: &BTreeMap<DeclarationId, bool>,
     // 僅 Rust 內部回歸注入：第幾筆真完成的「分支局部宣告」之後故障。
     fail_after_branch_declaration: Option<usize>,
     completed_branch_declarations: &mut usize,
@@ -224,9 +261,17 @@ fn execute_str_literal_branch(
                 PrivateStrLocalAction::NestedLiteralBranch {
                     condition, when_true, when_false,
                 } => {
+                    let selected = match condition {
+                        PrivateBoolCondition::Constant(value) => *value,
+                        PrivateBoolCondition::Bound(identity) =>
+                            bool_values.get(identity).copied().ok_or(
+                                crate::owned_str_runtime::StrRuntimeError::MissingOwner,
+                            )?,
+                    };
                     let nested = execute_str_literal_branch(
-                        resources, if *condition { when_true } else { when_false },
-                        fail_after_branch_declaration, completed_branch_declarations,
+                        resources, if selected { when_true } else { when_false },
+                        bool_values, fail_after_branch_declaration,
+                        completed_branch_declarations,
                     )?;
                     if nested.is_some() {
                         // 先由遞迴被呼叫者 leave_scope；本層的 finally
@@ -454,9 +499,11 @@ impl PreparedPrivateStr {
                         )),
                     };
                     let when_true = prepare_str_literal_branch(
-                        &branch.branch.body, &verified,
+                        &branch.branch.body, &verified, &bool_bindings,
                     )?;
-                    let when_false = prepare_private_else_body(no.as_ref(), &verified)?;
+                    let when_false = prepare_private_else_body(
+                        no.as_ref(), &verified, &bool_bindings,
+                    )?;
                     if branch_has_resource(&when_true) || branch_has_resource(&when_false) {
                         has_resource = true;
                     }
@@ -553,7 +600,7 @@ impl PreparedPrivateStr {
                         if let Some(value) = execute_str_literal_branch(
                             &mut resources,
                             if selected { when_true } else { when_false },
-                            fail_after_branch_declaration,
+                            &bool_values, fail_after_branch_declaration,
                             &mut completed_branch_declarations,
                         )? {
                             // 分支的真作用域已離開；其資源已由原 P16 Runtime
@@ -701,6 +748,58 @@ mod p17_private_str_execution_tests {
 
 
 
+
+    #[test]
+    fn p18_b_具名_false_else_if_只走最終_else_並逆序清理() {
+        let code = "fn main()->int{\nconst choose:bool = false\nvar outer:str = \"外\"\nif(false){\nvar missed1:str = \"跳過\"\n}else if(choose){\nvar missed2:str = \"仍跳過\"\n}else{\nvar selected:str = \"只建立這筆\"\nreturn 6\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(6));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_巢狀具名_bool_true_真返回依宣告身分逐層清理() {
+        let code = "fn main()->int{\nconst choose:bool = true\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(choose){\nvar inner:str = \"內\"\nreturn 13\n}\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(13));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_巢狀名稱被_str_遮蔽不得拿外層_bool_宣告身分誤授權() {
+        let code = "fn main()->int{\nconst choose:bool = true\nvar outer:str = \"外\"\nif(true){\nvar choose:str = \"遮蔽\"\nif(choose){\nvar inner:str = \"不建立\"\n}\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code), Err(PrivateStrPrepareError::Check(_))
+        ));
+    }
+
+    #[test]
+    fn p18_e_具名_else_if_失敗注入只計真選中的分支資源() {
+        let code = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nif(false){\nvar skipped:str = \"不計數\"\n}else if(flag){\nvar actual:str = \"真配置\"\n}\nreturn 0\n}\n";
+        let outcome = PreparedPrivateStr::prepare(code).unwrap()
+            .execute_with_branch_fault(Some(0)).unwrap();
+        assert_eq!(outcome.result, Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_具名_else_if_經驗證後來源竄改仍不得開始執行() {
+        let code = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nif(false){\nvar miss:str = \"跳過\"\n}else if(flag){\nvar chosen:str = \"選中\"\n}\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        plan.verified.source.bytes[0] = b'x';
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn p18_b_正式_else_if_第二個條件成立只求值被選中字串並返回() {
         let code = "fn main()->int{\nvar outer:str = \"外\"\nif(false){\nvar skipped:str = \"錯誤一\"\n}else if(true){\nvar chosen:str = \"真選中\"\nreturn 7\n}else{\nvar missed:str = \"錯誤二\"\n}\nreturn 0\n}\n";
@@ -747,10 +846,16 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_未接通的_else_if_具名條件即使_checker_合法仍拒絕執行() {
+    fn p18_b_原具名_else_if_負例現依正式型別身分執行() {
+        // 保留本來源原樣；只因已具備 P09/Checker 的引用身分
+        // 與 P16 真資源安全證據，才允許進入原本拒絕的分支。
         let code = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nif(false){\nvar missed:str = \"跳過\"\n}else if(flag){\nvar chosen:str = \"未支援\"\n}\nreturn 0\n}\n";
-        assert!(matches!(PreparedPrivateStr::prepare(code),
-            Err(PrivateStrPrepareError::Unsupported(_))));
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.result, Ok(0));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
     }
 
     #[test]
