@@ -85,6 +85,41 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// G4：保留同一 Checker 所檢查的逐路狀態選擇，而不是用一份
+    /// 任意拼接的「真實執行」事件或第二本可寫所有權表替代 Scopes。
+    fn record_checked_control_snapshot(
+        &self, vars: &Scopes, span: crate::common_ir::NodeSpan, flow: FlowState,
+    ) {
+        let mut bindings: Vec<VerifiedExitBinding> = vars.iter().enumerate()
+            .flat_map(|(depth, scope)| scope.values().map(move |binding| {
+                let pending_fields = binding.pending_fields.as_ref().map(|fields| {
+                    let mut sorted: Vec<String> = fields.iter().cloned().collect();
+                    sorted.sort();
+                    sorted
+                });
+                VerifiedExitBinding {
+                    scope_depth: depth,
+                    declaration: binding.declaration_start,
+                    ty: binding.ty.clone(),
+                    mutable: binding.mutable,
+                    value: binding.value,
+                    pending_fields,
+                    loan: binding.loan.clone(),
+                }
+            })).collect();
+        bindings.sort_by_key(|item| (item.scope_depth, item.declaration));
+        let snapshot = VerifiedExitSnapshot {
+            edge: VerifiedControlEdge { span, flow },
+            scope_sizes: vars.iter().map(|scope| scope.len()).collect(),
+            bindings,
+        };
+        let mut recorded = self.recorded_exit_snapshots.borrow_mut();
+        let alternatives = recorded.entry(span.start).or_default();
+        if !alternatives.contains(&snapshot) {
+            alternatives.push(snapshot);
+        }
+    }
+
     fn record_declaration(&self, id: DeclarationId, ty: &str, mutable: bool) {
         let fact = crate::common_ir::TypedDeclaration::new(
             id, ty.to_owned(), mutable,
@@ -1625,6 +1660,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     self.record_checked_control_edge(
                         statement.node_span(), FlowState::Returned,
                     );
+                    self.record_checked_control_snapshot(
+                        vars, statement.node_span(), FlowState::Returned,
+                    );
                     return Ok(FlowState::Returned);
                 }
                 StmtKind::Break | StmtKind::Continue => {
@@ -1645,6 +1683,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         _ => unreachable!("只可能為已核准的 break／continue"),
                     };
                     self.record_checked_control_edge(statement.node_span(), transfer);
+                    self.record_checked_control_snapshot(vars, statement.node_span(), transfer);
                     return Ok(transfer);
                 }
                 StmtKind::ForRange { iterator, iterator_start,

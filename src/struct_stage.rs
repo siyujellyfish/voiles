@@ -393,6 +393,28 @@ struct VerifiedMethodSafety {
     checked_returns: BTreeSet<crate::common_ir::NodeSpan>,
 }
 
+/// G4 第三批：每條 Checker 真正已安全核對的控制轉移，
+/// 封存該位置的完整詞彙 SafetyState 靜態事實。不建立或歸還真票據。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedExitBinding {
+    scope_depth: usize,
+    declaration: DeclarationId,
+    ty: String,
+    mutable: bool,
+    value: ValueSlot,
+    pending_fields: Option<Vec<String>>,
+    loan: Option<LoanBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedExitSnapshot {
+    edge: VerifiedControlEdge,
+    /// 與當時同一份 Checker Scopes 的逐深度宣告數量對帳，
+    /// 避免刪除一個持有者後由空集合假稱整個返回責任閉合。
+    scope_sizes: Vec<usize>,
+    bindings: Vec<VerifiedExitBinding>,
+}
+
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
@@ -405,6 +427,7 @@ struct Checker<'a, C> {
     recorded_control_conflicts: RefCell<BTreeSet<usize>>,
     recorded_method_safety: RefCell<BTreeMap<usize, VerifiedMethodSafety>>,
     recorded_method_safety_conflicts: RefCell<BTreeSet<usize>>,
+    recorded_exit_snapshots: RefCell<BTreeMap<usize, Vec<VerifiedExitSnapshot>>>,
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
@@ -724,6 +747,9 @@ struct VerifiedSafetyPlan {
     control_edges: BTreeMap<usize, VerifiedControlEdge>,
     /// 方法的 self/參數受限 safety 授權只由 Checker::check_method 完成後認領。
     method_safety: BTreeMap<usize, VerifiedMethodSafety>,
+    /// 控制轉移可達時由唯一 Checker 詞彙 Scopes 直接封存的純靜態狀態；
+    /// 同一位置不同可達路徑保留不同候選，絕不拼成單一執行序列。
+    exit_snapshots: BTreeMap<usize, Vec<VerifiedExitSnapshot>>,
     scalar_hir: crate::common_ir::VerifiedScalarHir,
     /// F01/F04：僅由真 Checker 驗證欄位／參數後簽出、與借用
     /// 資源持有者分離的型別 token 來源證據。
@@ -755,6 +781,7 @@ impl VerifiedSafetyPlan {
             function_exits: BTreeMap::new(),
             control_edges: BTreeMap::new(),
             method_safety: BTreeMap::new(),
+            exit_snapshots: BTreeMap::new(),
             expression_spans, reference_spans, assignment_spans }
     }
 
@@ -898,6 +925,42 @@ impl VerifiedSafetyPlan {
             })
     }
 
+    /// 真 Checker 出口的宣告／所有權／有效借用狀態只可唯讀對照，
+    /// 不把可能執行分支的快照當成任一已發生的 ResourceEvent。
+    fn exit_snapshots_are_consistent(&self) -> bool {
+        self.exit_snapshots.len() == self.control_edges.len()
+            && self.control_edges.iter().all(|(&start, &edge)| {
+                let Some(alternatives) = self.exit_snapshots.get(&start) else {
+                    return false;
+                };
+                !alternatives.is_empty() && alternatives.iter().enumerate().all(|(i, snapshot)| {
+                    if snapshot.edge != edge
+                        || alternatives[..i].iter().any(|older| older == snapshot) {
+                        return false;
+                    }
+                    let bindings = &snapshot.bindings;
+                    let size_matches = !snapshot.scope_sizes.is_empty()
+                        && snapshot.scope_sizes.iter().sum::<usize>() == bindings.len()
+                        && snapshot.scope_sizes.iter().enumerate().all(|(depth, expected)|
+                            bindings.iter().filter(|item| item.scope_depth == depth).count()
+                                == *expected);
+                    let ordered = bindings.windows(2).all(|pair|
+                        (pair[0].scope_depth, pair[0].declaration)
+                            < (pair[1].scope_depth, pair[1].declaration));
+                    let typed = bindings.iter().all(|item|
+                        self.declarations.typed_declaration(item.declaration)
+                            .is_some_and(|fact|
+                                fact.ty == item.ty.as_str()
+                                    && fact.mutable == item.mutable));
+                    let valid_loans = StaticBorrowSnapshot::from_aliases(bindings.iter()
+                        .filter_map(|item| item.loan.as_ref().map(|loan|
+                            (item.declaration, loan.fact, loan.active))))
+                        .validate().is_ok();
+                    size_matches && ordered && typed && valid_loans
+                })
+            })
+    }
+
     /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
     /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
     fn is_consistent(
@@ -921,6 +984,7 @@ impl VerifiedSafetyPlan {
             })
             && self.control_edges_are_consistent(functions, text)
             && self.method_safety_is_consistent(structs, text)
+            && self.exit_snapshots_are_consistent()
             && self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
             && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.operations_match_verified_ast(structs, functions)
@@ -995,6 +1059,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_control_conflicts: RefCell::new(BTreeSet::new()),
         recorded_method_safety: RefCell::new(BTreeMap::new()),
         recorded_method_safety_conflicts: RefCell::new(BTreeSet::new()),
+        recorded_exit_snapshots: RefCell::new(BTreeMap::new()),
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
@@ -1062,6 +1127,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     plan.function_exits = checker.recorded_function_exits.into_inner();
     plan.control_edges = checker.recorded_control_edges.into_inner();
     plan.method_safety = checker.recorded_method_safety.into_inner();
+    plan.exit_snapshots = checker.recorded_exit_snapshots.into_inner();
     if !plan.is_consistent(&structs, &functions, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
