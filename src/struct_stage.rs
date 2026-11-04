@@ -604,12 +604,11 @@ impl VerifiedDeclarationFacts {
     fn from_checker(
         by_source: BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>,
         direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
-        direct_borrows: BTreeMap<DeclarationId, BorrowFact>,
         named_returns: BTreeSet<(DeclarationId, usize)>,
         field_writes: BTreeSet<(DeclarationId, usize, String)>,
     ) -> Self {
         Self { by_source, call_borrows: BTreeMap::new(),
-            direct_moves, direct_borrows, named_returns, field_writes }
+            direct_moves, direct_borrows: BTreeMap::new(), named_returns, field_writes }
     }
 
     /// 公私雙 Checker 共用的完整宣告 HIR。避免驗證資源證據時
@@ -1235,7 +1234,9 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     let field_writes = checker.recorded_field_writes.into_inner();
     let scalar_hir = checker.recorded_scalar_hir.into_inner();
     let mut declarations = VerifiedDeclarationFacts::from_checker(
-        by_source, direct_moves, direct_borrows, named_returns, field_writes);
+        by_source, direct_moves, named_returns, field_writes);
+    // 原始 F11 四參數建構契約不變；這份借用事實只能由 Checker 出口交付。
+    declarations.direct_borrows = direct_borrows;
     // 只由真正 Checker 在每次已驗證的呼叫出口交付來源事實，
     // 不從任何 AST 呼叫外形或模擬資源事件逆向重建。
     declarations.call_borrows = checker.recorded_call_borrows.into_inner();
