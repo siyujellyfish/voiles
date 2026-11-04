@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對三十四項 P17-C／P18-B／P18-C 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對三十八項 P17-C／P18-B／P18-C 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -25,14 +25,18 @@ from pathlib import Path
     "p18_b_條件_false_且無_else_不產生未走到的資源事件",
     "p18_b_局部同名遮蔽在離開真資源作用域後不破壞外層持有者",
     "p18_b_分支局部所有者跨作用域外洩必須在_checker_拒絕",
-    "p18_b_巢狀_return_控制轉移尚未驗證仍必須保守拒絕",
+    "p18_c_原巢狀_return_保守負例改為真三資源逆序清理正例",
     "p18_b_原有巢狀資源保守負例現已真實求值並逆序釋放",
     "p18_b_巢狀兩層_true_的真資源按執行路徑逆序釋放",
     "p18_b_巢狀_false_只建立內層_else_實際資源",
     "p18_b_最外層_false_不得執行任何巢狀真資源",
     "p18_b_兩層同名局部遮蔽維持獨立持有者與逆序釋放",
     "p18_b_巢狀分支局部變數逃逸由真_checker_提前拒絕",
-    "p18_b_巢狀分支內的_return_動態清理尚未接通必須拒絕",
+    "p18_c_巢狀_early_return_不能繼續建立外層剩餘資源",
+    "p18_c_巢狀_false_選中_else_return_僅配置真實分支",
+    "p18_c_最外層_false_不應執行巢狀_return_也不分配字串",
+    "p18_c_巢狀非整數常值_return_即使語法合法仍須保守拒絕",
+    "p18_c_巢狀分支內_true_return_逐層清理真資源",
     "p18_b_具名_bool_條件由真宣告身分決定實際資源分支",
     "p18_b_具名_bool_false_未選分支永不產生_utf8_資源",
     "p18_b_來源為_bool_但是由字串同名冒充條件須事前拒絕",
