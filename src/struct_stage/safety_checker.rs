@@ -1414,10 +1414,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     } else {
                         ValueSlot::uninitialized(permission)
                     };
-                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding {
-                        declaration_start: DeclarationId(statement.start), ty: ty.clone(),
-                        mutable: *mutable, value: slot, pending_fields, loan
-                    });
+                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding::new(
+        DeclarationId(statement.start),
+        ty.clone(),
+        *mutable,
+        slot,
+        pending_fields,
+        loan,
+    ));
                     self.record_declaration(DeclarationId(statement.start), ty, *mutable);
                     // 僅成功完成 RHS 型別、借用與所有權驗證且寫入目標之後，
                     // 才允許 Checker 輸出此具名整筆轉移證據。
@@ -1602,12 +1606,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     simulated.push(Rc::new(HashMap::new()));
                     Rc::make_mut(simulated.last_mut().expect("迭代作用域存在")).insert(
                         iterator.clone(),
-                        Binding {
-                            declaration_start: DeclarationId(*iterator_start), ty: "int".into(),
-                            mutable: false,
-                            value: ValueSlot::initialized(CopyPermission::Allowed),
-                            pending_fields: None, loan: None,
-                        });
+                        Binding::new(
+        DeclarationId(*iterator_start),
+        "int".into(),
+        false,
+        ValueSlot::initialized(CopyPermission::Allowed),
+        None,
+        None,
+    ));
                     let mut after_loop = Vec::with_capacity(continuation.len() + 2);
                     // 已知恰好一次迭代時不存在下一次本體；
                     // 不得將假想反向邊延長借用最後使用點。
@@ -1855,12 +1861,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 name, parameter.name_span,
                 ty, parameter.type_span, false,
             );
-            Rc::make_mut(&mut vars[0]).insert(name.clone(), Binding {
-                declaration_start: DeclarationId(parameter.declaration_start),
-                ty: ty.clone(), mutable: false,
-                value: ValueSlot::initialized(self.permission(ty)),
-                pending_fields: None,
-                loan: (self.permission(ty) != CopyPermission::Allowed
+            Rc::make_mut(&mut vars[0]).insert(name.clone(), Binding::new(
+        DeclarationId(parameter.declaration_start),
+        ty.clone(),
+        false,
+        ValueSlot::initialized(self.permission(ty)),
+        None,
+        (self.permission(ty) != CopyPermission::Allowed
                     && !Self::parameter_is_consumed(fun, name)).then_some(LoanBinding {
                         // 呼叫端真正 BorrowTicket 仍由其追蹤器維護；
                         // 被呼叫端的靜態代理只保存相同的來源／權限契約。
@@ -1869,7 +1876,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             BorrowKind::SharedRead,
                         ), active: true,
                     }),
-            });
+    ));
             self.record_declaration(DeclarationId(parameter.declaration_start), ty, false);
         }
         self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
