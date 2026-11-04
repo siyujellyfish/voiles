@@ -557,7 +557,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             *at_depth >= depth
                                 && used.contains(&declaration_start));
                     if loan.active && !parameter_scope_loan && !future_use {
-                        loan.active = false;
+                        // 是否仍合法結束借用由唯一 SafetyState 轉移判定；
+                        // 先停止此次局部 loan 借用，再提交原有 Binding。
+                        let _ = loan;
+                        binding.expire_alias_checked();
                     }
                 }
             }

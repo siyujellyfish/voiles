@@ -2905,3 +2905,90 @@ mod r03_b06_f07_有效期歸還原子與來源身分 {
         assert!(vars[0]["alias"].loan.as_ref().unwrap().active);
     }
 }
+
+#[cfg(test)]
+mod r03_b06_f09_靜態安全全操作單一轉移 {
+    use super::*;
+
+    fn pending() -> Binding {
+        Binding::new(DeclarationId(50001), "Box".into(), true,
+            ValueSlot::uninitialized(CopyPermission::Forbidden),
+            Some(HashSet::from(["first".to_owned(), "second".to_owned()])), None)
+    }
+
+    #[test]
+    fn f09_b06_錯誤首次欄位及移動都沒有半提交() {
+        let mut binding = pending();
+        let before = binding.clone();
+        assert!(!binding.commit_first_field("unknown"));
+        assert!(binding.same_safety_state(&before));
+        assert_eq!(binding.move_whole(), Err(ModelError::UninitializedRead));
+        assert!(binding.same_safety_state(&before));
+    }
+
+    #[test]
+    fn f09_b06_部分欄位單一轉移最後一欄才恢復完整可讀() {
+        let mut binding = pending();
+        assert!(binding.commit_first_field("first"));
+        assert_eq!(binding.value.state(), ValueState::Uninitialized);
+        assert_eq!(binding.pending_fields.as_ref().unwrap().len(), 1);
+        assert!(!binding.commit_first_field("first"));
+        assert!(binding.commit_first_field("second"));
+        assert_eq!(binding.value.state(), ValueState::Available);
+        assert!(binding.pending_fields.is_none());
+        assert!(!binding.commit_first_field("second"));
+    }
+
+    #[test]
+    fn f09_b06_合法整筆移動與重新綁定恢復同一安全狀態() {
+        let mut binding = Binding::new(
+            DeclarationId(50002), "str".into(), true,
+            ValueSlot::initialized(CopyPermission::Forbidden), None, None,
+        );
+        binding.move_whole().unwrap();
+        assert_eq!(binding.value.state(), ValueState::Moved);
+        assert_eq!(binding.move_whole(), Err(ModelError::MovedRead));
+        binding.commit_rebind();
+        assert_eq!(binding.value.state(), ValueState::Available);
+        assert!(binding.pending_fields.is_none());
+        binding.move_whole().unwrap();
+    }
+
+    #[test]
+    fn f09_b06_非參數別名可以結束但參數自身借用不能提前結束() {
+        let fact = BorrowFact::new(DeclarationId(50003), BorrowKind::SharedRead);
+        let mut alias = Binding::new(
+            DeclarationId(50004), "int".into(), false,
+            ValueSlot::initialized(CopyPermission::Allowed), None,
+            Some(LoanBinding { fact, active: true }),
+        );
+        assert!(alias.expire_alias_checked());
+        assert!(!alias.loan.as_ref().unwrap().active);
+        assert!(!alias.expire_alias_checked());
+        let mut parameter = Binding::new(
+            DeclarationId(50003), "int".into(), false,
+            ValueSlot::initialized(CopyPermission::Allowed), None,
+            Some(LoanBinding { fact, active: true }),
+        );
+        assert!(!parameter.expire_alias_checked());
+        assert!(parameter.loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f09_b06_靜態借用結束絕不可改變真資源或票據的所有權身分() {
+        let mut binding = Binding::new(
+            DeclarationId(50005), "str".into(), false,
+            ValueSlot::initialized(CopyPermission::Forbidden), None,
+            Some(LoanBinding {
+                fact: BorrowFact::new(DeclarationId(50003), BorrowKind::ExclusiveWrite),
+                active: true,
+            }),
+        );
+        let declaration = binding.declaration_start;
+        assert!(binding.expire_alias_checked());
+        assert_eq!(binding.declaration_start, declaration);
+        assert_eq!(binding.value.state(), ValueState::Available);
+        assert!(binding.pending_fields.is_none());
+        assert!(!binding.loan.as_ref().unwrap().active);
+    }
+}
