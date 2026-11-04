@@ -162,48 +162,94 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         None
     }
 
-    /// 在受限來源中，只有真正包含具名整筆 .move() 的形狀
-    /// 才能消耗參數；否則非 Copyable 參數不可被虛構成獨立所有者。
-    /// 此檢查不推定一般間接副作用、別名再借用或跨例外逃逸。
-    fn term_moves_name(term: &Term, name: &str) -> bool {
+    /// G3/F07：只有真正指向函式參數 DeclarationId 的 .move() 才可
+    /// 改變參數借用／持有者預設資格；不能因內層同名遮蔽的 move
+    /// 誤把外層參數標成已消耗的獨立所有者。
+    ///
+    /// 此處不預先執行借用或資源交易，僅從原 Parser AST 的
+    /// 詞彙環境唯讀解析 use-def。完整非法語意由後續 Checker 拒絕。
+    fn term_moves_source(
+        term: &Term, visible: &HashMap<String, DeclarationId>,
+        source: DeclarationId,
+    ) -> bool {
         match &term.kind {
-            TermKind::Group(inner) => Self::term_moves_name(inner, name),
-            TermKind::Move(source) => source == name,
+            TermKind::Group(inner) =>
+                Self::term_moves_source(inner, visible, source),
+            TermKind::Move(name) => visible.get(name) == Some(&source),
             TermKind::Construct(_, args) =>
-                args.iter().any(|(_, t)| Self::term_moves_name(t, name)),
+                args.iter().any(|(_, term)|
+                    Self::term_moves_source(term, visible, source)),
             TermKind::Call(call) =>
-                call.arguments.iter().any(|t| Self::term_moves_name(t, name)),
+                call.arguments.iter().any(|term|
+                    Self::term_moves_source(term, visible, source)),
             TermKind::MethodCall(_, _, args) =>
-                args.iter().any(|t| Self::term_moves_name(t, name)),
+                args.iter().any(|term|
+                    Self::term_moves_source(term, visible, source)),
             TermKind::BinaryInt(binary) =>
-                Self::term_moves_name(&binary.left, name) || Self::term_moves_name(&binary.right, name),
+                Self::term_moves_source(&binary.left, visible, source)
+                    || Self::term_moves_source(&binary.right, visible, source),
+            // 借用、欄位 move 與普通名字不代表參數整筆移交。
             _ => false,
         }
     }
 
-    fn statements_move_name(body: &[Stmt], name: &str) -> bool {
-        body.iter().any(|stmt| match &stmt.kind {
-            StmtKind::Declare(declaration) => declaration.initializer.as_ref()
-                .is_some_and(|t| Self::term_moves_name(t, name)),
-            StmtKind::Assign(assignment) => Self::term_moves_name(&assignment.expression, name),
-            StmtKind::FieldAssign { value, .. } =>
-                Self::term_moves_name(value, name),
-            StmtKind::Return(value) =>
-                Self::term_moves_name(&value.expression, name),
-            StmtKind::If { branch, no } =>
-                Self::term_moves_name(&branch.condition, name)
-                    || Self::statements_move_name(&branch.body, name)
-                    || no.as_ref().is_some_and(|b| Self::statements_move_name(b, name)),
-            StmtKind::While {condition, body} =>
-                Self::term_moves_name(condition, name)
-                    || Self::statements_move_name(body, name),
-            StmtKind::ForRange {body, ..} => Self::statements_move_name(body, name),
-            StmtKind::Break | StmtKind::Continue => false,
-        })
+    /// 區塊的合法詞彙宣告在 RHS 求值後才入域；
+    /// if/else-if、while、for 的宣告／迭代器在分支內遮蔽外層，
+    /// 確定無後繼的退出不應再掃描不可達的 .move()。
+    fn block_moves_source(
+        body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
+        source: DeclarationId,
+    ) -> bool {
+        for stmt in body {
+            let consumes = match &stmt.kind {
+                StmtKind::Declare(declaration) => {
+                    let in_rhs = declaration.initializer.as_ref()
+                        .is_some_and(|term| Self::term_moves_source(term, visible, source));
+                    visible.insert(declaration.name.clone(), DeclarationId(stmt.start));
+                    in_rhs
+                }
+                StmtKind::Assign(assignment) =>
+                    Self::term_moves_source(&assignment.expression, visible, source),
+                StmtKind::FieldAssign { value, .. } =>
+                    Self::term_moves_source(value, visible, source),
+                StmtKind::Return(value) =>
+                    Self::term_moves_source(&value.expression, visible, source),
+                StmtKind::If { branch, no } => {
+                    Self::term_moves_source(&branch.condition, visible, source)
+                        || Self::block_moves_source(
+                            &branch.body, &mut visible.clone(), source)
+                        || no.as_ref().is_some_and(|other|
+                            Self::block_moves_source(
+                                other, &mut visible.clone(), source))
+                }
+                StmtKind::While { condition, body } =>
+                    Self::term_moves_source(condition, visible, source)
+                        || Self::block_moves_source(body, &mut visible.clone(), source),
+                StmtKind::ForRange { iterator, iterator_start, lower, upper, body } => {
+                    if Self::known_range_iterations(lower, upper) == Some(0) {
+                        false
+                    } else {
+                        let mut nested = visible.clone();
+                        nested.insert(iterator.clone(), DeclarationId(*iterator_start));
+                        Self::block_moves_source(body, &mut nested, source)
+                    }
+                }
+                StmtKind::Break | StmtKind::Continue => false,
+            };
+            if consumes { return true; }
+            if Self::future_stmt_must_exit(stmt) { break; }
+        }
+        false
     }
 
     fn parameter_is_consumed(function: &Function, name: &str) -> bool {
-        Self::statements_move_name(&function.body, name)
+        let Some(parameter) = function.params.iter().find(|p| p.name == name) else {
+            return false;
+        };
+        let source = DeclarationId(parameter.declaration_start);
+        let mut visible = function.params.iter().map(|p|
+            (p.name.clone(), DeclarationId(p.declaration_start))).collect();
+        Self::block_moves_source(&function.body, &mut visible, source)
     }
 
     /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
