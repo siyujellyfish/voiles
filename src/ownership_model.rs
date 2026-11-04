@@ -34,6 +34,10 @@ impl ValueSlot {
 
     pub(crate) fn state(self) -> ValueState { self.state }
 
+    /// G4：僅供已驗證 Checker 安全計畫輸出靜態資源清理責任，
+    /// 唯讀取得核准 Copyable 能力，不授權新的複製或執行期事件。
+    pub(crate) fn copy_permission(self) -> CopyPermission { self.copy_permission }
+
     pub(crate) fn read(self) -> Result<(), ModelError> {
         match self.state {
             ValueState::Available => Ok(()),
