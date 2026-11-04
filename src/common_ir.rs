@@ -211,7 +211,7 @@ pub(crate) fn lookup_lexical<'a, V: 'a>(
 
 /// P09 已完成的詞彙名稱解析證據，供正式 P10 型別檢查直接消耗。
 /// 名稱引用以實際原始位元組起點綁定 DeclarationId，絕不依同名字串猜測遮蔽。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct ResolvedNames {
     pub(crate) references: std::collections::BTreeMap<usize, DeclarationId>,
     /// 賦值語句原始位元組起點對應的目標宣告身分。
@@ -408,7 +408,7 @@ fn source_has_verified_group_wrapper(
     opens > 0 && opens == closes
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub(crate) struct VerifiedScalarHir {
     /// F01/F04：只有真正正式 Checker 在建構時指定的語法模式
     /// 才能簽出 Typed HIR，不能拿公開 MVP-A 的證據冒充私有
