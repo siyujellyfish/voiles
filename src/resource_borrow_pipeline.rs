@@ -448,3 +448,137 @@ mod tests {
         assert!(p.audit_finished().is_ok());
     }
 }
+
+
+/// G3 候選：真票據、靜態來源、所有權與抽象資源帳簿同一條
+/// 合法／非法交易路徑的跨層驗收；不把靜態事實當真執行事件。
+#[cfg(test)]
+mod r03_g3_跨層票據與資源交易 {
+    use super::*;
+    use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowSafetyError};
+    use crate::ownership_model::CopyPermission::{Allowed, Forbidden};
+
+    #[test]
+    fn g3_雙共享借用逐張對帳後完整原子歸還再整筆移交及清理() {
+        let mut pipeline = SafetyPipeline::new();
+        let source = DeclarationId(6000);
+        let target = DeclarationId(6001);
+        pipeline.declare(source, Forbidden).unwrap();
+        pipeline.register_resource(source, 6010).unwrap();
+        let first = pipeline.borrow(source, BorrowKind::SharedRead).unwrap();
+        let second = pipeline.borrow(source, BorrowKind::SharedRead).unwrap();
+        let facts = [BorrowFact::new(source, BorrowKind::SharedRead); 2];
+        assert_eq!(pipeline.verify_static_borrows(&facts), Ok(()));
+        assert!(pipeline.read(source).is_err());
+        assert!(pipeline.move_into(source, target).is_err());
+        assert!(pipeline.record_cleanup(source).is_err());
+        assert_eq!(pipeline.outstanding(), 1);
+        pipeline.finish_method_with_snapshot(&[first, second], &facts).unwrap();
+        assert_eq!(pipeline.verify_static_borrows(&[]), Ok(()));
+        assert!(pipeline.read(source).is_ok());
+        pipeline.move_into(source, target).unwrap();
+        assert!(pipeline.read(source).is_err());
+        assert_eq!(pipeline.record_cleanup(target), Ok(1));
+        assert_eq!(pipeline.outstanding(), 0);
+        assert_eq!(pipeline.audit_finished(), Ok(()));
+    }
+
+    #[test]
+    fn g3_靜態完整快照卻只帶部分票據時不可解鎖任何所有者() {
+        let mut pipeline = SafetyPipeline::new();
+        let source = DeclarationId(6100);
+        pipeline.declare(source, Forbidden).unwrap();
+        pipeline.register_resource(source, 6110).unwrap();
+        let first = pipeline.borrow(source, BorrowKind::SharedRead).unwrap();
+        let second = pipeline.borrow(source, BorrowKind::SharedRead).unwrap();
+        let facts = [first.fact(), second.fact()];
+        assert!(pipeline.finish_method_with_snapshot(&[first], &facts).is_err());
+        assert_eq!(pipeline.verify_static_borrows(&facts), Ok(()));
+        assert!(pipeline.read(source).is_err());
+        assert!(pipeline.record_cleanup(source).is_err());
+        assert_eq!(pipeline.outstanding(), 1);
+        pipeline.finish_method_with_snapshot(&[first, second], &facts).unwrap();
+        assert_eq!(pipeline.record_cleanup(source), Ok(1));
+        assert_eq!(pipeline.audit_finished(), Ok(()));
+    }
+
+    #[test]
+    fn g3_跨追蹤器真票據不可冒充相同宣告來源的正確票據() {
+        let source = DeclarationId(6200);
+        let mut target = SafetyPipeline::new();
+        let mut foreign = SafetyPipeline::new();
+        for pipeline in [&mut target, &mut foreign] {
+            pipeline.declare(source, Forbidden).unwrap();
+        }
+        target.register_resource(source, 6210).unwrap();
+        let correct = target.borrow(source, BorrowKind::ExclusiveWrite).unwrap();
+        let forged = foreign.borrow(source, BorrowKind::ExclusiveWrite).unwrap();
+        let facts = [BorrowFact::new(source, BorrowKind::ExclusiveWrite)];
+        assert_eq!(target.verify_static_borrows(&facts), Ok(()));
+        assert!(target.finish_method_with_snapshot(&[forged], &facts).is_err());
+        assert_eq!(target.verify_static_borrows(&facts), Ok(()));
+        assert!(target.record_cleanup(source).is_err());
+        target.finish_method_with_snapshot(&[correct], &facts).unwrap();
+        assert_eq!(target.record_cleanup(source), Ok(1));
+        assert_eq!(target.audit_finished(), Ok(()));
+        foreign.finish_method_with_snapshot(&[forged], &facts).unwrap();
+        assert_eq!(foreign.audit_finished(), Ok(()));
+    }
+
+    #[test]
+    fn g3_抽象資源批次清理遇活躍借用時拒絕前後兩帳簿皆不變() {
+        let mut pipeline = SafetyPipeline::new();
+        let first = DeclarationId(6300);
+        let second = DeclarationId(6301);
+        pipeline.declare(first, Forbidden).unwrap();
+        pipeline.declare(second, Forbidden).unwrap();
+        pipeline.register_resource(first, 6310).unwrap();
+        pipeline.register_resource(second, 6311).unwrap();
+        let ticket = pipeline.borrow(second, BorrowKind::SharedRead).unwrap();
+        assert!(pipeline.record_cleanup_batch(&[first, second]).is_err());
+        assert_eq!(pipeline.outstanding(), 2);
+        assert!(pipeline.read(first).is_ok());
+        assert!(pipeline.read(second).is_err());
+        assert_eq!(pipeline.verify_static_borrows(&[ticket.fact()]), Ok(()));
+        pipeline.finish_method_with_snapshot(&[ticket], &[ticket.fact()]).unwrap();
+        assert_eq!(pipeline.record_cleanup_batch(&[first, second]), Ok(2));
+        assert_eq!(pipeline.outstanding(), 0);
+        assert_eq!(pipeline.audit_finished(), Ok(()));
+    }
+
+    #[test]
+    fn g3_重複目標與資源能力衝突不會留下半完成複製或移交() {
+        let mut pipeline = SafetyPipeline::new();
+        let source = DeclarationId(6400);
+        let target = DeclarationId(6401);
+        pipeline.declare(source, Allowed).unwrap();
+        pipeline.declare(target, Allowed).unwrap();
+        assert!(pipeline.copy_into(source, target).is_err());
+        assert!(pipeline.move_into(source, target).is_err());
+        assert!(pipeline.read(source).is_ok());
+        assert!(pipeline.read(target).is_ok());
+        pipeline.record_cleanup_batch(&[source, target]).unwrap();
+        assert_eq!(pipeline.audit_finished(), Ok(()));
+    }
+
+    #[test]
+    fn g3_偽造靜態借用事實不會改變實際票據或資源責任() {
+        let source = DeclarationId(6500);
+        let fake = DeclarationId(6501);
+        let mut pipeline = SafetyPipeline::new();
+        pipeline.declare(source, Forbidden).unwrap();
+        pipeline.register_resource(source, 6510).unwrap();
+        let ticket = pipeline.borrow(source, BorrowKind::SharedRead).unwrap();
+        assert_eq!(
+            pipeline.verify_static_borrows(&[BorrowFact::new(fake, BorrowKind::SharedRead)]),
+            Err(PipelineError::Ownership(GateError::Borrow(
+                BorrowSafetyError::SnapshotMismatch
+            )))
+        );
+        assert!(pipeline.record_cleanup(source).is_err());
+        assert_eq!(pipeline.outstanding(), 1);
+        pipeline.finish_method_with_snapshot(&[ticket], &[ticket.fact()]).unwrap();
+        assert_eq!(pipeline.record_cleanup(source), Ok(1));
+        assert_eq!(pipeline.audit_finished(), Ok(()));
+    }
+}
