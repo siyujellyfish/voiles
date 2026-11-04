@@ -312,6 +312,9 @@ fn trace_string_return_source(
         return Err(unsupported("P16：呼叫端其他返回路徑尚未接通執行期"));
     }
     require_checked_bridge_return(&control_edges, &exit_snapshots, final_return)?;
+    if let Some(provider_return) = called.body.last() {
+        require_checked_bridge_return(&control_edges, &exit_snapshots, provider_return)?;
+    }
     // 已驗證具名來源以真正宣告起點識別返回前後的唯一持有者。
     // 直接 return "字串" 沒有來源宣告，維持原 P16 事件橋接，不偽造 DeclarationId。
     let (content, named_return) = match called.body.as_slice() {
@@ -861,6 +864,7 @@ fn trace_persistent_struct_return_source(
     } }) if name==local) {
         return Err(unsupported("P16：被呼叫端必須以具名整筆 .move() 返回結構"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, return_final)?;
     let [receive,main_return]=main.body.as_slice() else {
         return Err(unsupported("P16：main 須單次接收結構後直接返回"));
     };
