@@ -49,6 +49,24 @@ impl Value {
     }
 }
 
+/// P18 真正走到的控制轉移；僅記錄 Runtime 已執行的路徑。
+/// 與靜態 CFG、BorrowFact、ResourceEvent 各自獨立。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControlEvent {
+    FunctionEntered { name: String, span: NodeSpan },
+    FunctionExited { name: String, span: NodeSpan, returned: bool },
+    ConditionChecked { span: NodeSpan, selected: bool },
+    ElseSelected { span: NodeSpan },
+    Returned { span: NodeSpan },
+}
+
+/// 評估與真控制邊同時回傳；遇動態錯誤仍保留已執行路徑，
+#[derive(Debug)]
+pub(crate) struct ExecutionOutcome {
+    pub(crate) result: Result<Value, RuntimeFailure>,
+    pub(crate) events: Vec<ControlEvent>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     value: Option<Value>,
@@ -121,27 +139,39 @@ impl PreparedProgram {
 
     /// 只把實際運算的值回傳給內部測試；不映射 OS exit code。
     pub(crate) fn execute(&self) -> Result<Value, RuntimeFailure> {
+        self.execute_with_trace().result
+    }
+
+    /// P18-E：由實際 Runtime 產生執行紀錄；來源或 HIR 無效時絕不開始執行。
+    pub(crate) fn execute_with_trace(&self) -> ExecutionOutcome {
         if !self.is_same_verified_source() {
-            return Err(RuntimeFailure::global("來源或驗證身分在準備後遭到變更"));
+            return ExecutionOutcome {
+                result: Err(RuntimeFailure::global("來源或驗證身分在準備後遭到變更")),
+                events: Vec::new(),
+            };
         }
         let mut runtime = Runtime {
             prepared: self,
             globals: BTreeMap::new(),
             frames: Vec::new(),
             calls: Vec::new(),
+            trace: Vec::new(),
         };
-        for item in &self.ast.items {
-            if let Item::Binding(binding) = item {
-                let slot = runtime.initialized_slot(binding)?;
-                runtime.globals.insert(DeclarationId(binding.start), slot);
+        let result = (|| {
+            for item in &self.ast.items {
+                if let Item::Binding(binding) = item {
+                    let slot = runtime.initialized_slot(binding)?;
+                    runtime.globals.insert(DeclarationId(binding.start), slot);
+                }
             }
-        }
-        let result = runtime.call("main", None)?;
-        if result.matches(ScalarType::Int) {
-            Ok(result)
-        } else {
-            Err(RuntimeFailure::global("入口函式未產生已驗證的 int 值"))
-        }
+            let result = runtime.call("main", None)?;
+            if result.matches(ScalarType::Int) {
+                Ok(result)
+            } else {
+                Err(RuntimeFailure::global("入口函式未產生已驗證的 int 值"))
+            }
+        })();
+        ExecutionOutcome { result, events: runtime.trace }
     }
 
     /// 供內部回報動態錯誤來源；與 `DiagnosticKind` 靜態分類隔離。
@@ -158,6 +188,7 @@ struct Runtime<'a> {
     frames: Vec<Vec<BTreeMap<DeclarationId, Slot>>>,
     // 尚未支援遞迴的內部切片，遇到循環必須安全拒絕而非爆堆疊。
     calls: Vec<String>,
+    trace: Vec<ControlEvent>,
 }
 
 impl Runtime<'_> {
@@ -301,11 +332,21 @@ impl Runtime<'_> {
                     let value = self.expression(&assignment.expression)?;
                     self.assign(used.resolved.declaration, value, span)?;
                 }
-                StmtKind::Return(ret) => return self.expression(&ret.expression).map(Some),
+                StmtKind::Return(ret) => {
+                    let value = self.expression(&ret.expression)?;
+                    self.trace.push(ControlEvent::Returned { span: statement.node_span() });
+                    return Ok(Some(value));
+                },
                 StmtKind::IfChain(chain) => {
                     let mut selected = None;
                     for arm in &chain.arms {
                         let condition = self.expression(&arm.branch.condition)?;
+                        if let Value::Bool(selected) = condition {
+                            self.trace.push(ControlEvent::ConditionChecked {
+                                span: arm.branch.condition.node_span(),
+                                selected,
+                            });
+                        }
                         match condition {
                             Value::Bool(true) => {
                                 selected = Some(&arm.branch.body);
@@ -315,6 +356,13 @@ impl Runtime<'_> {
                             _ => return Err(RuntimeFailure::at(
                                 arm.branch.condition.node_span(), "if 條件不是 bool",
                             )),
+                        }
+                    }
+                    if selected.is_none() {
+                        if let Some(otherwise) = chain.otherwise.as_ref() {
+                            self.trace.push(ControlEvent::ElseSelected {
+                                span: NodeSpan::new(otherwise.start, otherwise.end),
+                            });
                         }
                     }
                     if let Some(body) = selected.or(chain.otherwise.as_ref()) {
@@ -341,11 +389,19 @@ impl Runtime<'_> {
         }).ok_or_else(|| RuntimeFailure {
             span: source_span, reason: "不存在已驗證的無參數函式",
         })?;
+        let function_span = NodeSpan::new(function.start, function.end);
+        self.trace.push(ControlEvent::FunctionEntered {
+            name: name.to_string(), span: function_span,
+        });
         self.calls.push(name.to_string());
         self.frames.push(Vec::new());
         let result = self.block(&function.body);
         self.frames.pop();
         self.calls.pop();
+        self.trace.push(ControlEvent::FunctionExited {
+            name: name.to_string(), span: function_span,
+            returned: matches!(&result, Ok(Some(_))),
+        });
         let value = result?.ok_or_else(|| RuntimeFailure {
             span: source_span, reason: "已驗證函式未產生 return",
         })?;
