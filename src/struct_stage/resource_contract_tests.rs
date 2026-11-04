@@ -1508,3 +1508,83 @@ mod r03_g4_多來源可達控制責任 {
         assert!(!checked.plan.exit_snapshots.contains_key(&three));
     }
 }
+
+
+#[cfg(test)]
+mod r03_g5_八橋接真退出義務 {
+    use super::*;
+
+    const CODE: &str = "fn main()->int{\nvar owner:str = \"保留🪼\"\nreturn 0\n}\n";
+
+    fn checked() -> VerifiedPrivateSource {
+        verified_private_source(CODE).expect("同一真正 Checker 必須核准資源來源")
+    }
+
+    #[test]
+    fn g5_真Checker的return與持有者責任核對後才容許資源橋接() {
+        let v = checked();
+        let exit = v.functions[0].body.last().unwrap();
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots, exit).is_ok());
+        let proof = &v.plan.exit_snapshots[&exit.start][0];
+        assert_eq!(proof.cleanup_owners.len(), 1);
+        assert_eq!(proof.cleanup_owners[0].declaration,
+            DeclarationId(CODE.find("var owner:str").unwrap()));
+        assert_eq!(proof.cleanup_owners[0].need, StaticCleanupNeed::Required);
+    }
+
+    #[test]
+    fn g5_沒有真控制邊或錯誤種類不得憑AST簽發資源事件() {
+        let mut v = checked();
+        let at = v.functions[0].body.last().unwrap().start;
+        v.plan.control_edges.get_mut(&at).unwrap().flow = FlowState::Break;
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            v.functions[0].body.last().unwrap()).is_err());
+        v.plan.control_edges.remove(&at);
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            v.functions[0].body.last().unwrap()).is_err());
+    }
+
+    #[test]
+    fn g5_清理義務遺失或作用域筆數被偽造就不能進入動態橋接() {
+        let mut v = checked();
+        let at = v.functions[0].body.last().unwrap().start;
+        v.plan.exit_snapshots.get_mut(&at).unwrap()[0].cleanup_owners.clear();
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            v.functions[0].body.last().unwrap()).is_err());
+        let mut v = checked();
+        v.plan.exit_snapshots.get_mut(&at).unwrap()[0].scope_sizes.clear();
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            v.functions[0].body.last().unwrap()).is_err());
+    }
+
+    #[test]
+    fn g5_借用尚有效時不能假定資源可在執行期立即釋放() {
+        let mut v = checked();
+        let at = v.functions[0].body.last().unwrap().start;
+        v.plan.exit_snapshots.get_mut(&at).unwrap()[0].active_borrows.push((
+            DeclarationId(99901),
+            BorrowFact::new(DeclarationId(99900), BorrowKind::SharedRead),
+        ));
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            v.functions[0].body.last().unwrap()).is_err());
+    }
+
+    #[test]
+    fn g5_非return的宣告或消失的快照不可冒充真實完成事件() {
+        let mut v = checked();
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            &v.functions[0].body[0]).is_err());
+        let at = v.functions[0].body.last().unwrap().start;
+        v.plan.exit_snapshots.remove(&at);
+        assert!(require_checked_bridge_return(
+            &v.plan.control_edges, &v.plan.exit_snapshots,
+            v.functions[0].body.last().unwrap()).is_err());
+    }
+}
