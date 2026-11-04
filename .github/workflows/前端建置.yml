@@ -75,7 +75,7 @@ jobs:
       - name: P17-C／P18-B/C/E 真 str 與可寫 bool 動態分支六十五項正反 Gate
         run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
 
-      - name: P17-C/F 真 Checker 整數欄位讀取、move、具名預設與回滾二十七項正反 Gate
+      - name: P17-C/F 真 TypedHIR 結構整數算式與溢位清理三十二項正反 Gate
         run: python3 tools/核對P17結構建立切片.py --test-bin target/p02/p04_source_internal
 
       - name: P21-A 多檔 canonical／inode 身分與來源快照九項正反 Gate
