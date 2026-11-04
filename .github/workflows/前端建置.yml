@@ -159,6 +159,10 @@ jobs:
         run: |
           python3 tools/核對G3參數來源第二批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G3 獨立 F06～F09 33 真 Rust 測試來源身分／原子狀態矩陣（仍非整包簽核）
+        run: |
+          python3 tools/核對G3獨立驗收矩陣.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
