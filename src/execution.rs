@@ -5,6 +5,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+mod file;
+
 use crate::common_ir::{
     self, FrontendMode, NodeSpan, ResolvedNames, ScalarType, VerifiedScalarHir,
 };
@@ -433,4 +435,28 @@ mod tests {
         let error = plan.execute().unwrap_err();
         assert!(error.reason.contains("遞迴"));
     }
+    #[test]
+    fn p18_多層非遞迴函式框架按實際呼叫返回() {
+        let code = "fn main()->int{\nreturn middle()+1\n}\nfn middle()->int{\nreturn leaf()+1\n}\nfn leaf()->int{\nreturn 2\n}\n";
+        assert_eq!(run(code), Ok(Value::Int(4)));
+    }
+
+    #[test]
+    fn p18_提前回傳阻止同函式剩餘可執行路徑的溢位() {
+        let code = "fn main()->int{\nvar n:int = 9223372036854775807\nif (true){\nreturn 1\n}\nreturn n+1\n}\n";
+        assert_eq!(run(code), Ok(Value::Int(1)));
+    }
+
+    #[test]
+    fn p18_函式框架的遮蔽不影響被呼叫函式的頂層宣告() {
+        let code = "var n:int = 5\nfn read()->int{\nreturn n\n}\nfn main()->int{\nvar n:int = 1\nreturn read()+n\n}\n";
+        assert_eq!(run(code), Ok(Value::Int(6)));
+    }
+
+    #[test]
+    fn p18_同一已驗證函式可重複呼叫且每次只執行實際路徑() {
+        let code = "fn pick()->int{\nif (true){\nreturn 3\n}\nreturn 9\n}\nfn main()->int{\nreturn pick()+pick()\n}\n";
+        assert_eq!(run(code), Ok(Value::Int(6)));
+    }
+
 }
