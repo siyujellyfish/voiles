@@ -180,6 +180,33 @@ impl PreparedPrivateStruct {
             && self.original == fresh.original
     }
 
+    /// P17-F：在真 P16 MixedStructRuntime 建構成功且資源仍存活時，
+    /// 逐欄位唯讀觀測實際值，必須符合真正 Checker 已核准的具名優先、
+    /// 未覆蓋預設其次；str 僅比較借用的 &str，不複製非 Copyable 資源。
+    fn audit_constructed_fields(
+        &self, runtime: &crate::mixed_struct_runtime::MixedStructRuntime,
+    ) -> Result<(), crate::mixed_struct_runtime::MixedError> {
+        use crate::mixed_struct_runtime::{MixedError, Observed};
+        for field in &self.fields {
+            let expected = self.supplied.iter()
+                .find(|value| value.name == field.name)
+                .map(|value| &value.seed)
+                .or(field.default.as_ref());
+            let actual = runtime.field(&self.binding_name, &field.name);
+            let valid = match (expected, actual) {
+                (Some(ApprovedSeed::Int(a)), Ok(Observed::Int(b))) => *a == b,
+                (Some(ApprovedSeed::Bool(a)), Ok(Observed::Bool(b))) => *a == b,
+                (Some(ApprovedSeed::Str(a)), Ok(Observed::Str(b))) => a.as_str() == b,
+                (None, Err(MixedError::MissingField)) => true,
+                _ => false,
+            };
+            if !valid {
+                return Err(MixedError::TypeMismatch(field.name.clone()));
+            }
+        }
+        Ok(())
+    }
+
     fn execute(&self) -> Result<PrivateStructOutcome, PrivateStructPrepareError> {
         self.execute_with_fault(None)
     }
@@ -210,6 +237,7 @@ impl PreparedPrivateStruct {
             }).collect();
         let mut runtime = crate::mixed_struct_runtime::MixedStructRuntime::new();
         let result = runtime.construct(&self.binding_name, &schema, &named, fail_after)
+            .and_then(|()| self.audit_constructed_fields(&runtime))
             .map(|()| self.returned);
         // 所有真 UTF-8 資源均由唯一 P16 Runtime 負責清理；
         // 靜態 CleanupObligation 不可直接製造動態 Released 事件。
@@ -298,6 +326,60 @@ mod p17_private_struct_execution_tests {
         prepared.binding_name = "other".into();
         assert!(matches!(prepared.execute(),
             Err(PrivateStructPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_f_真正建構後欄位借用觀測符合原始具名優先及預設求值() {
+        let code = "struct Note{\nvar title:str = \"預設\"\nvar active:bool = true\nvar total:int = 17\n}\nfn main()->int{\nvar n:Note = Note(title=\"繁體中文\", total=8)\nreturn 3\n}\n";
+        let plan = checked(code);
+        let output = plan.execute().unwrap();
+        assert_eq!(output.result, Ok(3));
+        assert_eq!(output.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_真結構執行時以借用檢查_utf8_不得對非copyable字串造複製事件() {
+        let code = "struct Note{\nvar title:str = \"🪼繁體\\n\"\nvar subtitle:str = \"第二筆\"\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 0\n}\n";
+        let output = checked(code).execute().unwrap();
+        assert_eq!(output.result, Ok(0));
+        assert_eq!(output.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_執行時真欄位內容不符checker預設計畫必須拒絕() {
+        use crate::mixed_struct_runtime::{MixedFieldSpec, MixedStructRuntime, ScalarKind, SeedValue, MixedError};
+        let code = "struct Note{\nvar title:str = \"預設\"\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 0\n}\n";
+        let plan = checked(code);
+        let mut runtime = MixedStructRuntime::new();
+        runtime.construct("n", &[MixedFieldSpec {
+            name: "title", kind: ScalarKind::Str,
+            default: Some(SeedValue::Str("不一致")), immutable: false,
+        }], &[], None).unwrap();
+        assert_eq!(plan.audit_constructed_fields(&runtime),
+            Err(MixedError::TypeMismatch("title".into())));
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_執行時布林與整數欄位錯誤須拒絕而不虛構資源事件() {
+        use crate::mixed_struct_runtime::{MixedFieldSpec, MixedStructRuntime, ScalarKind, SeedValue, MixedError};
+        let code = "struct Note{\nvar active:bool = true\nvar count:int = 4\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 0\n}\n";
+        let plan = checked(code);
+        let mut runtime = MixedStructRuntime::new();
+        runtime.construct("n", &[
+            MixedFieldSpec {name:"active",kind:ScalarKind::Bool,default:Some(SeedValue::Bool(false)),immutable:false},
+            MixedFieldSpec {name:"count",kind:ScalarKind::Int,default:Some(SeedValue::Int(4)),immutable:false},
+        ], &[], None).unwrap();
+        assert_eq!(plan.audit_constructed_fields(&runtime),
+            Err(MixedError::TypeMismatch("active".into())));
+        assert!(runtime.finish().unwrap().is_empty());
     }
     #[test]
     fn p17_f_真私有_checker_空建立式求值預設_utf8_並真正釋放() {
