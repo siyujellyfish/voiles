@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對六項 P17-C 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對十項 P17-C 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,10 @@ from pathlib import Path
     "p17_c_尚未接通的結構或分支在資源建立前保守拒絕",
     "p17_c_原始來源遭到替換不得產生動態資源事件",
     "p17_c_真資源覆寫錯誤注入原子回滾並清理原持有者",
+    "p17_c_準備後修改字串值不得偷換已驗證執行計畫",
+    "p17_c_準備後偷換整筆移動的來源身分立即拒絕",
+    "p17_c_準備後刪除返回或插入多餘操作都不得執行",
+    "p17_c_操作未遭篡改時仍保持真實_resourceid_與清理順序",
 )
 
 
