@@ -83,7 +83,7 @@ impl PreparedPrivateBorrow {
                     "別名型別或 var／const 權限與正式來源不同",
                 ));
             }
-            let Some(TermKind::Borrow(ref source)) =
+            let Some(TermKind::Borrow(source)) =
                 binding.initializer.as_ref().map(|term| &term.kind) else {
                 return Err(PrivateBorrowPrepareError::Unsupported(
                     "只接受明確原持有者 .borrow()",
