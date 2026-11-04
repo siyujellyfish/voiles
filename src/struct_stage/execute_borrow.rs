@@ -138,10 +138,14 @@ impl PreparedPrivateBorrow {
         let returned = crate::syntax_shared::integer_i64(n).map_err(|_|
             PrivateBorrowPrepareError::Unsupported("已核准整數返回超出 i64"),
         )?;
+        // 在封裝 VerifiedPrivateSource 之前先複製真正 AST 的標量欄位，
+        // 避免移動 verified 後仍借用原 Function／Declaration。
+        let owner_name = owner.name.clone();
+        let owner_mutable = owner.mutable;
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original,
-            owner: owner.name.clone(), owner_id, owner_mutable: owner.mutable,
+            owner: owner_name, owner_id, owner_mutable,
             text: content, aliases, returned,
         })
     }
