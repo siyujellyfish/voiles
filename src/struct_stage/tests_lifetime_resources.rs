@@ -2073,14 +2073,14 @@ mod p16_6_r04_私有作用域快照回歸 {
     #[test]
     fn 借用和移動的分支快照寫入不能污染來源() {
         let mut original_map = HashMap::new();
-        original_map.insert("text".to_owned(), Binding {
-            declaration_start: DeclarationId(11),
-            ty: "str".to_owned(),
-            mutable: true,
-            value: ValueSlot::initialized(CopyPermission::Forbidden),
-            pending_fields: None,
-            loan: None,
-        });
+        original_map.insert("text".to_owned(), Binding::new(
+        DeclarationId(11),
+        "str".to_owned(),
+        true,
+        ValueSlot::initialized(CopyPermission::Forbidden),
+        None,
+        None,
+    ));
         let initial: Scopes = vec![Rc::new(original_map)];
         let mut moved = initial.clone();
         assert!(Rc::ptr_eq(&initial[0], &moved[0]));
@@ -2106,14 +2106,14 @@ mod p16_6_r04_不必要作用域複製防回歸 {
     use super::*;
 
     fn binding(start: usize, loan: Option<LoanBinding>) -> Binding {
-        Binding {
-            declaration_start: DeclarationId(start),
-            ty: "int".to_owned(),
-            mutable: true,
-            value: ValueSlot::initialized(CopyPermission::Allowed),
-            pending_fields: None,
-            loan,
-        }
+        Binding::new(
+        DeclarationId(start),
+        "int".to_owned(),
+        true,
+        ValueSlot::initialized(CopyPermission::Allowed),
+        None,
+        loan,
+    )
     }
 
     #[test]
@@ -2160,24 +2160,32 @@ mod p16_6_r03_7_私有借用來源強型別身分 {
         let original = DeclarationId(10);
         let shadow = DeclarationId(30);
         let alias = DeclarationId(50);
-        let owner = Binding {
-            declaration_start: original, ty: "str".into(), mutable: false,
-            value: ValueSlot::initialized(CopyPermission::Forbidden),
-            pending_fields: None, loan: None,
-        };
-        let borrowed = Binding {
-            declaration_start: alias, ty: "str".into(), mutable: false,
-            value: ValueSlot::initialized(CopyPermission::Forbidden),
-            pending_fields: None,
-            loan: Some(LoanBinding {
+        let owner = Binding::new(
+        original,
+        "str".into(),
+        false,
+        ValueSlot::initialized(CopyPermission::Forbidden),
+        None,
+        None,
+    );
+        let borrowed = Binding::new(
+        alias,
+        "str".into(),
+        false,
+        ValueSlot::initialized(CopyPermission::Forbidden),
+        None,
+        Some(LoanBinding {
                 fact: BorrowFact::new(original, BorrowKind::SharedRead), active: true,
             }),
-        };
-        let overshadow = Binding {
-            declaration_start: shadow, ty: "str".into(), mutable: false,
-            value: ValueSlot::initialized(CopyPermission::Forbidden),
-            pending_fields: None, loan: None,
-        };
+    );
+        let overshadow = Binding::new(
+        shadow,
+        "str".into(),
+        false,
+        ValueSlot::initialized(CopyPermission::Forbidden),
+        None,
+        None,
+    );
         let vars = vec![
             Rc::new(HashMap::from([("text".to_owned(), owner),
                                    ("alias".to_owned(), borrowed)])),
@@ -2635,15 +2643,16 @@ mod r03_b05_f08_靜態狀態原子合流 {
     use crate::borrow_safety::BorrowSafetyError;
 
     fn binding(id: usize, source: Option<usize>, kind: BorrowKind) -> Binding {
-        Binding {
-            declaration_start: DeclarationId(id),
-            ty: "int".to_owned(), mutable: true,
-            value: ValueSlot::initialized(CopyPermission::Allowed),
-            pending_fields: None,
-            loan: source.map(|id| LoanBinding {
+        Binding::new(
+        DeclarationId(id),
+        "int".to_owned(),
+        true,
+        ValueSlot::initialized(CopyPermission::Allowed),
+        None,
+        source.map(|id| LoanBinding {
                 fact: BorrowFact::new(DeclarationId(id), kind), active: true,
             }),
-        }
+    )
     }
 
     #[test]
