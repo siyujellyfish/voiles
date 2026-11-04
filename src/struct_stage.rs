@@ -139,11 +139,11 @@ struct LoanBinding {
     active: bool,
 }
 
+/// F08/B05：真正私有 Checker 的單一可寫靜態安全狀態。
+/// 借用、初始化和部分欄位責任均由同一份 Binding 持有；
+/// 此結構不儲存真 BorrowTicket、ResourceId 或執行期事件。
 #[derive(Clone)]
-struct Binding {
-    declaration_start: DeclarationId,
-    ty: String,
-    mutable: bool,
+struct SafetyState {
     value: ValueSlot,
     /// 僅以合法 struct 建立式已知的未初始化 var 欄位集合。
     /// None 表示不存在可追蹤的部分建立證明；不等於全部欄位可用。
@@ -151,6 +151,26 @@ struct Binding {
     /// 非擁有的借用別名，不擁有來源值，不允許 .move()。
     loan: Option<LoanBinding>,
 }
+
+#[derive(Clone)]
+struct Binding {
+    declaration_start: DeclarationId,
+    ty: String,
+    mutable: bool,
+    safety: SafetyState,
+}
+
+// 既有 Checker 的型別、來源與診斷操作先沿用欄位名稱，
+// 實際所有靜態值／借用／部分初始化資料已唯一存放於 SafetyState。
+// 後續 F09 將逐一縮小寫入入口至預檢後的不可失敗提交。
+impl std::ops::Deref for Binding {
+    type Target = SafetyState;
+    fn deref(&self) -> &Self::Target { &self.safety }
+}
+impl std::ops::DerefMut for Binding {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.safety }
+}
+
 
 
 /// F08/B05：唯一真正可寫 Binding 的**唯讀**靜態安全狀態視圖。
@@ -166,6 +186,17 @@ struct SafetyStateView<'a> {
 }
 
 impl Binding {
+    fn new(
+        declaration_start: DeclarationId, ty: String, mutable: bool,
+        value: ValueSlot, pending_fields: Option<HashSet<String>>,
+        loan: Option<LoanBinding>,
+    ) -> Self {
+        Self {
+            declaration_start, ty, mutable,
+            safety: SafetyState { value, pending_fields, loan },
+        }
+    }
+
     /// F08／F09：整筆 move 只能委託 ValueSlot 的合法狀態轉移。
     /// 未完整建立的結構體不可移走；失敗不得修改 pending_fields
     /// 或清除借用來源事實。此處只管理靜態詞彙綁定，不創造動態資源。

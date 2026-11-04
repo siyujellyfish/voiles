@@ -113,15 +113,22 @@ mod tests {
         let original = DeclarationId(0);
         let borrowed = DeclarationId(7);
         let fact = BorrowFact::new(original, BorrowKind::SharedRead);
-        let owner = Binding {
-            declaration_start: original, ty: "int".into(), mutable: false,
-            value: ValueSlot::initialized(Allowed), pending_fields: None, loan: None,
-        };
-        let alias = Binding {
-            declaration_start: borrowed, ty: "int".into(), mutable: false,
-            value: ValueSlot::initialized(Allowed), pending_fields: None,
-            loan: Some(LoanBinding { fact, active: true }),
-        };
+        let owner = Binding::new(
+        original,
+        "int".into(),
+        false,
+        ValueSlot::initialized(Allowed),
+        None,
+        None,
+    );
+        let alias = Binding::new(
+        borrowed,
+        "int".into(),
+        false,
+        ValueSlot::initialized(Allowed),
+        None,
+        Some(LoanBinding { fact, active: true }),
+    );
         let mut vars = vec![Rc::new(HashMap::from([
             ("source".into(), owner), ("alias".into(), alias),
         ]))];
@@ -176,14 +183,17 @@ mod tests {
 
         // 對 alias 的局部證據完全合法，但另一條活躍別名偽造了
         // 與共享借用衝突的獨占票據，不能跳過整份快照一致性閘門。
-        Rc::make_mut(&mut vars[0]).insert("forged".into(), Binding {
-            declaration_start: DeclarationId(100), ty: "int".into(), mutable: true,
-            value: ValueSlot::initialized(Allowed), pending_fields: None,
-            loan: Some(LoanBinding {
+        Rc::make_mut(&mut vars[0]).insert("forged".into(), Binding::new(
+        DeclarationId(100),
+        "int".into(),
+        true,
+        ValueSlot::initialized(Allowed),
+        None,
+        Some(LoanBinding {
                 fact: BorrowFact::new(original, BorrowKind::ExclusiveWrite),
                 active: true,
             }),
-        });
+    ));
         assert!(!Checker::<fn(&str) -> CopyPermission>::active_loan_state_is_consistent(&vars));
         assert!(checker.check_direct(&vars, "alias", &term).is_err(),
             "局部來源有效時也不能忽略其它活躍借用的全域衝突");
@@ -215,10 +225,14 @@ mod tests {
         };
         let owner = DeclarationId(0);
         let term = Term { kind: TermKind::Name("value".into()), start: 18, end: 23 };
-        let mut vars = vec![Rc::new(HashMap::from([("value".into(), Binding {
-            declaration_start: owner, ty: "int".into(), mutable: true,
-            value: ValueSlot::initialized(Allowed), pending_fields: None, loan: None,
-        })]))];
+        let mut vars = vec![Rc::new(HashMap::from([("value".into(), Binding::new(
+        owner,
+        "int".into(),
+        true,
+        ValueSlot::initialized(Allowed),
+        None,
+        None,
+    ))]))];
         assert!(checker.check_direct(&vars, "value", &term).is_err(),
             "不可以只有一份自行組裝的 Binding 就授權直接存取");
         checker.record_declaration(owner, "int", true);
@@ -287,12 +301,14 @@ mod tests {
 
     #[test]
     fn 公私正式_checker_具型別引用契約保留實際來源且不放寬私有型別() {
-        let private = Binding {
-            declaration_start: DeclarationId(420),
-            ty: "str".into(), mutable: true,
-            value: ValueSlot::initialized(Forbidden),
-            pending_fields: None, loan: None,
-        };
+        let private = Binding::new(
+        DeclarationId(420),
+        "str".into(),
+        true,
+        ValueSlot::initialized(Forbidden),
+        None,
+        None,
+    );
         let span = crate::common_ir::NodeSpan::new(420, 429);
         let declared = private.semantic_declaration();
         assert_eq!(declared.declaration, DeclarationId(420));
@@ -319,15 +335,16 @@ mod tests {
     #[test]
     fn 正式_checker_活躍借用快照以宣告身分保守拒絕跨分支衝突() {
         fn binding(source: usize, declaration: usize, kind: BorrowKind) -> Binding {
-            Binding {
-                declaration_start: DeclarationId(declaration), ty: "int".into(),
-                mutable: kind == BorrowKind::ExclusiveWrite,
-                value: ValueSlot::initialized(Allowed),
-                pending_fields: None,
-                loan: Some(LoanBinding {
+            Binding::new(
+        DeclarationId(declaration),
+        "int".into(),
+        kind == BorrowKind::ExclusiveWrite,
+        ValueSlot::initialized(Allowed),
+        None,
+        Some(LoanBinding {
                     fact: BorrowFact::new(DeclarationId(source), kind), active: true,
                 }),
-            }
+    )
         }
         let source = 101;
         let shared = binding(source, 201, BorrowKind::SharedRead);
@@ -2910,17 +2927,17 @@ mod p16_6_r03_f08_f10_單一作用域安全狀態契約 {
     use super::*;
 
     fn sample() -> Binding {
-        Binding {
-            declaration_start: DeclarationId(30),
-            ty: "int".to_owned(),
-            mutable: true,
-            value: ValueSlot::initialized(CopyPermission::Allowed),
-            pending_fields: None,
-            loan: Some(LoanBinding {
+        Binding::new(
+        DeclarationId(30),
+        "int".to_owned(),
+        true,
+        ValueSlot::initialized(CopyPermission::Allowed),
+        None,
+        Some(LoanBinding {
                 fact: BorrowFact::new(DeclarationId(15), BorrowKind::SharedRead),
                 active: true,
             }),
-        }
+    )
     }
 
     #[test]
@@ -2967,16 +2984,16 @@ mod p16_6_r03_f08_f09_綁定轉移原子契約 {
     use super::*;
 
     fn incomplete() -> Binding {
-        Binding {
-            declaration_start: DeclarationId(650),
-            ty: "Box".to_owned(),
-            mutable: true,
-            value: ValueSlot::uninitialized(CopyPermission::Forbidden),
-            pending_fields: Some(HashSet::from([
+        Binding::new(
+        DeclarationId(650),
+        "Box".to_owned(),
+        true,
+        ValueSlot::uninitialized(CopyPermission::Forbidden),
+        Some(HashSet::from([
                 "first".to_owned(), "second".to_owned(),
             ])),
-            loan: None,
-        }
+        None,
+    )
     }
 
     #[test]
