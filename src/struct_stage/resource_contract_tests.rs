@@ -1153,3 +1153,74 @@ mod r03_b09_f12_真實事件身分與清理閉合 {
             matches!(event, ResourceEvent::Released(_))).count(), 1);
     }
 }
+
+
+#[cfg(test)]
+mod r03_g4_真Checker逐控制轉移證據 {
+    use super::*;
+    use crate::common_ir::NodeSpan;
+
+    const SIMPLE: &str = "fn helper()->int{\nreturn 1\n}\nfn main()->int{\nreturn helper()\n}\n";
+
+    #[test]
+    fn g4_兩函式真正Checker各簽已核准的return來源() {
+        let checked = verified_private_source(SIMPLE).unwrap();
+        assert_eq!(checked.plan.control_edges.len(), 2);
+        assert!(checked.plan.control_edges.values()
+            .all(|edge| edge.flow == FlowState::Returned));
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, SIMPLE));
+    }
+
+    #[test]
+    fn g4_兩可達分支return都有核對但其後不可達return不得假記() {
+        let source = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 3\n}\n";
+        let checked = verified_private_source(source).unwrap();
+        let first = source.find("return 1").unwrap();
+        let second = source.find("return 2").unwrap();
+        let unreachable = source.find("return 3").unwrap();
+        assert!(checked.plan.control_edges.contains_key(&first));
+        assert!(checked.plan.control_edges.contains_key(&second));
+        assert!(!checked.plan.control_edges.contains_key(&unreachable));
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, source));
+    }
+
+    #[test]
+    fn g4_合法迴圈break與continue明確區分且零次路徑沒有假出口() {
+        for (word, kind) in [
+            ("break", FlowState::Break),
+            ("continue", FlowState::Continue),
+        ] {
+            let source = format!("fn main()->int{{\nfor i in 0..2{{\n{word}\n}}\nreturn 0\n}}\n");
+            let checked = verified_private_source(&source)
+                .expect("原 P15 已核准的迴圈控制轉移必須通過");
+            let start = source.find(word).unwrap();
+            assert_eq!(checked.plan.control_edges.get(&start)
+                .map(|edge| edge.flow), Some(kind));
+            assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, &source));
+            let zero = source.replace("0..2", "0..0");
+            let zero_checked = verified_private_source(&zero).unwrap();
+            let at = zero.find(word).unwrap();
+            assert!(!zero_checked.plan.control_edges.contains_key(&at));
+        }
+    }
+
+    #[test]
+    fn g4_偽造錯誤控制分類或UTF8跨度不得冒充Checker退出() {
+        let mut checked = verified_private_source(SIMPLE).unwrap();
+        let start = SIMPLE.find("return 1").unwrap();
+        let before = *checked.plan.control_edges.get(&start).unwrap();
+        checked.plan.control_edges.get_mut(&start).unwrap().flow = FlowState::Break;
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, SIMPLE));
+        checked.plan.control_edges.insert(start, before);
+        checked.plan.control_edges.get_mut(&start).unwrap().span = NodeSpan::new(start, start + 1);
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, SIMPLE));
+    }
+
+    #[test]
+    fn g4_刪除唯一已驗證函式return證據必須拒絕整份計畫() {
+        let mut checked = verified_private_source(SIMPLE).unwrap();
+        let at = SIMPLE.find("return 1").unwrap();
+        checked.plan.control_edges.remove(&at);
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, SIMPLE));
+    }
+}
