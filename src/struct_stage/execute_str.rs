@@ -17,8 +17,8 @@ enum PrivateStrAction {
     /// P18-B：只執行真 Checker 已封閉的 bool 常值分支及局部字串。
     LiteralBranch {
         condition: PrivateBoolCondition,
-        when_true: Vec<PrivateStrLocalLiteral>,
-        when_false: Vec<PrivateStrLocalLiteral>,
+        when_true: PrivateStrBranchBody,
+        when_false: PrivateStrBranchBody,
     },
     /// P18-B：保留真 Checker 宣告身份的已初始化 bool 純值。
     DeclareBool { identity: DeclarationId, value: bool },
@@ -31,6 +31,14 @@ enum PrivateBoolCondition {
     Constant(bool),
     Bound(DeclarationId),
 }
+/// 此切片中選定的真作用域內已核准的局部資源與末尾整數返回。
+/// 局部資源先按來源順序建立，區塊退出前一定清理。
+#[derive(Debug, Default)]
+struct PrivateStrBranchBody {
+    literals: Vec<PrivateStrLocalLiteral>,
+    returned: Option<i64>,
+}
+
 #[derive(Debug)]
 struct PrivateStrLocalLiteral {
     name: String,
@@ -39,18 +47,37 @@ struct PrivateStrLocalLiteral {
 }
 
 /// 唯讀取自正式私有 Parser 的區塊和已驗證宣告身分。
-/// 這個首批切片禁止分支中的 return／賦值／巢狀控制轉移，
-/// 避免在缺少動態 CleanupPlan 時假裝已支援完整資源控制流。
+/// 只允許分支最後一筆明確 int 常值 return，
+/// 分支內賦值、巢狀控制或非整數返回仍維持保守拒絕。
 fn prepare_str_literal_branch(
     block: &crate::syntax_shared::ParsedBlock<Stmt>,
     verified: &VerifiedPrivateSource,
-) -> Result<Vec<PrivateStrLocalLiteral>, PrivateStrPrepareError> {
+) -> Result<PrivateStrBranchBody, PrivateStrPrepareError> {
     let mut names = BTreeSet::new();
     let mut declarations = Vec::new();
-    for statement in &block.statements {
+    let mut returned = None;
+    for (index, statement) in block.statements.iter().enumerate() {
+        if let StmtKind::Return(ret) = &statement.kind {
+            if index + 1 != block.statements.len() || returned.is_some() {
+                return Err(PrivateStrPrepareError::Unsupported(
+                    "分支提前返回只能是此區塊最後一筆語句",
+                ));
+            }
+            let TermKind::Scalar(
+                crate::syntax_shared::ScalarLiteral::Integer(raw),
+            ) = &ret.expression.kind else {
+                return Err(PrivateStrPrepareError::Unsupported(
+                    "此批分支只能明確返回已驗證 int 常值",
+                ));
+            };
+            returned = Some(crate::syntax_shared::integer_i64(raw).map_err(|_|
+                PrivateStrPrepareError::Unsupported("分支返回整數不合法")
+            )?);
+            continue;
+        }
         let StmtKind::Declare(binding) = &statement.kind else {
             return Err(PrivateStrPrepareError::Unsupported(
-                "此批分支僅支援作用域內的已驗證 str 常值宣告",
+                "此批分支僅支援局部 str 常值宣告及末尾 int return",
             ));
         };
         if binding.ty != "str" || !names.insert(binding.name.clone()) {
@@ -78,26 +105,28 @@ fn prepare_str_literal_branch(
             name: binding.name.clone(), mutable: binding.mutable, text,
         });
     }
-    Ok(declarations)
+    Ok(PrivateStrBranchBody {
+        literals: declarations, returned,
+    })
 }
 
 fn execute_str_literal_branch(
     resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
-    literals: &[PrivateStrLocalLiteral],
-) -> Result<(), crate::owned_str_runtime::StrRuntimeError> {
+    branch: &PrivateStrBranchBody,
+) -> Result<Option<i64>, crate::owned_str_runtime::StrRuntimeError> {
     resources.enter_scope();
     let outcome = (|| {
-        for binding in literals {
+        for binding in &branch.literals {
             resources.declare(&binding.name, binding.mutable, &binding.text)?;
         }
-        Ok(())
+        Ok(branch.returned)
     })();
     // 即使建立途中失敗也必須離開真正作用域，依序清理已建立資源。
     let cleanup = resources.leave_scope();
     match (outcome, cleanup) {
         (Err(err), _) => Err(err),
-        (Ok(()), Err(err)) => Err(err),
-        (Ok(()), Ok(())) => Ok(()),
+        (Ok(_), Err(err)) => Err(err),
+        (Ok(value), Ok(())) => Ok(value),
     }
 }
 
@@ -311,14 +340,14 @@ impl PreparedPrivateStr {
                         &branch.branch.body, &verified,
                     )?;
                     let when_false = match no {
-                        None => Vec::new(),
+                        None => PrivateStrBranchBody::default(),
                         Some(crate::syntax_shared::ParsedElse::Block(otherwise)) =>
                             prepare_str_literal_branch(otherwise, &verified)?,
                         Some(_) => return Err(PrivateStrPrepareError::Unsupported(
                             "此批尚未支援 else-if 或非區塊分支的資源執行",
                         )),
                     };
-                    if !when_true.is_empty() || !when_false.is_empty() {
+                    if !when_true.literals.is_empty() || !when_false.literals.is_empty() {
                         has_resource = true;
                     }
                     operations.push(PrivateStrAction::LiteralBranch {
@@ -395,10 +424,14 @@ impl PreparedPrivateStr {
                                     crate::owned_str_runtime::StrRuntimeError::MissingOwner,
                                 )?,
                         };
-                        execute_str_literal_branch(
+                        if let Some(value) = execute_str_literal_branch(
                             &mut resources,
                             if selected { when_true } else { when_false },
-                        )?;
+                        )? {
+                            // 分支的真作用域已離開；其資源已由原 P16 Runtime
+                            // 先完成逆序釋放，外層資源再交由 finish() 清理。
+                            return Ok(value);
+                        }
                     }
                     PrivateStrAction::Return(value) => return Ok(*value),
                 }
@@ -537,6 +570,61 @@ mod p17_private_str_execution_tests {
         ));
     }
 
+
+    #[test]
+    fn p18_c_成立分支提前返回先離開內層資源再清理外層() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif (true){\nvar first:str = \"一\"\nvar second:str = \"二\"\nreturn 7\n}\nreturn 9\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).expect("私有 Checker 應接受已核准 int 返回");
+        let actual = plan.execute().unwrap();
+        assert_eq!(actual.result, Ok(7));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_false_轉入_else_真返回_未選分支不得建立資源() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif (false){\nvar skipped:str = \"不可建立\"\nreturn 1\n}else{\nvar chosen:str = \"選中\"\nreturn 8\n}\nreturn 0\n}\n";
+        let outcome = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(8));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_具名_bool_false_分支返回未執行_繼續到外層_return() {
+        let code = "fn main()->int{\nvar choose:bool = false\nvar outer:str = \"外\"\nif (choose){\nvar skipped:str = \"不分配\"\nreturn 1\n}\nreturn 5\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(5));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_具名_bool_true_依_runtime_取值返回且只釋放選中資源() {
+        let code = "fn main()->int{\nconst choose:bool = true\nvar outer:str = \"外\"\nif (choose){\nvar selected:str = \"入\"\nreturn 2\n}else{\nvar skipped:str = \"不可建立\"\nreturn 3\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(2));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_分支內未支援的動態返回式須在執行前拒絕() {
+        let code = "fn main()->int{\nvar result:int = 7\nvar outer:str = \"外\"\nif (true){\nvar local:str = \"內\"\nreturn result\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Unsupported(_)),
+        ));
+    }
+
     #[test]
     fn p18_b_真私有_成立分支建立兩筆_str_並在外層返回前逆序清理() {
         let code = "fn main()->int{\nvar outer:str = \"外層\"\nif (true){\nvar first:str = \"一\"\nvar second:str = \"二\"\n}\nreturn 0\n}\n";
@@ -593,8 +681,8 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_分支內返回或巢狀資源控制尚未驗證必須保守拒絕() {
-        let code = "fn main()->int{\nvar outside:str = \"外\"\nif (true){\nvar local:str = \"內\"\nreturn 1\n}\nreturn 0\n}\n";
+    fn p18_b_巢狀資源控制未驗證仍必須保守拒絕() {
+        let code = "fn main()->int{\nvar outside:str = \"外\"\nif (true){\nvar local:str = \"內\"\nif (true){\nvar nested:str = \"更深\"\n}\n}\nreturn 0\n}\n";
         assert!(matches!(
             PreparedPrivateStr::prepare(code),
             Err(PrivateStrPrepareError::Unsupported(_)),
