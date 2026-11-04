@@ -29,6 +29,42 @@ fn require_checked_bridge_return(
     }
 }
 
+/// G5/F12：驗證即將執行的受限資源來源持有者，在同一
+/// Checker 已核准 return 的靜態快照裡真由 DeclarationId 認領。
+/// ResourceId 仍由原 runtime 分配；若該型別無資源（純 Copyable），
+/// 只能核對活著的宣告，禁止虛構應清理資源。
+#[cfg(test)]
+fn require_checked_bridge_owner(
+    snapshots: &std::collections::BTreeMap<usize, Vec<VerifiedExitSnapshot>>,
+    statement: &Stmt,
+    owner: DeclarationId,
+    needs_resource_cleanup: bool,
+) -> Result<(), Diagnostic> {
+    let valid = snapshots.get(&statement.start).is_some_and(|choices|
+        !choices.is_empty() && choices.iter().all(|snapshot| {
+            let sources: Vec<_> = snapshot.bindings.iter()
+                .filter(|binding| binding.declaration == owner && binding.loan.is_none())
+                .collect();
+            let matched_binding = sources.len() == 1
+                && sources[0].value.state() == ValueState::Available;
+            let required = snapshot.cleanup_owners.iter().any(|item|
+                item.declaration == owner && matches!(item.need,
+                    StaticCleanupNeed::Required | StaticCleanupNeed::Conditional));
+            matched_binding && (if needs_resource_cleanup {
+                required
+            } else {
+                !required
+            })
+        }));
+    if valid { Ok(()) } else {
+        Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：真資源持有者缺少相同 Checker 宣告身分／退出靜態清理責任".into(),
+            span: None,
+        })
+    }
+}
+
 /// F12/B09：所有受限橋接都必須檢查**真 runtime 已產生的**事件，
 /// 不由 Checker 計畫偽造 ResourceId，且不替代原路徑專用的逆序清理驗證。
 #[cfg(test)]
@@ -118,6 +154,8 @@ fn trace_string_struct_source(
     if !declarations.matches(DeclarationId(declaration.start), ty, mutable) {
         return Err(unsupported("P16：具名結構建立缺少 Checker 已驗證持有者身分及型別"));
     }
+    require_checked_bridge_owner(
+        &exit_snapshots, trailing_return, DeclarationId(declaration.start), true)?;
     let definition = structs.get(ty)
         .ok_or_else(|| unsupported("P16：結構型別不存在"))?;
     let mut fields = Vec::new();
@@ -215,6 +253,8 @@ fn trace_persistent_struct_move_source(
     let proof = declarations.verified_direct_move(
         DeclarationId(declare.start), DeclarationId(transfer.start), struct_name)
         .ok_or_else(||reject("P16：缺少 Checker 已驗證整筆結構移交來源證據"))?;
+    require_checked_bridge_owner(&exit_snapshots, last,
+        DeclarationId(transfer.start), true)?;
     let plan = WholeStructResourcePlan::new(proof.source, proof.target)
         .map_err(|_|reject("P16：整筆結構來源與新持有者不可共用宣告身分"))?;
     let definition=structs.get(struct_name)
@@ -315,6 +355,8 @@ fn trace_string_return_source(
     if let Some(provider_return) = called.body.last() {
         require_checked_bridge_return(&control_edges, &exit_snapshots, provider_return)?;
     }
+    require_checked_bridge_owner(&exit_snapshots, final_return,
+        DeclarationId(declaration.start), true)?;
     // 已驗證具名來源以真正宣告起點識別返回前後的唯一持有者。
     // 直接 return "字串" 沒有來源宣告，維持原 P16 事件橋接，不偽造 DeclarationId。
     let (content, named_return) = match called.body.as_slice() {
@@ -420,6 +462,8 @@ fn trace_persistent_struct_field_write_source(
     declarations.verified_field_write(
         DeclarationId(declaration.start), assignment.start, ty, field,
     ).ok_or_else(||reject("P16：缺少 Checker 已驗證欄位寫入身分與位置證據"))?;
+    require_checked_bridge_owner(&exit_snapshots, last,
+        DeclarationId(declaration.start), true)?;
     let definition=structs.get(ty)
         .ok_or_else(||reject("P16：結構型別不存在"))?;
     let fields=definition.fields.iter().map(|member| {
@@ -564,6 +608,8 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     }
     let definition=structs.get(ty)
         .ok_or_else(||reject("P16：混合型別結構不存在"))?;
+    require_checked_bridge_owner(&exit_snapshots, end, target_id,
+        definition.fields.iter().any(|field| field.ty == "str"))?;
     let mut fields=Vec::new();
     for field in &definition.fields {
         let kind=match field.ty.as_str() {
@@ -673,6 +719,8 @@ fn trace_scope_struct_source(
         return Err(reject("P16：外層必須以直接 return 0 結束"));
     }
     require_checked_bridge_return(&control_edges, &exit_snapshots, final_return)?;
+    require_checked_bridge_owner(
+        &exit_snapshots, final_return, DeclarationId(outside.start), true)?;
     let (cond,yes,no)=match &branch.kind {
         StmtKind::If{branch,no}=>(&branch.condition,&branch.body,no),
         _=>return Err(reject("P16：須有一個可靜態確定的 if 分支")),
@@ -891,6 +939,7 @@ fn trace_persistent_struct_return_source(
     };
     let from = DeclarationId(declaration.start);
     let to = DeclarationId(receive.start);
+    require_checked_bridge_owner(&exit_snapshots, main_return, to, true)?;
     let checked_return = declarations.verified_named_return(from, moved.start, ty)
         .ok_or_else(||unsupported("P16：缺少 Checker 已驗證整筆結構返回證據"))?;
     if !declarations.matches(to, ty, target_mutable) {
@@ -1004,6 +1053,8 @@ fn trace_named_string_move_source(
     let evidence = declarations.verified_direct_move(
         DeclarationId(first.start), DeclarationId(second.start), "str",
     ).ok_or_else(|| unsupported("P16：不存在已驗證來源的直接具名整筆轉移證據"))?;
+    require_checked_bridge_owner(
+        &exit_snapshots, trailing_return, DeclarationId(second.start), true)?;
     let transfer = NamedResourceTransfer::new(evidence.source, evidence.target)
         .map_err(|_| unsupported("P16：具名移動的來源宣告身分不唯一"))?;
     let raw = text.get(literal.start..literal.end)
