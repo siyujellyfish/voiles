@@ -33,8 +33,8 @@ enum PrivateBoolCondition {
 }
 /// 此切片中選定的真作用域內已核准的局部資源與末尾整數返回。
 /// 局部資源先按來源順序建立，區塊退出前一定清理。
-/// P18-C 的分支末尾 int return 仍有效；巢狀控制只允許
-/// 無 return 的安全 str 區塊，避免推測未知的跨層提前退出。
+/// P18-C 只核准各層已驗證的最後一筆 int 常值 return；
+/// 真返回逐層退出並逆序清理，未核准的其他運算式仍不放行。
 #[derive(Debug, Default)]
 struct PrivateStrBranchBody {
     actions: Vec<PrivateStrLocalAction>,
@@ -67,7 +67,7 @@ fn branch_has_resource(body: &PrivateStrBranchBody) -> bool {
 }
 
 /// 由同一真 Parser／Checker 與 DeclarationId 取得已核准分支身分。
-/// 最外層分支可有 #509 已驗證的尾端 int return；巢狀分支禁止 return。
+/// 巢狀分支允許各自已驗證末尾 int 常值 return；只發生真控制邊。
 fn prepare_str_literal_branch(
     block: &crate::syntax_shared::ParsedBlock<Stmt>,
     verified: &VerifiedPrivateSource,
@@ -144,11 +144,6 @@ fn prepare_str_literal_branch(
                         "尚未接通巢狀 else-if 資源控制",
                     )),
                 };
-                if when_true.returned.is_some() || when_false.returned.is_some() {
-                    return Err(PrivateStrPrepareError::Unsupported(
-                        "巢狀 return 的完整退出安全證據尚未封閉",
-                    ));
-                }
                 actions.push(PrivateStrLocalAction::NestedLiteralBranch {
                     condition: *condition, when_true, when_false,
                 });
@@ -178,7 +173,9 @@ fn execute_str_literal_branch(
                         resources, if *condition { when_true } else { when_false },
                     )?;
                     if nested.is_some() {
-                        return Err(crate::owned_str_runtime::StrRuntimeError::IncompleteReturn);
+                        // 已完成內層 leave_scope；這裡繼續上傳真正返回
+                        // 並讓每層外側區塊依序完成 leave_scope。
+                        return Ok(nested);
                     }
                 }
             }
@@ -752,8 +749,54 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_巢狀分支內的_return_動態清理尚未接通必須拒絕() {
+    fn p18_c_巢狀分支內_true_return_逐層清理真資源() {
         let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nif(true){\nvar inner:str = \"內\"\nreturn 1\n}\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(1));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+
+    #[test]
+    fn p18_c_巢狀_early_return_不能繼續建立外層剩餘資源() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(true){\nvar deep:str = \"深\"\nreturn 4\n}\nvar skipped:str = \"不可建立\"\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.result, Ok(4));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_巢狀_false_選中_else_return_僅配置真實分支() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(false){\nvar skipped:str = \"不建立\"\nreturn 1\n}else{\nvar chosen:str = \"選中\"\nreturn 8\n}\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.result, Ok(8));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_最外層_false_不應執行巢狀_return_也不分配字串() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(false){\nif(true){\nvar skipped:str = \"不可配置\"\nreturn 1\n}\n}\nreturn 9\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.result, Ok(9));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_巢狀非整數常值_return_即使語法合法仍須保守拒絕() {
+        let code = "fn main()->int{\nvar outside:str = \"外\"\nif(true){\nif(true){\nvar inner:str = \"內\"\nreturn 1+2\n}\n}\nreturn 0\n}\n";
         assert!(matches!(
             PreparedPrivateStr::prepare(code),
             Err(PrivateStrPrepareError::Unsupported(_)),
@@ -816,14 +859,15 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_巢狀_return_控制轉移尚未驗證仍必須保守拒絕() {
-        // 原本整個巢狀區塊都不支援；新正例已覆蓋完全相同的
-        // 純字串巢狀來源，負例只保留未證明的巢狀提前 return。
+    fn p18_c_原巢狀_return_保守負例改為真三資源逆序清理正例() {
         let code = "fn main()->int{\nvar outside:str = \"外\"\nif (true){\nvar local:str = \"內\"\nif (true){\nvar nested:str = \"更深\"\nreturn 1\n}\n}\nreturn 0\n}\n";
-        assert!(matches!(
-            PreparedPrivateStr::prepare(code),
-            Err(PrivateStrPrepareError::Unsupported(_)),
-        ));
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(1));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
     }
 
     #[test]
