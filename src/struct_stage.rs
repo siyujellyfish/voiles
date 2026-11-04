@@ -136,6 +136,9 @@ include!("struct_stage/syntax.rs");
 // P17-C：只有完整私有 Checker 安全驗證後才可實際分配資源。
 include!("struct_stage/execute_str.rs");
 
+// P17-F 僅限真私有 Checker 允許的混合欄位建立式、求值與逆序清理。
+include!("struct_stage/execute_constructor.rs");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
