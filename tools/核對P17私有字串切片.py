@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對十一項 P17-C 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對十七項 P17-C／P18-B 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -20,6 +20,12 @@ from pathlib import Path
     "p17_c_賦值目標不可變與自身移動在_checker_先拒絕",
     "p17_c_已移動來源再次轉交必須在建立資源之前靜態拒絕",
     "p17_c_真資源整筆重綁前若來源改寫不得產生任何實際事件",
+    "p18_b_真私有_成立分支建立兩筆_str_並在外層返回前逆序清理",
+    "p18_b_不成立分支不可建立資源_真_else_才會配置與離域清理",
+    "p18_b_條件_false_且無_else_不產生未走到的資源事件",
+    "p18_b_局部同名遮蔽在離開真資源作用域後不破壞外層持有者",
+    "p18_b_分支局部所有者跨作用域外洩必須在_checker_拒絕",
+    "p18_b_分支內返回或巢狀資源控制尚未驗證必須保守拒絕",
 )
 
 
