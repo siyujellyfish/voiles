@@ -406,6 +406,19 @@ struct VerifiedExitBinding {
     loan: Option<LoanBinding>,
 }
 
+/// 只對內部靜態計畫表示未來需要的清理，絕不是已執行 Released。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StaticCleanupNeed {
+    Required,
+    Conditional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct StaticCleanupObligation {
+    declaration: DeclarationId,
+    need: StaticCleanupNeed,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VerifiedExitSnapshot {
     edge: VerifiedControlEdge,
@@ -413,6 +426,71 @@ struct VerifiedExitSnapshot {
     /// 避免刪除一個持有者後由空集合假稱整個返回責任閉合。
     scope_sizes: Vec<usize>,
     bindings: Vec<VerifiedExitBinding>,
+    /// 仍持有可清理資源的靜態 Owner；不含返回時已完成 move 的來源。
+    cleanup_owners: Vec<StaticCleanupObligation>,
+    /// 還存活的靜態借用別名，不含 tracker serial 或真 BorrowTicket。
+    active_borrows: Vec<(DeclarationId, BorrowFact)>,
+}
+
+impl VerifiedExitSnapshot {
+    fn cleanup_from_bindings(bindings: &[VerifiedExitBinding])
+        -> Vec<StaticCleanupObligation> {
+        bindings.iter().filter_map(|binding| {
+            if binding.loan.is_some()
+                || binding.value.copy_permission() == CopyPermission::Allowed {
+                return None;
+            }
+            let need = match binding.value.state() {
+                ValueState::Available => StaticCleanupNeed::Required,
+                ValueState::MayBeUnavailable => StaticCleanupNeed::Conditional,
+                ValueState::Uninitialized if binding.pending_fields.is_some() =>
+                    StaticCleanupNeed::Conditional,
+                ValueState::Uninitialized | ValueState::Moved => return None,
+            };
+            Some(StaticCleanupObligation {
+                declaration: binding.declaration, need,
+            })
+        }).collect()
+    }
+
+    fn active_borrows_from_bindings(bindings: &[VerifiedExitBinding])
+        -> Vec<(DeclarationId, BorrowFact)> {
+        bindings.iter().filter_map(|binding|
+            binding.loan.as_ref().filter(|loan| loan.active)
+                .map(|loan| (binding.declaration, loan.fact))).collect()
+    }
+
+    /// 只有真 Checker 於每次出口呼叫此建構器；由同一 Scopes
+    /// 正規化狀態及清理義務，不允許橋接依 AST 繞過來源身分認領。
+    fn from_checked_scopes(
+        vars: &Scopes, span: crate::common_ir::NodeSpan, flow: FlowState,
+    ) -> Self {
+        let mut bindings: Vec<VerifiedExitBinding> = vars.iter().enumerate()
+            .flat_map(|(depth, scope)| scope.values().map(move |binding| {
+                let pending_fields = binding.pending_fields.as_ref().map(|fields| {
+                    let mut sorted: Vec<String> = fields.iter().cloned().collect();
+                    sorted.sort();
+                    sorted
+                });
+                VerifiedExitBinding {
+                    scope_depth: depth,
+                    declaration: binding.declaration_start,
+                    ty: binding.ty.clone(),
+                    mutable: binding.mutable,
+                    value: binding.value,
+                    pending_fields,
+                    loan: binding.loan.clone(),
+                }
+            })).collect();
+        bindings.sort_by_key(|binding| (binding.scope_depth, binding.declaration));
+        let cleanup_owners = Self::cleanup_from_bindings(&bindings);
+        let active_borrows = Self::active_borrows_from_bindings(&bindings);
+        Self {
+            edge: VerifiedControlEdge { span, flow },
+            scope_sizes: vars.iter().map(|scope| scope.len()).collect(),
+            bindings, cleanup_owners, active_borrows,
+        }
+    }
 }
 
 struct Checker<'a, C> {
@@ -956,7 +1034,11 @@ impl VerifiedSafetyPlan {
                         .filter_map(|item| item.loan.as_ref().map(|loan|
                             (item.declaration, loan.fact, loan.active))))
                         .validate().is_ok();
-                    size_matches && ordered && typed && valid_loans
+                    let obligations = snapshot.cleanup_owners
+                        == VerifiedExitSnapshot::cleanup_from_bindings(bindings)
+                        && snapshot.active_borrows
+                            == VerifiedExitSnapshot::active_borrows_from_bindings(bindings);
+                    size_matches && ordered && typed && valid_loans && obligations
                 })
             })
     }
