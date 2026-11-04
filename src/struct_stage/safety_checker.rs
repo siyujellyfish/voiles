@@ -538,14 +538,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 continue;
             }
             for binding in Rc::make_mut(scope).values_mut() {
+                // DerefMut 只對 SafetyState 取得可變參照；先複製外層
+                // 不可變 DeclarationId，避免同一 Binding 同時可變／不可變借用。
+                let declaration_start = binding.declaration_start;
                 if let Some(loan) = binding.loan.as_mut() {
                     // 函式借用參數仍由函式作用域出口管理，不能提前歸還。
                     let parameter_scope_loan =
-                        loan.fact.source == binding.declaration_start;
-                    let future_use = needed_here.contains(&binding.declaration_start)
+                        loan.fact.source == declaration_start;
+                    let future_use = needed_here.contains(&declaration_start)
                         || needed_later.iter().any(|(at_depth, used)|
                             *at_depth >= depth
-                                && used.contains(&binding.declaration_start));
+                                && used.contains(&declaration_start));
                     if loan.active && !parameter_scope_loan && !future_use {
                         loan.active = false;
                     }
