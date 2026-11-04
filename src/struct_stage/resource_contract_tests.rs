@@ -1455,3 +1455,56 @@ mod r03_g4_靜態退出清理責任 {
             vec![(DeclarationId(9201), fact)]);
     }
 }
+
+
+#[cfg(test)]
+mod r03_g4_多來源可達控制責任 {
+    use super::*;
+
+    #[test]
+    fn g4_同一return的兩個獨立str資源各自有必需清理身分() {
+        let source = "fn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nreturn 0\n}\n";
+        let checked = verified_private_source(source).unwrap();
+        let exit = source.find("return 0").unwrap();
+        let obligations = &checked.plan.exit_snapshots[&exit][0].cleanup_owners;
+        let owners: Vec<_> = obligations.iter().map(|obligation| obligation.declaration).collect();
+        assert_eq!(owners, vec![
+            DeclarationId(source.find("var first:str").unwrap()),
+            DeclarationId(source.find("var second:str").unwrap()),
+        ]);
+        assert!(obligations.iter().all(|obligation|
+            obligation.need == StaticCleanupNeed::Required));
+    }
+
+    #[test]
+    fn g4_移交其中一個資源時原Owner不清理且剩餘Owner仍須清理() {
+        let source = "fn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nvar moved:str = first.move()\nreturn 0\n}\n";
+        let checked = verified_private_source(source).unwrap();
+        let at = source.find("return 0").unwrap();
+        let owners = &checked.plan.exit_snapshots[&at][0].cleanup_owners;
+        assert!(!owners.iter().any(|o|
+            o.declaration == DeclarationId(source.find("var first:str").unwrap())));
+        assert!(owners.iter().any(|o|
+            o.declaration == DeclarationId(source.find("var second:str").unwrap())));
+        assert!(owners.iter().any(|o|
+            o.declaration == DeclarationId(source.find("var moved:str").unwrap())));
+    }
+
+    #[test]
+    fn g4_不同分支各自局部str只能出現在自己的靜態return責任() {
+        let source = "fn main()->int{\nif(true){\nvar left:str = \"左\"\nreturn 1\n}else{\nvar right:str = \"右\"\nreturn 2\n}\nreturn 3\n}\n";
+        let checked = verified_private_source(source).unwrap();
+        let one = source.find("return 1").unwrap();
+        let two = source.find("return 2").unwrap();
+        let three = source.find("return 3").unwrap();
+        let left = DeclarationId(source.find("var left:str").unwrap());
+        let right = DeclarationId(source.find("var right:str").unwrap());
+        let a = &checked.plan.exit_snapshots[&one][0].cleanup_owners;
+        let b = &checked.plan.exit_snapshots[&two][0].cleanup_owners;
+        assert!(a.iter().any(|owner| owner.declaration == left));
+        assert!(!a.iter().any(|owner| owner.declaration == right));
+        assert!(b.iter().any(|owner| owner.declaration == right));
+        assert!(!b.iter().any(|owner| owner.declaration == left));
+        assert!(!checked.plan.exit_snapshots.contains_key(&three));
+    }
+}
