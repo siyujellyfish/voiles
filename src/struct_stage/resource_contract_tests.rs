@@ -1301,3 +1301,71 @@ mod r03_g4_真方法安全來源 {
         assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, READ));
     }
 }
+
+
+#[cfg(test)]
+mod r03_g4_出口完整SafetyState快照 {
+    use super::*;
+    use crate::ownership_model::ValueState;
+
+    const MOVE: &str = "fn give()->str{\nvar origin:str = \"資源🪼\"\nreturn origin.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+
+    #[test]
+    fn g4_原Checker已驗證return會封存來源移動後的完整靜態狀態() {
+        let checked = verified_private_source(MOVE).unwrap();
+        let at = MOVE.find("return origin.move()").unwrap();
+        let owner = DeclarationId(MOVE.find("var origin:str").unwrap());
+        let snapshots = &checked.plan.exit_snapshots[&at];
+        assert_eq!(snapshots.len(), 1);
+        let bindings = &snapshots[0].bindings;
+        let actual = bindings.iter().find(|state| state.declaration == owner).unwrap();
+        assert_eq!(actual.value.state(), ValueState::Moved);
+        assert!(actual.loan.is_none());
+        assert_eq!(snapshots[0].scope_sizes.iter().sum::<usize>(), bindings.len());
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, MOVE));
+    }
+
+    #[test]
+    fn g4_兩條合法return分支各有獨立來源狀態而非假動態事件() {
+        let source = "fn main()->int{\nvar v:int = 1\nif(true){\nreturn v\n}else{\nreturn 2\n}\nreturn 3\n}\n";
+        let checked = verified_private_source(source).unwrap();
+        let first = source.find("return v").unwrap();
+        let other = source.find("return 2").unwrap();
+        let dead = source.find("return 3").unwrap();
+        assert!(checked.plan.exit_snapshots.contains_key(&first));
+        assert!(checked.plan.exit_snapshots.contains_key(&other));
+        assert!(!checked.plan.exit_snapshots.contains_key(&dead));
+        assert!(checked.plan.exit_snapshots_are_consistent());
+    }
+
+    #[test]
+    fn g4_刪除已驗證控制點任一持有者不得以空帳簿假裝退出已閉合() {
+        let mut checked = verified_private_source(MOVE).unwrap();
+        let at = MOVE.find("return origin.move()").unwrap();
+        let entry = &mut checked.plan.exit_snapshots.get_mut(&at).unwrap()[0];
+        let before = entry.bindings.len();
+        entry.bindings.pop();
+        assert_eq!(entry.bindings.len() + 1, before);
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, MOVE));
+    }
+
+    #[test]
+    fn g4_來源相同但型別偽造不許通過真Checker出口安全計畫() {
+        let mut checked = verified_private_source(MOVE).unwrap();
+        let at = MOVE.find("return origin.move()").unwrap();
+        checked.plan.exit_snapshots.get_mut(&at).unwrap()[0].bindings
+            .iter_mut().find(|entry| entry.ty == "str").unwrap().ty = "int".into();
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, MOVE));
+    }
+
+    #[test]
+    fn g4_重複同一路徑狀態與無來源快照均不能冒充不同可達分支() {
+        let mut checked = verified_private_source(MOVE).unwrap();
+        let at = MOVE.find("return origin.move()").unwrap();
+        let repeated = checked.plan.exit_snapshots[&at][0].clone();
+        checked.plan.exit_snapshots.get_mut(&at).unwrap().push(repeated);
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, MOVE));
+        checked.plan.exit_snapshots.remove(&at);
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, MOVE));
+    }
+}
