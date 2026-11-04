@@ -129,9 +129,20 @@ def authority_check() -> None:
         raise AssertionError("私有迴圈仍在原分類之外二次猜語句頭")
     if 'matches!(ty, "int" | "bool" | "float" | "str")' in source_map["src/struct_stage/safety_checker.rs"]:
         raise AssertionError("私有 Checker 重建了 int/bool 第二份型別白名單")
+    # 結案後正式 Gate 會重新執行各 F 子驗收，不再要求額外獨立 CI 步驟。
+    # 驗證真執行鏈本身，避免僅以腳本檔名存在充作驗收證據。
     flow = (ROOT / ".github/workflows/前端建置.yml").read_text(encoding="utf-8")
+    a6 = (ROOT / "tools/核對A6主線總驗收.py").read_text(encoding="utf-8")
+    g6 = (ROOT / "tools/核對G6正式總驗收.py").read_text(encoding="utf-8")
     for marker in [
         "  push:\n    branches:\n      - main",
+        "tools/核對A6主線總驗收.py",
+        "tools/核對G6正式總驗收.py",
+        "tools/核對F00總驗收.py",
+    ]:
+        if marker not in flow:
+            raise AssertionError(f"缺少 main push 或正式 F00/A6/G6 CI 入口：{marker}")
+    for marker in [
         "tools/核對F01驗收.py",
         "tools/核對F02驗收.py",
         "tools/核對F03驗收.py",
@@ -140,10 +151,12 @@ def authority_check() -> None:
         "tools/核對G1G2驗收.py",
         "tools/核對F00總驗收.py",
     ]:
-        if marker not in flow:
-            raise AssertionError(f"缺少同 SHA 主線 Rust 或五個獨立驗收入口：{marker}")
+        if marker not in a6:
+            raise AssertionError(f"A6 未保留 F01～F05/G1/G2/G0 真驗收依賴：{marker}")
+    if "tools/核對A6主線總驗收.py" not in g6:
+        raise AssertionError("G6 未真正串接 A6 同 SHA 獨立總驗收")
     print("F05 可寫權威：共通9項 parser 分別唯一；正式公私消費與私有專用消歧閉合，舊投影型別無可寫定義")
-    print("F05 CI：main push 與 F00/F01～F05/G1/G2 獨立真工作掛載")
+    print("F05 CI：main push → A6 真重跑 F00/F01～F05/G1/G2 → G6 同 SHA 再驗證")
 
 
 def run(command: list[str]) -> str:
