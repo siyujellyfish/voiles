@@ -22,6 +22,9 @@ pub(crate) struct VerifiedSourceFile {
     pub(crate) requested_path: PathBuf,
     /// 作業系統解出的同一真實檔案身分，不能以名稱字串比較代替。
     pub(crate) canonical_path: PathBuf,
+    /// Unix 裝置與 inode：硬連結也必須識別為同一實體來源。
+    /// 非 Unix 平台只維持原 canonical PathBuf 的保守策略。
+    physical_identity: Option<(u64, u64)>,
     /// 每檔只持有其自己經原 Checker 核准的來源與 HIR，不能跨檔合併。
     pub(crate) prepared: PreparedProgram,
 }
@@ -37,16 +40,35 @@ fn file_io(path: &Path, error: std::io::Error) -> RegistryFailure {
     }
 }
 
+/// OS 實際檔案身分與文字路徑分開；Linux/Unix 硬連結會共享 inode。
+/// 不把此資訊解讀為 voiles 模組宣告名稱、載入順序或所有權。
+fn physical_identity(path: &Path) -> Result<Option<(u64, u64)>, RegistryFailure> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        let meta = std::fs::metadata(path).map_err(|error| file_io(path, error))?;
+        Ok(Some((meta.dev(), meta.ino())))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+
 impl VerifiedSourceRegistry {
     /// 從呼叫者明示的真路徑建立來源登錄，不載入未知 import，不執行初始化。
     /// 任一來源有 I/O、重複身分或 Checker 錯誤時，不回傳部分已驗證清單。
     pub(crate) fn prepare_paths(paths: &[PathBuf]) -> Result<Self, RegistryFailure> {
         let mut seen = BTreeSet::<PathBuf>::new();
+        let mut seen_physical = BTreeSet::<(u64, u64)>::new();
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
             let canonical = std::fs::canonicalize(path)
                 .map_err(|error| file_io(path, error))?;
-            if !seen.insert(canonical.clone()) {
+            let physical = physical_identity(path)?;
+            if !seen.insert(canonical.clone())
+                || physical.is_some_and(|identity| !seen_physical.insert(identity)) {
                 return Err(RegistryFailure::DuplicateSource {
                     path: path.clone(),
                     canonical,
@@ -61,10 +83,14 @@ impl VerifiedSourceRegistry {
                 })?;
             files.push(VerifiedSourceFile {
                 requested_path: path.clone(), canonical_path: canonical,
-                prepared,
+                physical_identity: physical, prepared,
             });
         }
-        Ok(Self { files })
+        let result = Self { files };
+        // 完成所有 Checker 後，再查一次內容及物理身分；
+        // 避免前一檔在讀取後續檔案期間已遭替換。
+        result.check_unchanged()?;
+        Ok(result)
     }
 
     /// 後續需要真正模組解析之前的來源快照防偽：同一路徑別名不得
@@ -75,7 +101,8 @@ impl VerifiedSourceRegistry {
             let path = &entry.requested_path;
             let canonical = std::fs::canonicalize(path)
                 .map_err(|error| file_io(path, error))?;
-            if canonical != entry.canonical_path {
+            if canonical != entry.canonical_path
+                || physical_identity(path)? != entry.physical_identity {
                 return Err(RegistryFailure::SourceChanged { path: path.clone() });
             }
             let bytes = std::fs::read(path)
@@ -205,6 +232,46 @@ mod tests {
                 VerifiedSourceRegistry::prepare_paths(&[file.clone()]),
                 Err(RegistryFailure::Static { path, .. }) if path == file,
             ));
+        });
+    }
+
+
+    #[cfg(unix)]
+    #[test]
+    fn p21_a_unix_硬連結不同正規路徑仍須判定同一實體來源() {
+        with_directory("hardlink_duplicate", |dir| {
+            let primary = dir.join("原檔.voil");
+            let hardlink = dir.join("硬連結.voil");
+            write(&primary, b"fn main()->int{\nreturn 2\n}\n");
+            std::fs::hard_link(&primary, &hardlink).unwrap();
+            assert_ne!(
+                std::fs::canonicalize(&primary).unwrap(),
+                std::fs::canonicalize(&hardlink).unwrap(),
+            );
+            let error = VerifiedSourceRegistry::prepare_paths(
+                &[primary, hardlink.clone()],
+            ).err().expect("兩個路徑指向同一 inode 必須拒絕");
+            assert!(matches!(
+                error, RegistryFailure::DuplicateSource { path, .. } if path == hardlink,
+            ));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn p21_a_unix_檔案被相同位元組的另一_inode_取代仍拒絕舊證據() {
+        with_directory("replaced_inode", |dir| {
+            let original = dir.join("實際.voil");
+            let replacement = dir.join("候補.voil");
+            let bytes = b"fn main()->int{\nreturn 2\n}\n";
+            write(&original, bytes);
+            let registry = VerifiedSourceRegistry::prepare_paths(&[original.clone()]).unwrap();
+            write(&replacement, bytes);
+            // Unix rename 覆寫舊路徑，內容相等但物理檔案身分不同。
+            std::fs::rename(&replacement, &original).unwrap();
+            assert_eq!(std::fs::read(&original).unwrap(), bytes);
+            assert!(matches!(registry.check_unchanged(),
+                Err(RegistryFailure::SourceChanged { path }) if path == original));
         });
     }
 
