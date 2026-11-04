@@ -38,8 +38,11 @@ def main() -> int:
         "fn commit_reachable_join(",
         "self.safety.transition(StaticTransition::JoinReachable {",
     ):
-        if core.count(marker) != 1:
-            raise AssertionError(f"F13 唯一 CFG 三維安全轉移權威缺失：{marker}")
+        # 單一正式變體在 match 的實作處與 Binding 的呼叫處各出現一次；
+        # 兩者不是兩個獨立的可寫權威。
+        expected = 2 if marker == "StaticTransition::JoinReachable {" else 1
+        if core.count(marker) != expected:
+            raise AssertionError(f"F13 CFG 三維安全轉移實作／消費數量異常：{marker}")
     if checker.count("original.commit_reachable_join(") != 1:
         raise AssertionError("真 Checker 尚未接線唯一 JoinReachable")
     for old in ("original.value =", "original.pending_fields =", "loan.active = true_active || false_active;"):
