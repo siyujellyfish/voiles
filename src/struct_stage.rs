@@ -1089,6 +1089,9 @@ impl VerifiedSafetyPlan {
 
 struct VerifiedPrivateSource {
     source: Source,
+    /// 同一份正式 Lexer 產物；供 P17 取回已解碼的 StringLiteral，
+    /// 避免在真 Checker 後另造第二份文字掃描或猜測字串跳脫規則。
+    tokens: Vec<Token>,
     structs: HashMap<String, StructDecl>,
     functions: Vec<Function>,
     /// 與真正通過驗證的完整原始來源一起封裝，不能獨立從 AST 重建。
@@ -1217,7 +1220,9 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
-    Ok(VerifiedPrivateSource { source, structs, functions, plan })
+    Ok(VerifiedPrivateSource {
+        source, tokens: tokens.tokens, structs, functions, plan,
+    })
 }
 
 /// F00：唯一的正式私有來源入口維持原樣；只有內部測試開啟
@@ -1293,6 +1298,10 @@ fn inspect_with_test_ability(text: &str, ability: impl Fn(&str) -> CopyPermissio
     inspect_with_ability(text, ability)
 }
 
+
+// P17-C：真正私有 Checker 的唯一直線 .move() 來源→UTF-8 實際資源事件橋接。
+// 仍只作內部受限垂直切片，不公開私有語法或假造 Runtime 事件。
+include!("struct_stage/private_resource_execution.rs");
 
 // 同層引入原有測試模組，以保留 Rust 測試完整識別名稱及驗收腳本過濾條件。
 #[cfg(test)]
