@@ -314,6 +314,13 @@ impl Binding {
 // 分支與迴圈快照共用不可變狀態；只有實際寫入的詞彙作用域才複製。
 type Scopes = Vec<Rc<HashMap<String, Binding>>>;
 
+/// F10/B07：跨作用域反向邊及 break/continue 共用同一安全狀態差異分類。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OuterSafetyDiff {
+    MissingBinding,
+    ChangedState,
+}
+
 /// 資料流需區分正常後繼、函式返回與迴圈轉移；後兩者不能混用。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FlowState {

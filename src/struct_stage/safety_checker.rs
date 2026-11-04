@@ -1309,33 +1309,42 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         })
     }
 
-    /// P15.3：對 break／continue 的每條實際轉移路徑確認所有
-    /// 外層持有者、部分初始化與借用票據均與迴圈入口一致。
-    /// 不把未達不動點的資源變化偽裝成安全跳出或下一輪。
-    fn check_loop_exit_stability(&self, vars: &Scopes, entry: &Scopes,
-        statement: &Stmt) -> Result<(), Diagnostic> {
+    /// F10/B07：唯一可寫 SafetyState 已能以同一份來源身份
+    /// 實際驗證所有外層宣告在跳轉、for 及 while 反向邊的穩定性。
+    /// 此處只讀，不改任何分支／執行期資源事件，不重新建立狀態帳簿。
+    fn checked_outer_state_stability(
+        vars: &Scopes, entry: &Scopes,
+    ) -> Result<(), OuterSafetyDiff> {
         for (depth, scope) in entry.iter().enumerate() {
             for (name, original) in scope.iter() {
                 let candidate = vars.get(depth).and_then(|scope| scope.get(name))
-                    .ok_or_else(|| Diagnostic {
-                        kind: DiagnosticKind::Static,
-                        message: "P15：跳轉後外層來源宣告遺失".into(),
-                        span: Some(self.source.span(statement.start, statement.end)),
-                    })?;
+                    .ok_or(OuterSafetyDiff::MissingBinding)?;
                 if !original.same_safety_state(candidate) {
-                    return Err(Diagnostic {
-                        kind: DiagnosticKind::Static,
-                        message: if matches!(&statement.kind, StmtKind::ForRange { .. }) {
-                            "P15：單次 for 混合迴圈跳轉與正常路徑時外層所有權或借用狀態不穩定".into()
-                        } else {
-                            "P15：break／continue 轉移時外層所有權或借用狀態不穩定".into()
-                        },
-                        span: Some(self.source.span(statement.start, statement.end)),
-                    });
+                    return Err(OuterSafetyDiff::ChangedState);
                 }
             }
         }
         Ok(())
+    }
+
+    /// 保留 P15.3 已凍結的「宣告遺失」與「安全狀態漂移」
+    /// 兩種精確繁體中文診斷，不因收斂共同核對器而改變優先序。
+    fn check_loop_exit_stability(&self, vars: &Scopes, entry: &Scopes,
+        statement: &Stmt) -> Result<(), Diagnostic> {
+        Self::checked_outer_state_stability(vars, entry).map_err(|difference| {
+            let message = match difference {
+                OuterSafetyDiff::MissingBinding => "P15：跳轉後外層來源宣告遺失",
+                OuterSafetyDiff::ChangedState if matches!(&statement.kind, StmtKind::ForRange { .. }) =>
+                    "P15：單次 for 混合迴圈跳轉與正常路徑時外層所有權或借用狀態不穩定",
+                OuterSafetyDiff::ChangedState =>
+                    "P15：break／continue 轉移時外層所有權或借用狀態不穩定",
+            };
+            Diagnostic {
+                kind: DiagnosticKind::Static,
+                message: message.into(),
+                span: Some(self.source.span(statement.start, statement.end)),
+            }
+        })
     }
 
     fn statements(&self, body: &[Stmt], vars: &mut Scopes,
@@ -1663,18 +1672,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             }
                         }
                     } else if can_repeat == FlowState::Fallthrough {
-                        for (depth, scope) in snapshot.iter().enumerate() {
-                            for (name, original) in scope.iter() {
-                                let candidate = simulated[depth].get(name)
-                                    .expect("迴圈不得移除外層宣告");
-                                if !original.same_safety_state(candidate) {
-                                    return Err(Diagnostic {
-                                        kind: DiagnosticKind::Static,
-                                        message: "P15：for 反向邊來源狀態不穩定，不可跨迭代沿用借用／所有權".into(),
-                                        span: Some(self.source.span(statement.start, statement.end)),
-                                    });
-                                }
-                            }
+                        if Self::checked_outer_state_stability(&simulated, &snapshot).is_err() {
+                            return Err(Diagnostic {
+                                kind: DiagnosticKind::Static,
+                                message: "P15：for 反向邊來源狀態不穩定，不可跨迭代沿用借用／所有權".into(),
+                                span: Some(self.source.span(statement.start, statement.end)),
+                            });
                         }
                     }
                     } // 有至少一種迭代可能時才檢查迴圈本體
@@ -1719,19 +1722,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         loop_body, &mut simulated, expected_return, true, &after_loop,
                         Some(&snapshot))?;
                     if can_repeat == FlowState::Fallthrough {
-                        // 未建立不動點證明前，所有會回到條件的外部來源
-                        // 必須保持所有權、部分初始化及借用活性不變。
-                        // 迴圈局部宣告會於每次區塊退出後消失。
-                        for (depth, scope) in snapshot.iter().enumerate() {
-                            for (name, original) in scope.iter() {
-                                let candidate = simulated[depth].get(name)
-                                    .expect("迴圈不得移除外層宣告");
-                                if !original.same_safety_state(candidate) {
-                                    return Err(self.error(
-                                        "P15：while 反向邊的來源所有權／借用狀態不穩定，需完整不動點證明",
-                                        condition));
-                                }
-                            }
+                        // for／while 的反向邊使用同一個真 SafetyState 唯讀
+                        // 契約；沒有不動點證據時仍維持原保守拒絕。
+                        if Self::checked_outer_state_stability(&simulated, &snapshot).is_err() {
+                            return Err(self.error(
+                                "P15：while 反向邊的來源所有權／借用狀態不穩定，需完整不動點證明",
+                                condition));
                         }
                     }
                     // while 可執行零次，因此後續只使用入口快照；

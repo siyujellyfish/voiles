@@ -2992,3 +2992,74 @@ mod r03_b06_f09_靜態安全全操作單一轉移 {
         assert!(!binding.loan.as_ref().unwrap().active);
     }
 }
+
+#[cfg(test)]
+mod r03_b07_f10_共通反向邊安全證明 {
+    use super::*;
+
+    fn binding(id: usize, kind: BorrowKind) -> Binding {
+        Binding::new(DeclarationId(id), "int".to_owned(), true,
+            ValueSlot::initialized(CopyPermission::Allowed), None,
+            Some(LoanBinding {
+                fact: BorrowFact::new(DeclarationId(id + 1), kind), active: true,
+            }))
+    }
+    fn entry() -> Scopes {
+        vec![Rc::new(HashMap::from([
+            ("outer".into(), binding(10001, BorrowKind::SharedRead)),
+        ]))]
+    }
+
+    #[test]
+    fn f10_b07_全部外層安全欄位同源時共通反向邊核對成功() {
+        let original = entry();
+        let candidate = original.clone();
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::checked_outer_state_stability(
+                &candidate, &original), Ok(())
+        );
+        assert!(Rc::ptr_eq(&candidate[0], &original[0]));
+    }
+
+    #[test]
+    fn f10_b07_反向邊變動ValueSlot必定被同一契約拒絕() {
+        let original = entry();
+        let mut candidate = original.clone();
+        Rc::make_mut(&mut candidate[0]).get_mut("outer").unwrap()
+            .value.move_whole().unwrap();
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::checked_outer_state_stability(
+                &candidate, &original), Err(OuterSafetyDiff::ChangedState)
+        );
+        assert_eq!(original[0]["outer"].value.state(), ValueState::Available);
+    }
+
+    #[test]
+    fn f10_b07_反向邊變動借用有效期必定拒絕且不污染入口() {
+        let original = entry();
+        let mut candidate = original.clone();
+        Rc::make_mut(&mut candidate[0]).get_mut("outer").unwrap()
+            .loan.as_mut().unwrap().active = false;
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::checked_outer_state_stability(
+                &candidate, &original), Err(OuterSafetyDiff::ChangedState)
+        );
+        assert!(original[0]["outer"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f10_b07_跳轉遺失原外層宣告應保留獨立失效分類() {
+        let original = entry();
+        let candidate: Scopes = vec![Rc::new(HashMap::new())];
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::checked_outer_state_stability(
+                &candidate, &original), Err(OuterSafetyDiff::MissingBinding)
+        );
+    }
+
+    #[test]
+    fn f10_b07_真正私有for迴圈中Copyable賦值可安全保留原安全狀態() {
+        let source="fn main()->int{\nvar count:int = 1\nfor i in 0..2{\ncount = count + 1\n}\nreturn count\n}\n";
+        assert!(inspect(source).is_ok());
+    }
+}
