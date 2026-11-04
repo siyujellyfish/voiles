@@ -207,6 +207,10 @@ jobs:
         run: |
           python3 tools/核對G5同環境效能.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G5／F12～F13 同 SHA 正式 50 筆 Rust＋八橋接 15 路徑／57 真資源事件總驗收
+        run: |
+          python3 tools/核對G5正式驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
