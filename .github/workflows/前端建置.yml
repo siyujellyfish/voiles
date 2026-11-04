@@ -175,6 +175,10 @@ jobs:
         run: |
           python3 tools/核對G4控制轉移第一批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G4 第二批真 Checker 方法 self 借用與多 return 來源（非整包簽核）
+        run: |
+          python3 tools/核對G4方法安全第二批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
