@@ -156,9 +156,10 @@ impl PreparedPrivateStruct {
         };
         let returned = crate::syntax_shared::integer_i64(value)
             .map_err(|_| PrivateStructPrepareError::Unsupported("返回值超出 i64 範圍"))?;
+        let binding_name = binding.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            verified, original, binding_name: binding.name.clone(),
+            verified, original, binding_name,
             fields, supplied, returned,
         })
     }
