@@ -69,143 +69,13 @@ jobs:
         run: |
           rustup run stable rustc --edition=2021 --test --crate-name voiles_source_tests src/lib.rs -o target/p02/p04_source_internal
           ./target/p02/p04_source_internal
-      - name: F01／A1 公私真 AST、Lexer token 與 Typed HIR 角色身分獨立驗收
-        run: |
-          # 必須實際找到本輪五個 A1 真來源／假來源測試，不允許空過濾器報成功。
-          test "$(./target/p02/p04_source_internal --list | grep -c 'a1_f01_')" -ge 5
-          ./target/p02/p04_source_internal --test-threads=1 a1_f01_
-
-      - name: F01／A1 六子項正式來源身分驗收（逐具名非空真 Rust 案例）
-        run: |
-          python3 tools/核對F01驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: F02／A2 零引數類別唯一真 Parser／Checker 正反硬性回歸
-        run: |
-          test "$(./target/p02/p04_source_internal --list | grep -c 'a2_f02_')" -ge 3
-          ./target/p02/p04_source_internal --test-threads=1 a2_f02_
-
-      - name: F02／A2 共通真 Lexer 名稱後綴與公私原模式隔離
-        run: |
-          test "$(./target/p02/p04_source_internal --list | grep -c 'a2_f02_suffix_')" -ge 3
-          ./target/p02/p04_source_internal --test-threads=1 a2_f02_suffix_
-
-      - name: F02／A2 六子項共同 AST 與唯一可寫詞彙權威正式驗收
-        run: |
-          python3 tools/核對F02驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: F03／A3 私有 for while break continue 唯一共同前綴與原 CFG 守衛
-        run: |
-          test "$(./target/p02/p04_source_internal --list | grep -c 'a3_f03_')" -ge 3
-          ./target/p02/p04_source_internal --test-threads=1 a3_f03_
-
-      - name: F03／A3 五子項真 AST／CFG／診斷與共通可寫權威獨立正式驗收
-        run: |
-          python3 tools/核對F03驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: F04／A4 真 Checker 靜態非純值三操作與偽造來源硬性回歸
-        run: |
-          test "$(./target/p02/p04_source_internal --list | grep -c 'a4_f04_')" -ge 3
-          ./target/p02/p04_source_internal --test-threads=1 a4_f04_
-
-      - name: F04／A4 五子項 Typed HIR、可達性與非純值 Checker 安全正式驗收
-        run: |
-          python3 tools/核對F04驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: F05／A5 真 AST 可寫權威清除與五子項正反驗收
-        run: |
-          python3 tools/核對F05驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B05／F06 第一批靜態別名身分與真票據保守驗證（非整包簽核）
-        run: |
-          python3 tools/核對R03B05第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B05／F08 可達分支全狀態原子合流（非整包簽核）
-        run: |
-          python3 tools/核對R03B05第二批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B05／F08 第三批靜態唯一 SafetyState 物理來源（非整包簽核）
-        run: |
-          python3 tools/核對R03B05第三批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B06／F07 借用最後使用點全域拒假與原子歸還（非整包簽核）
-        run: |
-          python3 tools/核對R03B06第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B06／F09 唯一靜態安全轉移與原子失敗證據（非整包簽核）
-        run: |
-          python3 tools/核對R03B06第二批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B07／F10 統一迴圈反向邊與跳轉安全狀態（非整包簽核）
-        run: |
-          python3 tools/核對R03B07第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B08／F11 Checker 真函式可達退出證據（非整包簽核）
-        run: |
-          python3 tools/核對R03B08第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B09／F12 真實 ResourceId 事件順序與清理閉合（非整包簽核）
-        run: |
-          python3 tools/核對R03B09第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: R03 B10／F13 唯一靜態 CFG 合流 Transition（非整包簽核）
-        run: |
-          python3 tools/核對R03B10第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G3 第一批真 BorrowTicket／BorrowFact／雙帳簿原子一致性（非整包簽核）
-        run: |
-          python3 tools/核對G3跨層票據第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G3 第二批：參數來源 DeclarationId 與遮蔽／零次 CFG 真消耗驗證（非整包簽核）
-        run: |
-          python3 tools/核對G3參數來源第二批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G3 第三批：全引用及參數整筆移動共享唯一 DeclId use-def 真來源（非整包簽核）
-        run: |
-          python3 tools/核對G3共同use-def第三批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G3 獨立 F06～F09 37 真 Rust 測試來源身分／原子狀態矩陣（仍非整包簽核）
-        run: |
-          python3 tools/核對G3獨立驗收矩陣.py --test-bin target/p02/p04_source_internal --check
-
       - name: G3 F06～F09 正式獨立真票據／SafetyState／全操作原子安全驗收
         run: |
           python3 tools/核對G3正式驗收.py --test-bin target/p02/p04_source_internal --check
 
-      - name: G4 第一批真 Checker 靜態控制轉移與 AST 防偽（非整包簽核）
-        run: |
-          python3 tools/核對G4控制轉移第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G4 第二批真 Checker 方法 self 借用與多 return 來源（非整包簽核）
-        run: |
-          python3 tools/核對G4方法安全第二批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G4 第三批真 Checker 每個控制點完整 SafetyState 原始詞彙快照
-        run: |
-          python3 tools/核對G4出口狀態第三批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G4 第四批 Checker 靜態資源清理及借用歸還義務（不冒充真事件）
-        run: |
-          python3 tools/核對G4清理義務第四批.py --test-bin target/p02/p04_source_internal --check
-
       - name: G4 F10～F11 真 Checker／方法／多資源 CFG 正式獨立總驗收
         run: |
           python3 tools/核對G4正式驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G5 第一批八橋接真 Checker 返回／靜態清理前置守衛與假證據拒絕
-        run: |
-          python3 tools/核對G5真安全出口第一批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G5 第二批八橋接實際 Owner DeclarationId 對真 Checker 退出清理靜態義務
-        run: |
-          python3 tools/核對G5真持有者第二批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G5 第三批真 if 提前 return 的動態分支與 Checker 原位內外 Owner 責任
-        run: |
-          python3 tools/核對G5真早退第三批.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G5／F13 真 Checker 與受限動態 UTF-8 事件兩負載同程序效能觀察
-        run: |
-          python3 tools/核對G5同環境效能.py --test-bin target/p02/p04_source_internal --check
 
       - name: G5／F12～F13 同 SHA 正式 50 筆 Rust＋八橋接 15 路徑／57 真資源事件總驗收
         run: |
@@ -214,10 +84,6 @@ jobs:
       - name: G6／F14 同一 GitHub main SHA 正式重跑 G0～G5 與 F00～F14 十五工作包總驗收
         run: |
           python3 tools/核對G6正式總驗收.py --test-bin target/p02/p04_source_internal --check
-
-      - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
-        run: |
-          python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
 
       - name: P13 人工驗收輔助腳本的 Bash 語法檢查
         run: bash -n tools/人工驗收-P13.sh
