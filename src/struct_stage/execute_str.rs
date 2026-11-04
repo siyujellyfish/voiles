@@ -396,6 +396,71 @@ mod p17_private_str_execution_tests {
         ));
     }
 
+
+    #[test]
+    fn p18_b_真私有_成立分支建立兩筆_str_並在外層返回前逆序清理() {
+        let code = "fn main()->int{\nvar outer:str = \"外層\"\nif (true){\nvar first:str = \"一\"\nvar second:str = \"二\"\n}\nreturn 0\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).expect("真 Checker 必須允許獨立局部資源");
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_不成立分支不可建立資源_真_else_才會配置與離域清理() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif (false){\nvar missed:str = \"絕不建立\"\n}else{\nvar chosen:str = \"只建立這筆\"\n}\nreturn 1\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).expect("Checker 應驗證兩個真區塊");
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(1));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_條件_false_且無_else_不產生未走到的資源事件() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif (false){\nvar never:str = \"不分配\"\n}\nreturn 0\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).unwrap();
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_局部同名遮蔽在離開真資源作用域後不破壞外層持有者() {
+        let code = "fn main()->int{\nvar item:str = \"外\"\nif (true){\nvar item:str = \"內\"\n}\nreturn 0\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).unwrap();
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_分支局部所有者跨作用域外洩必須在_checker_拒絕() {
+        let code = "fn main()->int{\nif (true){\nvar inner:str = \"局部\"\n}\ninner = \"不可越界\"\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p18_b_分支內返回或巢狀資源控制尚未驗證必須保守拒絕() {
+        let code = "fn main()->int{\nvar outside:str = \"外\"\nif (true){\nvar local:str = \"內\"\nreturn 1\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Unsupported(_)),
+        ));
+    }
+
     #[test]
     fn p17_c_真私有_checker_來源驅動字串建立移動再初始化並逆序清理() {
         let code = include_str!("../../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil");
