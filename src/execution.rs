@@ -3,7 +3,7 @@
 //! 本模組尚不公開 CLI、str、struct、借用或資源事件。
 #![allow(dead_code)]
 
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 
 use crate::common_ir::{
     self, FrontendMode, NodeSpan, ResolvedNames, ScalarType, VerifiedScalarHir,
@@ -124,7 +124,7 @@ impl PreparedProgram {
         }
         let mut runtime = Runtime {
             prepared: self,
-            globals: HashMap::new(),
+            globals: BTreeMap::new(),
             frames: Vec::new(),
             calls: Vec::new(),
         };
@@ -151,9 +151,9 @@ impl PreparedProgram {
 
 struct Runtime<'a> {
     prepared: &'a PreparedProgram,
-    globals: HashMap<DeclarationId, Slot>,
+    globals: BTreeMap<DeclarationId, Slot>,
     // 每個函式有獨立框架，區塊依來源身分建立與退出。
-    frames: Vec<Vec<HashMap<DeclarationId, Slot>>>,
+    frames: Vec<Vec<BTreeMap<DeclarationId, Slot>>>,
     // 尚未支援遞迴的內部切片，遇到循環必須安全拒絕而非爆堆疊。
     calls: Vec<String>,
 }
@@ -270,7 +270,7 @@ impl Runtime<'_> {
     fn block(&mut self, block: &Block) -> Result<Option<Value>, RuntimeFailure> {
         self.frames.last_mut().ok_or_else(|| RuntimeFailure::global(
             "區塊沒有函式框架",
-        ))?.push(HashMap::new());
+        ))?.push(BTreeMap::new());
         let outcome = self.statements(block);
         // 標量切片沒有 ResourceId；pop 僅退出詞彙作用域，不產生假清理事件。
         self.frames.last_mut().expect("已建立區塊框架").pop();
@@ -417,7 +417,8 @@ mod tests {
     fn p17_準備後來源更換或_hir_遭偽造_不得授權執行() {
         let mut plan = PreparedProgram::prepare(b"fn main()->int{\nreturn 2\n}\n".to_vec())
             .unwrap();
-        plan.source.bytes[plan.source.bytes.len() - 3] = b'3';
+        let position = plan.source.bytes.len() - 3;
+        plan.source.bytes[position] = b'3';
         assert!(plan.execute().is_err());
         let mut plan = PreparedProgram::prepare(b"fn main()->int{\nreturn 2\n}\n".to_vec())
             .unwrap();
