@@ -161,7 +161,7 @@ fn prepare_str_literal_branch(
 fn execute_str_literal_branch(
     resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
     branch: &PrivateStrBranchBody,
-    /// 僅 Rust 內部回歸注入：第幾筆真完成的「分支局部宣告」之後故障。
+    // 僅 Rust 內部回歸注入：第幾筆真完成的「分支局部宣告」之後故障。
     fail_after_branch_declaration: Option<usize>,
     completed_branch_declarations: &mut usize,
 ) -> Result<Option<i64>, crate::owned_str_runtime::StrRuntimeError> {
