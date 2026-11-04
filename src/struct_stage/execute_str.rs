@@ -14,8 +14,84 @@ enum PrivateStrAction {
     AssignLiteral { name: String, text: String },
     /// VA16-03-A：既有 var str 目的地接收來源明確 move，舊資源原子釋放。
     AssignMoved { to: String, from: String },
+    /// P18-B：只執行真 Checker 已封閉的 bool 常值分支及局部字串。
+    LiteralBranch {
+        condition: bool,
+        when_true: Vec<PrivateStrLocalLiteral>,
+        when_false: Vec<PrivateStrLocalLiteral>,
+    },
     Return(i64),
 }
+#[derive(Debug)]
+struct PrivateStrLocalLiteral {
+    name: String,
+    mutable: bool,
+    text: String,
+}
+
+/// 唯讀取自正式私有 Parser 的區塊和已驗證宣告身分。
+/// 這個首批切片禁止分支中的 return／賦值／巢狀控制轉移，
+/// 避免在缺少動態 CleanupPlan 時假裝已支援完整資源控制流。
+fn prepare_str_literal_branch(
+    block: &crate::syntax_shared::ParsedBlock<Stmt>,
+    verified: &VerifiedPrivateSource,
+) -> Result<Vec<PrivateStrLocalLiteral>, PrivateStrPrepareError> {
+    let mut names = BTreeSet::new();
+    let mut declarations = Vec::new();
+    for statement in &block.statements {
+        let StmtKind::Declare(binding) = &statement.kind else {
+            return Err(PrivateStrPrepareError::Unsupported(
+                "此批分支僅支援作用域內的已驗證 str 常值宣告",
+            ));
+        };
+        if binding.ty != "str" || !names.insert(binding.name.clone()) {
+            return Err(PrivateStrPrepareError::Unsupported(
+                "此批分支只允許互不重複的 str 局部宣告",
+            ));
+        }
+        let Some(fact) = verified.plan.declarations.typed_declaration(
+            DeclarationId(binding.start),
+        ) else {
+            return Err(PrivateStrPrepareError::Unsupported(
+                "分支局部字串缺少 Checker 宣告身分",
+            ));
+        };
+        if fact.ty != "str" || fact.mutable != binding.mutable {
+            return Err(PrivateStrPrepareError::Unsupported(
+                "分支局部字串型別或寫入權限與 Checker 不符",
+            ));
+        }
+        let init = binding.initializer.as_ref().ok_or(
+            PrivateStrPrepareError::Unsupported("分支局部字串必須立即初始化"),
+        )?;
+        let text = private_str_literal(init, &verified.tokens)?;
+        declarations.push(PrivateStrLocalLiteral {
+            name: binding.name.clone(), mutable: binding.mutable, text,
+        });
+    }
+    Ok(declarations)
+}
+
+fn execute_str_literal_branch(
+    resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
+    literals: &[PrivateStrLocalLiteral],
+) -> Result<(), crate::owned_str_runtime::StrRuntimeError> {
+    resources.enter_scope();
+    let outcome = (|| {
+        for binding in literals {
+            resources.declare(&binding.name, binding.mutable, &binding.text)?;
+        }
+        Ok(())
+    })();
+    // 即使建立途中失敗也必須離開真正作用域，依序清理已建立資源。
+    let cleanup = resources.leave_scope();
+    match (outcome, cleanup) {
+        (Err(err), _) => Err(err),
+        (Ok(()), Err(err)) => Err(err),
+        (Ok(()), Ok(())) => Ok(()),
+    }
+}
+
 #[derive(Debug)]
 struct PrivateStrOutcome {
     result: Result<i64, crate::owned_str_runtime::StrRuntimeError>,
@@ -150,6 +226,32 @@ impl PreparedPrivateStr {
                     };
                     operations.push(action);
                 }
+                StmtKind::If { branch, no } => {
+                    let TermKind::Scalar(
+                        crate::syntax_shared::ScalarLiteral::Boolean(condition),
+                    ) = &branch.branch.condition.kind else {
+                        return Err(PrivateStrPrepareError::Unsupported(
+                            "此批私有資源分支只執行真 bool 常值條件",
+                        ));
+                    };
+                    let when_true = prepare_str_literal_branch(
+                        &branch.branch.body, &verified,
+                    )?;
+                    let when_false = match no {
+                        None => Vec::new(),
+                        Some(crate::syntax_shared::ParsedElse::Block(otherwise)) =>
+                            prepare_str_literal_branch(otherwise, &verified)?,
+                        Some(_) => return Err(PrivateStrPrepareError::Unsupported(
+                            "此批尚未支援 else-if 或非區塊分支的資源執行",
+                        )),
+                    };
+                    if !when_true.is_empty() || !when_false.is_empty() {
+                        has_resource = true;
+                    }
+                    operations.push(PrivateStrAction::LiteralBranch {
+                        condition: *condition, when_true, when_false,
+                    });
+                }
                 StmtKind::Return(ret) => {
                     let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
                         &ret.expression.kind else {
@@ -206,6 +308,12 @@ impl PreparedPrivateStr {
                     }
                     PrivateStrAction::AssignMoved { to, from } =>
                         resources.replace_from(from, to)?,
+                    PrivateStrAction::LiteralBranch { condition, when_true, when_false } => {
+                        execute_str_literal_branch(
+                            &mut resources,
+                            if *condition { when_true } else { when_false },
+                        )?;
+                    }
                     PrivateStrAction::Return(value) => return Ok(*value),
                 }
             }
