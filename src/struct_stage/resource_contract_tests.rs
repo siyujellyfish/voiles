@@ -1224,3 +1224,80 @@ mod r03_g4_真Checker逐控制轉移證據 {
         assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, SIMPLE));
     }
 }
+
+
+#[cfg(test)]
+mod r03_g4_真方法安全來源 {
+    use super::*;
+    use crate::borrow_safety::BorrowKind;
+    use crate::common_ir::NodeSpan;
+
+    const READ: &str = "struct Counter{\nvar n:int = 1\nfn get()->int{\nreturn self.n\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+    const WRITE: &str = "struct Counter{\nvar n:int = 1\nfn set()->int{\nself.n = 2\nreturn self.n\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+    const BRANCH: &str = "struct Counter{\nvar n:int = 1\nfn get()->int{\nif(true){\nreturn self.n\n}\nreturn self.n\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+
+    fn get_method<'a>(checked: &'a VerifiedPrivateSource) -> &'a Function {
+        checked.structs.get("Counter").unwrap().methods.first().unwrap()
+    }
+
+    #[test]
+    fn g4_唯讀方法Checker直接簽出共享self與精確return來源() {
+        let checked = verified_private_source(READ).unwrap();
+        let method = get_method(&checked);
+        let proof = checked.plan.method_safety.get(&method.start).unwrap();
+        assert_eq!(proof.self_borrow, BorrowKind::SharedRead);
+        assert_eq!(proof.checked_returns.len(), 1);
+        assert!(proof.checked_returns.contains(&method.body.last().unwrap().node_span()));
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, READ));
+    }
+
+    #[test]
+    fn g4_合法可寫方法Checker應獨立記錄獨占self借用() {
+        let checked = verified_private_source(WRITE).unwrap();
+        let method = get_method(&checked);
+        let proof = checked.plan.method_safety.get(&method.start).unwrap();
+        assert_eq!(proof.self_borrow, BorrowKind::ExclusiveWrite);
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, WRITE));
+    }
+
+    #[test]
+    fn g4_方法提前return與最終return必須各有真Checker位置() {
+        let checked = verified_private_source(BRANCH).unwrap();
+        let method = get_method(&checked);
+        let proof = checked.plan.method_safety.get(&method.start).unwrap();
+        assert_eq!(proof.checked_returns.len(), 2);
+        assert!(proof.checked_returns.contains(&NodeSpan::new(
+            BRANCH.find("return self.n").unwrap(),
+            BRANCH.find("return self.n").unwrap() + "return self.n".len()
+        )));
+        assert!(proof.checked_returns.contains(&method.body.last().unwrap().node_span()));
+    }
+
+    #[test]
+    fn g4_假造方法唯讀self或把來源改成別的Span都拒絕() {
+        let mut checked = verified_private_source(WRITE).unwrap();
+        let method_start = get_method(&checked).start;
+        let before = checked.plan.method_safety[&method_start].clone();
+        checked.plan.method_safety.get_mut(&method_start).unwrap().self_borrow =
+            BorrowKind::SharedRead;
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, WRITE));
+        checked.plan.method_safety.insert(method_start, before);
+        checked.plan.method_safety.get_mut(&method_start).unwrap().span.end -= 1;
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, WRITE));
+    }
+
+    #[test]
+    fn g4_刪除方法最後return或增加虛構退出證據必定拒絕() {
+        let mut checked = verified_private_source(READ).unwrap();
+        let method_start = get_method(&checked).start;
+        let final_span = get_method(&checked).body.last().unwrap().node_span();
+        checked.plan.method_safety.get_mut(&method_start).unwrap()
+            .checked_returns.remove(&final_span);
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, READ));
+        checked.plan.method_safety.get_mut(&method_start).unwrap()
+            .checked_returns.insert(final_span);
+        checked.plan.method_safety.get_mut(&method_start).unwrap()
+            .checked_returns.insert(NodeSpan::new(final_span.start, final_span.start + 2));
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, READ));
+    }
+}
