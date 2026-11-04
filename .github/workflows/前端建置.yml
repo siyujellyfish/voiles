@@ -211,6 +211,10 @@ jobs:
         run: |
           python3 tools/核對G5正式驗收.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G6／F14 同一 GitHub main SHA 正式重跑 G0～G5 與 F00～F14 十五工作包總驗收
+        run: |
+          python3 tools/核對G6正式總驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
