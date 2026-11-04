@@ -47,6 +47,7 @@ struct PreparedPrivateStruct {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
     binding_name: String,
+    move_target: Option<(String, DeclarationId, DeclarationId)>,
     fields: Vec<PreparedField>,
     supplied: Vec<PreparedNamedField>,
     returned: i64,
@@ -90,7 +91,7 @@ impl PreparedPrivateStruct {
         }
         let main = &verified.functions[0];
         if main.name != "main" || main.result_ty != "int" || !main.params.is_empty()
-            || main.body.statements.len() != 2 {
+            || !(2..=3).contains(&main.body.statements.len()) {
             return Err(PrivateStructPrepareError::Unsupported(
                 "此切片僅支援無參數 main 的一次建立與直接整數返回",
             ));
@@ -149,7 +150,34 @@ impl PreparedPrivateStruct {
             }
             supplied.push(PreparedNamedField { name: name.clone(), seed });
         }
-        let StmtKind::Return(ret) = &main.body.statements[1].kind else {
+        // 只接通 Checker 逐筆證明的同型別整筆移動；不可用名稱猜測授權。
+        let mut move_target = None;
+        if main.body.statements.len() == 3 {
+            let StmtKind::Declare(target) = &main.body.statements[1].kind else {
+                return Err(PrivateStructPrepareError::Unsupported("結構整筆移動必須使用具型別宣告"));
+            };
+            if target.ty != binding.ty || !target.mutable || target.name == binding.name {
+                return Err(PrivateStructPrepareError::Unsupported("結構移動目標型別或權限不合法"));
+            }
+            let term = target.initializer.as_ref().ok_or(
+                PrivateStructPrepareError::Unsupported("移動目標必須立即初始化"),
+            )?;
+            if !matches!(&term.kind, TermKind::Move(name) if name == &binding.name) {
+                return Err(PrivateStructPrepareError::Unsupported("只接受真 Checker 核准的整筆 move()"));
+            }
+            let target_id = DeclarationId(target.start);
+            let target_fact = verified.plan.declarations.typed_declaration(target_id)
+                .ok_or(PrivateStructPrepareError::Unsupported("移動目標缺少真宣告證據"))?;
+            if target_fact.ty != target.ty || !target_fact.mutable
+                || !verified.plan.declarations.direct_moves.contains(&(declaration, target_id))
+            {
+                return Err(PrivateStructPrepareError::Unsupported(
+                    "移動來源與目標缺少同一 Checker 簽發的轉移配對",
+                ));
+            }
+            move_target = Some((target.name.clone(), declaration, target_id));
+        }
+        let StmtKind::Return(ret) = &main.body.statements[main.body.statements.len() - 1].kind else {
             return Err(PrivateStructPrepareError::Unsupported("缺少最後 return"));
         };
         let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(value)) =
@@ -161,7 +189,7 @@ impl PreparedPrivateStruct {
         let binding_name = binding.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            verified, original, binding_name,
+            verified, original, binding_name, move_target,
             fields, supplied, returned,
         })
     }
@@ -174,6 +202,7 @@ impl PreparedPrivateStruct {
     fn is_same_prepared_payload(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false };
         self.binding_name == fresh.binding_name
+            && self.move_target == fresh.move_target
             && self.fields == fresh.fields
             && self.supplied == fresh.supplied
             && self.returned == fresh.returned
@@ -198,6 +227,11 @@ impl PreparedPrivateStruct {
         {
             return Err(PrivateStructPrepareError::SourceChanged);
         }
+        if self.move_target.as_ref().is_some_and(|(_, source, target)|
+            !self.verified.plan.declarations.direct_moves.contains(&(*source, *target))
+        ) {
+            return Err(PrivateStructPrepareError::SourceChanged);
+        }
         let schema: Vec<_> = self.fields.iter().map(|field|
             crate::mixed_struct_runtime::MixedFieldSpec {
                 name: &field.name, kind: field.kind,
@@ -209,8 +243,13 @@ impl PreparedPrivateStruct {
                 field: &value.name, value: value.seed.runtime(),
             }).collect();
         let mut runtime = crate::mixed_struct_runtime::MixedStructRuntime::new();
-        let result = runtime.construct(&self.binding_name, &schema, &named, fail_after)
-            .map(|()| self.returned);
+        let result = (|| {
+            runtime.construct(&self.binding_name, &schema, &named, fail_after)?;
+            if let Some((target, _, _)) = &self.move_target {
+                runtime.move_whole(&self.binding_name, target)?;
+            }
+            Ok(self.returned)
+        })();
         // 所有真 UTF-8 資源均由唯一 P16 Runtime 負責清理；
         // 靜態 CleanupObligation 不可直接製造動態 Released 事件。
         let events = runtime.finish().map_err(PrivateStructPrepareError::Runtime)?;
@@ -362,4 +401,100 @@ mod p17_private_struct_execution_tests {
         plan.verified.source.bytes[0] = b'x';
         assert!(matches!(plan.execute(), Err(PrivateStructPrepareError::SourceChanged)));
     }
+    #[test]
+    fn p17_c_真私有混合結構整筆移動保留唯一_utf8_resource_id() {
+        let source = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_c_含字串結構的隱含複製必須在分配前由真_checker_拒絕() {
+        let source = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構禁止複製.voil");
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_c_刪除_checker_整筆移動配對不得建立任何真資源() {
+        let source = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        let mut prepared = checked(source);
+        prepared.verified.plan.declarations.direct_moves.clear();
+        assert!(matches!(
+            prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn p17_c_已準備整筆移動目標被篡改即使原_checker_正確仍須拒絕() {
+        let source = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        let mut prepared = checked(source);
+        prepared.move_target.as_mut().expect("應有真 move 計畫").0 = "偽造目標".into();
+        assert!(matches!(
+            prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn p17_f_具名引數尾逗號沿用正式_parser_且只建立一次資源() {
+        let source = "struct Note{\nvar label:str = \"預設\"\n}\nfn main()->int{\nvar note:Note = Note(label=\"具名\",)\nreturn 0\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_重複具名引數須由真_checker_在建資源前拒絕() {
+        let source = "struct Note{\nvar label:str = \"預設\"\n}\nfn main()->int{\nvar note:Note = Note(label=\"一\",label=\"二\")\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_沒有預設的_const_欄位須在配置前拒絕() {
+        let source = "struct Note{\nconst label:str\n}\nfn main()->int{\nvar note:Note = Note(label=\"具名\")\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_未初始化_const_實例必須由真_checker_拒絕() {
+        let source = "struct Note{\nvar label:str = \"預設\"\n}\nfn main()->int{\nconst note:Note\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_已完整初始化_const_實例可以安全建立並離域釋放() {
+        let source = "struct Note{\nconst label:str = \"定值\"\n}\nfn main()->int{\nconst note:Note = Note()\nreturn 0\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_空建立保留未初始化_var_欄位不得虛構資源事件() {
+        let source = "struct Note{\nvar label:str\n}\nfn main()->int{\nvar note:Note = Note()\nreturn 0\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert!(outcome.events.is_empty());
+    }
+
 }
