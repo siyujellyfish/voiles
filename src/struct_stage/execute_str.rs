@@ -7,7 +7,7 @@ enum PrivateStrPrepareError {
     SourceChanged,
     Cleanup(crate::owned_str_runtime::StrRuntimeError),
 }
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum PrivateStrAction {
     DeclareLiteral { name: String, mutable: bool, text: String },
     DeclareMoved { name: String, from: String },
@@ -26,7 +26,7 @@ enum PrivateStrAction {
 }
 /// 具名 bool 必須已在來源中由原 Checker 確認宣告和型別；
 /// Runtime 自身以 DeclarationId 讀取，不從同名文字猜測。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateBoolCondition {
     Constant(bool),
     Bound(DeclarationId),
@@ -35,20 +35,20 @@ enum PrivateBoolCondition {
 /// 局部資源先按來源順序建立，區塊退出前一定清理。
 /// P18-C 的分支末尾 int return 仍有效；巢狀控制只允許
 /// 無 return 的安全 str 區塊，避免推測未知的跨層提前退出。
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 struct PrivateStrBranchBody {
     actions: Vec<PrivateStrLocalAction>,
     returned: Option<i64>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 struct PrivateStrLocalLiteral {
     name: String,
     mutable: bool,
     text: String,
 }
 
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 enum PrivateStrLocalAction {
     Declare(PrivateStrLocalLiteral),
     NestedLiteralBranch {
@@ -533,6 +533,15 @@ impl PreparedPrivateStr {
         Ok(Self { verified, original, operations })
     }
 
+    /// P17-C：已驗證計畫在配置第一筆 UTF-8 資源之前必須仍符合原來源。
+    /// 重新使用同一份既有私有 Checker／Lexer／Parser 產生動作投影，
+    /// 比對所有常值、DeclarationId、move 目標、分支和巢狀返回。
+    /// 這是執行授權防線，不把未決語法變成合法語言能力。
+    fn is_same_prepared_payload(&self, source: &str) -> bool {
+        let Ok(fresh) = Self::prepare(source) else { return false };
+        self.original == fresh.original && self.operations == fresh.operations
+    }
+
     fn execute(&self) -> Result<PrivateStrOutcome, PrivateStrPrepareError> {
         self.execute_with_fault(None)
     }
@@ -562,7 +571,8 @@ impl PreparedPrivateStr {
         if self.original.as_ref() != self.verified.source.bytes.as_slice()
             || !self.verified.plan.is_consistent(
                 &self.verified.structs, &self.verified.functions, text,
-            ) {
+            )
+            || !self.is_same_prepared_payload(text) {
             return Err(PrivateStrPrepareError::SourceChanged);
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
