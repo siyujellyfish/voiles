@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod file;
+mod registry;
 mod trace;
 mod source_audit;
 
