@@ -1484,6 +1484,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     } else {
                         ValueSlot::uninitialized(permission)
                     };
+                    // 僅當同一原 Checker 已完成 borrow 權限檢查及 RHS 型別
+                    // 核對時封存真正直線借用來源；不是動態票據或事件。
+                    let direct_borrow_fact =
+                        if continuation.is_empty() && loop_entry.is_none() {
+                            loan.as_ref().map(|alias| alias.fact)
+                        } else { None };
                     Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding::new(
         DeclarationId(statement.start),
         ty.clone(),
@@ -1493,6 +1499,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         loan,
     ));
                     self.record_declaration(DeclarationId(statement.start), ty, *mutable);
+                    if let Some(fact) = direct_borrow_fact {
+                        self.recorded_direct_borrows.borrow_mut()
+                            .insert(DeclarationId(statement.start), fact);
+                    }
                     // 僅成功完成 RHS 型別、借用與所有權驗證且寫入目標之後，
                     // 才允許 Checker 輸出此具名整筆轉移證據。
                     if let Some(source) = direct_move_source {
