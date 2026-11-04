@@ -33,8 +33,9 @@ def main() -> int:
     bridge = (ROOT / "src/struct_stage/resource_trace.rs").read_text(encoding="utf-8")
     if bridge.count("fn require_checked_bridge_owner(") != 1:
         raise AssertionError("真 Checker 持有者靜態責任來源不是唯一")
-    if bridge.count("require_checked_bridge_owner(") != 9:
-        raise AssertionError("八條 P16 真橋接沒有全部在執行前核對自身 DeclId")
+    # 八橋接各一次＋早退真內外持有者兩次＋函式定義一次。
+    if bridge.count("require_checked_bridge_owner(") != 11:
+        raise AssertionError("八橋接及實際已執行的早退內外 Owner 沒有完整來源核對")
     if bridge.count("require_checked_bridge_return(&control_edges, &exit_snapshots,") != 10:
         raise AssertionError("第一批 G5 真 return 前置證據不可回退")
     listed = run([args.test_bin, "--list"])

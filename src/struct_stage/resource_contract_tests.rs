@@ -1656,3 +1656,65 @@ mod r03_g5_實際執行持有者來源 {
             checked.functions[0].body.last().unwrap(), owner, true).is_err());
     }
 }
+
+
+#[cfg(test)]
+mod r03_g5_實際分支提前返回證明 {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent as E;
+
+    const SOURCE: &str = "struct Holder{\nvar text:str = \"預設\"\n}\nfn main()->int{\nvar outer:Holder = Holder(text=\"外層\")\nif(true){\nvar inner:Holder = Holder(text=\"內層\")\nreturn 0\n}\nreturn 0\n}\n";
+
+    fn get_early<'a>(checked: &'a VerifiedPrivateSource) -> &'a Stmt {
+        let main = checked.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let StmtKind::If { branch, .. } = &main.body[1].kind else {
+            panic!("必須以原 Parser 真 if 分支取得來源");
+        };
+        &branch.body[1]
+    }
+
+    #[test]
+    fn g5_實際提早return同一Checker靜態內外兩個Owner各自負清理責任() {
+        let checked = verified_private_source(SOURCE).unwrap();
+        let early = get_early(&checked);
+        assert!(require_checked_bridge_return(
+            &checked.plan.control_edges, &checked.plan.exit_snapshots, early).is_ok());
+        let snapshot = &checked.plan.exit_snapshots[&early.start][0];
+        assert_eq!(snapshot.cleanup_owners.len(), 2);
+        for id in [
+            DeclarationId(SOURCE.find("var outer:Holder").unwrap()),
+            DeclarationId(SOURCE.find("var inner:Holder").unwrap()),
+        ] {
+            assert!(require_checked_bridge_owner(
+                &checked.plan.exit_snapshots, early, id, true).is_ok());
+        }
+        let events = trace_scope_struct_source(SOURCE, None).unwrap();
+        assert_eq!(events, vec![E::Created(1), E::Created(2),
+            E::Released(2), E::Released(1)]);
+    }
+
+    #[test]
+    fn g5_提前return的內層清理不可從函式最後return靜態責任假借() {
+        let checked = verified_private_source(SOURCE).unwrap();
+        let main = checked.functions.iter().find(|fun| fun.name == "main").unwrap();
+        let outer = DeclarationId(main.body[0].start);
+        let early = get_early(&checked);
+        let final_return = main.body.last().unwrap();
+        assert_ne!(early.start, final_return.start);
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots, early, outer, true).is_ok());
+        let inner = DeclarationId(SOURCE.find("var inner:Holder").unwrap());
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots, final_return, inner, true).is_err());
+    }
+
+    #[test]
+    fn g5_未執行的提前return不創造資源事件且失敗注入不改變逆序清理() {
+        let skipped = SOURCE.replace("if(true)", "if(false)");
+        let events = trace_scope_struct_source(&skipped, None).unwrap();
+        assert_eq!(events, vec![E::Created(1), E::Released(1)]);
+        let events = trace_scope_struct_source(SOURCE, Some("text")).unwrap();
+        assert_eq!(events, vec![E::Created(1), E::Created(2),
+            E::Released(2), E::Released(1)]);
+    }
+}
