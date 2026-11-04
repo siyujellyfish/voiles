@@ -13,6 +13,7 @@ mod tests {
                 source: &source, structs: &structs, functions: &functions,
                 function_index: HashMap::new(),
                 ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -60,6 +61,7 @@ mod tests {
             source: &source, structs: &structs, functions: &functions,
             function_index: HashMap::new(),
             ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -98,6 +100,7 @@ mod tests {
             source: &source, structs: &structs, functions: &functions,
             function_index: HashMap::new(),
             ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -211,6 +214,7 @@ mod tests {
             source: &source, structs: &structs, functions: &functions,
             function_index: HashMap::new(),
             ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -267,6 +271,7 @@ mod tests {
             source: &source, structs: &structs, functions: &functions,
             function_index: HashMap::new(),
             ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -783,6 +788,7 @@ mod automatic_self_borrow_tests {
         let methods = &structs["Counter"].methods;
         let checker = Checker {source: &source, structs: &structs, functions: &[],
             function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -857,6 +863,7 @@ mod conditional_self_inference_tests {
         let (types, _) = Parser {source: &source, tokens: &scanned.tokens, cursor: 0}.file().unwrap();
         let checker = Checker {source: &source, structs: &types, functions: &[],
             function_index: std::collections::HashMap::new(), ability: crate::ownership_policy::approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -1241,6 +1248,7 @@ mod float_copyable_approved_tests {
         let checker = Checker {
             source: &source, structs: &structs, functions: &[],
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -1294,6 +1302,7 @@ mod float_copyable_method_tests {
         let checker = Checker {
             source: &source, structs: &types, functions: &[],
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -1323,6 +1332,7 @@ mod float_copyable_method_tests {
         let checker = Checker {
             source: &source, structs: &types, functions: &[],
             function_index: std::collections::HashMap::new(), ability: approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -2590,6 +2600,7 @@ mod p13_1_copyable_完整能力分類 {
         let checker = Checker {
             source: &source, structs: &structs, functions: &functions,
             function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
@@ -2651,6 +2662,7 @@ mod p13_1_正式來源閉包 {
         Checker {
             source: &source, structs: &structs, functions: &functions,
             function_index: functions.iter().enumerate().map(|(i, f)| (f.name.clone(), i)).collect(), ability: approved_leaf_copy_permission,
+            recorded_function_exits: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_direct_moves: std::cell::RefCell::new(std::collections::BTreeSet::new()),
             recorded_declarations: std::cell::RefCell::new(std::collections::BTreeMap::new()),
             recorded_member_types: std::cell::RefCell::new(std::collections::BTreeMap::new()),
