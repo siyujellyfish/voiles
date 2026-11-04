@@ -7,6 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 mod file;
 mod trace;
+mod source_audit;
 
 use crate::common_ir::{
     self, FrontendMode, NodeSpan, ResolvedNames, ScalarType, VerifiedScalarHir,
@@ -136,6 +137,7 @@ impl PreparedProgram {
             .is_some_and(|roles| common_ir::syntax_covers_verified_scalar_hir(
                 &roles, &self.typed, FrontendMode::PublicMvpA, text,
             ))
+            && source_audit::atoms_match_source(&self.ast, text)
     }
 
     /// 只把實際運算的值回傳給內部測試；不映射 OS exit code。
