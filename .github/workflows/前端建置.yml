@@ -72,6 +72,9 @@ jobs:
       - name: P17／P18 內部真求值與控制邊三十二項正反案例存在性 Gate
         run: python3 tools/核對G17內部切片.py --test-bin target/p02/p04_source_internal
 
+      - name: P17-C 真私有 Checker 到 UTF-8 資源執行六項正反案例 Gate
+        run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
+
       - name: G3 F06～F09 正式獨立真票據／SafetyState／全操作原子安全驗收
         run: |
           python3 tools/核對G3正式驗收.py --test-bin target/p02/p04_source_internal --check
