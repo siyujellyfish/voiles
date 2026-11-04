@@ -1091,3 +1091,65 @@ mod r03_b08_f11_函式驗證退出證據 {
         assert!(verified_private_source(source).is_err());
     }
 }
+
+#[cfg(test)]
+mod r03_b09_f12_真實事件身分與清理閉合 {
+    use super::*;
+    use crate::owned_str_runtime::{event_trace_balanced, ResourceEvent};
+
+    #[test]
+    fn f12_b09_真實資源ID允許多次轉交但只可釋放一次() {
+        let events = [
+            ResourceEvent::Created(1),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ];
+        assert!(event_trace_balanced(&events));
+        assert!(closed_bridge_events(events.to_vec()).is_ok());
+    }
+
+    #[test]
+    fn f12_b09_建立之前轉移或釋放後返回一律拒絕() {
+        for events in [
+            vec![ResourceEvent::Moved(1), ResourceEvent::Created(1), ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Released(1), ResourceEvent::Returned(1)],
+        ] {
+            assert!(!event_trace_balanced(&events));
+            assert!(closed_bridge_events(events).is_err());
+        }
+    }
+
+    #[test]
+    fn f12_b09_重複建立重複釋放及漏清理不得通過() {
+        for events in [
+            vec![ResourceEvent::Created(1), ResourceEvent::Created(1), ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Released(1), ResourceEvent::Released(1)],
+            vec![ResourceEvent::Created(1), ResourceEvent::Moved(1)],
+        ] {
+            assert!(!event_trace_balanced(&events));
+            assert!(closed_bridge_events(events).is_err());
+        }
+    }
+
+    #[test]
+    fn f12_b09_多資源交錯轉移與逆序清理各自保持獨立資源ID() {
+        let events = vec![
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(2), ResourceEvent::Released(2),
+            ResourceEvent::Returned(1), ResourceEvent::Released(1),
+        ];
+        assert_eq!(closed_bridge_result(12i64, events).unwrap().0, 12);
+    }
+
+    #[test]
+    fn f12_b09_真正私有字串資源移交橋接會輸出已驗證事件() {
+        let source = "fn main()->int{\nvar source:str = \"繁體🪼\"\nvar target:str = source.move()\nreturn 0\n}\n";
+        let events = trace_named_string_move_source(source)
+            .expect("原核准的直線具名移交應產生真實 ResourceEvent");
+        assert!(event_trace_balanced(&events));
+        assert_eq!(events.iter().filter(|event|
+            matches!(event, ResourceEvent::Released(_))).count(), 1);
+    }
+}

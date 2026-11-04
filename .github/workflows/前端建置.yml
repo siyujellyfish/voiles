@@ -143,6 +143,10 @@ jobs:
         run: |
           python3 tools/核對R03B08第一批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: R03 B09／F12 真實 ResourceId 事件順序與清理閉合（非整包簽核）
+        run: |
+          python3 tools/核對R03B09第一批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check

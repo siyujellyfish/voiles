@@ -26,6 +26,28 @@ pub(crate) enum ResourceEvent {
     Returned(u64),
 }
 
+/// F12/B09：共用於受限執行期與八條來源橋接的逐 ResourceId 實際事件
+/// 完整性。每 ID 必須唯一建立、恰好釋放一次，Moved／Returned
+/// 必須位於建立後、釋放前。此函式唯讀，不會捏造執行期事件。
+pub(crate) fn event_trace_balanced(events: &[ResourceEvent]) -> bool {
+    let mut created = std::collections::HashSet::new();
+    let mut released = std::collections::HashSet::new();
+    for event in events {
+        match event {
+            ResourceEvent::Created(id) => {
+                if !created.insert(*id) { return false; }
+            }
+            ResourceEvent::Moved(id) | ResourceEvent::Returned(id) => {
+                if !created.contains(id) || released.contains(id) { return false; }
+            }
+            ResourceEvent::Released(id) => {
+                if !created.contains(id) || !released.insert(*id) { return false; }
+            }
+        }
+    }
+    created == released
+}
+
 #[derive(Debug)]
 pub(crate) struct OwnedUtf8 {
     id: u64,
@@ -260,31 +282,13 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
-    /// P16.4：以資源身分追蹤建立、轉交與釋放。只看計數可能
-    /// 掩蓋同數量的漏釋放和重複釋放，因此最終需逐筆核對事件。
+    /// F12：真 runtime 另外以內部記帳確認所有 Created／Released 次數。
     fn events_balanced(&self) -> bool {
-        let mut created = std::collections::HashSet::new();
-        let mut released = std::collections::HashSet::new();
-        for event in &self.events {
-            match event {
-                ResourceEvent::Created(id) => {
-                    if !created.insert(*id) { return false; }
-                }
-                ResourceEvent::Moved(id) | ResourceEvent::Returned(id) => {
-                    if !created.contains(id) || released.contains(id) {
-                        return false;
-                    }
-                }
-                ResourceEvent::Released(id) => {
-                    if !created.contains(id) || !released.insert(*id) {
-                        return false;
-                    }
-                }
-            }
-        }
-        created.len() == self.created
-            && released.len() == self.released
-            && created == released
+        event_trace_balanced(&self.events)
+            && self.events.iter().filter(|event|
+                matches!(event, ResourceEvent::Created(_))).count() == self.created
+            && self.events.iter().filter(|event|
+                matches!(event, ResourceEvent::Released(_))).count() == self.released
     }
 
     pub(crate) fn finish(mut self) -> Result<Vec<ResourceEvent>, StrRuntimeError> {

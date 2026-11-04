@@ -1,3 +1,27 @@
+/// F12/B09：所有受限橋接都必須檢查**真 runtime 已產生的**事件，
+/// 不由 Checker 計畫偽造 ResourceId，且不替代原路徑專用的逆序清理驗證。
+#[cfg(test)]
+fn closed_bridge_events(
+    events: Vec<crate::owned_str_runtime::ResourceEvent>,
+) -> Result<Vec<crate::owned_str_runtime::ResourceEvent>, Diagnostic> {
+    if crate::owned_str_runtime::event_trace_balanced(&events) {
+        Ok(events)
+    } else {
+        Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：真實資源事件身分、次序或清理閉合不一致".into(),
+            span: None,
+        })
+    }
+}
+
+#[cfg(test)]
+fn closed_bridge_result<T>(
+    value: T, events: Vec<crate::owned_str_runtime::ResourceEvent>,
+) -> Result<(T, Vec<crate::owned_str_runtime::ResourceEvent>), Diagnostic> {
+    closed_bridge_events(events).map(|events| (value, events))
+}
+
 // 對應 P16.6-R01 無語意變更之實作拆檔。
 /// 成功僅代表完整檢查了這個明確受限的 P13 子集，不代表 P13 Phase 已通過。
 /// P16 私有測試橋接：先完成真正 .voil 的來源／型別／所有權檢查，
@@ -97,7 +121,9 @@ fn trace_string_struct_source(
                 "P16：失敗注入欄位不存在，或未被此結構求值計畫執行"));
         }
     }
-    Ok(build_string_struct(&fields, &named, fail_after))
+    let mut result = build_string_struct(&fields, &named, fail_after);
+    result.resources = closed_bridge_events(result.resources)?;
+    Ok(result)
 }
 
 /// P16：真正 .voil 來源經完整靜態檢查後，才交給
@@ -186,7 +212,7 @@ fn trace_persistent_struct_move_source(
             .map_err(|_|reject("P16：失敗回滾後資源身分未完整清理"))?;
         plan.verify_failed_build_events(&events).map_err(|_|
             reject("P16：多欄位建構失敗的來源身分與逆序清理責任不一致"))?;
-        return Ok((None,events));
+        return closed_bridge_result(None, events);
     }
     match status {
         Ok(BuildStatus::Complete)=>{},
@@ -205,7 +231,7 @@ fn trace_persistent_struct_move_source(
         .map_err(|_|reject("P16：整筆移動後未完整清理全部資源身分"))?;
     plan.verify_moved_events(&events).map_err(|_|
         reject("P16：多欄位移交及逆序清理與共同資源責任 IR 不一致"))?;
-    Ok((Some(retained),events))
+    closed_bridge_result(Some(retained), events)
 }
 
 /// P16 私有字串函式返回證據：只模擬已通過來源檢查且
@@ -300,7 +326,7 @@ fn trace_string_return_source(
         proof.verify_actual_events(&events)
             .map_err(|_| unsupported("P16：具名返回資源事件與宣告身分及清理責任不一致"))?;
     }
-    Ok((retained, events))
+    closed_bridge_result(retained, events)
 }
 
 /// VA16-03-A：真正 .voil 受限「建構→var str 欄位賦值」
@@ -408,7 +434,7 @@ fn trace_persistent_struct_field_write_source(
         .map_err(|_|reject("P16：結構欄位覆寫未完整平衡資源身分"))?;
     proof.verify_actual_events(&resources,fail_after_rhs)
         .map_err(|_|reject("P16：欄位覆寫與已驗證來源的所有權／資源清理順序不一致"))?;
-    Ok((observed,resources))
+    closed_bridge_result(observed, resources)
 }
 
 /// P16.6 混合 int／bool／str 受限來源橋接。
@@ -552,7 +578,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
                 reject("P16：混合欄位失敗未能逆序清理資源"))?;
             proof.verify_failed_build(&events,before_failure)
                 .map_err(|_|reject("P16：混合失敗點已建立的 str 清理責任與資源 IR 不一致"))?;
-            return Ok((None,events));
+            return closed_bridge_result(None, events);
         },
         Err(_)=>return Err(reject("P16：混合結構求值計畫無法安全完成")),
     }
@@ -571,7 +597,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
         reject("P16：混合結構退出後資源身分未平衡"))?;
     proof.verify_completed(&events,moved)
         .map_err(|_|reject("P16：混合純值複製／唯一 str 移交與兩張安全責任表不一致"))?;
-    Ok((Some(number),events))
+    closed_bridge_result(Some(number), events)
 }
 
 /// P16.3：真實 .voil 的已知 bool 分支與內外詞彙作用域。
@@ -731,7 +757,7 @@ fn trace_scope_struct_source(
                     reject("P16：提前 return 外層資源未反序清理"))?;
                 proof.verify_actual_events(&events).map_err(|_|
                     reject("P16：提前返回分支的內外層資源責任次序不一致"))?;
-                return Ok(events);
+                return closed_bridge_events(events);
             }
             return Err(reject("P16：分支不能省略未驗證的控制流程"));
         };
@@ -750,7 +776,7 @@ fn trace_scope_struct_source(
         reject("P16：外層退出後資源帳簿未平衡"))?;
     proof.verify_actual_events(&events).map_err(|_|
         reject("P16：可達分支與未執行分支的清理責任不一致"))?;
-    Ok(events)
+    closed_bridge_events(events)
 }
 
 /// P16：真實 .voil 結構函式返回的私有所有權證據。
@@ -861,7 +887,7 @@ fn trace_persistent_struct_return_source(
             unsupported("P16：失敗構造後所有資源未完整釋放"))?;
         plan.verify_failed_build_events(&events).map_err(|_|
             unsupported("P16：結構返回失敗時已建立欄位未完整逆序回滾"))?;
-        return Ok((None,events));
+        return closed_bridge_result(None, events);
     }
     if !matches!(&status,Ok(BuildStatus::Complete)) {
         return Err(unsupported("P16：返回結構未完成初始化或失敗注入切點不合法"));
@@ -878,7 +904,7 @@ fn trace_persistent_struct_return_source(
         .map_err(|_|unsupported("P16：呼叫端退出後資源清理身分不完整"))?;
     plan.verify_returned_events(&events).map_err(|_|
         unsupported("P16：跨函式整筆結構返回與資源責任帳簿不一致"))?;
-    Ok((Some(value),events))
+    closed_bridge_result(Some(value), events)
 }
 
 /// P16.2 內部來源／資源橋接：只模擬明確的「建立單一 str、
@@ -980,6 +1006,6 @@ fn trace_named_string_move_source(
     }
     pipeline.audit_finished()
         .map_err(|_| unsupported("P16：真實 UTF-8 資源清理後仍有未結責任"))?;
-    Ok(events)
+    closed_bridge_events(events)
 }
 
