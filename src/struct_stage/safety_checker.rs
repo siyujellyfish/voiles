@@ -1892,7 +1892,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     ));
             self.record_declaration(DeclarationId(parameter.declaration_start), ty, false);
         }
-        self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
+        let flow = self.statements(&fun.body, &mut vars, &fun.result_ty, false)?;
+        // 只有整份函式經 Checker 成功之後才能交付真 CFG 退出事實。
+        // 此處不執行 return，更不建立真 ResourceEvent。
+        let fact = VerifiedFunctionExit {
+            span: crate::common_ir::NodeSpan::new(fun.start, fun.end), flow,
+        };
+        if self.recorded_function_exits.borrow_mut()
+            .insert(fun.start, fact).is_some() {
+            return Err(Diagnostic {
+                kind: DiagnosticKind::Static,
+                message: "P16：同一函式來源跨度不能重複認領安全退出證據".into(),
+                span: None,
+            });
+        }
         Ok(())
     }
     /// 對方法內所有深度的運算式查核明確禁令，不只檢查頂層 return。
