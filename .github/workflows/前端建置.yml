@@ -199,6 +199,10 @@ jobs:
         run: |
           python3 tools/核對G5真持有者第二批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G5 第三批真 if 提前 return 的動態分支與 Checker 原位內外 Owner 責任
+        run: |
+          python3 tools/核對G5真早退第三批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
