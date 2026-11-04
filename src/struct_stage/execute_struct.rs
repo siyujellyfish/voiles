@@ -442,4 +442,59 @@ mod p17_private_struct_execution_tests {
         ));
     }
 
+    #[test]
+    fn p17_f_具名引數尾逗號沿用正式_parser_且只建立一次資源() {
+        let source = "struct Note{\nvar label:str = \"預設\"\n}\nfn main()->int{\nvar note:Note = Note(label=\"具名\",)\nreturn 0\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_重複具名引數須由真_checker_在建資源前拒絕() {
+        let source = "struct Note{\nvar label:str = \"預設\"\n}\nfn main()->int{\nvar note:Note = Note(label=\"一\",label=\"二\")\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_沒有預設的_const_欄位須在配置前拒絕() {
+        let source = "struct Note{\nconst label:str\n}\nfn main()->int{\nvar note:Note = Note(label=\"具名\")\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_未初始化_const_實例必須由真_checker_拒絕() {
+        let source = "struct Note{\nvar label:str = \"預設\"\n}\nfn main()->int{\nconst note:Note\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_已完整初始化_const_實例可以安全建立並離域釋放() {
+        let source = "struct Note{\nconst label:str = \"定值\"\n}\nfn main()->int{\nconst note:Note = Note()\nreturn 0\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_空建立保留未初始化_var_欄位不得虛構資源事件() {
+        let source = "struct Note{\nvar label:str\n}\nfn main()->int{\nvar note:Note = Note()\nreturn 0\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert!(outcome.events.is_empty());
+    }
+
 }
