@@ -409,6 +409,9 @@ struct VerifiedExitBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VerifiedExitSnapshot {
     edge: VerifiedControlEdge,
+    /// 與當時同一份 Checker Scopes 的逐深度宣告數量對帳，
+    /// 避免刪除一個持有者後由空集合假稱整個返回責任閉合。
+    scope_sizes: Vec<usize>,
     bindings: Vec<VerifiedExitBinding>,
 }
 
@@ -936,19 +939,24 @@ impl VerifiedSafetyPlan {
                         return false;
                     }
                     let bindings = &snapshot.bindings;
+                    let size_matches = !snapshot.scope_sizes.is_empty()
+                        && snapshot.scope_sizes.iter().sum::<usize>() == bindings.len()
+                        && snapshot.scope_sizes.iter().enumerate().all(|(depth, expected)|
+                            bindings.iter().filter(|item| item.scope_depth == depth).count()
+                                == *expected);
                     let ordered = bindings.windows(2).all(|pair|
                         (pair[0].scope_depth, pair[0].declaration)
                             < (pair[1].scope_depth, pair[1].declaration));
                     let typed = bindings.iter().all(|item|
                         self.declarations.typed_declaration(item.declaration)
                             .is_some_and(|fact|
-                                fact.ty == item.ty
+                                fact.ty == item.ty.as_str()
                                     && fact.mutable == item.mutable));
                     let valid_loans = StaticBorrowSnapshot::from_aliases(bindings.iter()
                         .filter_map(|item| item.loan.as_ref().map(|loan|
                             (item.declaration, loan.fact, loan.active))))
                         .validate().is_ok();
-                    ordered && typed && valid_loans
+                    size_matches && ordered && typed && valid_loans
                 })
             })
     }
