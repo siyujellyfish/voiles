@@ -43,6 +43,15 @@ from pathlib import Path
 )
 
 
+私有真資源測試名稱 = (
+    "p17_c_真私有_checker_來源的字串實際建立移動逆向清理",
+    "p17_c_真實字串跳脫只採用既有_lexer_已解碼結果",
+    "p17_c_非_copyable_來源的隱含複製被正式_checker_拒絕",
+    "p17_c_超出已證明範圍的合法語法在資源建立前保守阻擋",
+    "p17_c_竄改真_checker_具名移動證據不得執行",
+)
+
+
 def 主程式() -> int:
     命令 = argparse.ArgumentParser(description=__doc__)
     命令.add_argument("--test-bin", type=Path, required=True)
@@ -65,6 +74,8 @@ def 主程式() -> int:
     }
     必要 = {"execution::tests::" + 名稱 for 名稱 in 測試名稱}
     必要.update({"execution::file::tests::" + 名稱 for 名稱 in 檔案測試名稱})
+    必要.update({"struct_stage::p17_checked_private_runtime_tests::" + 名稱
+                for 名稱 in 私有真資源測試名稱})
     缺失 = sorted(必要 - 真正測試)
     if 缺失:
         print("P17 真正 Rust 正反案例缺失：" + "、".join(缺失), file=sys.stderr)
