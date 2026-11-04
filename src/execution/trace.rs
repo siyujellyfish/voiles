@@ -214,9 +214,9 @@ mod tests {
     #[test]
     fn p18_真實_checker_來源的控制事件可通過_ast_角色核對() {
         let code = "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nif (true){\nreturn helper()+1\n}\nreturn 0\n}\n";
-        let prepared = super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let prepared = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         let result = prepared.execute_with_trace();
-        assert_eq!(result.result, Ok(super::Value::Int(3)));
+        assert_eq!(result.result, Ok(super::super::Value::Int(3)));
         assert_eq!(audit_control_events_against_source(
             &result.events, &prepared.ast, code,
         ), Ok(()));
@@ -225,7 +225,7 @@ mod tests {
     #[test]
     fn p18_相同函式內的合法跨度不能冒充另一個_return_角色() {
         let code = "fn main()->int{\nif (true){\nreturn 1\n}\nreturn 0\n}\n";
-        let prepared = super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let prepared = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         let mut events = prepared.execute_with_trace().events;
         let condition = events.iter().find_map(|event| match event {
             ControlEvent::ConditionChecked { span, .. } => Some(*span),
@@ -247,7 +247,7 @@ mod tests {
     #[test]
     fn p18_同函式內非法_else_事件不得借用正常_span_冒充來源() {
         let code = "fn main()->int{\nif (true){\nreturn 1\n}\nreturn 0\n}\n";
-        let prepared = super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let prepared = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         let mut events = prepared.execute_with_trace().events;
         let condition = events.iter().find_map(|event| match event {
             ControlEvent::ConditionChecked { span, .. } => Some(*span),
@@ -263,7 +263,7 @@ mod tests {
     #[test]
     fn p18_另一函式的真跨度不得冒用現行函式身分() {
         let code = "fn helper()->int{\nreturn 1\n}\nfn main()->int{\nreturn helper()\n}\n";
-        let prepared = super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let prepared = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         let mut events = prepared.execute_with_trace().events;
         let replacement = events.iter().find_map(|event| match event {
             ControlEvent::FunctionEntered { name, span } if name == "helper" => Some(*span),
@@ -281,7 +281,7 @@ mod tests {
     #[test]
     fn p18_竄改非原始來源的_函式_ast_或文字不得授權執行事件() {
         let code = "fn main()->int{\nreturn 7\n}\n";
-        let prepared = super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let prepared = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         let events = prepared.execute_with_trace().events;
         assert_eq!(audit_control_events_against_source(
             &events, &prepared.ast, code,
@@ -290,7 +290,7 @@ mod tests {
         // 同長度編碼也不能獲得先前 Parser 的完整來源授權。
         // 目前 verified_public_syntax_roles 只驗角色與跨度，
         // 所以此一來源變更由 PreparedProgram 的位元組指紋再次守衛。
-        let mut changed = super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut changed = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         changed.source.bytes = tampered.into_bytes();
         assert!(changed.execute_with_trace().events.is_empty());
     }
