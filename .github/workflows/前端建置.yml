@@ -75,7 +75,7 @@ jobs:
       - name: P17-C／P18-B/C/E 真 str 具名 bool 條件鏈與資源清理五十二項正反 Gate
         run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
 
-      - name: P17-F 私有真結構求值、來源防偽與回滾十一項正反 Gate
+      - name: P17-F 真結構建構、欄位實值觀測及防偽十五項正反 Gate
         run: python3 tools/核對P17結構建立切片.py --test-bin target/p02/p04_source_internal
 
       - name: G3 F06～F09 正式獨立真票據／SafetyState／全操作原子安全驗收
