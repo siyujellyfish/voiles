@@ -69,6 +69,22 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// 只在 Checker 的真實語意與路徑驗證成功的控制轉移原位記錄，
+    /// 重複造訪同一來源可接受相同事實，但禁止矛盾出口覆寫。
+    fn record_checked_control_edge(
+        &self, span: crate::common_ir::NodeSpan, flow: FlowState,
+    ) {
+        let fact = VerifiedControlEdge { span, flow };
+        let mut edges = self.recorded_control_edges.borrow_mut();
+        if let Some(previous) = edges.get(&span.start) {
+            if previous != &fact {
+                self.recorded_control_conflicts.borrow_mut().insert(span.start);
+            }
+        } else {
+            edges.insert(span.start, fact);
+        }
+    }
+
     fn record_declaration(&self, id: DeclarationId, ty: &str, mutable: bool) {
         let fact = crate::common_ir::TypedDeclaration::new(
             id, ty.to_owned(), mutable,
@@ -1586,6 +1602,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 .insert((source, term.start));
                         }
                     }
+                    self.record_checked_control_edge(
+                        statement.node_span(), FlowState::Returned,
+                    );
                     return Ok(FlowState::Returned);
                 }
                 StmtKind::Break | StmtKind::Continue => {
@@ -1600,11 +1619,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 另一個未證明的持有者／別名狀態。嵌套 if 各路
                     // 徑在轉移點個別查核，因此不會把 continue 偷當 return。
                     self.check_loop_exit_stability(vars, snapshot, statement)?;
-                    return Ok(match &statement.kind {
+                    let transfer = match &statement.kind {
                         StmtKind::Break => FlowState::Break,
                         StmtKind::Continue => FlowState::Continue,
                         _ => unreachable!("只可能為已核准的 break／continue"),
-                    });
+                    };
+                    self.record_checked_control_edge(statement.node_span(), transfer);
+                    return Ok(transfer);
                 }
                 StmtKind::ForRange { iterator, iterator_start,
                     lower, upper, body: loop_body } => {
