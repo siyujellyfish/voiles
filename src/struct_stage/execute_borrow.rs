@@ -153,6 +153,10 @@ impl PreparedPrivateBorrow {
     fn matches_original(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false };
         self.original == fresh.original
+            // 靜態 Checker 的整份 direct_borrows 表亦為執行許可權威。
+            // 刪除或增加證據都必須在建立第一筆 ResourceId 以前拒絕。
+            && self.verified.plan.declarations.direct_borrows
+                == fresh.verified.plan.declarations.direct_borrows
             && self.owner == fresh.owner
             && self.owner_id == fresh.owner_id
             && self.owner_mutable == fresh.owner_mutable
