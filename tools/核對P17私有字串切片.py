@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對五十九項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對六十五項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,12 @@ from pathlib import Path
 案例 = (
     "p17_c_真私有_checker_來源驅動字串建立移動再初始化並逆序清理",
     "p17_c_原私有來源動作計畫未變可連續真正執行並完成清理",
+    "p18_b_已驗證_var_bool_從_true_改為_false_只執行_else_資源",
+    "p18_b_已驗證_var_bool_從_false_改為_true_真正提前返回且清理",
+    "p18_b_同一_bool_多次重新賦值須以真正最後值選擇分支",
+    "p18_b_兩個具名_bool_else_if_重新賦值後僅執行最後_else",
+    "p18_b_const_bool_不得經重新賦值偽裝成合法可寫條件",
+    "p18_b_已準備_bool_賦值動作被改寫不能沿用_checker_來源授權",
     "p17_c_已驗證字串動作常值被換掉須先拒絕零資源分配",
     "p17_c_明示_move_賦值目標或來源偷換須在持有者轉交前拒絕",
     "p17_c_具名_bool_原宣告真假及分支目標更動不可沿用舊_checker_授權",
