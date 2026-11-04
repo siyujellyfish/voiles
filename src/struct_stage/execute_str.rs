@@ -7,7 +7,7 @@ enum PrivateStrPrepareError {
     SourceChanged,
     Cleanup(crate::owned_str_runtime::StrRuntimeError),
 }
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateStrAction {
     DeclareLiteral { name: String, mutable: bool, text: String },
     DeclareMoved { name: String, from: String },
@@ -48,6 +48,15 @@ impl PreparedPrivateStr {
         let verified = verify_source_with_ability(
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateStrPrepareError::Check)?;
+        let operations = Self::build_actions(&verified)?;
+        let original = verified.source.bytes.clone().into_boxed_slice();
+        Ok(Self { verified, original, operations })
+    }
+
+    /// 從唯一私有 Checker 的 AST/token/來源身分重新導出受限執行操作。
+    /// 執行前使用同一函式比對封存計畫，禁止計畫被換成另一個合法外形。
+    fn build_actions(verified: &VerifiedPrivateSource)
+        -> Result<Vec<PrivateStrAction>, PrivateStrPrepareError> {
         // P17-C 第一垂直切片只允許單一 main 的局部 str 直線語句。
         // 先完整預檢每一條語句，再允許任何 Rust String 資源建立。
         if !verified.structs.is_empty() || verified.functions.len() != 1 {
@@ -132,8 +141,7 @@ impl PreparedPrivateStr {
         if !returned || !has_resource {
             return Err(PrivateStrPrepareError::Unsupported("需要真 str 資源及明確 return"));
         }
-        let original = verified.source.bytes.clone().into_boxed_slice();
-        Ok(Self { verified, original, operations })
+        Ok(operations)
     }
 
     fn execute(&self) -> Result<PrivateStrOutcome, PrivateStrPrepareError> {
@@ -151,6 +159,13 @@ impl PreparedPrivateStr {
             || !self.verified.plan.is_consistent(
                 &self.verified.structs, &self.verified.functions, text,
             ) {
+            return Err(PrivateStrPrepareError::SourceChanged);
+        }
+        // P17-C：不能只檢查 source/Checker 而信任可變的已準備操作向量。
+        // 必須與同一次正式 AST/token/DeclarationId 導出的完整操作逐筆相等。
+        let verified_operations = Self::build_actions(&self.verified)
+            .map_err(|_| PrivateStrPrepareError::SourceChanged)?;
+        if self.operations != verified_operations {
             return Err(PrivateStrPrepareError::SourceChanged);
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
@@ -254,4 +269,56 @@ return 1
             ResourceEvent::Released(2), ResourceEvent::Released(1),
         ]);
     }
+    #[test]
+    fn p17_c_準備後修改字串值不得偷換已驗證執行計畫() {
+        let mut plan = PreparedPrivateStr::prepare(
+            "fn main()->int{\nvar x:str = \"原值\"\nreturn 0\n}\n",
+        ).unwrap();
+        let PrivateStrAction::DeclareLiteral { text, .. } = &mut plan.operations[0] else {
+            panic!("第一筆應為來源已驗證 str 常值");
+        };
+        *text = "偽造內容".into();
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_準備後偷換整筆移動的來源身分立即拒絕() {
+        let mut plan = PreparedPrivateStr::prepare(
+            include_str!("../../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil"),
+        ).unwrap();
+        let PrivateStrAction::DeclareMoved { from, .. } = &mut plan.operations[1] else {
+            panic!("第二筆應為已驗證整筆移動");
+        };
+        *from = "假的來源".into();
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_準備後刪除返回或插入多餘操作都不得執行() {
+        let code = "fn main()->int{\nvar x:str = \"安全\"\nreturn 0\n}\n";
+        let mut missing = PreparedPrivateStr::prepare(code).unwrap();
+        missing.operations.pop();
+        assert!(matches!(missing.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+        let mut extra = PreparedPrivateStr::prepare(code).unwrap();
+        extra.operations.insert(1, PrivateStrAction::AssignLiteral {
+            name: "x".into(), text: "額外副作用".into(),
+        });
+        assert!(matches!(extra.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_操作未遭篡改時仍保持真實_resourceid_與清理順序() {
+        let plan = PreparedPrivateStr::prepare(
+            include_str!("../../tests/fixtures/p13_stage/字串具名整筆移動與重新初始化.voil"),
+        ).unwrap();
+        assert_eq!(plan.operations, PreparedPrivateStr::build_actions(&plan.verified).unwrap());
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1),
+            ResourceEvent::Created(2), ResourceEvent::Moved(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
 }
