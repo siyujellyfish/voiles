@@ -195,6 +195,10 @@ jobs:
         run: |
           python3 tools/核對G5真安全出口第一批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G5 第二批八橋接實際 Owner DeclarationId 對真 Checker 退出清理靜態義務
+        run: |
+          python3 tools/核對G5真持有者第二批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check

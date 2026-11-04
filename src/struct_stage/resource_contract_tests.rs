@@ -1588,3 +1588,71 @@ mod r03_g5_八橋接真退出義務 {
             v.functions[0].body.last().unwrap()).is_err());
     }
 }
+
+
+#[cfg(test)]
+mod r03_g5_實際執行持有者來源 {
+    use super::*;
+    use crate::ownership_model::{ValueSlot, CopyPermission};
+
+    const LIVE: &str = "fn main()->int{\nvar owner:str = \"真資源🪼\"\nreturn 0\n}\n";
+    const PURE: &str = "fn main()->int{\nvar amount:int = 7\nreturn 0\n}\n";
+
+    #[test]
+    fn g5_真資源執行者DeclarationId須命中同一Checker退出清理Owner() {
+        let checked = verified_private_source(LIVE).unwrap();
+        let statement = checked.functions[0].body.last().unwrap();
+        let id = DeclarationId(LIVE.find("var owner:str").unwrap());
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots, statement, id, true).is_ok());
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, LIVE));
+    }
+
+    #[test]
+    fn g5_假持有者即使同型別或同名字串也不得冒充真DeclarationId() {
+        let checked = verified_private_source(LIVE).unwrap();
+        let statement = checked.functions[0].body.last().unwrap();
+        let wrong = DeclarationId(LIVE.find("return 0").unwrap());
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots, statement, wrong, true).is_err());
+    }
+
+    #[test]
+    fn g5_已移走的來源不得假稱仍保有原ResourceId清理責任() {
+        let mut checked = verified_private_source(LIVE).unwrap();
+        let at = LIVE.find("return 0").unwrap();
+        let owner = DeclarationId(LIVE.find("var owner:str").unwrap());
+        let snapshot = &mut checked.plan.exit_snapshots.get_mut(&at).unwrap()[0];
+        snapshot.bindings.iter_mut().find(|item| item.declaration == owner)
+            .unwrap().value = {
+                let mut value = ValueSlot::initialized(CopyPermission::Forbidden);
+                value.move_whole().unwrap();
+                value
+            };
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots,
+            checked.functions[0].body.last().unwrap(), owner, true).is_err());
+    }
+
+    #[test]
+    fn g5_純Copyable持有者無須任何真字串清理事件不能偽造Required() {
+        let checked = verified_private_source(PURE).unwrap();
+        let statement = checked.functions[0].body.last().unwrap();
+        let owner = DeclarationId(PURE.find("var amount:int").unwrap());
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots, statement, owner, false).is_ok());
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots, statement, owner, true).is_err());
+    }
+
+    #[test]
+    fn g5_真持有者若遺失Checker清理義務絕不可只靠runtime事件平衡放行() {
+        let mut checked = verified_private_source(LIVE).unwrap();
+        let at = LIVE.find("return 0").unwrap();
+        let owner = DeclarationId(LIVE.find("var owner:str").unwrap());
+        checked.plan.exit_snapshots.get_mut(&at).unwrap()[0].cleanup_owners.clear();
+        assert!(require_checked_bridge_owner(
+            &checked.plan.exit_snapshots,
+            checked.functions[0].body.last().unwrap(), owner, true).is_err());
+    }
+}
