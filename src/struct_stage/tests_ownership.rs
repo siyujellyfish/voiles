@@ -3043,3 +3043,42 @@ mod p16_6_r03_f08_f09_綁定轉移原子契約 {
         assert!(partial.pending_fields.is_none());
     }
 }
+
+
+#[cfg(test)]
+mod r03_g3_函式參數來源詞彙身份 {
+    use super::*;
+    use crate::ownership_model::CopyPermission;
+
+    fn consumed(code: &str, function_name: &str) -> bool {
+        let checked = verified_private_source(code)
+            .expect("測試的原 Lexer/Parser/Checker 應接受此受限私有來源");
+        let function = checked.functions.iter()
+            .find(|function| function.name == function_name).unwrap();
+        Checker::<fn(&str) -> CopyPermission>::parameter_is_consumed(function, "value")
+    }
+
+    #[test]
+    fn g3_同名內層字串移動不得冒充外層參數已真正消耗() {
+        let code = "fn check(value:str)->int{\nif(true){\nvar value:str = \"內層🪼\"\nvar moved:str = value.move()\n}\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(!consumed(code, "check"));
+    }
+
+    #[test]
+    fn g3_真正參數來源的整筆移動仍必須保持已消耗() {
+        let code = "fn check(value:str)->int{\nvar moved:str = value.move()\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(consumed(code, "check"));
+    }
+
+    #[test]
+    fn g3_確定零次迴圈內的來源移動不能當成已執行參數移交() {
+        let code = "fn check(value:str)->int{\nfor i in 0..0{\nvar moved:str = value.move()\n}\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(!consumed(code, "check"));
+    }
+
+    #[test]
+    fn g3_同一函式中先遮蔽再解除遮蔽後的外層移動來源必須正確() {
+        let code = "fn check(value:str)->int{\nif(true){\nvar value:str = \"內層\"\nvar moved:str = value.move()\n}\nvar actual:str = value.move()\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(consumed(code, "check"));
+    }
+}
