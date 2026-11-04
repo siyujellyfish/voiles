@@ -186,12 +186,19 @@ struct SafetyStateView<'a> {
 }
 
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum StaticTransition<'a> {
     MoveWhole,
     CommitRebindChecked,
     InitializeField(&'a str),
     ExpireAliasChecked,
+    /// F13/B10：只有 Checker 已決定可達分支、完成全部型別與欄位
+    /// 責任預檢後才可提交；三個靜態安全維度必須一起更新。
+    JoinReachable {
+        value: ValueSlot,
+        pending_fields: Option<HashSet<String>>,
+        loan_active: Option<bool>,
+    },
 }
 
 impl SafetyState {
@@ -234,6 +241,21 @@ impl SafetyState {
                 }
                 Ok(false)
             }
+            StaticTransition::JoinReachable {
+                value, pending_fields, loan_active,
+            } => {
+                // 錯誤的有無 loan 證據不可先改值／欄位再發現失配。
+                if loan_active.is_some() != self.loan.is_some() {
+                    return Ok(false);
+                }
+                // 以上完成所有可失敗預檢；以下提交不再回傳 Err。
+                self.value = value;
+                self.pending_fields = pending_fields;
+                if let (Some(loan), Some(active)) = (self.loan.as_mut(), loan_active) {
+                    loan.active = active;
+                }
+                Ok(true)
+            }
         }
     }
 }
@@ -275,6 +297,17 @@ impl Binding {
             self.safety.transition(StaticTransition::ExpireAliasChecked)
                 .expect("已驗證別名有效期轉移不得失敗")
         } else { false }
+    }
+
+    /// F13/B10：真正 CFG 來源 Checker 的一組合流安全責任一次提交。
+    /// 此函式只是唯一 SafetyState Transition 的轉接，不維護第二本表。
+    fn commit_reachable_join(
+        &mut self, value: ValueSlot, pending_fields: Option<HashSet<String>>,
+        loan_active: Option<bool>,
+    ) -> bool {
+        self.safety.transition(StaticTransition::JoinReachable {
+            value, pending_fields, loan_active,
+        }).expect("完成來源預檢後的合流提交不得失敗")
     }
 
     /// F08／F10：所有 CFG 反向邊、break／continue 出口及單次 for
