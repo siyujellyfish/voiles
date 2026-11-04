@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對四十二項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對四十七項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -41,6 +41,11 @@ from pathlib import Path
     "p18_e_未選分支故障注入不得因預先分析而被誤觸發",
     "p18_e_具名_false_選擇_else_後故障只作用於真求值的資源",
     "p18_e_來源失效時故障注入亦不能提前建立任何資源",
+    "p18_b_正式_else_if_第二個條件成立只求值被選中字串並返回",
+    "p18_b_正式連續兩個_else_if_先假後真只建立單一資源",
+    "p18_b_正式_else_if_全部不成立由_else_建立唯一資源",
+    "p18_b_巢狀_else_if_中真返回先清理其餘外層持有者",
+    "p18_b_未接通的_else_if_具名條件即使_checker_合法仍拒絕執行",
     "p18_b_具名_bool_條件由真宣告身分決定實際資源分支",
     "p18_b_具名_bool_false_未選分支永不產生_utf8_資源",
     "p18_b_來源為_bool_但是由字串同名冒充條件須事前拒絕",
