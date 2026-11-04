@@ -183,6 +183,10 @@ jobs:
         run: |
           python3 tools/核對G4出口狀態第三批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G4 第四批 Checker 靜態資源清理及借用歸還義務（不冒充真事件）
+        run: |
+          python3 tools/核對G4清理義務第四批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
