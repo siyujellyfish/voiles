@@ -1798,7 +1798,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 }
                                 Some(same.value)
                             } else { None };
-                            original.value = ValueSlot::join_reachable(&[left, right])
+                            let joined_value = ValueSlot::join_reachable(&[left, right])
                                 .map_err(|err| self.model_error(err, condition))?;
                             // 只有各可達分支的缺失欄位集合完全相同，才能
                             // 保留首次寫入許可；否則失去部分初始化證明。
@@ -1808,14 +1808,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             let pending_false = if live_false {
                                 Some(&on_false[depth][name].pending_fields)
                             } else { None };
-                            original.pending_fields = match (pending_true, pending_false) {
+                            let joined_fields = match (pending_true, pending_false) {
                                 (Some(left), Some(right)) if left == right => left.clone(),
                                 // 兩個可達分支皆持有尚未完整的相同結構，
                                 // 但完成欄位的順序不同時，只有「可能已初始化」
                                 // 的差異欄位全為 Copyable，才可安全合併缺失聯集：
                                 // 後續寫入若在某路徑是覆寫，也不會遺失資源責任。
                                 (Some(Some(left)), Some(Some(right)))
-                                    if original.value.state() == ValueState::Uninitialized
+                                    if joined_value.state() == ValueState::Uninitialized
                                         && left.symmetric_difference(right).all(|field_name| {
                                             self.structs.get(&original.ty)
                                                 .and_then(|definition| definition.fields.iter()
@@ -1827,14 +1827,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 (Some(one), None) | (None, Some(one)) => one.clone(),
                                 _ => None,
                             };
-                            if let Some(loan) = original.loan.as_mut() {
-                                // 僅合流實際繼續執行的分支；若任一可達
-                                // 路徑仍有借用，合流後必須維持來源封鎖。
+                            // 只有一份仍有入口別名的來源必須合流活性。
+                            // 之前不修改任何 ValueSlot、欄位及借用寫入欄位。
+                            let joined_loan = original.loan.as_ref().map(|_| {
                                 let true_active = live_true && on_true[depth][name].loan
                                     .as_ref().is_some_and(|item| item.active);
                                 let false_active = live_false && on_false[depth][name].loan
                                     .as_ref().is_some_and(|item| item.active);
-                                loan.active = true_active || false_active;
+                                true_active || false_active
+                            });
+                            if !original.commit_reachable_join(
+                                joined_value, joined_fields, joined_loan,
+                            ) {
+                                return Err(self.error(
+                                    "HC14：分支合流缺少原始借用有效期來源身分", condition));
                             }
                         }
                     }
