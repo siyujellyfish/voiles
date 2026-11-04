@@ -588,4 +588,83 @@ mod tests {
         assert!(outcome.events.is_empty());
     }
 
+    #[test]
+    fn p18_實際真分支與提前返回事件按路徑順序登錄() {
+        let code = "fn main()->int{\nif (true){\nreturn 7\n}else{\nreturn 9\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(7)));
+        assert_eq!(outcome.events.len(), 4);
+        assert!(matches!(&outcome.events[0], ControlEvent::FunctionEntered { name, .. } if name == "main"));
+        assert!(matches!(&outcome.events[1], ControlEvent::ConditionChecked { selected: true, .. }));
+        assert!(matches!(&outcome.events[2], ControlEvent::Returned { .. }));
+        assert!(matches!(&outcome.events[3], ControlEvent::FunctionExited { returned: true, .. }));
+        assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::ElseSelected { .. })));
+    }
+
+    #[test]
+    fn p18_實際_false_分支只登錄_else_及被執行的返回() {
+        let code = "fn main()->int{\nif (false){\nreturn 99\n}else{\nreturn 4\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(4)));
+        assert_eq!(outcome.events.len(), 5);
+        assert!(matches!(&outcome.events[1], ControlEvent::ConditionChecked { selected: false, .. }));
+        assert!(matches!(&outcome.events[2], ControlEvent::ElseSelected { .. }));
+        assert!(matches!(&outcome.events[3], ControlEvent::Returned { .. }));
+        assert!(matches!(&outcome.events[4], ControlEvent::FunctionExited { returned: true, .. }));
+    }
+
+    #[test]
+    fn p18_多層函式實際事件保持嚴格進出堆疊順序() {
+        let code = "fn main()->int{\nreturn helper()+1\n}\nfn helper()->int{\nreturn 5\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(6)));
+        let simplified: Vec<_> = outcome.events.iter().map(|event| match event {
+            ControlEvent::FunctionEntered { name, .. } => format!("enter:{name}"),
+            ControlEvent::FunctionExited { name, .. } => format!("exit:{name}"),
+            ControlEvent::Returned { .. } => "return".into(),
+            _ => "condition".into(),
+        }).collect();
+        assert_eq!(simplified, ["enter:main", "enter:helper", "return", "exit:helper", "return", "exit:main"]);
+    }
+
+    #[test]
+    fn p18_動態溢位保留真實已進入函式且未成功退出的控制紀錄() {
+        let code = "fn main()->int{\nvar n:int = 9223372036854775807\nif (true){\nreturn n+1\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result.unwrap_err().reason, "執行時有號 64 位元整數溢位");
+        assert_eq!(outcome.events.len(), 3);
+        assert!(matches!(&outcome.events[0], ControlEvent::FunctionEntered { .. }));
+        assert!(matches!(&outcome.events[1], ControlEvent::ConditionChecked { selected: true, .. }));
+        assert!(matches!(&outcome.events[2], ControlEvent::FunctionExited { returned: false, .. }));
+        assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::Returned { .. })));
+    }
+
+    #[test]
+    fn p18_來源或_hir_失效時事件簿必須完全為空() {
+        let mut plan = PreparedProgram::prepare(b"fn main()->int{\nreturn 1\n}\n".to_vec()).unwrap();
+        plan.typed = VerifiedScalarHir::default();
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn p18_多重_else_if_僅登錄實際檢查至成立的分支() {
+        let code = "fn main()->int{\nif (false){\nreturn 1\n}else if (true){\nreturn 2\n}else if (true){\nreturn 3\n}else{\nreturn 4\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(2)));
+        let decisions: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::ConditionChecked { selected, .. } => Some(*selected),
+            _ => None,
+        }).collect();
+        assert_eq!(decisions, [false, true]);
+        assert_eq!(outcome.events.iter().filter(|event| matches!(event, ControlEvent::Returned { .. })).count(), 1);
+        assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::ElseSelected { .. })));
+    }
+
 }
