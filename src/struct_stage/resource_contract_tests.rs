@@ -1266,10 +1266,10 @@ mod r03_g4_真方法安全來源 {
         let method = get_method(&checked);
         let proof = checked.plan.method_safety.get(&method.start).unwrap();
         assert_eq!(proof.checked_returns.len(), 2);
-        assert!(proof.checked_returns.contains(&NodeSpan::new(
-            BRANCH.find("return self.n").unwrap(),
-            BRANCH.find("return self.n").unwrap() + "return self.n".len()
-        )));
+        let StmtKind::If { branch, .. } = &method.body[0].kind else {
+            panic!("第一筆應為真正的私有 if AST");
+        };
+        assert!(proof.checked_returns.contains(&branch.body[0].node_span()));
         assert!(proof.checked_returns.contains(&method.body.last().unwrap().node_span()));
     }
 
