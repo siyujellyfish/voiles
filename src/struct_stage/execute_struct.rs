@@ -45,6 +45,7 @@ struct PreparedPrivateStruct {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
     binding_name: String,
+    move_target: Option<(String, DeclarationId, DeclarationId)>,
     fields: Vec<PreparedField>,
     supplied: Vec<PreparedNamedField>,
     returned: i64,
@@ -88,7 +89,7 @@ impl PreparedPrivateStruct {
         }
         let main = &verified.functions[0];
         if main.name != "main" || main.result_ty != "int" || !main.params.is_empty()
-            || main.body.statements.len() != 2 {
+            || !(2..=3).contains(&main.body.statements.len()) {
             return Err(PrivateStructPrepareError::Unsupported(
                 "此切片僅支援無參數 main 的一次建立與直接整數返回",
             ));
@@ -147,7 +148,33 @@ impl PreparedPrivateStruct {
             }
             supplied.push(PreparedNamedField { name: name.clone(), seed });
         }
-        let StmtKind::Return(ret) = &main.body.statements[1].kind else {
+        // 第二條可選聲明只允許已由 Checker 簽發的同型別整筆 .move()。
+        let mut move_target = None;
+        if main.body.statements.len() == 3 {
+            let StmtKind::Declare(target) = &main.body.statements[1].kind else {
+                return Err(PrivateStructPrepareError::Unsupported("結構移動需明確具型別宣告"));
+            };
+            if target.ty != binding.ty || !target.mutable || target.name == binding.name {
+                return Err(PrivateStructPrepareError::Unsupported("移動接收者類型或權限不合法"));
+            }
+            let term = target.initializer.as_ref().ok_or(
+                PrivateStructPrepareError::Unsupported("移動接收者必須初始化"),
+            )?;
+            if !matches!(&term.kind, TermKind::Move(name) if name == &binding.name) {
+                return Err(PrivateStructPrepareError::Unsupported("只接受已核准整筆 move()"));
+            }
+            let target_id = DeclarationId(target.start);
+            let fact = verified.plan.declarations.typed_declaration(target_id)
+                .ok_or(PrivateStructPrepareError::Unsupported("移動目標缺少真 Checker 宣告身份"))?;
+            if fact.ty != target.ty || !fact.mutable
+                || !verified.plan.declarations.direct_moves.contains(&(declaration, target_id)) {
+                return Err(PrivateStructPrepareError::Unsupported(
+                    "整筆移動缺少 Checker 對應的原始宣告身分轉移",
+                ));
+            }
+            move_target = Some((target.name.clone(), declaration, target_id));
+        }
+        let StmtKind::Return(ret) = &main.body.statements[main.body.statements.len() - 1].kind else {
             return Err(PrivateStructPrepareError::Unsupported("缺少最後 return"));
         };
         let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(value)) =
@@ -159,7 +186,7 @@ impl PreparedPrivateStruct {
         let binding_name = binding.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            verified, original, binding_name,
+            verified, original, binding_name, move_target,
             fields, supplied, returned,
         })
     }
@@ -180,6 +207,11 @@ impl PreparedPrivateStruct {
             ) {
             return Err(PrivateStructPrepareError::SourceChanged);
         }
+        if self.move_target.as_ref().is_some_and(|(_, source, target)|
+            !self.verified.plan.declarations.direct_moves.contains(&(*source, *target))
+        ) {
+            return Err(PrivateStructPrepareError::SourceChanged);
+        }
         let schema: Vec<_> = self.fields.iter().map(|field|
             crate::mixed_struct_runtime::MixedFieldSpec {
                 name: &field.name, kind: field.kind,
@@ -191,8 +223,13 @@ impl PreparedPrivateStruct {
                 field: &value.name, value: value.seed.runtime(),
             }).collect();
         let mut runtime = crate::mixed_struct_runtime::MixedStructRuntime::new();
-        let result = runtime.construct(&self.binding_name, &schema, &named, fail_after)
-            .map(|()| self.returned);
+        let result = (|| {
+            runtime.construct(&self.binding_name, &schema, &named, fail_after)?;
+            if let Some((name, _, _)) = &self.move_target {
+                runtime.move_whole(&self.binding_name, name)?;
+            }
+            Ok(self.returned)
+        })();
         // 所有真 UTF-8 資源均由唯一 P16 Runtime 負責清理；
         // 靜態 CleanupObligation 不可直接製造動態 Released 事件。
         let events = runtime.finish().map_err(PrivateStructPrepareError::Runtime)?;
@@ -279,4 +316,31 @@ mod p17_private_struct_execution_tests {
         plan.verified.source.bytes[0] = b'x';
         assert!(matches!(plan.execute(), Err(PrivateStructPrepareError::SourceChanged)));
     }
+    #[test]
+    fn p17_c_真私有混合結構整筆移動只保留同一_utf8_資源身份() {
+        let text = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        let outcome = checked(text).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_c_結構內含字串不可由真_checker_隱含複製() {
+        let text = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構禁止複製.voil");
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(text),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_c_真整筆移動的_checker_宣告身分被篡改時資源建立前拒絕() {
+        let text = include_str!("../../tests/fixtures/p13_stage/包含字串欄位的結構允許整筆移動.voil");
+        let mut prepared = checked(text);
+        prepared.verified.plan.declarations.direct_moves.clear();
+        assert!(matches!(prepared.execute(), Err(PrivateStructPrepareError::SourceChanged)));
+    }
+
 }
