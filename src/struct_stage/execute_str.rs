@@ -415,6 +415,65 @@ mod p17_private_str_execution_tests {
     }
 
 
+
+    #[test]
+    fn p18_b_巢狀兩層_true_的真資源按執行路徑逆序釋放() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar first:str = \"甲\"\nif(true){\nvar inner:str = \"乙\"\n}\nvar after:str = \"丙\"\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.result, Ok(0));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Created(4), ResourceEvent::Released(4),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_巢狀_false_只建立內層_else_實際資源() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nif(false){\nvar missed:str = \"永不求值\"\n}else{\nvar chosen:str = \"實際執行\"\n}\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_最外層_false_不得執行任何巢狀真資源() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(false){\nvar first:str = \"不執行\"\nif(true){\nvar nested:str = \"也不執行\"\n}\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn p18_b_兩層同名局部遮蔽維持獨立持有者與逆序釋放() {
+        let code = "fn main()->int{\nvar item:str = \"外\"\nif(true){\nvar item:str = \"中\"\nif(true){\nvar item:str = \"內\"\n}\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2), ResourceEvent::Created(3),
+            ResourceEvent::Released(3), ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_巢狀分支局部變數逃逸由真_checker_提前拒絕() {
+        let code = "fn main()->int{\nif(true){\nif(true){\nvar inner:str = \"局部\"\n}\n}\ninner = \"逃逸\"\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p18_b_巢狀分支內的_return_動態清理尚未接通必須拒絕() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nif(true){\nvar inner:str = \"內\"\nreturn 1\n}\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Unsupported(_)),
+        ));
+    }
+
     #[test]
     fn p18_b_真私有_成立分支建立兩筆_str_並在外層返回前逆序清理() {
         let code = "fn main()->int{\nvar outer:str = \"外層\"\nif (true){\nvar first:str = \"一\"\nvar second:str = \"二\"\n}\nreturn 0\n}\n";
