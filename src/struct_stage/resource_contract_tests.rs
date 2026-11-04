@@ -1035,3 +1035,59 @@ mod p16_6_r03_10_單層布林分支與作用域資源清理 {
         assert!(trace_scope_struct_source(&illegal,None).is_err());
     }
 }
+
+#[cfg(test)]
+mod r03_b08_f11_函式驗證退出證據 {
+    use super::*;
+    use crate::common_ir::NodeSpan;
+
+    const SOURCE: &str = "fn pass()->int{\nreturn 3\n}\nfn main()->int{\nvar n:int = pass()\nreturn n\n}\n";
+
+    fn valid() -> VerifiedPrivateSource {
+        verified_private_source(SOURCE).expect("真正 Checker 應成功接受雙函式")
+    }
+
+    #[test]
+    fn f11_b08_真正Checker為每個已驗證函式各自交付完整退出身份() {
+        let verified = valid();
+        assert_eq!(verified.plan.function_exits.len(), verified.functions.len());
+        for function in &verified.functions {
+            assert_eq!(verified.plan.function_exits.get(&function.start),
+                Some(&VerifiedFunctionExit {
+                    span: NodeSpan::new(function.start, function.end),
+                    flow: FlowState::Returned,
+                }));
+        }
+        assert!(verified.plan.is_consistent(&verified.structs, &verified.functions, SOURCE));
+    }
+
+    #[test]
+    fn f11_b08_任一函式退出證據被移除必須拒絕整個已驗證計畫() {
+        let mut verified = valid();
+        let first = verified.functions[0].start;
+        verified.plan.function_exits.remove(&first);
+        assert!(!verified.plan.is_consistent(&verified.structs, &verified.functions, SOURCE));
+    }
+
+    #[test]
+    fn f11_b08_相同起點但錯誤函式終點不得冒充可達退出義務() {
+        let mut verified = valid();
+        let start = verified.functions[0].start;
+        verified.plan.function_exits.get_mut(&start).unwrap().span.end -= 1;
+        assert!(!verified.plan.is_consistent(&verified.structs, &verified.functions, SOURCE));
+    }
+
+    #[test]
+    fn f11_b08_靜態未返回分類不可冒充完整函式已驗證退出() {
+        let mut verified = valid();
+        let start = verified.functions[0].start;
+        verified.plan.function_exits.get_mut(&start).unwrap().flow = FlowState::Fallthrough;
+        assert!(!verified.plan.is_consistent(&verified.structs, &verified.functions, SOURCE));
+    }
+
+    #[test]
+    fn f11_b08_非法函式不會交付任何成功安全退出計畫() {
+        let source="fn main()->int{\nvar n:int = 1\n}\n";
+        assert!(verified_private_source(source).is_err());
+    }
+}
