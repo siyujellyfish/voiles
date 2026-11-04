@@ -831,10 +831,19 @@ fn trace_scope_struct_source(
         let [inner]=body else {
             // 可選末尾提前 return 0；此情況在分支清理後
             // 須直接退出 main，而不得再次執行已不可達語句。
-            if let [inner,Stmt{kind:StmtKind::Return(term),..}]=body {
+            if let [inner, actual_return @ Stmt {kind:StmtKind::Return(term),..}]=body {
                 if !returns_zero(term) {
                     return Err(reject("P16：不支援其他分支返回運算式"));
                 }
+                // G5：此次「實際被選中的」提前 return 不是最後的
+                // final_return；必須擁有獨立 Checker 控制邊／靜態
+                // 內外兩個 Owner 清理責任，否則不得開始建構資源。
+                require_checked_bridge_return(
+                    &control_edges, &exit_snapshots, actual_return)?;
+                require_checked_bridge_owner(&exit_snapshots, actual_return,
+                    DeclarationId(outside.start), true)?;
+                require_checked_bridge_owner(&exit_snapshots, actual_return,
+                    DeclarationId(inner.start), true)?;
                 rt.enter_scope();
                 match construct(&mut rt,inner,fail_inner)? {
                     Ok(())=>rt.leave_scope().map_err(|_|
