@@ -17,8 +17,8 @@ enum PrivateStrAction {
     /// P18-B：只執行真 Checker 已封閉的 bool 常值分支及局部字串。
     LiteralBranch {
         condition: bool,
-        when_true: Vec<PrivateStrLocalLiteral>,
-        when_false: Vec<PrivateStrLocalLiteral>,
+        when_true: Vec<PrivateStrLocalAction>,
+        when_false: Vec<PrivateStrLocalAction>,
     },
     Return(i64),
 }
@@ -28,58 +28,76 @@ struct PrivateStrLocalLiteral {
     mutable: bool,
     text: String,
 }
+#[derive(Debug)]
+enum PrivateStrLocalAction {
+    Declare(PrivateStrLocalLiteral),
+    NestedLiteralBranch { condition: bool, when_true: Vec<PrivateStrLocalAction>, when_false: Vec<PrivateStrLocalAction> },
+}
 
 /// 唯讀取自正式私有 Parser 的區塊和已驗證宣告身分。
-/// 這個首批切片禁止分支中的 return／賦值／巢狀控制轉移，
+/// 本批只接受真巢狀 if／else 與局部 str，仍禁止 return／賦值等轉移，
 /// 避免在缺少動態 CleanupPlan 時假裝已支援完整資源控制流。
 fn prepare_str_literal_branch(
     block: &crate::syntax_shared::ParsedBlock<Stmt>,
     verified: &VerifiedPrivateSource,
-) -> Result<Vec<PrivateStrLocalLiteral>, PrivateStrPrepareError> {
+) -> Result<Vec<PrivateStrLocalAction>, PrivateStrPrepareError> {
     let mut names = BTreeSet::new();
     let mut declarations = Vec::new();
     for statement in &block.statements {
-        let StmtKind::Declare(binding) = &statement.kind else {
-            return Err(PrivateStrPrepareError::Unsupported(
-                "此批分支僅支援作用域內的已驗證 str 常值宣告",
-            ));
-        };
-        if binding.ty != "str" || !names.insert(binding.name.clone()) {
-            return Err(PrivateStrPrepareError::Unsupported(
-                "此批分支只允許互不重複的 str 局部宣告",
-            ));
+        match &statement.kind {
+            StmtKind::Declare(binding) => {
+                if binding.ty != "str" || !names.insert(binding.name.clone()) {
+                    return Err(PrivateStrPrepareError::Unsupported("分支只接受不重複的 str 局部宣告"));
+                }
+                let fact = verified.plan.declarations.typed_declaration(DeclarationId(binding.start))
+                    .ok_or(PrivateStrPrepareError::Unsupported("局部宣告缺少 Checker 身分"))?;
+                if fact.ty != "str" || fact.mutable != binding.mutable {
+                    return Err(PrivateStrPrepareError::Unsupported("局部宣告型別與權限不一致"));
+                }
+                let init = binding.initializer.as_ref().ok_or(
+                    PrivateStrPrepareError::Unsupported("局部字串必須立即初始化"))?;
+                declarations.push(PrivateStrLocalAction::Declare(PrivateStrLocalLiteral {
+                    name: binding.name.clone(), mutable: binding.mutable,
+                    text: private_str_literal(init, &verified.tokens)?,
+                }));
+            }
+            StmtKind::If { branch, no } => {
+                let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(condition)) =
+                    &branch.branch.condition.kind else {
+                    return Err(PrivateStrPrepareError::Unsupported("巢狀分支只接受 bool 常值"));
+                };
+                let when_true = prepare_str_literal_branch(&branch.branch.body, verified)?;
+                let when_false = match no {
+                    None => Vec::new(),
+                    Some(crate::syntax_shared::ParsedElse::Block(body)) =>
+                        prepare_str_literal_branch(body, verified)?,
+                    Some(_) => return Err(PrivateStrPrepareError::Unsupported("尚未支援巢狀 else-if")),
+                };
+                declarations.push(PrivateStrLocalAction::NestedLiteralBranch {
+                    condition: *condition, when_true, when_false,
+                });
+            }
+            _ => return Err(PrivateStrPrepareError::Unsupported(
+                "巢狀分支的 return／賦值／移動尚無完整動態安全證據",
+            )),
         }
-        let Some(fact) = verified.plan.declarations.typed_declaration(
-            DeclarationId(binding.start),
-        ) else {
-            return Err(PrivateStrPrepareError::Unsupported(
-                "分支局部字串缺少 Checker 宣告身分",
-            ));
-        };
-        if fact.ty != "str" || fact.mutable != binding.mutable {
-            return Err(PrivateStrPrepareError::Unsupported(
-                "分支局部字串型別或寫入權限與 Checker 不符",
-            ));
-        }
-        let init = binding.initializer.as_ref().ok_or(
-            PrivateStrPrepareError::Unsupported("分支局部字串必須立即初始化"),
-        )?;
-        let text = private_str_literal(init, &verified.tokens)?;
-        declarations.push(PrivateStrLocalLiteral {
-            name: binding.name.clone(), mutable: binding.mutable, text,
-        });
     }
     Ok(declarations)
 }
 
 fn execute_str_literal_branch(
     resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
-    literals: &[PrivateStrLocalLiteral],
+    literals: &[PrivateStrLocalAction],
 ) -> Result<(), crate::owned_str_runtime::StrRuntimeError> {
     resources.enter_scope();
     let outcome = (|| {
-        for binding in literals {
-            resources.declare(&binding.name, binding.mutable, &binding.text)?;
+        for action in literals {
+            match action {
+                PrivateStrLocalAction::Declare(binding) =>
+                    resources.declare(&binding.name, binding.mutable, &binding.text)?,
+                PrivateStrLocalAction::NestedLiteralBranch { condition, when_true, when_false } =>
+                    execute_str_literal_branch(resources, if *condition { when_true } else { when_false })?,
+            }
         }
         Ok(())
     })();
