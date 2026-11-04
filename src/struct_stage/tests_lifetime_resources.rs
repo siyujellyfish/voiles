@@ -2737,3 +2737,69 @@ mod r03_b05_f08_靜態狀態原子合流 {
         assert_eq!(current[0]["owner"].value.state(), ValueState::Available);
     }
 }
+
+#[cfg(test)]
+mod r03_b05_f08_唯一靜態安全狀態 {
+    use super::*;
+
+    fn sample() -> Binding {
+        Binding::new(
+            DeclarationId(8100), "str".to_owned(), true,
+            ValueSlot::initialized(CopyPermission::Forbidden), None,
+            Some(LoanBinding {
+                fact: BorrowFact::new(DeclarationId(8101), BorrowKind::SharedRead),
+                active: true,
+            }),
+        )
+    }
+
+    #[test]
+    fn f08_b05_真正Binding值與借用活性只有SafetyState一份可寫儲存() {
+        let mut binding = sample();
+        assert!(std::ptr::eq(&binding.safety.value, &binding.value));
+        assert!(std::ptr::eq(&binding.safety.loan, &binding.loan));
+        assert!(std::ptr::eq(&binding.safety.pending_fields, &binding.pending_fields));
+        assert_eq!(binding.safety_state().declaration, DeclarationId(8100));
+        binding.loan.as_mut().unwrap().active = false;
+        assert!(!binding.safety.loan.as_ref().unwrap().active);
+        binding.value.move_whole().unwrap();
+        assert_eq!(binding.safety.value.state(), ValueState::Moved);
+    }
+
+    #[test]
+    fn f08_b05_不同Cfg快照的SafetyState寫時複製不回寫入口來源() {
+        let mut original: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".to_owned(), sample()),
+        ]))];
+        let mut next = original.clone();
+        let copy_before = Rc::clone(&original[0]);
+        Rc::make_mut(&mut next[0]).get_mut("owner").unwrap()
+            .loan.as_mut().unwrap().active = false;
+        assert!(Rc::ptr_eq(&original[0], &copy_before));
+        assert!(!Rc::ptr_eq(&original[0], &next[0]));
+        assert!(original[0]["owner"].loan.as_ref().unwrap().active);
+        assert!(!next[0]["owner"].loan.as_ref().unwrap().active);
+        original[0]["owner"].value.read().unwrap();
+    }
+
+    #[test]
+    fn f08_b05_未初始化整筆移動失敗時SafetyState的欄位與借用均不變() {
+        let mut binding = Binding::new(
+            DeclarationId(8200), "Box".to_owned(), true,
+            ValueSlot::uninitialized(CopyPermission::Forbidden),
+            Some(HashSet::from(["first".to_owned(), "second".to_owned()])),
+            None,
+        );
+        let original = binding.clone();
+        assert_eq!(binding.move_whole(), Err(ModelError::UninitializedRead));
+        assert!(binding.same_safety_state(&original));
+        assert!(!binding.commit_first_field("unknown"));
+        assert!(binding.same_safety_state(&original));
+        assert!(binding.commit_first_field("first"));
+        assert_eq!(binding.value.state(), ValueState::Uninitialized);
+        assert_eq!(binding.pending_fields.as_ref().unwrap().len(), 1);
+        assert!(binding.commit_first_field("second"));
+        assert_eq!(binding.value.state(), ValueState::Available);
+        assert!(binding.pending_fields.is_none());
+    }
+}
