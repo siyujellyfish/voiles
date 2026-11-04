@@ -140,6 +140,19 @@ impl PreparedProgram {
             && source_audit::atoms_match_source(&self.ast, text)
     }
 
+    /// P17-A：準備後的 P09 宣告與名稱、P10 具型別 HIR、P11 真可達集合
+    /// 必須仍與**同一原始來源重新執行既有 Checker** 的唯一結果一致。
+    /// 不是新 Parser、也不以 Passed 單一布林值授權任意被修改的證據。
+    fn has_original_checker_facts(&self) -> bool {
+        let Ok(fresh) = Self::prepare(self.original_bytes.to_vec()) else {
+            return false;
+        };
+        self.resolved == fresh.resolved
+            && self.typed == fresh.typed
+            && self.reachable_expressions == fresh.reachable_expressions
+            && self.reachable_assignments == fresh.reachable_assignments
+    }
+
     /// 只把實際運算的值回傳給內部測試；不映射 OS exit code。
     pub(crate) fn execute(&self) -> Result<Value, RuntimeFailure> {
         self.execute_with_trace().result
@@ -147,7 +160,8 @@ impl PreparedProgram {
 
     /// P18-E：由實際 Runtime 產生執行紀錄；來源或 HIR 無效時絕不開始執行。
     pub(crate) fn execute_with_trace(&self) -> ExecutionOutcome {
-        if !self.is_same_verified_source() {
+        if !self.is_same_verified_source()
+            || !self.has_original_checker_facts() {
             return ExecutionOutcome {
                 result: Err(RuntimeFailure::global("來源或驗證身分在準備後遭到變更")),
                 events: Vec::new(),
