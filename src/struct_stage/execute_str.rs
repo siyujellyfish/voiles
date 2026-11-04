@@ -12,6 +12,8 @@ enum PrivateStrAction {
     DeclareLiteral { name: String, mutable: bool, text: String },
     DeclareMoved { name: String, from: String },
     AssignLiteral { name: String, text: String },
+    /// VA16-03-A：既有 var str 目的地接收來源明確 move，舊資源原子釋放。
+    AssignMoved { to: String, from: String },
     Return(i64),
 }
 #[derive(Debug)]
@@ -109,10 +111,44 @@ impl PreparedPrivateStr {
                     if !bound.get(&assignment.name).is_some_and(|(_, mutable)| *mutable) {
                         return Err(PrivateStrPrepareError::Unsupported("賦值目標不存在或不可變"));
                     }
-                    operations.push(PrivateStrAction::AssignLiteral {
-                        name: assignment.name.clone(),
-                        text: private_str_literal(&assignment.expression, &verified.tokens)?,
-                    });
+                    let action = match &assignment.expression.kind {
+                        TermKind::Literal("str") => PrivateStrAction::AssignLiteral {
+                            name: assignment.name.clone(),
+                            text: private_str_literal(
+                                &assignment.expression, &verified.tokens,
+                            )?,
+                        },
+                        TermKind::Move(source_name) => {
+                            // 正式 Checker 已確認此真來源可移動且無非法借用；
+                            // 此處只接入既有核准 VA16-03-A 原子重綁，
+                            // 不自行補定其它型別、未知引用或自身覆寫語意。
+                            let source = bound.get(source_name)
+                                .ok_or(PrivateStrPrepareError::Unsupported(
+                                    "整筆移動賦值來源尚未宣告",
+                                ))?;
+                            let target = bound.get(&assignment.name)
+                                .ok_or(PrivateStrPrepareError::Unsupported(
+                                    "整筆移動賦值目標尚未宣告",
+                                ))?;
+                            if source.0 == target.0
+                                || verified.plan.declarations.typed_declaration(source.0)
+                                    .is_none_or(|fact| fact.ty != "str")
+                                || verified.plan.declarations.typed_declaration(target.0)
+                                    .is_none_or(|fact| fact.ty != "str" || !fact.mutable) {
+                                return Err(PrivateStrPrepareError::Unsupported(
+                                    "str 整筆移動賦值缺少合法來源／可寫目標身分",
+                                ));
+                            }
+                            PrivateStrAction::AssignMoved {
+                                to: assignment.name.clone(),
+                                from: source_name.clone(),
+                            }
+                        }
+                        _ => return Err(PrivateStrPrepareError::Unsupported(
+                            "此切片只允許真 str 字面值或已驗證整筆移動賦值",
+                        )),
+                    };
+                    operations.push(action);
                 }
                 StmtKind::Return(ret) => {
                     let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
@@ -168,6 +204,8 @@ impl PreparedPrivateStr {
                         )?;
                         assignment_index += 1;
                     }
+                    PrivateStrAction::AssignMoved { to, from } =>
+                        resources.replace_from(from, to)?,
                     PrivateStrAction::Return(value) => return Ok(*value),
                 }
             }
@@ -189,6 +227,66 @@ impl PreparedPrivateStr {
 mod p17_private_str_execution_tests {
     use super::*;
     use crate::owned_str_runtime::{ResourceEvent, StrRuntimeError};
+
+
+    #[test]
+    fn p17_c_真私有_checker_整筆_move_覆寫現存_str_舊資源立即釋放() {
+        let code = "fn main()->int{\nvar source:str = \"第一\"\nvar target:str = \"第二\"\ntarget = source.move()\nreturn 0\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).expect("VA16-03-A 真 Checker 允許");
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(1), ResourceEvent::Released(2),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_c_移動後重新初始化原持有者_按真實完成次序逆序清理() {
+        let code = "fn main()->int{\nvar source:str = \"原始\"\nvar target:str = \"預設\"\ntarget = source.move()\nsource = \"復原\"\nreturn 1\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).expect("來源明確 move 後 var 可重新初始化");
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(1));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(1), ResourceEvent::Released(2),
+            ResourceEvent::Created(3),
+            ResourceEvent::Released(3), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_c_賦值目標不可變與自身移動在_checker_先拒絕() {
+        for code in [
+            "fn main()->int{\nvar a:str = \"a\"\na = a.move()\nreturn 0\n}\n",
+            "fn main()->int{\nvar source:str = \"src\"\nconst target:str = \"old\"\ntarget = source.move()\nreturn 0\n}\n",
+        ] {
+            assert!(matches!(
+                PreparedPrivateStr::prepare(code),
+                Err(PrivateStrPrepareError::Check(_)),
+            ));
+        }
+    }
+
+    #[test]
+    fn p17_c_已移動來源再次轉交必須在建立資源之前靜態拒絕() {
+        let code = "fn main()->int{\nvar source:str = \"a\"\nvar target:str = \"b\"\ntarget = source.move()\nvar another:str = source.move()\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_c_真資源整筆重綁前若來源改寫不得產生任何實際事件() {
+        let code = "fn main()->int{\nvar from:str = \"a\"\nvar into:str = \"b\"\ninto = from.move()\nreturn 0\n}\n";
+        let mut prepared = PreparedPrivateStr::prepare(code).unwrap();
+        prepared.verified.source.bytes[0] = b'x';
+        assert!(matches!(
+            prepared.execute(), Err(PrivateStrPrepareError::SourceChanged),
+        ));
+    }
 
     #[test]
     fn p17_c_真私有_checker_來源驅動字串建立移動再初始化並逆序清理() {
