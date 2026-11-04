@@ -191,6 +191,10 @@ jobs:
         run: |
           python3 tools/核對G4正式驗收.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G5 第一批八橋接真 Checker 返回／靜態清理前置守衛與假證據拒絕
+        run: |
+          python3 tools/核對G5真安全出口第一批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check

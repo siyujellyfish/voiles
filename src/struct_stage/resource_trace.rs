@@ -1,3 +1,34 @@
+/// G5/F12：橋接只有在同一真正 Checker 已核准該 return 控制邊
+/// 及當時整份靜態義務快照存在時，才准根據受限來源產生真事件。
+/// ResourceId 必須另外由 runtime 自己配置、由 closed_bridge_events 核帳。
+#[cfg(test)]
+fn require_checked_bridge_return(
+    edges: &std::collections::BTreeMap<usize, VerifiedControlEdge>,
+    snapshots: &std::collections::BTreeMap<usize, Vec<VerifiedExitSnapshot>>,
+    statement: &Stmt,
+) -> Result<(), Diagnostic> {
+    let span = statement.node_span();
+    let valid = matches!(statement.kind, StmtKind::Return(_))
+        && edges.get(&span.start).is_some_and(|edge|
+            edge.span == span && edge.flow == FlowState::Returned)
+        && snapshots.get(&span.start).is_some_and(|choices|
+            !choices.is_empty() && choices.iter().all(|snapshot|
+                snapshot.edge == VerifiedControlEdge {
+                    span, flow: FlowState::Returned,
+                } && !snapshot.scope_sizes.is_empty()
+                    && snapshot.scope_sizes.iter().sum::<usize>() == snapshot.bindings.len()
+                    && snapshot.active_borrows.is_empty()
+                    && snapshot.cleanup_owners
+                        == VerifiedExitSnapshot::cleanup_from_bindings(&snapshot.bindings)));
+    if valid { Ok(()) } else {
+        Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：資源橋接缺少真 Checker 同位置 return 的已驗證靜態安全責任".into(),
+            span: None,
+        })
+    }
+}
+
 /// F12/B09：所有受限橋接都必須檢查**真 runtime 已產生的**事件，
 /// 不由 Checker 計畫偽造 ResourceId，且不替代原路徑專用的逆序清理驗證。
 #[cfg(test)]
@@ -58,7 +89,7 @@ fn trace_string_struct_source(
         }
         Some(content)
     }
-    let VerifiedPrivateSource { source: _, structs, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：來源不存在 main"))?;
@@ -72,6 +103,7 @@ fn trace_string_struct_source(
     } }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：返回及控制流程尚未接通資源追蹤"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, trailing_return)?;
     let (ty, mutable, args) = match &declaration.kind {
         StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
             Some((owner, args))
@@ -147,7 +179,7 @@ fn trace_persistent_struct_move_source(
         (!value.contains('\\') && !value.contains('\n')
             && !value.contains('\r')).then_some(value)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：字串結構來源須有合法 main"))?;
@@ -159,6 +191,7 @@ fn trace_persistent_struct_move_source(
     } }) if text.get(*start..*end)==Some("0")) {
         return Err(reject("P16：非直接 return 0 的控制流程尚無資源執行證明"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, last)?;
     let (owner, struct_name, named_args)=match &declare.kind {
         StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
             Some((actual, args))
@@ -255,7 +288,7 @@ fn trace_string_return_source(
         }
         Some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：缺少 main"))?;
@@ -277,6 +310,10 @@ fn trace_string_return_source(
         kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_)), start, end,
     } }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：呼叫端其他返回路徑尚未接通執行期"));
+    }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, final_return)?;
+    if let Some(provider_return) = called.body.last() {
+        require_checked_bridge_return(&control_edges, &exit_snapshots, provider_return)?;
     }
     // 已驗證具名來源以真正宣告起點識別返回前後的唯一持有者。
     // 直接 return "字串" 沒有來源宣告，維持原 P16 事件橋接，不偽造 DeclarationId。
@@ -350,7 +387,7 @@ fn trace_persistent_struct_field_write_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function|function.name=="main")
         .ok_or_else(||reject("P16：結構欄位來源缺少 main"))?;
@@ -362,6 +399,7 @@ fn trace_persistent_struct_field_write_source(
     } }) if text.get(*start..*end)==Some("0")) {
         return Err(reject("P16：欄位資源清理僅證明直接 return 0"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, last)?;
     let (owner,ty,mutable,args)=match &declaration.kind {
         StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
             Some((ctor, args))
@@ -472,7 +510,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
             _=>None,
         }
     }
-    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：缺少 main"))?;
@@ -484,6 +522,7 @@ fn trace_mixed_struct_source(text:&str,fail_after:Option<&str>)
     } }) if text.get(*start..*end)==Some("0")) {
         return Err(reject("P16：尚未證明非直接返回的清理順序"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, end)?;
     let (owner,ty,args)=match &declare.kind {
         StmtKind::Declare(declaration) => match declaration.initializer.as_ref().and_then(trace_struct_constructor) {
             Some((ctor, args))
@@ -621,7 +660,7 @@ fn trace_scope_struct_source(
         (!raw.contains('\\')&&!raw.contains('\n')
             &&!raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir, .. } } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|fun|fun.name=="main")
         .ok_or_else(||reject("P16：區塊清理來源缺少 main"))?;
@@ -633,6 +672,7 @@ fn trace_scope_struct_source(
     if !matches!(&final_return.kind,StmtKind::Return(term) if returns_zero(term)) {
         return Err(reject("P16：外層必須以直接 return 0 結束"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, final_return)?;
     let (cond,yes,no)=match &branch.kind {
         StmtKind::If{branch,no}=>(&branch.condition,&branch.body,no),
         _=>return Err(reject("P16：須有一個可靜態確定的 if 分支")),
@@ -800,7 +840,7 @@ fn trace_persistent_struct_return_source(
         (!raw.contains('\\') && !raw.contains('\n')
             && !raw.contains('\r')).then_some(raw)
     }
-    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs, functions, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main=functions.iter().find(|function| function.name=="main")
         .ok_or_else(||unsupported("P16：缺少有效 main"))?;
@@ -824,6 +864,7 @@ fn trace_persistent_struct_return_source(
     } }) if name==local) {
         return Err(unsupported("P16：被呼叫端必須以具名整筆 .move() 返回結構"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, return_final)?;
     let [receive,main_return]=main.body.as_slice() else {
         return Err(unsupported("P16：main 須單次接收結構後直接返回"));
     };
@@ -839,6 +880,7 @@ fn trace_persistent_struct_return_source(
     } }) if text.get(*start..*end)==Some("0")) {
         return Err(unsupported("P16：main 的其他返回路徑尚未接通"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, main_return)?;
     let moved = match &return_final.kind {
         StmtKind::Return(term) => term,
         _ => unreachable!("上方已驗證 return .move() 形狀"),
@@ -919,7 +961,7 @@ fn trace_named_string_move_source(
     let unsupported = |message: &str| Diagnostic {
         kind: DiagnosticKind::Static, message: message.into(), span: None,
     };
-    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, .. } } =
+    let VerifiedPrivateSource { source: _, structs: _, functions: funcs, plan: VerifiedSafetyPlan { declarations, scalar_hir: _, control_edges, exit_snapshots, .. } } =
         verified_private_source(text)?;
     let main = funcs.iter().find(|fun| fun.name == "main")
         .ok_or_else(|| unsupported("P16：具名字串移動來源缺少 main"))?;
@@ -931,6 +973,7 @@ fn trace_named_string_move_source(
     } }) if text.get(*start..*end) == Some("0")) {
         return Err(unsupported("P16：尚未證明此返回或其他控制流程的資源事件"));
     }
+    require_checked_bridge_return(&control_edges, &exit_snapshots, trailing_return)?;
     let (owner, mutable, literal) = match &first.kind {
         StmtKind::Declare(declaration) => match declaration.initializer.as_ref() {
             Some(literal) if declaration.ty == "str"
