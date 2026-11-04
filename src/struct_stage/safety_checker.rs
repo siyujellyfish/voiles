@@ -754,8 +754,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
 
     /// 以所有可能執行路徑的操作推導方法整體借用模式；
     /// 任一路徑寫入都需要在方法入口取得獨占借用。
-    fn method_writes(&self, owner: &str, method: &Function, body: &[Stmt])
-        -> Result<bool, Diagnostic> {
+    fn method_writes(&self, owner: &str, method: &Function, body: &[Stmt],
+        checked_returns: &mut BTreeSet<crate::common_ir::NodeSpan>,
+    ) -> Result<bool, Diagnostic> {
         let definition = self.structs.get(owner).expect("方法所屬型別已確認");
         let mut writes = false;
         for statement in body {
@@ -786,16 +787,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !Self::checked_return_type(&actual, &method.result_ty, true) {
                         return Err(self.error("方法提前回傳型別與簽章不一致", value));
                     }
-                    // 後續同一條路徑已不可達，不得把它當作額外借用操作。
+                    // 真正核對返回類型與自借用責任後才認領此靜態
+                    // 控制點；後續同一路徑不可達，不會憑 AST 假補。
+                    checked_returns.insert(statement.node_span());
                     return Ok(writes);
                 }
                 StmtKind::If { branch, no } => {
                     let condition = &branch.condition;
                     let yes = &branch.body;
                     self.method_bool_condition(owner, method, condition)?;
-                    let yes_writes = self.method_writes(owner, method, yes)?;
+                    let yes_writes = self.method_writes(
+                        owner, method, yes, checked_returns)?;
                     let no_writes = if let Some(otherwise) = no {
-                        self.method_writes(owner, method, otherwise)?
+                        self.method_writes(owner, method, otherwise, checked_returns)?
                     } else { false };
                     writes |= yes_writes || no_writes;
                 }
@@ -832,13 +836,29 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             return Err(Diagnostic { kind: DiagnosticKind::Static,
                 message: "目前方法必須以單一明確 return 結束".into(), span: None });
         };
+        let mut checked_returns = BTreeSet::new();
         let mode = if self.method_writes(owner, method,
-            &method.body[..method.body.len() - 1])? {
+            &method.body[..method.body.len() - 1], &mut checked_returns)? {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
         let actual = self.method_return_type(owner, method, return_value)?;
         if !Self::checked_return_type(&actual, &method.result_ty, true) {
             return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
+        }
+        checked_returns.insert(method.body.last()
+            .expect("已驗證方法最後必有 return").node_span());
+        let fact = VerifiedMethodSafety {
+            span: crate::common_ir::NodeSpan::new(method.start, method.end),
+            self_borrow: mode, checked_returns,
+        };
+        let mut evidence = self.recorded_method_safety.borrow_mut();
+        if let Some(previous) = evidence.get(&method.start) {
+            if previous != &fact {
+                self.recorded_method_safety_conflicts.borrow_mut()
+                    .insert(method.start);
+            }
+        } else {
+            evidence.insert(method.start, fact);
         }
         Ok(mode)
     }
