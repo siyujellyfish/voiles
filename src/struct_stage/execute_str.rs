@@ -685,6 +685,71 @@ mod p17_private_str_execution_tests {
 
 
 
+
+    #[test]
+    fn p18_b_具名_bool_copyable_直接初始化另一個宣告並真正選中分支() {
+        let code = "fn main()->int{\nvar source:bool = true\nvar copied:bool = source\nvar outer:str = \"外\"\nif(copied){\nvar yes:str = \"甲\"\nvar two:str = \"乙\"\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(0));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_具名_bool_重新賦值複製另一宣告的動態值改選_else() {
+        let code = "fn main()->int{\nvar source:bool = false\nvar target:bool = true\ntarget = source\nvar outer:str = \"外\"\nif(target){\nvar skipped:str = \"不執行\"\n}else{\nvar yes:str = \"甲\"\nvar two:str = \"乙\"\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(0));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_複製後來源_bool_變動不應使先前目的地成為別名() {
+        let code = "fn main()->int{\nvar source:bool = true\nvar copied:bool = source\nsource = false\nvar outer:str = \"外\"\nif(copied){\nvar yes:str = \"甲\"\nvar two:str = \"乙\"\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(0));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_已驗證_bool_不可從尚未初始化或錯誤型別名稱偷取值() {
+        for code in [
+            "fn main()->int{\nvar source:bool\nvar copied:bool = source\nvar title:str = \"字串\"\nreturn 0\n}\n",
+            "fn main()->int{\nvar source:str = \"非布林\"\nvar copied:bool = source\nreturn 0\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateStr::prepare(code),
+                Err(PrivateStrPrepareError::Check(_))));
+        }
+    }
+
+    #[test]
+    fn p18_b_const_bool_不得以具名值複製繞過不可變賦值禁令() {
+        let code = "fn main()->int{\nvar source:bool = false\nconst target:bool = true\ntarget = source\nvar title:str = \"字串\"\nreturn 0\n}\n";
+        assert!(matches!(PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn p18_b_具名_bool_複製動作來源身份被替換時預先拒絕() {
+        let code = "fn main()->int{\nvar source:bool = false\nvar target:bool = true\ntarget = source\nvar title:str = \"字串\"\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::AssignBoolFrom { source, identity } =
+            &mut plan.operations[2] else { panic!("必須是真原 Parser 的 bool 名稱賦值") };
+        *source = *identity;
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn p18_b_已驗證_var_bool_從_true_改為_false_只執行_else_資源() {
         let code = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nflag = false\nif(flag){\nvar skipped:str = \"不建立\"\n}else{\nvar chosen:str = \"實際建立\"\n}\nreturn 0\n}\n";
