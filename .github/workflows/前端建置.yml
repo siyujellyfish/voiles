@@ -167,6 +167,10 @@ jobs:
         run: |
           python3 tools/核對G3獨立驗收矩陣.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G3 F06～F09 正式獨立真票據／SafetyState／全操作原子安全驗收
+        run: |
+          python3 tools/核對G3正式驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
