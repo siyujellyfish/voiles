@@ -452,6 +452,87 @@ mod tests {
         plan.execute().map_err(|error| format!("動態拒絕：{}", error.reason))
     }
 
+
+    #[test]
+    fn p17_a_同源正式_hir_與可達證據完整時可重複真求值() {
+        let text = "fn helper()->int{\nreturn 2\n}\nfn main()->int{\nif(true){\nreturn helper()+3\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        for _ in 0..2 {
+            let outcome = plan.execute_with_trace();
+            assert_eq!(outcome.result, Ok(Value::Int(5)));
+            assert!(matches!(outcome.events.first(), Some(ControlEvent::FunctionEntered { .. })));
+        }
+    }
+
+    #[test]
+    fn p17_a_已解析同型別名稱引用被轉接至其他宣告必須零事件拒絕() {
+        let text = "fn main()->int{\nvar a:int = 2\nvar b:int = 9\nreturn a\n}\n";
+        let mut plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        let names: Vec<_> = plan.resolved.declarations.keys().copied().collect();
+        assert_eq!(names.len(), 2);
+        let key = *plan.resolved.references.keys().next().unwrap();
+        let original = plan.resolved.references[&key];
+        let forged = *names.iter().find(|name| **name != original).unwrap();
+        plan.resolved.references.insert(key, forged);
+        let result = plan.execute_with_trace();
+        assert!(result.result.is_err());
+        assert!(result.events.is_empty());
+    }
+
+    #[test]
+    fn p17_a_真賦值身分偷換同型別變數不能開始執行() {
+        let text = "fn main()->int{\nvar a:int = 2\nvar b:int = 9\na = 5\nreturn a\n}\n";
+        let mut plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        let target_key = *plan.resolved.assignments.keys().next().unwrap();
+        let original = plan.resolved.assignments[&target_key];
+        let wrong = *plan.resolved.declarations.keys()
+            .find(|id| **id != original).unwrap();
+        plan.resolved.assignments.insert(target_key, wrong);
+        let result = plan.execute_with_trace();
+        assert!(result.result.is_err());
+        assert!(result.events.is_empty());
+    }
+
+    #[test]
+    fn p17_a_正式宣告可變性或型別事實被換掉不得沿用原授權() {
+        let text = "fn main()->int{\nvar a:int = 1\nreturn a\n}\n";
+        let mut plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        let key = *plan.resolved.declarations.keys().next().unwrap();
+        plan.resolved.declarations.get_mut(&key).unwrap().mutable = false;
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn p17_a_刪除已驗證運算式可達證據須在入口前安全拒絕() {
+        let text = "fn main()->int{\nreturn 2+3\n}\n";
+        let mut plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        assert!(!plan.reachable_expressions.is_empty());
+        let removed = *plan.reachable_expressions.iter().next().unwrap();
+        plan.reachable_expressions.remove(&removed);
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn p17_a_捏造不存在的可達表達式或賦值邊不得增加執行許可() {
+        let text = "fn main()->int{\nvar n:int = 1\nn = 3\nreturn n\n}\n";
+        let mut plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        let artificial = NodeSpan::new(0, 1);
+        assert!(plan.reachable_expressions.insert(artificial));
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+        let mut plan = PreparedProgram::prepare(text.as_bytes().to_vec()).unwrap();
+        assert!(!plan.reachable_assignments.is_empty());
+        plan.reachable_assignments.clear();
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
     #[test]
     fn p17_原始_voil_通過所有正式_checker_後真正計算_二加三() {
         assert_eq!(run("fn main()->int{\nreturn 2+3\n}\n"), Ok(Value::Int(5)));
