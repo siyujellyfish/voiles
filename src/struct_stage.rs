@@ -133,6 +133,9 @@ struct Parser<'a> {
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
 
+// P17-C：只有完整私有 Checker 安全驗證後才可實際分配資源。
+include!("struct_stage/execute_str.rs");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
@@ -1089,6 +1092,8 @@ impl VerifiedSafetyPlan {
 
 struct VerifiedPrivateSource {
     source: Source,
+    /// 保留同一正式 Lexer 交給私有 Parser 的原始 token，避免第二套解析。
+    tokens: Vec<Token>,
     structs: HashMap<String, StructDecl>,
     functions: Vec<Function>,
     /// 與真正通過驗證的完整原始來源一起封裝，不能獨立從 AST 重建。
@@ -1217,7 +1222,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
-    Ok(VerifiedPrivateSource { source, structs, functions, plan })
+    Ok(VerifiedPrivateSource { source, tokens: tokens.tokens, structs, functions, plan })
 }
 
 /// F00：唯一的正式私有來源入口維持原樣；只有內部測試開啟
