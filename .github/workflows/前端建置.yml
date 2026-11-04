@@ -69,7 +69,7 @@ jobs:
         run: |
           rustup run stable rustc --edition=2021 --test --crate-name voiles_source_tests src/lib.rs -o target/p02/p04_source_internal
           ./target/p02/p04_source_internal
-      - name: P17／P18 真求值、控制及來源詞彙四十四項正反案例存在性 Gate
+      - name: P17／P18 真求值、控制事件來源及條件鏈五十項正反案例 Gate
         run: python3 tools/核對G17內部切片.py --test-bin target/p02/p04_source_internal
 
       - name: P17-C／P18-B/C 真私有 str 分支與提前返回二十七項正反 Gate

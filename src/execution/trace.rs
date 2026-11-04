@@ -12,6 +12,7 @@ pub(crate) enum ControlAuditError {
     EventOutsideFunction,
     EventOutsideSource,
     ReturnCountMismatch,
+    InvalidBranchPath,
 }
 
 struct ActiveFunction<'a> {
@@ -82,6 +83,10 @@ struct SourceSites {
     returns: std::collections::BTreeMap<NodeSpan, NodeSpan>,
     conditions: std::collections::BTreeMap<NodeSpan, NodeSpan>,
     else_blocks: std::collections::BTreeMap<NodeSpan, NodeSpan>,
+    /// 同一正式 if/else-if 鏈中的條件由原 AST 順序決定，不能偽造。
+    chain_conditions: std::collections::BTreeMap<NodeSpan, Vec<NodeSpan>>,
+    condition_chain: std::collections::BTreeMap<NodeSpan, (NodeSpan, usize)>,
+    else_chain: std::collections::BTreeMap<NodeSpan, NodeSpan>,
 }
 
 impl SourceSites {
@@ -120,18 +125,28 @@ impl SourceSites {
                     }
                 }
                 crate::parser::StmtKind::IfChain(chain) => {
+                    let mut ordered = Vec::new();
                     for arm in &chain.arms {
                         let condition = arm.branch.condition.node_span();
                         if !contained(span, condition)
-                            || self.conditions.insert(condition, function).is_some() {
+                            || self.conditions.insert(condition, function).is_some()
+                            || self.condition_chain.insert(
+                                condition, (span, ordered.len()),
+                            ).is_some() {
                             return Err(ControlAuditError::EventOutsideSource);
                         }
+                        ordered.push(condition);
                         self.gather_block(&arm.branch.body, function, source)?;
+                    }
+                    if ordered.is_empty()
+                        || self.chain_conditions.insert(span, ordered).is_some() {
+                        return Err(ControlAuditError::EventOutsideSource);
                     }
                     if let Some(otherwise) = &chain.otherwise {
                         let else_span = NodeSpan::new(otherwise.start, otherwise.end);
                         if !contained(span, else_span)
-                            || self.else_blocks.insert(else_span, function).is_some() {
+                            || self.else_blocks.insert(else_span, function).is_some()
+                            || self.else_chain.insert(else_span, span).is_some() {
                             return Err(ControlAuditError::EventOutsideSource);
                         }
                         self.gather_block(otherwise, function, source)?;
@@ -139,6 +154,37 @@ impl SourceSites {
                 }
                 crate::parser::StmtKind::Binding(_) |
                 crate::parser::StmtKind::Assignment(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+/// 僅保存這次函式呼叫實際走過的條件決策，非靜態 CFG。
+#[derive(Debug, Default)]
+struct ChainProgress {
+    checked: usize,
+    selected: bool,
+    else_entered: bool,
+}
+#[derive(Debug)]
+struct SourceFrame {
+    span: NodeSpan,
+    branches: std::collections::BTreeMap<NodeSpan, ChainProgress>,
+}
+impl SourceFrame {
+    fn complete(&self, sites: &SourceSites) -> Result<(), ControlAuditError> {
+        for (chain, progress) in &self.branches {
+            if progress.selected || progress.else_entered {
+                continue;
+            }
+            if progress.checked != sites.chain_conditions
+                .get(chain).map_or(0, Vec::len) {
+                return Err(ControlAuditError::InvalidBranchPath);
+            }
+            // 真的 if/else 全部 false 時，Runtime 必須選中現存 else。
+            if sites.else_chain.values().any(|owner| owner == chain) {
+                return Err(ControlAuditError::InvalidBranchPath);
             }
         }
         Ok(())
@@ -163,34 +209,64 @@ pub(crate) fn audit_control_events_against_source(
             sites.gather_function(function, source)?;
         }
     }
-    let mut stack: Vec<NodeSpan> = Vec::new();
+    let mut stack: Vec<SourceFrame> = Vec::new();
     for event in events {
         match event {
             ControlEvent::FunctionEntered { name, span } => {
                 if sites.functions.get(span).map(String::as_str) != Some(name) {
                     return Err(ControlAuditError::FunctionIdentityMismatch);
                 }
-                stack.push(*span);
+                stack.push(SourceFrame {
+                    span: *span,
+                    branches: std::collections::BTreeMap::new(),
+                });
             }
-            ControlEvent::FunctionExited { span, .. } => {
-                if stack.pop() != Some(*span) {
+            ControlEvent::FunctionExited { span, returned, .. } => {
+                let frame = stack.pop().ok_or(ControlAuditError::UnmatchedFunctionExit)?;
+                if frame.span != *span {
                     return Err(ControlAuditError::FunctionIdentityMismatch);
+                }
+                if *returned {
+                    frame.complete(&sites)?;
                 }
             }
             ControlEvent::Returned { span } => {
-                if sites.returns.get(span).copied() != stack.last().copied() {
+                if sites.returns.get(span).copied()
+                    != stack.last().map(|frame| frame.span) {
                     return Err(ControlAuditError::EventOutsideSource);
                 }
             }
-            ControlEvent::ConditionChecked { span, .. } => {
-                if sites.conditions.get(span).copied() != stack.last().copied() {
+            ControlEvent::ConditionChecked { span, selected } => {
+                let frame = stack.last_mut()
+                    .ok_or(ControlAuditError::EventOutsideFunction)?;
+                if sites.conditions.get(span).copied() != Some(frame.span) {
                     return Err(ControlAuditError::EventOutsideSource);
                 }
+                let &(chain, index) = sites.condition_chain.get(span)
+                    .ok_or(ControlAuditError::EventOutsideSource)?;
+                let progress = frame.branches.entry(chain).or_default();
+                if progress.checked != index || progress.selected || progress.else_entered {
+                    return Err(ControlAuditError::InvalidBranchPath);
+                }
+                progress.checked += 1;
+                progress.selected = *selected;
             }
             ControlEvent::ElseSelected { span } => {
-                if sites.else_blocks.get(span).copied() != stack.last().copied() {
+                let frame = stack.last_mut()
+                    .ok_or(ControlAuditError::EventOutsideFunction)?;
+                if sites.else_blocks.get(span).copied() != Some(frame.span) {
                     return Err(ControlAuditError::EventOutsideSource);
                 }
+                let &chain = sites.else_chain.get(span)
+                    .ok_or(ControlAuditError::EventOutsideSource)?;
+                let progress = frame.branches.get_mut(&chain)
+                    .ok_or(ControlAuditError::InvalidBranchPath)?;
+                if progress.selected || progress.else_entered
+                    || progress.checked != sites.chain_conditions
+                        .get(&chain).map_or(0, Vec::len) {
+                    return Err(ControlAuditError::InvalidBranchPath);
+                }
+                progress.else_entered = true;
             }
         }
     }
@@ -210,6 +286,92 @@ mod tests {
         ControlEvent::FunctionExited { name: name.into(), span: src(), returned }
     }
 
+
+
+    #[test]
+    fn p18_e_真正_else_if_多段決策依原_ast_順序通過() {
+        let code = "fn main()->int{\nif (false){\nreturn 1\n}else if (false){\nreturn 2\n}else if (true){\nreturn 3\n}else{\nreturn 4\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let result = plan.execute_with_trace();
+        assert_eq!(result.result, Ok(super::super::Value::Int(3)));
+        assert_eq!(audit_control_events_against_source(&result.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_e_合法條件跨度也不可跳過前一段_else_if_直接進入後段() {
+        let code = "fn main()->int{\nif (false){\nreturn 1\n}else if(true){\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        let checked: Vec<_> = events.iter().filter_map(|e| match e {
+            ControlEvent::ConditionChecked { span, .. } => Some(*span),
+            _ => None,
+        }).collect();
+        assert_eq!(checked.len(), 2);
+        for event in &mut events {
+            if let ControlEvent::ConditionChecked { span, .. } = event {
+                *span = checked[1];
+                break;
+            }
+        }
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_同一_if_已真成立後不可偽報再檢查_else_if() {
+        let code = "fn main()->int{\nif(false){\nreturn 1\n}else if(true){\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        for event in &mut events {
+            if let ControlEvent::ConditionChecked { selected, .. } = event {
+                *selected = true;
+                break;
+            }
+        }
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_真假_else_必須由全_false_決策鏈觸發() {
+        let code = "fn main()->int{\nif(false){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        for event in &mut events {
+            if let ControlEvent::ConditionChecked { selected, .. } = event {
+                *selected = true;
+                break;
+            }
+        }
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_不能刪去最後_false_條件後仍假稱已完成正常返回() {
+        let code = "fn main()->int{\nif(false){\nreturn 1\n}else if(true){\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        let second = events.iter().rposition(|event|
+            matches!(event, ControlEvent::ConditionChecked { selected: true, .. })
+        ).unwrap();
+        events.remove(second);
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_同一函式多次呼叫應分別重設真正分支進度() {
+        let code = "fn pick()->int{\nif(true){\nreturn 2\n}\nreturn 9\n}\nfn main()->int{\nreturn pick()+pick()\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let actual = plan.execute_with_trace();
+        assert_eq!(actual.result, Ok(super::super::Value::Int(4)));
+        assert_eq!(audit_control_events_against_source(&actual.events, &plan.ast, code), Ok(()));
+    }
 
     #[test]
     fn p18_真實_checker_來源的控制事件可通過_ast_角色核對() {
