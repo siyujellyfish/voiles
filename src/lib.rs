@@ -1,5 +1,5 @@
 //! voiles 最小 Rust 前端核心介面。
-//! P12 已完成 P01 MVP-A 子集靜態檢查，尚無直譯或產生執行檔能力。
+//! 對外仍僅提供 P01 MVP-A 靜態檢查；P17 求值器限內部實作，尚無公開執行命令。
 
 mod source;
 mod lexer;
@@ -7,6 +7,7 @@ mod expr;
 mod parser;
 mod syntax_shared;
 mod common_ir;
+mod execution;
 mod ast_debug;
 mod diagnostics;
 mod names;
