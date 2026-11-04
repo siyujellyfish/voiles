@@ -136,6 +136,9 @@ include!("struct_stage/syntax.rs");
 // P17-C：只有完整私有 Checker 安全驗證後才可實際分配資源。
 include!("struct_stage/execute_str.rs");
 
+// P17-F：只有真私有來源才可構成混合欄位執行計畫。
+include!("struct_stage/execute_struct.rs");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
