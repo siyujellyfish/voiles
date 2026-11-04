@@ -222,6 +222,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::active_loan_snapshot(vars).validate().is_ok()
     }
 
+    /// F08/B05：先完整檢查合流候選，再一次性替換全部作用域。
+    /// 檢查失敗時保留呼叫端的原狀態，沒有任何半完成的值／借用提交。
+    fn commit_reachable_safety_join(
+        vars: &mut Scopes, proposed: Scopes,
+    ) -> Result<(), crate::borrow_safety::BorrowSafetyError> {
+        Self::active_loan_snapshot(&proposed).validate()?;
+        *vars = proposed;
+        Ok(())
+    }
+
     /// R03.12：宣告時直接借用、方法預設借用及一般函式預設借用
     /// 一律透過相同的 DeclarationId／活躍借用快照／HC14 衝突規則。
     /// 診斷內容仍由三種已核准的呼叫情境各自指定。
@@ -1746,8 +1756,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !live_true && !live_false {
                         return Ok(Self::combine_non_fallthrough(true_flow, false_flow));
                     }
+                    // 從原作用域複製**候選**；中途任何 ValueSlot 或來源
+                    // 證據驗證失敗都不得讓原 vars 留下半完成的合流。
+                    let mut proposed = snapshot.clone();
                     // 僅合流分支進入前可見的真正名稱。分支私有宣告不得洩漏。
-                    for (depth, scope) in vars.iter_mut().enumerate() {
+                    for (depth, scope) in proposed.iter_mut().enumerate() {
                         for (name, original) in Rc::make_mut(scope).iter_mut() {
                             // 真正來源以原始宣告位元組起點及詞彙深度識別。
                             let left = if live_true {
@@ -1806,11 +1819,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             }
                         }
                     }
-                    // 對各可達分支的借用活性聯集重新套用同一 HC14 衝突規則。
-                    if !Self::active_loan_state_is_consistent(vars) {
-                        return Err(self.error(
-                            "HC14：分支合流後共享／獨占借用狀態無法一致證明", condition));
-                    }
+                    // 唯一可寫原狀態直到整筆合流驗證完畢才一起提交；
+                    // 失敗時不會留下已改 value、但尚未改 loan 的污染狀態。
+                    Self::commit_reachable_safety_join(vars, proposed).map_err(|_| {
+                        self.error("HC14：分支合流後共享／獨占借用狀態無法一致證明", condition)
+                    })?;
                 }
             }
             // 本區塊剩餘路徑已不再引用的非擁有借用可即時歸還；

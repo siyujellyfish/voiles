@@ -133,7 +133,7 @@ struct Parser<'a> {
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
 
-#[derive(Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
     active: bool,
@@ -150,6 +150,19 @@ struct Binding {
     pending_fields: Option<HashSet<String>>,
     /// 非擁有的借用別名，不擁有來源值，不允許 .move()。
     loan: Option<LoanBinding>,
+}
+
+
+/// F08/B05：唯一真正可寫 Binding 的**唯讀**靜態安全狀態視圖。
+/// 此視圖借用現有資料而不複製所有權或借用票據；不能建立平行帳簿。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SafetyStateView<'a> {
+    declaration: DeclarationId,
+    ty: &'a str,
+    mutable: bool,
+    value: ValueSlot,
+    pending_fields: Option<&'a HashSet<String>>,
+    loan: Option<&'a LoanBinding>,
 }
 
 impl Binding {
@@ -188,13 +201,19 @@ impl Binding {
     /// 分支合流都必須使用同一份來源安全狀態相等契約。除了原有
     /// ValueSlot、待初始化欄位和借用有效期，也要驗證真正宣告
     /// 身分、型別及 var/const 權限；不得讓局部比較產生不同權威。
+    fn safety_state(&self) -> SafetyStateView<'_> {
+        SafetyStateView {
+            declaration: self.declaration_start,
+            ty: &self.ty,
+            mutable: self.mutable,
+            value: self.value,
+            pending_fields: self.pending_fields.as_ref(),
+            loan: self.loan.as_ref(),
+        }
+    }
+
     fn same_safety_state(&self, other: &Self) -> bool {
-        self.declaration_start == other.declaration_start
-            && self.ty == other.ty
-            && self.mutable == other.mutable
-            && self.value == other.value
-            && self.pending_fields == other.pending_fields
-            && self.loan == other.loan
+        self.safety_state() == other.safety_state()
     }
 
     /// 正式私有 Checker 的詞彙已解析宣告及受限型別，與 P09→P10/P11
