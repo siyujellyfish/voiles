@@ -1,4 +1,4 @@
-//! P17-C：同一正式 AST、原始 Lexer token 與 Checker 的安全證據。
+// P17-C：同一正式 AST、原始 Lexer token 與 Checker 的安全證據。
 
 fn checked_single_move(checked: &VerifiedPrivateSource)
     -> Result<CheckedSingleMove, PrivateStrExecutionError> {
