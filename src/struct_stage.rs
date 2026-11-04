@@ -375,6 +375,15 @@ struct VerifiedFunctionExit {
     flow: FlowState,
 }
 
+/// G4 第一批：正式 Checker 真正走訪且安全核對成功的靜態控制轉移。
+/// 只有三類明確轉移：return、break、continue；是靜態可達證據，
+/// 絕非真實執行 Return、ResourceEvent 或 BorrowTicket。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedControlEdge {
+    span: crate::common_ir::NodeSpan,
+    flow: FlowState,
+}
+
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
@@ -383,6 +392,8 @@ struct Checker<'a, C> {
     ability: C,
     /// F11 前置：真實 Checker 成功評估並完成宣告後記錄的直線具名移交。
     recorded_function_exits: RefCell<BTreeMap<usize, VerifiedFunctionExit>>,
+    recorded_control_edges: RefCell<BTreeMap<usize, VerifiedControlEdge>>,
+    recorded_control_conflicts: RefCell<BTreeSet<usize>>,
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
@@ -697,6 +708,9 @@ struct VerifiedSafetyPlan {
     /// 不可從真 AST 或橋接倒推；唯一從 Checker::function 成功
     /// 的整個函式控制流驗證出口取得。方法另保留原受限安全路徑。
     function_exits: BTreeMap<usize, VerifiedFunctionExit>,
+    /// 每筆皆由真 Checker 已成功驗證的 return/break/continue
+    /// 原位交付，供正式安全計畫唯讀核對原 Parser AST 位置。
+    control_edges: BTreeMap<usize, VerifiedControlEdge>,
     scalar_hir: crate::common_ir::VerifiedScalarHir,
     /// F01/F04：僅由真 Checker 驗證欄位／參數後簽出、與借用
     /// 資源持有者分離的型別 token 來源證據。
@@ -726,6 +740,7 @@ impl VerifiedSafetyPlan {
             scalar_hir.verified_assignments().map(|fact| fact.span).collect();
         Self { declarations, scalar_hir, members,
             function_exits: BTreeMap::new(),
+            control_edges: BTreeMap::new(),
             expression_spans, reference_spans, assignment_spans }
     }
 
@@ -779,6 +794,46 @@ impl VerifiedSafetyPlan {
         })
     }
 
+    /// 唯讀交叉核對：只接受原 AST 真正存在且跨度吻合的控制語句，
+    /// 不從 AST 建立缺失的 Checker 退出證據，也不猜測執行順序。
+    fn control_edge_matches_ast(body: &[Stmt], edge: VerifiedControlEdge) -> bool {
+        body.iter().any(|stmt| {
+            let same_span = stmt.start == edge.span.start && stmt.end == edge.span.end;
+            let same_flow = matches!(
+                (&stmt.kind, edge.flow),
+                (StmtKind::Return(_), FlowState::Returned)
+                    | (StmtKind::Break, FlowState::Break)
+                    | (StmtKind::Continue, FlowState::Continue)
+            );
+            (same_span && same_flow) || match &stmt.kind {
+                StmtKind::If { branch, no } =>
+                    Self::control_edge_matches_ast(&branch.body, edge)
+                        || no.as_ref().is_some_and(|otherwise|
+                            Self::control_edge_matches_ast(otherwise, edge)),
+                StmtKind::ForRange { body, .. } | StmtKind::While { body, .. } =>
+                    Self::control_edge_matches_ast(body, edge),
+                _ => false,
+            }
+        })
+    }
+
+    fn control_edges_are_consistent(&self, functions: &[Function], text: &str) -> bool {
+        self.control_edges.iter().all(|(&start, &edge)| {
+            edge.span.start == start
+                && edge.span.start < edge.span.end
+                && edge.span.end <= text.len()
+                && text.is_char_boundary(edge.span.start)
+                && text.is_char_boundary(edge.span.end)
+                && matches!(edge.flow, FlowState::Returned
+                    | FlowState::Break | FlowState::Continue)
+                && functions.iter().filter(|fun|
+                    Self::control_edge_matches_ast(&fun.body, edge)).count() == 1
+        }) && functions.iter().all(|fun|
+            self.control_edges.values().any(|edge|
+                edge.flow == FlowState::Returned
+                    && Self::control_edge_matches_ast(&fun.body, *edge)))
+    }
+
     /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
     /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
     fn is_consistent(
@@ -800,6 +855,7 @@ impl VerifiedSafetyPlan {
                         && text.is_char_boundary(function.end)
                 })
             })
+            && self.control_edges_are_consistent(functions, text)
             && self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
             && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.operations_match_verified_ast(structs, functions)
@@ -870,6 +926,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         source: &source, structs: &structs, functions: &functions,
         function_index, ability,
         recorded_function_exits: RefCell::new(BTreeMap::new()),
+        recorded_control_edges: RefCell::new(BTreeMap::new()),
+        recorded_control_conflicts: RefCell::new(BTreeSet::new()),
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
@@ -906,6 +964,13 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
+    if !checker.recorded_control_conflicts.borrow().is_empty() {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：同一來源的 Checker 靜態轉移不可被兩種不相容的控制出口認領".into(),
+            span: None,
+        });
+    }
     let members = checker.recorded_member_types.into_inner();
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
@@ -921,6 +986,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     // 真正 Checker 的資訊由此單一所有權移入，不能傳遞獨立可換的兩本表。
     let mut plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir, members);
     plan.function_exits = checker.recorded_function_exits.into_inner();
+    plan.control_edges = checker.recorded_control_edges.into_inner();
     if !plan.is_consistent(&structs, &functions, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
