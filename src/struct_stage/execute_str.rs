@@ -22,8 +22,11 @@ enum PrivateStrAction {
     },
     /// P18-B：保留真 Checker 宣告身份的已初始化 bool 純值。
     DeclareBool { identity: DeclarationId, value: bool },
+    /// 原 Bool 是 Copyable：僅從已由 HIR 繫結的真具名 bool 複製純值。
+    DeclareBoolFrom { identity: DeclarationId, source: DeclarationId },
     /// P18-B：原 Checker 已驗證 var bool 直接常值重綁；分支以同一身分取最新值。
     AssignBool { identity: DeclarationId, value: bool },
+    AssignBoolFrom { identity: DeclarationId, source: DeclarationId },
     Return(i64),
 }
 /// 具名 bool 必須已在來源中由原 Checker 確認宣告和型別；
@@ -367,23 +370,16 @@ impl PreparedPrivateStr {
                             "此執行切片要求 bool 有直接初始值",
                         ));
                     };
-                    let TermKind::Scalar(
-                        crate::syntax_shared::ScalarLiteral::Boolean(value),
-                    ) = &init.kind else {
-                        return Err(PrivateStrPrepareError::Unsupported(
-                            "此執行切片只接受原 Lexer 的 bool 常值初始值",
-                        ));
+                    let action = match verified_nested_bool(
+                        init, &verified, &bool_bindings,
+                    )? {
+                        PrivateBoolCondition::Constant(value) =>
+                            PrivateStrAction::DeclareBool { identity, value },
+                        PrivateBoolCondition::Bound(source) =>
+                            PrivateStrAction::DeclareBoolFrom { identity, source },
                     };
-                    let expected = if *value { "true" } else { "false" };
-                    if text.get(init.start..init.end) != Some(expected) {
-                        return Err(PrivateStrPrepareError::Unsupported(
-                            "bool 原始常值與真 Parser 來源不一致",
-                        ));
-                    }
                     bool_bindings.insert(binding.name.clone(), identity);
-                    operations.push(PrivateStrAction::DeclareBool {
-                        identity, value: *value,
-                    });
+                    operations.push(action);
                 }
                 StmtKind::Declare(binding) if binding.ty == "str" => {
                     let identity = DeclarationId(binding.start);
@@ -434,23 +430,15 @@ impl PreparedPrivateStr {
                                 "bool 重新賦值目標不是已驗證可寫宣告",
                             ));
                         }
-                        let TermKind::Scalar(
-                            crate::syntax_shared::ScalarLiteral::Boolean(value),
-                        ) = &assignment.expression.kind else {
-                            return Err(PrivateStrPrepareError::Unsupported(
-                                "此切片只執行直接 bool 常值重新賦值",
-                            ));
+                        let action = match verified_nested_bool(
+                            &assignment.expression, &verified, &bool_bindings,
+                        )? {
+                            PrivateBoolCondition::Constant(value) =>
+                                PrivateStrAction::AssignBool { identity, value },
+                            PrivateBoolCondition::Bound(source) =>
+                                PrivateStrAction::AssignBoolFrom { identity, source },
                         };
-                        let expected = if *value { "true" } else { "false" };
-                        if text.get(assignment.expression.start
-                            ..assignment.expression.end) != Some(expected) {
-                            return Err(PrivateStrPrepareError::Unsupported(
-                                "bool 賦值來源與原 Lexer 常值不一致",
-                            ));
-                        }
-                        operations.push(PrivateStrAction::AssignBool {
-                            identity, value: *value,
-                        });
+                        operations.push(action);
                         continue;
                     }
                     if !bound.get(&assignment.name).is_some_and(|(_, mutable)| *mutable) {
@@ -635,6 +623,23 @@ impl PreparedPrivateStr {
                             crate::owned_str_runtime::StrRuntimeError::MissingOwner,
                         )?;
                         *slot = *value;
+                    }
+                    PrivateStrAction::DeclareBoolFrom { identity, source } => {
+                        let copied = bool_values.get(source).copied().ok_or(
+                            crate::owned_str_runtime::StrRuntimeError::MissingOwner,
+                        )?;
+                        if bool_values.insert(*identity, copied).is_some() {
+                            return Err(crate::owned_str_runtime::StrRuntimeError::DuplicateBinding);
+                        }
+                    }
+                    PrivateStrAction::AssignBoolFrom { identity, source } => {
+                        let copied = bool_values.get(source).copied().ok_or(
+                            crate::owned_str_runtime::StrRuntimeError::MissingOwner,
+                        )?;
+                        let slot = bool_values.get_mut(identity).ok_or(
+                            crate::owned_str_runtime::StrRuntimeError::MissingOwner,
+                        )?;
+                        *slot = copied;
                     }
                     PrivateStrAction::LiteralBranch { condition, when_true, when_false } => {
                         let selected = match condition {
