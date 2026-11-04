@@ -49,6 +49,24 @@ impl Value {
     }
 }
 
+/// P18 真正走到的控制轉移；僅記錄 Runtime 已執行的路徑。
+/// 與靜態 CFG、BorrowFact、ResourceEvent 各自獨立。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ControlEvent {
+    FunctionEntered { name: String, span: NodeSpan },
+    FunctionExited { name: String, span: NodeSpan, returned: bool },
+    ConditionChecked { span: NodeSpan, selected: bool },
+    ElseSelected { span: NodeSpan },
+    Returned { span: NodeSpan },
+}
+
+/// 評估與真控制邊同時回傳；遇動態錯誤仍保留已執行路徑，
+#[derive(Debug)]
+pub(crate) struct ExecutionOutcome {
+    pub(crate) result: Result<Value, RuntimeFailure>,
+    pub(crate) events: Vec<ControlEvent>,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     value: Option<Value>,
@@ -121,27 +139,39 @@ impl PreparedProgram {
 
     /// 只把實際運算的值回傳給內部測試；不映射 OS exit code。
     pub(crate) fn execute(&self) -> Result<Value, RuntimeFailure> {
+        self.execute_with_trace().result
+    }
+
+    /// P18-E：由實際 Runtime 產生執行紀錄；來源或 HIR 無效時絕不開始執行。
+    pub(crate) fn execute_with_trace(&self) -> ExecutionOutcome {
         if !self.is_same_verified_source() {
-            return Err(RuntimeFailure::global("來源或驗證身分在準備後遭到變更"));
+            return ExecutionOutcome {
+                result: Err(RuntimeFailure::global("來源或驗證身分在準備後遭到變更")),
+                events: Vec::new(),
+            };
         }
         let mut runtime = Runtime {
             prepared: self,
             globals: BTreeMap::new(),
             frames: Vec::new(),
             calls: Vec::new(),
+            trace: Vec::new(),
         };
-        for item in &self.ast.items {
-            if let Item::Binding(binding) = item {
-                let slot = runtime.initialized_slot(binding)?;
-                runtime.globals.insert(DeclarationId(binding.start), slot);
+        let result = (|| {
+            for item in &self.ast.items {
+                if let Item::Binding(binding) = item {
+                    let slot = runtime.initialized_slot(binding)?;
+                    runtime.globals.insert(DeclarationId(binding.start), slot);
+                }
             }
-        }
-        let result = runtime.call("main", None)?;
-        if result.matches(ScalarType::Int) {
-            Ok(result)
-        } else {
-            Err(RuntimeFailure::global("入口函式未產生已驗證的 int 值"))
-        }
+            let result = runtime.call("main", None)?;
+            if result.matches(ScalarType::Int) {
+                Ok(result)
+            } else {
+                Err(RuntimeFailure::global("入口函式未產生已驗證的 int 值"))
+            }
+        })();
+        ExecutionOutcome { result, events: runtime.trace }
     }
 
     /// 供內部回報動態錯誤來源；與 `DiagnosticKind` 靜態分類隔離。
@@ -158,6 +188,7 @@ struct Runtime<'a> {
     frames: Vec<Vec<BTreeMap<DeclarationId, Slot>>>,
     // 尚未支援遞迴的內部切片，遇到循環必須安全拒絕而非爆堆疊。
     calls: Vec<String>,
+    trace: Vec<ControlEvent>,
 }
 
 impl Runtime<'_> {
@@ -301,11 +332,21 @@ impl Runtime<'_> {
                     let value = self.expression(&assignment.expression)?;
                     self.assign(used.resolved.declaration, value, span)?;
                 }
-                StmtKind::Return(ret) => return self.expression(&ret.expression).map(Some),
+                StmtKind::Return(ret) => {
+                    let value = self.expression(&ret.expression)?;
+                    self.trace.push(ControlEvent::Returned { span: statement.node_span() });
+                    return Ok(Some(value));
+                },
                 StmtKind::IfChain(chain) => {
                     let mut selected = None;
                     for arm in &chain.arms {
                         let condition = self.expression(&arm.branch.condition)?;
+                        if let Value::Bool(selected) = condition {
+                            self.trace.push(ControlEvent::ConditionChecked {
+                                span: arm.branch.condition.node_span(),
+                                selected,
+                            });
+                        }
                         match condition {
                             Value::Bool(true) => {
                                 selected = Some(&arm.branch.body);
@@ -315,6 +356,13 @@ impl Runtime<'_> {
                             _ => return Err(RuntimeFailure::at(
                                 arm.branch.condition.node_span(), "if 條件不是 bool",
                             )),
+                        }
+                    }
+                    if selected.is_none() {
+                        if let Some(otherwise) = chain.otherwise.as_ref() {
+                            self.trace.push(ControlEvent::ElseSelected {
+                                span: NodeSpan::new(otherwise.start, otherwise.end),
+                            });
                         }
                     }
                     if let Some(body) = selected.or(chain.otherwise.as_ref()) {
@@ -341,11 +389,19 @@ impl Runtime<'_> {
         }).ok_or_else(|| RuntimeFailure {
             span: source_span, reason: "不存在已驗證的無參數函式",
         })?;
+        let function_span = NodeSpan::new(function.start, function.end);
+        self.trace.push(ControlEvent::FunctionEntered {
+            name: name.to_string(), span: function_span,
+        });
         self.calls.push(name.to_string());
         self.frames.push(Vec::new());
         let result = self.block(&function.body);
         self.frames.pop();
         self.calls.pop();
+        self.trace.push(ControlEvent::FunctionExited {
+            name: name.to_string(), span: function_span,
+            returned: matches!(&result, Ok(Some(_))),
+        });
         let value = result?.ok_or_else(|| RuntimeFailure {
             span: source_span, reason: "已驗證函式未產生 return",
         })?;
@@ -457,6 +513,158 @@ mod tests {
     fn p18_同一已驗證函式可重複呼叫且每次只執行實際路徑() {
         let code = "fn pick()->int{\nif (true){\nreturn 3\n}\nreturn 9\n}\nfn main()->int{\nreturn pick()+pick()\n}\n";
         assert_eq!(run(code), Ok(Value::Int(6)));
+    }
+
+    #[test]
+    fn p18_真控制邊紀錄只包含實際檢查的條件與返回() {
+        let code = "fn main()->int{\nif (false){\nreturn 99\n}else if(true){\nreturn 7\n}else{\nreturn 100\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(7)));
+        let selected: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::ConditionChecked { selected, .. } => Some(*selected),
+            _ => None,
+        }).collect();
+        assert_eq!(selected, [false, true]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::Returned { .. })).count(), 1);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, ControlEvent::ElseSelected { .. })));
+    }
+
+    #[test]
+    fn p18_無任何成立分支才會紀錄真正_else_選擇() {
+        let code = "fn main()->int{\nif (false){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let outcome = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap()
+            .execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(2)));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::ElseSelected { .. })).count(), 1);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::Returned { .. })).count(), 1);
+    }
+
+    #[test]
+    fn p18_巢狀真函式的進出順序與返回值一致() {
+        let code = "fn inner()->int{\nreturn 2\n}\nfn main()->int{\nreturn inner()+1\n}\n";
+        let outcome = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap()
+            .execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(3)));
+        let calls: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::FunctionEntered { name, .. } =>
+                Some(format!("進入:{name}")),
+            ControlEvent::FunctionExited { name, returned, .. } =>
+                Some(format!("退出:{name}:{returned}")),
+            _ => None,
+        }).collect();
+        assert_eq!(calls, ["進入:main", "進入:inner",
+                           "退出:inner:true", "退出:main:true"]);
+    }
+
+    #[test]
+    fn p18_執行期錯誤保留真實函式退出且不冒稱_return_成功() {
+        let code = "fn explode()->int{\nvar n:int = 9223372036854775807\nreturn n+1\n}\nfn main()->int{\nreturn explode()\n}\n";
+        let outcome = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap()
+            .execute_with_trace();
+        assert_eq!(outcome.result.unwrap_err().reason,
+            "執行時有號 64 位元整數溢位");
+        let exits: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::FunctionExited { name, returned, .. } =>
+                Some((name.as_str(), *returned)),
+            _ => None,
+        }).collect();
+        assert_eq!(exits, [("explode", false), ("main", false)]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, ControlEvent::Returned { .. })));
+    }
+
+    #[test]
+    fn p18_驗證來源被改寫時拒絕且不得產生任何控制事件() {
+        let mut plan = PreparedProgram::prepare(
+            b"fn main()->int{\nreturn 2\n}\n".to_vec()).unwrap();
+        plan.original_bytes[0] = b'x';
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn p18_實際真分支與提前返回事件按路徑順序登錄() {
+        let code = "fn main()->int{\nif (true){\nreturn 7\n}else{\nreturn 9\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(7)));
+        assert_eq!(outcome.events.len(), 4);
+        assert!(matches!(&outcome.events[0], ControlEvent::FunctionEntered { name, .. } if name == "main"));
+        assert!(matches!(&outcome.events[1], ControlEvent::ConditionChecked { selected: true, .. }));
+        assert!(matches!(&outcome.events[2], ControlEvent::Returned { .. }));
+        assert!(matches!(&outcome.events[3], ControlEvent::FunctionExited { returned: true, .. }));
+        assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::ElseSelected { .. })));
+    }
+
+    #[test]
+    fn p18_實際_false_分支只登錄_else_及被執行的返回() {
+        let code = "fn main()->int{\nif (false){\nreturn 99\n}else{\nreturn 4\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(4)));
+        assert_eq!(outcome.events.len(), 5);
+        assert!(matches!(&outcome.events[1], ControlEvent::ConditionChecked { selected: false, .. }));
+        assert!(matches!(&outcome.events[2], ControlEvent::ElseSelected { .. }));
+        assert!(matches!(&outcome.events[3], ControlEvent::Returned { .. }));
+        assert!(matches!(&outcome.events[4], ControlEvent::FunctionExited { returned: true, .. }));
+    }
+
+    #[test]
+    fn p18_多層函式實際事件保持嚴格進出堆疊順序() {
+        let code = "fn main()->int{\nreturn helper()+1\n}\nfn helper()->int{\nreturn 5\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(6)));
+        let simplified: Vec<_> = outcome.events.iter().map(|event| match event {
+            ControlEvent::FunctionEntered { name, .. } => format!("enter:{name}"),
+            ControlEvent::FunctionExited { name, .. } => format!("exit:{name}"),
+            ControlEvent::Returned { .. } => "return".into(),
+            _ => "condition".into(),
+        }).collect();
+        assert_eq!(simplified, ["enter:main", "enter:helper", "return", "exit:helper", "return", "exit:main"]);
+    }
+
+    #[test]
+    fn p18_動態溢位保留真實已進入函式且未成功退出的控制紀錄() {
+        let code = "fn main()->int{\nvar n:int = 9223372036854775807\nif (true){\nreturn n+1\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result.unwrap_err().reason, "執行時有號 64 位元整數溢位");
+        assert_eq!(outcome.events.len(), 3);
+        assert!(matches!(&outcome.events[0], ControlEvent::FunctionEntered { .. }));
+        assert!(matches!(&outcome.events[1], ControlEvent::ConditionChecked { selected: true, .. }));
+        assert!(matches!(&outcome.events[2], ControlEvent::FunctionExited { returned: false, .. }));
+        assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::Returned { .. })));
+    }
+
+    #[test]
+    fn p18_來源或_hir_失效時事件簿必須完全為空() {
+        let mut plan = PreparedProgram::prepare(b"fn main()->int{\nreturn 1\n}\n".to_vec()).unwrap();
+        plan.typed = VerifiedScalarHir::default();
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn p18_多重_else_if_僅登錄實際檢查至成立的分支() {
+        let code = "fn main()->int{\nif (false){\nreturn 1\n}else if (true){\nreturn 2\n}else if (true){\nreturn 3\n}else{\nreturn 4\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(2)));
+        let decisions: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::ConditionChecked { selected, .. } => Some(*selected),
+            _ => None,
+        }).collect();
+        assert_eq!(decisions, [false, true]);
+        assert_eq!(outcome.events.iter().filter(|event| matches!(event, ControlEvent::Returned { .. })).count(), 1);
+        assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::ElseSelected { .. })));
     }
 
 }
