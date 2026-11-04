@@ -171,6 +171,10 @@ jobs:
         run: |
           python3 tools/核對G3正式驗收.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G4 第一批真 Checker 靜態控制轉移與 AST 防偽（非整包簽核）
+        run: |
+          python3 tools/核對G4控制轉移第一批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
