@@ -6,6 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod file;
+mod trace;
 
 use crate::common_ir::{
     self, FrontendMode, NodeSpan, ResolvedNames, ScalarType, VerifiedScalarHir,
@@ -171,6 +172,14 @@ impl PreparedProgram {
                 Err(RuntimeFailure::global("入口函式未產生已驗證的 int 值"))
             }
         })();
+        // P18-E：執行器本身所產生的控制邊若破壞堆疊／返回不變量，
+        // 即使計算有值也不得把它作為成功結果交付。
+        if trace::audit_control_events(&runtime.trace).is_err() {
+            return ExecutionOutcome {
+                result: Err(RuntimeFailure::global("控制事件堆疊或來源驗證失敗")),
+                events: runtime.trace,
+            };
+        }
         ExecutionOutcome { result, events: runtime.trace }
     }
 
@@ -400,7 +409,7 @@ impl Runtime<'_> {
         self.calls.pop();
         self.trace.push(ControlEvent::FunctionExited {
             name: name.to_string(), span: function_span,
-            returned: matches!(&result, Ok(Some(_))),
+            returned: matches!(&result, Ok(Some(value)) if value.matches(function.result_ty)),
         });
         let value = result?.ok_or_else(|| RuntimeFailure {
             span: source_span, reason: "已驗證函式未產生 return",
