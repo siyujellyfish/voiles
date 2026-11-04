@@ -515,4 +515,77 @@ mod tests {
         assert_eq!(run(code), Ok(Value::Int(6)));
     }
 
+    #[test]
+    fn p18_真控制邊紀錄只包含實際檢查的條件與返回() {
+        let code = "fn main()->int{\nif (false){\nreturn 99\n}else if(true){\nreturn 7\n}else{\nreturn 100\n}\nreturn 0\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(7)));
+        let selected: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::ConditionChecked { selected, .. } => Some(*selected),
+            _ => None,
+        }).collect();
+        assert_eq!(selected, [false, true]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::Returned { .. })).count(), 1);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, ControlEvent::ElseSelected { .. })));
+    }
+
+    #[test]
+    fn p18_無任何成立分支才會紀錄真正_else_選擇() {
+        let code = "fn main()->int{\nif (false){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let outcome = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap()
+            .execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(2)));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::ElseSelected { .. })).count(), 1);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::Returned { .. })).count(), 1);
+    }
+
+    #[test]
+    fn p18_巢狀真函式的進出順序與返回值一致() {
+        let code = "fn inner()->int{\nreturn 2\n}\nfn main()->int{\nreturn inner()+1\n}\n";
+        let outcome = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap()
+            .execute_with_trace();
+        assert_eq!(outcome.result, Ok(Value::Int(3)));
+        let calls: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::FunctionEntered { name, .. } =>
+                Some(format!("進入:{name}")),
+            ControlEvent::FunctionExited { name, returned, .. } =>
+                Some(format!("退出:{name}:{returned}")),
+            _ => None,
+        }).collect();
+        assert_eq!(calls, ["進入:main", "進入:inner",
+                           "退出:inner:true", "退出:main:true"]);
+    }
+
+    #[test]
+    fn p18_執行期錯誤保留真實函式退出且不冒稱_return_成功() {
+        let code = "fn explode()->int{\nvar n:int = 9223372036854775807\nreturn n+1\n}\nfn main()->int{\nreturn explode()\n}\n";
+        let outcome = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap()
+            .execute_with_trace();
+        assert_eq!(outcome.result.unwrap_err().reason,
+            "執行時有號 64 位元整數溢位");
+        let exits: Vec<_> = outcome.events.iter().filter_map(|event| match event {
+            ControlEvent::FunctionExited { name, returned, .. } =>
+                Some((name.as_str(), *returned)),
+            _ => None,
+        }).collect();
+        assert_eq!(exits, [("explode", false), ("main", false)]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, ControlEvent::Returned { .. })));
+    }
+
+    #[test]
+    fn p18_驗證來源被改寫時拒絕且不得產生任何控制事件() {
+        let mut plan = PreparedProgram::prepare(
+            b"fn main()->int{\nreturn 2\n}\n".to_vec()).unwrap();
+        plan.original_bytes[0] = b'x';
+        let outcome = plan.execute_with_trace();
+        assert!(outcome.result.is_err());
+        assert!(outcome.events.is_empty());
+    }
+
 }
