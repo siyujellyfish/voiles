@@ -43,6 +43,13 @@ struct PreparedNamedField {
     name: String,
     seed: ApprovedSeed,
 }
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateStructReturn {
+    Int(i64),
+    /// 原私有 Checker 同一來源已證明可 Copyable 的整數欄位讀取。
+    IntField { owner: String, field: String },
+}
+
 struct PreparedPrivateStruct {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -50,7 +57,7 @@ struct PreparedPrivateStruct {
     move_target: Option<(String, DeclarationId, DeclarationId)>,
     fields: Vec<PreparedField>,
     supplied: Vec<PreparedNamedField>,
-    returned: i64,
+    returned: PrivateStructReturn,
 }
 #[derive(Debug)]
 struct PrivateStructOutcome {
@@ -180,12 +187,38 @@ impl PreparedPrivateStruct {
         let StmtKind::Return(ret) = &main.body.statements[main.body.statements.len() - 1].kind else {
             return Err(PrivateStructPrepareError::Unsupported("缺少最後 return"));
         };
-        let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(value)) =
-            &ret.expression.kind else {
-            return Err(PrivateStructPrepareError::Unsupported("只接受明確整數字面值返回"));
+        // 只採用原真正私有 Checker 對此 return 原始跨度簽發的 int TypedHIR，
+        // 絕不由結構欄位名稱或預設種子自行推斷執行許可。
+        if !verified.plan.scalar_hir.expression(ret.expression.node_span())
+            .is_some_and(|fact| fact.ty == crate::common_ir::ScalarType::Int)
+        {
+            return Err(PrivateStructPrepareError::Unsupported(
+                "返回運算式沒有正式私有 Checker 的 int HIR 來源證明",
+            ));
+        }
+        let returned = match &ret.expression.kind {
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(value)) =>
+                PrivateStructReturn::Int(crate::syntax_shared::integer_i64(value)
+                    .map_err(|_| PrivateStructPrepareError::Unsupported("返回值超出 i64 範圍"))?),
+            TermKind::FieldRead(owner, field) => {
+                let legal_owner = owner == &binding.name
+                    || move_target.as_ref().is_some_and(|(name, _, _)| owner == name);
+                if !legal_owner || !fields.iter().any(|item|
+                    item.name == *field
+                        && item.kind == crate::mixed_struct_runtime::ScalarKind::Int
+                ) {
+                    return Err(PrivateStructPrepareError::Unsupported(
+                        "此切片的 return 僅可讀取已驗證的實例 int 欄位",
+                    ));
+                }
+                PrivateStructReturn::IntField {
+                    owner: owner.clone(), field: field.clone(),
+                }
+            }
+            _ => return Err(PrivateStructPrepareError::Unsupported(
+                "此切片僅可返回已驗證整數常值或 Copyable 整數欄位",
+            )),
         };
-        let returned = crate::syntax_shared::integer_i64(value)
-            .map_err(|_| PrivateStructPrepareError::Unsupported("返回值超出 i64 範圍"))?;
         let binding_name = binding.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
@@ -248,7 +281,16 @@ impl PreparedPrivateStruct {
             if let Some((target, _, _)) = &self.move_target {
                 runtime.move_whole(&self.binding_name, target)?;
             }
-            Ok(self.returned)
+            match &self.returned {
+                PrivateStructReturn::Int(value) => Ok(*value),
+                PrivateStructReturn::IntField { owner, field } =>
+                    match runtime.field(owner, field)? {
+                        crate::mixed_struct_runtime::Observed::Int(value) => Ok(value),
+                        _ => Err(crate::mixed_struct_runtime::MixedError::TypeMismatch(
+                            field.clone(),
+                        )),
+                    },
+            }
         })();
         // 所有真 UTF-8 資源均由唯一 P16 Runtime 負責清理；
         // 靜態 CleanupObligation 不可直接製造動態 Released 事件。
@@ -330,7 +372,7 @@ mod p17_private_struct_execution_tests {
     fn p17_f_入口返回整數與實例名稱若被竄改不能沿用原來源() {
         let code = "struct Note{\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 2\n}\n";
         let mut prepared = checked(code);
-        prepared.returned = 9;
+        prepared.returned = PrivateStructReturn::Int(9);
         assert!(matches!(prepared.execute(),
             Err(PrivateStructPrepareError::SourceChanged)));
         let mut prepared = checked(code);
@@ -495,6 +537,69 @@ mod p17_private_struct_execution_tests {
         let outcome = checked(source).execute().unwrap();
         assert_eq!(outcome.result, Ok(0));
         assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn p17_f_真實混合結構整數欄位返回取當次執行值而非預設種子() {
+        let source = "struct Note{\nvar count:int = 2\nvar label:str = \"繁體\"\n}\nfn main()->int{\nvar note:Note = Note(count=9)\nreturn note.count\n}\n";
+        let plan = checked(source);
+        for _ in 0..2 {
+            let outcome = plan.execute().unwrap();
+            assert_eq!(outcome.result, Ok(9));
+            assert_eq!(outcome.events, [
+                ResourceEvent::Created(1), ResourceEvent::Released(1),
+            ]);
+        }
+    }
+
+    #[test]
+    fn p17_c_整筆移動後從真接收者讀取可複製整數欄位() {
+        let source = "struct Note{\nvar count:int = 7\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar original:Note = Note()\nvar moved:Note = original.move()\nreturn moved.count\n}\n";
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(7));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_c_移動後原持有者整數欄位讀取須由_checker_預先拒絕() {
+        let source = "struct Note{\nvar count:int = 7\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar original:Note = Note()\nvar moved:Note = original.move()\nreturn original.count\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_未初始化的_var_整數欄位不得以已驗證型別偷讀() {
+        let source = "struct Note{\nvar count:int\n}\nfn main()->int{\nvar note:Note = Note()\nreturn note.count\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p17_f_準備後竄改真返回欄位的名稱須在資源建立前拒絕() {
+        let source = "struct Note{\nvar count:int = 3\nvar other:int = 4\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar note:Note = Note()\nreturn note.count\n}\n";
+        let mut plan = checked(source);
+        plan.returned = PrivateStructReturn::IntField {
+            owner: "note".into(), field: "other".into(),
+        };
+        assert!(matches!(
+            plan.execute(),
+            Err(PrivateStructPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn p17_f_非_copyable_str_欄位不得冒充整數返回() {
+        let source = "struct Note{\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar note:Note = Note()\nreturn note.label\n}\n";
+        assert!(matches!(
+            PreparedPrivateStruct::prepare(source),
+            Err(PrivateStructPrepareError::Check(_)),
+        ));
     }
 
 }
