@@ -16,11 +16,20 @@ enum PrivateStrAction {
     AssignMoved { to: String, from: String },
     /// P18-B：只執行真 Checker 已封閉的 bool 常值分支及局部字串。
     LiteralBranch {
-        condition: bool,
+        condition: PrivateBoolCondition,
         when_true: Vec<PrivateStrLocalLiteral>,
         when_false: Vec<PrivateStrLocalLiteral>,
     },
+    /// P18-B：保留真 Checker 宣告身份的已初始化 bool 純值。
+    DeclareBool { identity: DeclarationId, value: bool },
     Return(i64),
+}
+/// 具名 bool 必須已在來源中由原 Checker 確認宣告和型別；
+/// Runtime 自身以 DeclarationId 讀取，不從同名文字猜測。
+#[derive(Debug, Clone, Copy)]
+enum PrivateBoolCondition {
+    Constant(bool),
+    Bound(DeclarationId),
 }
 #[derive(Debug)]
 struct PrivateStrLocalLiteral {
@@ -138,6 +147,7 @@ impl PreparedPrivateStr {
             ));
         }
         let mut bound = BTreeMap::<String, (DeclarationId, bool)>::new();
+        let mut bool_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut operations = Vec::new();
         let mut returned = false;
         let mut has_resource = false;
@@ -146,6 +156,42 @@ impl PreparedPrivateStr {
                 return Err(PrivateStrPrepareError::Unsupported("return 後不執行語句"));
             }
             match &statement.kind {
+                StmtKind::Declare(binding) if binding.ty == "bool" => {
+                    let identity = DeclarationId(binding.start);
+                    let typed = verified.plan.declarations.typed_declaration(identity)
+                        .ok_or(PrivateStrPrepareError::Unsupported(
+                            "具名 bool 缺少真 Checker 宣告身分",
+                        ))?;
+                    if typed.ty != "bool" || typed.mutable != binding.mutable
+                        || bound.contains_key(&binding.name)
+                        || bool_bindings.contains_key(&binding.name) {
+                        return Err(PrivateStrPrepareError::Unsupported(
+                            "bool 宣告型別、可寫權限或唯一身分不符",
+                        ));
+                    }
+                    let Some(init) = &binding.initializer else {
+                        return Err(PrivateStrPrepareError::Unsupported(
+                            "此執行切片要求 bool 有直接初始值",
+                        ));
+                    };
+                    let TermKind::Scalar(
+                        crate::syntax_shared::ScalarLiteral::Boolean(value),
+                    ) = &init.kind else {
+                        return Err(PrivateStrPrepareError::Unsupported(
+                            "此執行切片只接受原 Lexer 的 bool 常值初始值",
+                        ));
+                    };
+                    let expected = if *value { "true" } else { "false" };
+                    if text.get(init.start..init.end) != Some(expected) {
+                        return Err(PrivateStrPrepareError::Unsupported(
+                            "bool 原始常值與真 Parser 來源不一致",
+                        ));
+                    }
+                    bool_bindings.insert(binding.name.clone(), identity);
+                    operations.push(PrivateStrAction::DeclareBool {
+                        identity, value: *value,
+                    });
+                }
                 StmtKind::Declare(binding) if binding.ty == "str" => {
                     let identity = DeclarationId(binding.start);
                     let typed = verified.plan.declarations.typed_declaration(identity)
@@ -153,7 +199,8 @@ impl PreparedPrivateStr {
                     if typed.ty != "str" || typed.mutable != binding.mutable {
                         return Err(PrivateStrPrepareError::Unsupported("宣告型別或寫入權限不一致"));
                     }
-                    if bound.contains_key(&binding.name) {
+                    if bound.contains_key(&binding.name)
+                        || bool_bindings.contains_key(&binding.name) {
                         return Err(PrivateStrPrepareError::Unsupported("此切片禁止同名遮蔽"));
                     }
                     let init = binding.initializer.as_ref()
@@ -227,12 +274,38 @@ impl PreparedPrivateStr {
                     operations.push(action);
                 }
                 StmtKind::If { branch, no } => {
-                    let TermKind::Scalar(
-                        crate::syntax_shared::ScalarLiteral::Boolean(condition),
-                    ) = &branch.branch.condition.kind else {
-                        return Err(PrivateStrPrepareError::Unsupported(
-                            "此批私有資源分支只執行真 bool 常值條件",
-                        ));
+                    let condition = match &branch.branch.condition.kind {
+                        TermKind::Scalar(
+                            crate::syntax_shared::ScalarLiteral::Boolean(value),
+                        ) => {
+                            let expected = if *value { "true" } else { "false" };
+                            if text.get(branch.branch.condition.start
+                                ..branch.branch.condition.end) != Some(expected) {
+                                return Err(PrivateStrPrepareError::Unsupported(
+                                    "bool 條件與真來源詞彙不一致",
+                                ));
+                            }
+                            PrivateBoolCondition::Constant(*value)
+                        }
+                        TermKind::Name(name) => {
+                            let identity = bool_bindings.get(name).copied()
+                                .ok_or(PrivateStrPrepareError::Unsupported(
+                                    "此切片只允許已驗證的同函式 bool 宣告作條件",
+                                ))?;
+                            if !verified.tokens.iter().any(|token|
+                                token.start == branch.branch.condition.start
+                                && token.end == branch.branch.condition.end
+                                && matches!(&token.kind, TokenKind::Name(lexed) if lexed == name)
+                            ) {
+                                return Err(PrivateStrPrepareError::Unsupported(
+                                    "bool 條件未對應原 Lexer 已解析的具名 token",
+                                ));
+                            }
+                            PrivateBoolCondition::Bound(identity)
+                        }
+                        _ => return Err(PrivateStrPrepareError::Unsupported(
+                            "此切片僅執行 bool 常值或同函式已驗證 bool 名稱",
+                        )),
                     };
                     let when_true = prepare_str_literal_branch(
                         &branch.branch.body, &verified,
@@ -249,7 +322,7 @@ impl PreparedPrivateStr {
                         has_resource = true;
                     }
                     operations.push(PrivateStrAction::LiteralBranch {
-                        condition: *condition, when_true, when_false,
+                        condition, when_true, when_false,
                     });
                 }
                 StmtKind::Return(ret) => {
@@ -293,6 +366,7 @@ impl PreparedPrivateStr {
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         let result = (|| {
+            let mut bool_values = BTreeMap::<DeclarationId, bool>::new();
             let mut assignment_index = 0usize;
             for op in &self.operations {
                 match op {
@@ -308,10 +382,22 @@ impl PreparedPrivateStr {
                     }
                     PrivateStrAction::AssignMoved { to, from } =>
                         resources.replace_from(from, to)?,
+                    PrivateStrAction::DeclareBool { identity, value } => {
+                        if bool_values.insert(*identity, *value).is_some() {
+                            return Err(crate::owned_str_runtime::StrRuntimeError::DuplicateBinding);
+                        }
+                    }
                     PrivateStrAction::LiteralBranch { condition, when_true, when_false } => {
+                        let selected = match condition {
+                            PrivateBoolCondition::Constant(value) => *value,
+                            PrivateBoolCondition::Bound(identity) =>
+                                bool_values.get(identity).copied().ok_or(
+                                    crate::owned_str_runtime::StrRuntimeError::MissingOwner,
+                                )?,
+                        };
                         execute_str_literal_branch(
                             &mut resources,
-                            if *condition { when_true } else { when_false },
+                            if selected { when_true } else { when_false },
                         )?;
                     }
                     PrivateStrAction::Return(value) => return Ok(*value),
@@ -396,6 +482,60 @@ mod p17_private_str_execution_tests {
         ));
     }
 
+
+
+    #[test]
+    fn p18_b_具名_bool_條件由真宣告身分決定實際資源分支() {
+        let code = "fn main()->int{\nconst choose:bool = true\nvar outer:str = \"外\"\nif (choose){\nvar selected:str = \"入\"\n}else{\nvar skipped:str = \"不執行\"\n}\nreturn 2\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).expect("具名 bool 必須先完成真 Checker");
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(2));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_具名_bool_false_未選分支永不產生_utf8_資源() {
+        let code = "fn main()->int{\nvar choose:bool = false\nvar outer:str = \"外\"\nif (choose){\nvar skipped:str = \"未執行\"\n}\nreturn 0\n}\n";
+        let outcome = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_來源為_bool_但是由字串同名冒充條件須事前拒絕() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif (outer){\nvar skipped:str = \"拒絕\"\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn p18_b_未初始化_bool_或未知名稱不得開始資源執行() {
+        for code in [
+            "fn main()->int{\nvar flag:bool\nvar outer:str = \"a\"\nif (flag){\nvar x:str = \"x\"\n}\nreturn 0\n}\n",
+            "fn main()->int{\nvar outer:str = \"a\"\nif (unknown){\nvar x:str = \"x\"\n}\nreturn 0\n}\n",
+        ] {
+            assert!(matches!(
+                PreparedPrivateStr::prepare(code),
+                Err(PrivateStrPrepareError::Check(_)),
+            ));
+        }
+    }
+
+    #[test]
+    fn p18_b_非純值_bool_初始式即便_checker_通過也不偷渡新求值能力() {
+        let code = "fn main()->int{\nvar first:bool = true\nvar second:bool = first\nvar outer:str = \"x\"\nif (second){\nvar x:str = \"x\"\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Unsupported(_)),
+        ));
+    }
 
     #[test]
     fn p18_b_真私有_成立分支建立兩筆_str_並在外層返回前逆序清理() {

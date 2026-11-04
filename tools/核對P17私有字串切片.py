@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對十七項 P17-C／P18-B 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對二十二項 P17-C／P18-B 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ from pathlib import Path
     "p18_b_局部同名遮蔽在離開真資源作用域後不破壞外層持有者",
     "p18_b_分支局部所有者跨作用域外洩必須在_checker_拒絕",
     "p18_b_分支內返回或巢狀資源控制尚未驗證必須保守拒絕",
+    "p18_b_具名_bool_條件由真宣告身分決定實際資源分支",
+    "p18_b_具名_bool_false_未選分支永不產生_utf8_資源",
+    "p18_b_來源為_bool_但是由字串同名冒充條件須事前拒絕",
+    "p18_b_未初始化_bool_或未知名稱不得開始資源執行",
+    "p18_b_非純值_bool_初始式即便_checker_通過也不偷渡新求值能力",
 )
 
 
