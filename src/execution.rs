@@ -174,7 +174,10 @@ impl PreparedProgram {
         })();
         // P18-E：執行器本身所產生的控制邊若破壞堆疊／返回不變量，
         // 即使計算有值也不得把它作為成功結果交付。
-        if trace::audit_control_events(&runtime.trace).is_err() {
+        if trace::audit_control_events_against_source(
+            &runtime.trace, &self.ast,
+            std::str::from_utf8(&self.source.bytes).unwrap_or(""),
+        ).is_err() {
             return ExecutionOutcome {
                 result: Err(RuntimeFailure::global("控制事件堆疊或來源驗證失敗")),
                 events: runtime.trace,
