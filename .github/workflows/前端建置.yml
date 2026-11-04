@@ -78,6 +78,9 @@ jobs:
       - name: P17-C/F 真 TypedHIR 結構整數算式與溢位清理三十二項正反 Gate
         run: python3 tools/核對P17結構建立切片.py --test-bin target/p02/p04_source_internal
 
+      - name: G17 P17.3 真私有 Checker 借用來源與動態 BorrowTicket 八項正反 Gate
+        run: python3 tools/核對G17真借用票據.py --test-bin target/p02/p04_source_internal
+
       - name: P21-A 多檔 canonical／inode 身分與來源快照九項正反 Gate
         run: python3 tools/核對P21來源登錄切片.py --test-bin target/p02/p04_source_internal
 
