@@ -679,6 +679,68 @@ mod p17_private_str_execution_tests {
 
 
 
+
+    #[test]
+    fn p18_b_已驗證_var_bool_從_true_改為_false_只執行_else_資源() {
+        let code = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nflag = false\nif(flag){\nvar skipped:str = \"不建立\"\n}else{\nvar chosen:str = \"實際建立\"\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(0));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_已驗證_var_bool_從_false_改為_true_真正提前返回且清理() {
+        let code = "fn main()->int{\nvar flag:bool = false\nvar outer:str = \"外\"\nflag = true\nif(flag){\nvar chosen:str = \"內\"\nreturn 7\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(7));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_同一_bool_多次重新賦值須以真正最後值選擇分支() {
+        let code = "fn main()->int{\nvar flag:bool = true\nflag = false\nflag = true\nvar outer:str = \"外\"\nif(flag){\nvar yes:str = \"實際\"\n}else{\nvar no:str = \"不執行\"\n}\nreturn 3\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(3));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_兩個具名_bool_else_if_重新賦值後僅執行最後_else() {
+        let code = "fn main()->int{\nvar first:bool = false\nvar second:bool = true\nsecond = false\nvar outer:str = \"外\"\nif(first){\nvar first_value:str = \"不執行一\"\n}else if(second){\nvar second_value:str = \"不執行二\"\n}else{\nvar fallback:str = \"執行\"\nreturn 4\n}\nreturn 0\n}\n";
+        let actual = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(actual.result, Ok(4));
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_b_const_bool_不得經重新賦值偽裝成合法可寫條件() {
+        let code = "fn main()->int{\nconst flag:bool = true\nflag = false\nvar title:str = \"外\"\nreturn 0\n}\n";
+        assert!(matches!(PreparedPrivateStr::prepare(code),
+            Err(PrivateStrPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn p18_b_已準備_bool_賦值動作被改寫不能沿用_checker_來源授權() {
+        let code = "fn main()->int{\nvar flag:bool = true\nflag = false\nvar title:str = \"合法\"\nif(flag){\nvar skipped:str = \"不執行\"\n}\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::AssignBool { value, .. } = &mut plan.operations[1]
+            else { panic!("第二筆必須是真 bool 賦值") };
+        *value = true;
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn p17_c_原私有來源動作計畫未變可連續真正執行並完成清理() {
         let code = "fn main()->int{\nvar outer:str = \"外層\"\nif(true){\nvar inside:str = \"內層\"\n}\nreturn 2\n}\n";
