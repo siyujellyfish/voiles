@@ -161,18 +161,30 @@ fn prepare_str_literal_branch(
 fn execute_str_literal_branch(
     resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
     branch: &PrivateStrBranchBody,
+    /// 僅 Rust 內部回歸注入：第幾筆真完成的「分支局部宣告」之後故障。
+    fail_after_branch_declaration: Option<usize>,
+    completed_branch_declarations: &mut usize,
 ) -> Result<Option<i64>, crate::owned_str_runtime::StrRuntimeError> {
     resources.enter_scope();
     let result = (|| {
         for action in &branch.actions {
             match action {
-                PrivateStrLocalAction::Declare(binding) =>
-                    resources.declare(&binding.name, binding.mutable, &binding.text)?,
+                PrivateStrLocalAction::Declare(binding) => {
+                    resources.declare(&binding.name, binding.mutable, &binding.text)?;
+                    let completed_at = *completed_branch_declarations;
+                    *completed_branch_declarations += 1;
+                    // 故障發生在真正建立 UTF-8 ResourceId 後，而非虛擬事件。
+                    // 所有層級仍由原 P16 Runtime 的 leave_scope 實際清理。
+                    if fail_after_branch_declaration == Some(completed_at) {
+                        return Err(crate::owned_str_runtime::StrRuntimeError::EvaluationFailed);
+                    }
+                },
                 PrivateStrLocalAction::NestedLiteralBranch {
                     condition, when_true, when_false,
                 } => {
                     let nested = execute_str_literal_branch(
                         resources, if *condition { when_true } else { when_false },
+                        fail_after_branch_declaration, completed_branch_declarations,
                     )?;
                     if nested.is_some() {
                         // 先由遞迴被呼叫者 leave_scope；本層的 finally
@@ -447,6 +459,21 @@ impl PreparedPrivateStr {
     fn execute_with_fault(
         &self, fail_assignment_at: Option<usize>,
     ) -> Result<PrivateStrOutcome, PrivateStrPrepareError> {
+        self.execute_with_test_faults(fail_assignment_at, None)
+    }
+
+    /// 專供 Rust 內部真資源失敗清理測試；不是 voiles 已核准例外。
+    fn execute_with_branch_fault(
+        &self, fail_after_branch_declaration: Option<usize>,
+    ) -> Result<PrivateStrOutcome, PrivateStrPrepareError> {
+        self.execute_with_test_faults(None, fail_after_branch_declaration)
+    }
+
+    fn execute_with_test_faults(
+        &self,
+        fail_assignment_at: Option<usize>,
+        fail_after_branch_declaration: Option<usize>,
+    ) -> Result<PrivateStrOutcome, PrivateStrPrepareError> {
         let Ok(text) = std::str::from_utf8(&self.verified.source.bytes) else {
             return Err(PrivateStrPrepareError::SourceChanged);
         };
@@ -460,6 +487,7 @@ impl PreparedPrivateStr {
         let result = (|| {
             let mut bool_values = BTreeMap::<DeclarationId, bool>::new();
             let mut assignment_index = 0usize;
+            let mut completed_branch_declarations = 0usize;
             for op in &self.operations {
                 match op {
                     PrivateStrAction::DeclareLiteral { name, mutable, text } =>
@@ -490,6 +518,8 @@ impl PreparedPrivateStr {
                         if let Some(value) = execute_str_literal_branch(
                             &mut resources,
                             if selected { when_true } else { when_false },
+                            fail_after_branch_declaration,
+                            &mut completed_branch_declarations,
                         )? {
                             // 分支的真作用域已離開；其資源已由原 P16 Runtime
                             // 先完成逆序釋放，外層資源再交由 finish() 清理。
@@ -633,6 +663,64 @@ mod p17_private_str_execution_tests {
         ));
     }
 
+
+
+    #[test]
+    fn p18_e_巢狀第三筆字串建立後注入失敗逐層逆序回滾() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(true){\nvar leaf:str = \"葉\"\n}\n}\nreturn 9\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).unwrap();
+        let result = plan.execute_with_branch_fault(Some(1)).unwrap();
+        assert_eq!(result.result, Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_e_外層第一筆局部資源建立後失敗不漏清理根持有者() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(true){\nvar unreachable:str = \"不建立\"\n}\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap()
+            .execute_with_branch_fault(Some(0)).unwrap();
+        assert_eq!(result.result, Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_e_未選分支故障注入不得因預先分析而被誤觸發() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(false){\nvar skipped:str = \"未執行\"\n}\nreturn 5\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap()
+            .execute_with_branch_fault(Some(0)).unwrap();
+        assert_eq!(result.result, Ok(5));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_e_具名_false_選擇_else_後故障只作用於真求值的資源() {
+        let code = "fn main()->int{\nconst choose:bool = false\nvar outer:str = \"外\"\nif(choose){\nvar skipped:str = \"不計數\"\n}else{\nvar chosen:str = \"實際配置\"\n}\nreturn 0\n}\n";
+        let result = PreparedPrivateStr::prepare(code).unwrap()
+            .execute_with_branch_fault(Some(0)).unwrap();
+        assert_eq!(result.result, Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_e_來源失效時故障注入亦不能提前建立任何資源() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar inner:str = \"內\"\n}\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        plan.verified.source.bytes[0] = b'x';
+        assert!(matches!(plan.execute_with_branch_fault(Some(0)),
+            Err(PrivateStrPrepareError::SourceChanged)));
+    }
 
     #[test]
     fn p18_c_成立分支提前返回先離開內層資源再清理外層() {

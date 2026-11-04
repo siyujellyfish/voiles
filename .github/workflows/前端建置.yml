@@ -72,7 +72,7 @@ jobs:
       - name: P17／P18 真求值、控制事件條件鏈與返回路徑五十五項正反 Gate
         run: python3 tools/核對G17內部切片.py --test-bin target/p02/p04_source_internal
 
-      - name: P17-C／P18-B/C 真 str 巢狀 return 與資源逐層清理三十七項正反 Gate
+      - name: P17-C／P18-B/C/E 真 str 巢狀返回與動態故障清理四十二項正反 Gate
         run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
 
       - name: P17-F 私有具名結構實際建構與預設／回滾六項正反 Gate

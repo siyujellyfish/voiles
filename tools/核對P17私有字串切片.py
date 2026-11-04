@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對三十七項 P17-C／P18-B／P18-C 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對四十二項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -36,6 +36,11 @@ from pathlib import Path
     "p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     "p18_c_巢狀_false_的_else_實際返回且未執行分支零事件",
     "p18_c_巢狀_false_未返回而正常離域後使用外層返回",
+    "p18_e_巢狀第三筆字串建立後注入失敗逐層逆序回滾",
+    "p18_e_外層第一筆局部資源建立後失敗不漏清理根持有者",
+    "p18_e_未選分支故障注入不得因預先分析而被誤觸發",
+    "p18_e_具名_false_選擇_else_後故障只作用於真求值的資源",
+    "p18_e_來源失效時故障注入亦不能提前建立任何資源",
     "p18_b_具名_bool_條件由真宣告身分決定實際資源分支",
     "p18_b_具名_bool_false_未選分支永不產生_utf8_資源",
     "p18_b_來源為_bool_但是由字串同名冒充條件須事前拒絕",
