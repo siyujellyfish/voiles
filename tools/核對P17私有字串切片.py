@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對十七項 P17-C／P18-B 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對二十三項 P17-C／P18-B 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -26,6 +26,12 @@ from pathlib import Path
     "p18_b_局部同名遮蔽在離開真資源作用域後不破壞外層持有者",
     "p18_b_分支局部所有者跨作用域外洩必須在_checker_拒絕",
     "p18_b_分支內返回或巢狀資源控制尚未驗證必須保守拒絕",
+    "p18_b_巢狀兩層_true_的真資源按執行路徑逆序釋放",
+    "p18_b_巢狀_false_只建立內層_else_實際資源",
+    "p18_b_最外層_false_不得執行任何巢狀真資源",
+    "p18_b_兩層同名局部遮蔽維持獨立持有者與逆序釋放",
+    "p18_b_巢狀分支局部變數逃逸由真_checker_提前拒絕",
+    "p18_b_巢狀分支內的_return_動態清理尚未接通必須拒絕",
 )
 
 
