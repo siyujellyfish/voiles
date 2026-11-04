@@ -335,7 +335,7 @@ mod tests {
     }
 
     #[test]
-    fn p18_e_真假_else_必須由全 false_決策鏈觸發() {
+    fn p18_e_真假_else_必須由全_false_決策鏈觸發() {
         let code = "fn main()->int{\nif(false){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
         let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
         let mut events = plan.execute_with_trace().events;
