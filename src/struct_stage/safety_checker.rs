@@ -1,6 +1,14 @@
 // 對應 P16.6-R01 無語意變更之實作拆檔。
 /// A2/F02：只有這個真正 Checker 名稱決策能將 name()
 /// 裁決為已核准 struct 或零參數 fn；缺名維持舊拒絕路徑。
+/// G3：公開與私有仍保持原解析模式；私有最後使用點與參數整筆
+/// .move() 只准消費同一詞彙已解析 DeclarationId use-def 結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ResolvedUseKind {
+    All,
+    WholeMove,
+}
+
 enum ZeroArgResolution<'a> {
     Structure,
     Function(&'a Function),
@@ -162,94 +170,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         None
     }
 
-    /// G3/F07：只有真正指向函式參數 DeclarationId 的 .move() 才可
-    /// 改變參數借用／持有者預設資格；不能因內層同名遮蔽的 move
-    /// 誤把外層參數標成已消耗的獨立所有者。
-    ///
-    /// 此處不預先執行借用或資源交易，僅從原 Parser AST 的
-    /// 詞彙環境唯讀解析 use-def。完整非法語意由後續 Checker 拒絕。
-    fn term_moves_source(
-        term: &Term, visible: &HashMap<String, DeclarationId>,
-        source: DeclarationId,
-    ) -> bool {
-        match &term.kind {
-            TermKind::Group(inner) =>
-                Self::term_moves_source(inner, visible, source),
-            TermKind::Move(name) => visible.get(name) == Some(&source),
-            TermKind::Construct(_, args) =>
-                args.iter().any(|(_, term)|
-                    Self::term_moves_source(term, visible, source)),
-            TermKind::Call(call) =>
-                call.arguments.iter().any(|term|
-                    Self::term_moves_source(term, visible, source)),
-            TermKind::MethodCall(_, _, args) =>
-                args.iter().any(|term|
-                    Self::term_moves_source(term, visible, source)),
-            TermKind::BinaryInt(binary) =>
-                Self::term_moves_source(&binary.left, visible, source)
-                    || Self::term_moves_source(&binary.right, visible, source),
-            // 借用、欄位 move 與普通名字不代表參數整筆移交。
-            _ => false,
-        }
-    }
-
-    /// 區塊的合法詞彙宣告在 RHS 求值後才入域；
-    /// if/else-if、while、for 的宣告／迭代器在分支內遮蔽外層，
-    /// 確定無後繼的退出不應再掃描不可達的 .move()。
-    fn block_moves_source(
-        body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
-        source: DeclarationId,
-    ) -> bool {
-        for stmt in body {
-            let consumes = match &stmt.kind {
-                StmtKind::Declare(declaration) => {
-                    let in_rhs = declaration.initializer.as_ref()
-                        .is_some_and(|term| Self::term_moves_source(term, visible, source));
-                    visible.insert(declaration.name.clone(), DeclarationId(stmt.start));
-                    in_rhs
-                }
-                StmtKind::Assign(assignment) =>
-                    Self::term_moves_source(&assignment.expression, visible, source),
-                StmtKind::FieldAssign { value, .. } =>
-                    Self::term_moves_source(value, visible, source),
-                StmtKind::Return(value) =>
-                    Self::term_moves_source(&value.expression, visible, source),
-                StmtKind::If { branch, no } => {
-                    Self::term_moves_source(&branch.condition, visible, source)
-                        || Self::block_moves_source(
-                            &branch.body, &mut visible.clone(), source)
-                        || no.as_ref().is_some_and(|other|
-                            Self::block_moves_source(
-                                other, &mut visible.clone(), source))
-                }
-                StmtKind::While { condition, body } =>
-                    Self::term_moves_source(condition, visible, source)
-                        || Self::block_moves_source(body, &mut visible.clone(), source),
-                StmtKind::ForRange { iterator, iterator_start, lower, upper, body } => {
-                    if Self::known_range_iterations(lower, upper) == Some(0) {
-                        false
-                    } else {
-                        let mut nested = visible.clone();
-                        nested.insert(iterator.clone(), DeclarationId(*iterator_start));
-                        Self::block_moves_source(body, &mut nested, source)
-                    }
-                }
-                StmtKind::Break | StmtKind::Continue => false,
-            };
-            if consumes { return true; }
-            if Self::future_stmt_must_exit(stmt) { break; }
-        }
-        false
-    }
-
+    /// 參數只在「真正指向此 Parameter DeclarationId」的已解析
+    /// WholeMove use-def 存在時才視為消耗。與最後使用點的活性分析
+    /// 共用同一份詞彙解析器，不為同名遮蔽重建第二套規則。
     fn parameter_is_consumed(function: &Function, name: &str) -> bool {
         let Some(parameter) = function.params.iter().find(|p| p.name == name) else {
             return false;
         };
         let source = DeclarationId(parameter.declaration_start);
-        let mut visible = function.params.iter().map(|p|
-            (p.name.clone(), DeclarationId(p.declaration_start))).collect();
-        Self::block_moves_source(&function.body, &mut visible, source)
+        let mut visible: HashMap<String, DeclarationId> = function.params.iter()
+            .map(|p| (p.name.clone(), DeclarationId(p.declaration_start))).collect();
+        let mut consumed = BTreeSet::new();
+        Self::scan_resolved_block_uses(
+            &function.body, &mut visible, &mut consumed, ResolvedUseKind::WholeMove);
+        consumed.contains(&source)
     }
 
     /// HC14-A：以實際宣告來源身分查找全部仍有效的非擁有借用。
@@ -397,9 +331,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    /// F07：從實際詞彙宣告環境一次解析後繼中的全部 use-def 身分。
-    /// 語句 RHS 先於新宣告入域；分支／迴圈有獨立的名稱遮蔽，
-    /// 不把動態迭代實例誤認為同一個靜態票據。
+    /// 真正 Lexer/Parser 提供 AST 節點，唯讀詞彙入口提供已驗證
+    /// DeclarationId；兩種用途都必須用這份共同 use-def 掃描器。
+    /// All 保留後繼活性，WholeMove 只認列整筆所有權消耗。
     fn record_named_future_use(
         visible: &HashMap<String, DeclarationId>,
         used: &mut BTreeSet<DeclarationId>, name: &str,
@@ -409,36 +343,45 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
-    fn scan_future_term_uses(
+    fn scan_resolved_term_uses(
         term: &Term, visible: &HashMap<String, DeclarationId>,
-        used: &mut BTreeSet<DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>, kind: ResolvedUseKind,
     ) {
         match &term.kind {
-            TermKind::Group(inner) => Self::scan_future_term_uses(inner, visible, used),
-            TermKind::Name(name) | TermKind::Move(name) | TermKind::Borrow(name)
-            | TermKind::FieldRead(name, _) | TermKind::FieldMove(name, _) =>
+            TermKind::Group(inner) =>
+                Self::scan_resolved_term_uses(inner, visible, used, kind),
+            TermKind::Move(name) =>
+                Self::record_named_future_use(visible, used, name),
+            TermKind::Name(name) | TermKind::Borrow(name)
+                | TermKind::FieldRead(name, _) | TermKind::FieldMove(name, _)
+                if kind == ResolvedUseKind::All =>
                 Self::record_named_future_use(visible, used, name),
             TermKind::MethodCall(receiver, _, arguments) => {
-                Self::record_named_future_use(visible, used, receiver);
-                for term in arguments {
-                    Self::scan_future_term_uses(term, visible, used);
+                if kind == ResolvedUseKind::All {
+                    Self::record_named_future_use(visible, used, receiver);
+                }
+                for value in arguments {
+                    Self::scan_resolved_term_uses(value, visible, used, kind);
                 }
             }
             TermKind::Construct(_, fields) => {
-                for (_, term) in fields {
-                    Self::scan_future_term_uses(term, visible, used);
+                for (_, value) in fields {
+                    Self::scan_resolved_term_uses(value, visible, used, kind);
                 }
             }
             TermKind::Call(call) => {
-                for term in &call.arguments {
-                    Self::scan_future_term_uses(term, visible, used);
+                for value in &call.arguments {
+                    Self::scan_resolved_term_uses(value, visible, used, kind);
                 }
             }
             TermKind::BinaryInt(binary) => {
-                Self::scan_future_term_uses(&binary.left, visible, used);
-                Self::scan_future_term_uses(&binary.right, visible, used);
+                Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
+                Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
             }
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => {}
+            TermKind::Scalar(_) | TermKind::Literal(_)
+            | TermKind::UnresolvedZeroArgs(_) | TermKind::Name(_)
+            | TermKind::Borrow(_) | TermKind::FieldRead(_, _)
+            | TermKind::FieldMove(_, _) => {}
         }
     }
 
@@ -477,69 +420,73 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::future_block_exit(body).is_some()
     }
 
-    fn scan_future_block_uses(
+    /// 對原 AST 的唯一詞彙 DeclarationId use-def 掃描；
+    /// 只追蹤入口已可見的真來源，RHS 在宣告遮蔽前先求值。
+    /// 分支／迴圈有獨立的詞彙視圖，不產生真 ResourceId／票據。
+    fn scan_resolved_block_uses(
         body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
-        used: &mut BTreeSet<DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>, kind: ResolvedUseKind,
     ) {
         for statement in body {
             match &statement.kind {
                 StmtKind::Declare(declaration) => {
-                    let name = &declaration.name;
-                    let init = &declaration.initializer;
-                    if let Some(term) = init {
-                        Self::scan_future_term_uses(term, visible, used);
+                    if let Some(term) = &declaration.initializer {
+                        Self::scan_resolved_term_uses(term, visible, used, kind);
                     }
-                    // 未來宣告在 RHS 之後才遮蔽外層。詞法位置不是
-                    // 下一輪迭代的動態借用票據身分。
-                    // 本次掃描只關心入口既存的借用身分。
-                    // 無論新宣告位置是否與入口 ID 相同，重建的動態
-                    // 別名都是另一個實例；後續名稱不再代表舊票據。
-                    visible.remove(name);
+                    // 只為入口已有宣告追蹤活性；新同名局部不可能
+                    // 代表原借用來源，故必須自入口可見表移除。
+                    visible.remove(&declaration.name);
                 }
                 StmtKind::Assign(assignment) => {
-                    let name = &assignment.name;
-                    let value = &assignment.expression;
-                    Self::record_named_future_use(visible, used, name);
-                    Self::scan_future_term_uses(value, visible, used);
+                    if kind == ResolvedUseKind::All {
+                        Self::record_named_future_use(visible, used, &assignment.name);
+                    }
+                    Self::scan_resolved_term_uses(
+                        &assignment.expression, visible, used, kind);
                 }
                 StmtKind::FieldAssign { receiver, value, .. } => {
-                    Self::record_named_future_use(visible, used, receiver);
-                    Self::scan_future_term_uses(value, visible, used);
+                    if kind == ResolvedUseKind::All {
+                        Self::record_named_future_use(visible, used, receiver);
+                    }
+                    Self::scan_resolved_term_uses(value, visible, used, kind);
                 }
                 StmtKind::If { branch, no } => {
-                    Self::scan_future_term_uses(&branch.condition, visible, used);
-                    Self::scan_future_block_uses(
-                        &branch.body, &mut visible.clone(), used);
+                    Self::scan_resolved_term_uses(&branch.condition, visible, used, kind);
+                    Self::scan_resolved_block_uses(
+                        &branch.body, &mut visible.clone(), used, kind);
                     if let Some(otherwise) = no {
-                        Self::scan_future_block_uses(
-                            otherwise, &mut visible.clone(), used);
+                        Self::scan_resolved_block_uses(
+                            otherwise, &mut visible.clone(), used, kind);
                     }
                 }
                 StmtKind::While { condition, body } => {
-                    Self::scan_future_term_uses(condition, visible, used);
-                    Self::scan_future_block_uses(body, &mut visible.clone(), used);
+                    Self::scan_resolved_term_uses(condition, visible, used, kind);
+                    Self::scan_resolved_block_uses(
+                        body, &mut visible.clone(), used, kind);
                 }
                 StmtKind::ForRange { iterator, lower, upper, body, .. } => {
-                    // 與正式 for 檢查共用「確定零次執行」的 CFG 判準；
-                    // 不可將永遠不可達本體中的名稱誤算成實際最後使用點。
-                    // 其餘未知範圍仍保守掃描，不能憑推測提早歸還借用。
                     if Self::known_range_iterations(lower, upper) != Some(0) {
                         let mut nested = visible.clone();
-                        // 迭代器屬於新實例，不得替入口舊別名延長票據。
                         nested.remove(iterator);
-                        Self::scan_future_block_uses(body, &mut nested, used);
+                        Self::scan_resolved_block_uses(body, &mut nested, used, kind);
                     }
                 }
                 StmtKind::Return(term) =>
-                    Self::scan_future_term_uses(term, visible, used),
+                    Self::scan_resolved_term_uses(term, visible, used, kind),
                 StmtKind::Break | StmtKind::Continue => {}
             }
-            // 確定離開當前序列時，後續語句沒有任何可達邊。
-            // 未能證明必定退出的分支／迴圈仍保守掃描全部後繼。
             if Self::future_stmt_must_exit(statement) {
                 break;
             }
         }
+    }
+
+    /// 後繼引用與參數消耗只差使用種類，不可各維護一套名稱規則。
+    fn scan_future_block_uses(
+        body: &[Stmt], visible: &mut HashMap<String, DeclarationId>,
+        used: &mut BTreeSet<DeclarationId>,
+    ) {
+        Self::scan_resolved_block_uses(body, visible, used, ResolvedUseKind::All);
     }
 
     fn visible_future_sources(vars: &Scopes, depth: usize)
