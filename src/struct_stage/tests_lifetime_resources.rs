@@ -3063,3 +3063,61 @@ mod r03_b07_f10_共通反向邊安全證明 {
         assert!(inspect(source).is_ok());
     }
 }
+
+#[cfg(test)]
+mod r03_b10_f13_唯一CFG合流可寫權威 {
+    use super::*;
+    use crate::ownership_model::{CopyPermission, ValueSlot, ValueState};
+
+    fn owner_with_loan() -> Binding {
+        Binding::new(DeclarationId(7000), "Box".to_owned(), true,
+            ValueSlot::uninitialized(CopyPermission::Forbidden),
+            Some(HashSet::from(["a".to_owned(), "b".to_owned()])),
+            Some(LoanBinding {
+                fact: BorrowFact::new(DeclarationId(7001), BorrowKind::SharedRead),
+                active: true,
+            }))
+    }
+
+    #[test]
+    fn f13_b10_缺少借用來源時合流整筆失敗且值與欄位完全不變() {
+        let mut binding = owner_with_loan();
+        let before = binding.clone();
+        assert!(!binding.commit_reachable_join(
+            ValueSlot::initialized(CopyPermission::Forbidden),
+            None, None));
+        assert!(binding.same_safety_state(&before));
+    }
+
+    #[test]
+    fn f13_b10_偽造借用活性不可在無LoanBinding的持有者上寫入() {
+        let mut binding = Binding::new(DeclarationId(7100), "int".to_owned(), true,
+            ValueSlot::initialized(CopyPermission::Allowed), None, None);
+        let before = binding.clone();
+        assert!(!binding.commit_reachable_join(
+            ValueSlot::uninitialized(CopyPermission::Allowed),
+            Some(HashSet::new()), Some(true)));
+        assert!(binding.same_safety_state(&before));
+    }
+
+    #[test]
+    fn f13_b10_合法分支合流同次更換值欄位與借用有效期() {
+        let mut binding = owner_with_loan();
+        assert!(binding.commit_reachable_join(
+            ValueSlot::initialized(CopyPermission::Forbidden), None, Some(false)));
+        assert_eq!(binding.value.state(), ValueState::Available);
+        assert!(binding.pending_fields.is_none());
+        assert!(!binding.loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f13_b10_沒有借用的分支合流保持唯一靜態狀態儲存() {
+        let mut binding = Binding::new(DeclarationId(7200), "int".to_owned(), true,
+            ValueSlot::uninitialized(CopyPermission::Allowed),
+            Some(HashSet::from(["ready".to_owned()])), None);
+        assert!(binding.commit_reachable_join(
+            ValueSlot::initialized(CopyPermission::Allowed), None, None));
+        assert!(std::ptr::eq(&binding.safety.value, &binding.value));
+        assert_eq!(binding.value.state(), ValueState::Available);
+    }
+}
