@@ -1369,3 +1369,89 @@ mod r03_g4_出口完整SafetyState快照 {
         assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, MOVE));
     }
 }
+
+
+#[cfg(test)]
+mod r03_g4_靜態退出清理責任 {
+    use super::*;
+    use crate::ownership_model::{CopyPermission, ValueSlot};
+
+    const LIVE: &str = "fn main()->int{\nvar alive:str = \"存活🪼\"\nreturn 0\n}\n";
+    const MOVED: &str = "fn give()->str{\nvar origin:str = \"已移交\"\nreturn origin.move()\n}\nfn main()->int{\nreturn 0\n}\n";
+
+    #[test]
+    fn g4_未移交的真實str持有者必須出現在靜態必需清理責任中() {
+        let checked = verified_private_source(LIVE).unwrap();
+        let at = LIVE.find("return 0").unwrap();
+        let owner = DeclarationId(LIVE.find("var alive:str").unwrap());
+        let snapshot = &checked.plan.exit_snapshots[&at][0];
+        assert_eq!(snapshot.cleanup_owners, vec![
+            StaticCleanupObligation {
+                declaration: owner,
+                need: StaticCleanupNeed::Required,
+            }
+        ]);
+        assert!(snapshot.active_borrows.is_empty());
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, LIVE));
+    }
+
+    #[test]
+    fn g4_已明確move返回的來源不能重複列為靜態清理責任() {
+        let checked = verified_private_source(MOVED).unwrap();
+        let at = MOVED.find("return origin.move()").unwrap();
+        let origin = DeclarationId(MOVED.find("var origin:str").unwrap());
+        let snapshot = &checked.plan.exit_snapshots[&at][0];
+        assert!(!snapshot.cleanup_owners.iter()
+            .any(|item| item.declaration == origin));
+        assert!(checked.plan.is_consistent(&checked.structs, &checked.functions, MOVED));
+    }
+
+    #[test]
+    fn g4_可能有資源的未知合流狀態必須維持條件清理而非假必需() {
+        let available = ValueSlot::initialized(CopyPermission::Forbidden);
+        let uninitialized = ValueSlot::uninitialized(CopyPermission::Forbidden);
+        let uncertain = ValueSlot::join_reachable(&[
+            Some(available), Some(uninitialized),
+        ]).unwrap();
+        let sample = VerifiedExitBinding {
+            scope_depth: 0, declaration: DeclarationId(9100),
+            ty: "str".into(), mutable: true,
+            value: uncertain, pending_fields: None, loan: None,
+        };
+        assert_eq!(VerifiedExitSnapshot::cleanup_from_bindings(&[sample]), vec![
+            StaticCleanupObligation {
+                declaration: DeclarationId(9100),
+                need: StaticCleanupNeed::Conditional,
+            }
+        ]);
+    }
+
+    #[test]
+    fn g4_資源清理義務被刪除或靜態借用歸還清單遭偽造皆拒絕() {
+        let mut checked = verified_private_source(LIVE).unwrap();
+        let at = LIVE.find("return 0").unwrap();
+        checked.plan.exit_snapshots.get_mut(&at).unwrap()[0].cleanup_owners.clear();
+        assert!(!checked.plan.is_consistent(&checked.structs, &checked.functions, LIVE));
+        let checked_again = verified_private_source(LIVE).unwrap();
+        let mut changed = checked_again;
+        changed.plan.exit_snapshots.get_mut(&at).unwrap()[0].active_borrows
+            .push((DeclarationId(9999),
+                BorrowFact::new(DeclarationId(9998), BorrowKind::ExclusiveWrite)));
+        assert!(!changed.plan.is_consistent(&changed.structs, &changed.functions, LIVE));
+    }
+
+    #[test]
+    fn g4_非擁有借用別名只留下靜態歸還義務不被誤當資源owner() {
+        let fact = BorrowFact::new(DeclarationId(9200), BorrowKind::SharedRead);
+        let borrowed = VerifiedExitBinding {
+            scope_depth: 0, declaration: DeclarationId(9201),
+            ty: "str".into(), mutable: false,
+            value: ValueSlot::initialized(CopyPermission::Forbidden),
+            pending_fields: None,
+            loan: Some(LoanBinding { fact, active: true }),
+        };
+        assert!(VerifiedExitSnapshot::cleanup_from_bindings(&[borrowed.clone()]).is_empty());
+        assert_eq!(VerifiedExitSnapshot::active_borrows_from_bindings(&[borrowed]),
+            vec![(DeclarationId(9201), fact)]);
+    }
+}
