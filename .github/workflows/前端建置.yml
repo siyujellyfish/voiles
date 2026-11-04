@@ -127,6 +127,10 @@ jobs:
         run: |
           python3 tools/核對R03B05第三批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: R03 B06／F07 借用最後使用點全域拒假與原子歸還（非整包簽核）
+        run: |
+          python3 tools/核對R03B06第一批.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check

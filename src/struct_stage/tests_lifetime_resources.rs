@@ -2803,3 +2803,105 @@ mod r03_b05_f08_唯一靜態安全狀態 {
         assert!(binding.pending_fields.is_none());
     }
 }
+
+#[cfg(test)]
+mod r03_b06_f07_有效期歸還原子與來源身分 {
+    use super::*;
+    use crate::borrow_safety::BorrowSafetyError;
+
+    fn owner(id: usize) -> Binding {
+        Binding::new(DeclarationId(id), "int".into(), false,
+            ValueSlot::initialized(CopyPermission::Allowed), None, None)
+    }
+    fn alias(id: usize, source: usize, kind: BorrowKind) -> Binding {
+        Binding::new(DeclarationId(id), "int".into(), false,
+            ValueSlot::initialized(CopyPermission::Allowed), None,
+            Some(LoanBinding {
+                fact: BorrowFact::new(DeclarationId(source), kind), active: true,
+            }))
+    }
+
+    #[test]
+    fn f07_b06_衝突的全域借用不得在最後使用點局部解鎖成假合法() {
+        let mut vars: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".into(), owner(4000)),
+            ("shared".into(), alias(4001, 4000, BorrowKind::SharedRead)),
+            ("exclusive".into(), alias(4002, 4000, BorrowKind::ExclusiveWrite)),
+        ]))];
+        let original = vars[0].clone();
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::active_loan_snapshot(&vars).validate(),
+            Err(BorrowSafetyError::BorrowConflict)
+        );
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(&mut vars, &[], &[]);
+        assert!(Rc::ptr_eq(&vars[0], &original), "不得藉局部釋放清洗非法安全狀態");
+        assert!(vars[0]["shared"].loan.as_ref().unwrap().active);
+        assert!(vars[0]["exclusive"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f07_b06_重複別名宣告身分不可靠提早歸還洗去衝突() {
+        let mut vars: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".into(), owner(4100)),
+            ("alias1".into(), alias(4101, 4100, BorrowKind::SharedRead)),
+            ("alias2".into(), alias(4101, 4100, BorrowKind::SharedRead)),
+        ]))];
+        let original = vars[0].clone();
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::active_loan_snapshot(&vars).validate(),
+            Err(BorrowSafetyError::SnapshotMismatch)
+        );
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(&mut vars, &[], &[]);
+        assert!(Rc::ptr_eq(&vars[0], &original));
+        assert!(vars[0]["alias1"].loan.as_ref().unwrap().active);
+        assert!(vars[0]["alias2"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f07_b06_合法雙共享別名在最後使用點同次歸還且來源COW不變() {
+        let mut vars: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".into(), owner(4200)),
+            ("alias1".into(), alias(4201, 4200, BorrowKind::SharedRead)),
+            ("alias2".into(), alias(4202, 4200, BorrowKind::SharedRead)),
+        ]))];
+        let original = vars[0].clone();
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(&mut vars, &[], &[]);
+        assert!(!Rc::ptr_eq(&vars[0], &original));
+        assert!(original["alias1"].loan.as_ref().unwrap().active);
+        assert!(!vars[0]["alias1"].loan.as_ref().unwrap().active);
+        assert!(!vars[0]["alias2"].loan.as_ref().unwrap().active);
+        assert_eq!(
+            Checker::<fn(&str) -> CopyPermission>::active_loan_snapshot(&vars).validate(),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn f07_b06_參數自身借用永遠不會因無後繼提早解除() {
+        let mut vars: Scopes = vec![Rc::new(HashMap::from([
+            ("parameter".into(), alias(4300, 4300, BorrowKind::SharedRead)),
+        ]))];
+        let initial = vars[0].clone();
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(&mut vars, &[], &[]);
+        assert!(Rc::ptr_eq(&vars[0], &initial));
+        assert!(vars[0]["parameter"].loan.as_ref().unwrap().active);
+    }
+
+    #[test]
+    fn f07_b06_真正後繼引用借用別名不得讓入口安全狀態提前釋放() {
+        let mut vars: Scopes = vec![Rc::new(HashMap::from([
+            ("owner".into(), owner(4400)),
+            ("alias".into(), alias(4401, 4400, BorrowKind::SharedRead)),
+        ]))];
+        let term = Term {
+            kind: TermKind::Name("alias".into()), start: 5, end: 10,
+        };
+        let following = vec![Stmt {
+            kind: StmtKind::Return(crate::syntax_shared::ParsedReturn::new(term)),
+            start: 0, end: 10,
+        }];
+        Checker::<fn(&str) -> CopyPermission>::release_last_uses(
+            &mut vars, &following, &[]);
+        assert!(vars[0]["alias"].loan.as_ref().unwrap().active);
+    }
+}
