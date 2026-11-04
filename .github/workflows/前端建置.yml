@@ -72,7 +72,7 @@ jobs:
       - name: P17／P18 真求值、控制及來源詞彙四十四項正反案例存在性 Gate
         run: python3 tools/核對G17內部切片.py --test-bin target/p02/p04_source_internal
 
-      - name: P17-C／P18-B 真私有 UTF-8 及 if/else 區塊清理十七項正反 Gate
+      - name: P17-C／P18-B 真私有 UTF-8 巢狀 if/else 逆序清理二十三項正反 Gate
         run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
 
       - name: P17-F 私有具名結構實際建構與預設／回滾六項正反 Gate
