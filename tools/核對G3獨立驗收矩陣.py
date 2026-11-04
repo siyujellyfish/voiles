@@ -15,11 +15,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 GATES = {
     "F06": ("核對R03B05第一批.py", "核對G3跨層票據第一批.py"),
-    "F07": ("核對R03B06第一批.py", "核對G3參數來源第二批.py"),
+    "F07": ("核對R03B06第一批.py", "核對G3參數來源第二批.py", "核對G3共同use-def第三批.py"),
     "F08": ("核對R03B05第二批.py", "核對R03B05第三批.py"),
     "F09": ("核對R03B06第二批.py",),
 }
-MINIMUM = {"F06": 12, "F07": 9, "F08": 7, "F09": 5}
+MINIMUM = {"F06": 12, "F07": 13, "F08": 7, "F09": 5}
 REMAINING = [
     "G3：所有已核准 CFG 路徑的 HIR use-def 與退出責任尚待完整稽核",
     "G3：Owner、真 BorrowTicket、ResourceId 全操作 Transition 與錯誤回滾尚待整包簽核",

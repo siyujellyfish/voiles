@@ -33,18 +33,25 @@ def main() -> int:
         parser.error("必須使用 --check")
     checker = (ROOT / "src/struct_stage/safety_checker.rs").read_text(encoding="utf-8")
     checks = (
-        "fn term_moves_source(",
-        "fn block_moves_source(",
+        "enum ResolvedUseKind {",
+        "fn scan_resolved_term_uses(",
+        "fn scan_resolved_block_uses(",
         "fn parameter_is_consumed(",
-        "visible.get(name) == Some(&source)",
-        "visible.insert(declaration.name.clone(), DeclarationId(stmt.start))",
-        "Self::known_range_iterations(lower, upper) == Some(0)",
+        "Self::scan_resolved_block_uses(",
+        "ResolvedUseKind::WholeMove",
+        "visible.remove(&declaration.name)",
+        "Self::known_range_iterations(lower, upper) != Some(0)",
     )
     for marker in checks:
-        if checker.count(marker) != 1:
-            raise AssertionError(f"G3 詞彙參數來源守衛缺失或非唯一：{marker}")
-    if "fn statements_move_name(" in checker or "fn term_moves_name(" in checker:
-        raise AssertionError("正式 Checker 仍存在可放行遮蔽假 move 的舊名字權威")
+        if checker.count(marker) < 1:
+            raise AssertionError(f"G3 唯一詞彙來源 use-def 守衛缺失：{marker}")
+    for old in (
+        "fn statements_move_name(", "fn term_moves_name(",
+        "fn term_moves_source(", "fn block_moves_source(",
+        "fn scan_future_term_uses(",
+    ):
+        if old in checker:
+            raise AssertionError(f"正式 Checker 仍存在獨立同名 move/使用點掃描權威：{old}")
     listing = run([args.test_bin, "--list"])
     available = [line[:-6] for line in listing.splitlines() if line.endswith(": test")]
     seen: set[str] = set()

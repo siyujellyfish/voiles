@@ -3082,3 +3082,61 @@ mod r03_g3_函式參數來源詞彙身份 {
         assert!(consumed(code, "check"));
     }
 }
+
+
+#[cfg(test)]
+mod r03_g3_唯一詞彙來源_use_def_掃描 {
+    use super::*;
+    use crate::ownership_model::CopyPermission;
+    use std::collections::{BTreeSet, HashMap};
+
+    fn scan(source: &str, fun_name: &str) ->
+        (BTreeSet<DeclarationId>, BTreeSet<DeclarationId>, DeclarationId) {
+        let checked = verified_private_source(source)
+            .expect("真正 Parser/Checker 應成功接受此受限私有來源");
+        let fun = checked.functions.iter().find(|fun| fun.name == fun_name).unwrap();
+        let parameter = &fun.params[0];
+        let id = DeclarationId(parameter.declaration_start);
+        let visible: HashMap<String, DeclarationId> = fun.params.iter().map(|p|
+            (p.name.clone(), DeclarationId(p.declaration_start))).collect();
+        let mut all = BTreeSet::new();
+        let mut moved = BTreeSet::new();
+        Checker::<fn(&str) -> CopyPermission>::scan_resolved_block_uses(
+            &fun.body, &mut visible.clone(), &mut all, ResolvedUseKind::All);
+        Checker::<fn(&str) -> CopyPermission>::scan_resolved_block_uses(
+            &fun.body, &mut visible.clone(), &mut moved, ResolvedUseKind::WholeMove);
+        (all, moved, id)
+    }
+
+    #[test]
+    fn g3_正常參數純讀僅算後繼使用不算整筆移動() {
+        let source = "fn inspect(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn 0\n}\n";
+        let (all, moved, id) = scan(source, "inspect");
+        assert!(all.contains(&id));
+        assert!(!moved.contains(&id));
+    }
+
+    #[test]
+    fn g3_真正參數移動同時出現在唯一全引用與移動來源集合() {
+        let source = "fn inspect(value:str)->int{\nvar next:str = value.move()\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        let (all, moved, id) = scan(source, "inspect");
+        assert!(all.contains(&id));
+        assert!(moved.contains(&id));
+    }
+
+    #[test]
+    fn g3_內層同名遮蔽移動不可出現在外層參數的任何來源集合() {
+        let source = "fn inspect(value:str)->int{\nif(true){\nvar value:str = \"覆蓋🪼\"\nvar next:str = value.move()\n}\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        let (all, moved, id) = scan(source, "inspect");
+        assert!(!all.contains(&id));
+        assert!(!moved.contains(&id));
+    }
+
+    #[test]
+    fn g3_確定零次for之不可達整筆移動不算任何後繼參數來源() {
+        let source = "fn inspect(value:str)->int{\nfor i in 0..0{\nvar next:str = value.move()\n}\nreturn 0\n}\nfn main()->int{\nreturn 0\n}\n";
+        let (all, moved, id) = scan(source, "inspect");
+        assert!(!all.contains(&id));
+        assert!(!moved.contains(&id));
+    }
+}
