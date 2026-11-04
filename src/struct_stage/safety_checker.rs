@@ -90,29 +90,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn record_checked_control_snapshot(
         &self, vars: &Scopes, span: crate::common_ir::NodeSpan, flow: FlowState,
     ) {
-        let mut bindings: Vec<VerifiedExitBinding> = vars.iter().enumerate()
-            .flat_map(|(depth, scope)| scope.values().map(move |binding| {
-                let pending_fields = binding.pending_fields.as_ref().map(|fields| {
-                    let mut sorted: Vec<String> = fields.iter().cloned().collect();
-                    sorted.sort();
-                    sorted
-                });
-                VerifiedExitBinding {
-                    scope_depth: depth,
-                    declaration: binding.declaration_start,
-                    ty: binding.ty.clone(),
-                    mutable: binding.mutable,
-                    value: binding.value,
-                    pending_fields,
-                    loan: binding.loan.clone(),
-                }
-            })).collect();
-        bindings.sort_by_key(|item| (item.scope_depth, item.declaration));
-        let snapshot = VerifiedExitSnapshot {
-            edge: VerifiedControlEdge { span, flow },
-            scope_sizes: vars.iter().map(|scope| scope.len()).collect(),
-            bindings,
-        };
+        // 純靜態狀態與後續可能的清理責任採唯一唯讀來源正規化。
+        // 不簽真票據，不進行資源釋放，不為未執行分支產生動態事件。
+        let snapshot = VerifiedExitSnapshot::from_checked_scopes(vars, span, flow);
         let mut recorded = self.recorded_exit_snapshots.borrow_mut();
         let alternatives = recorded.entry(span.start).or_default();
         if !alternatives.contains(&snapshot) {
