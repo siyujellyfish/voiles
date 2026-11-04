@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P17-F 具名與預設欄位之私有真結構建立式六項 Rust 正反 Gate。"""
+"""P17-F 具名與預設欄位之私有真結構建立式九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -15,6 +15,9 @@ from pathlib import Path
     "p17_f_真結構預設建構中途失敗回滾並逆序釋放已建資源",
     "p17_f_不合法未知具名欄位在真私有_checker_階段拒絕",
     "p17_f_巢狀結構或來源替換仍不會執行未驗證資源",
+    "p17_c_真私有混合結構整筆移動只保留同一_utf8_資源身份",
+    "p17_c_結構內含字串不可由真_checker_隱含複製",
+    "p17_c_真整筆移動的_checker_宣告身分被篡改時資源建立前拒絕",
 )
 
 
