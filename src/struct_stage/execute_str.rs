@@ -144,11 +144,8 @@ fn prepare_str_literal_branch(
                         "尚未接通巢狀 else-if 資源控制",
                     )),
                 };
-                if when_true.returned.is_some() || when_false.returned.is_some() {
-                    return Err(PrivateStrPrepareError::Unsupported(
-                        "巢狀 return 的完整退出安全證據尚未封閉",
-                    ));
-                }
+                // 真正跨層 return 僅限原 Checker 已驗證的 int 常值；
+                // 由 Runtime 以 Option<i64> 逐層退出，原 P16 資源作用域逐層清理。
                 actions.push(PrivateStrLocalAction::NestedLiteralBranch {
                     condition: *condition, when_true, when_false,
                 });
@@ -178,7 +175,9 @@ fn execute_str_literal_branch(
                         resources, if *condition { when_true } else { when_false },
                     )?;
                     if nested.is_some() {
-                        return Err(crate::owned_str_runtime::StrRuntimeError::IncompleteReturn);
+                        // 先由遞迴被呼叫者 leave_scope；本層的 finally
+                        // 再執行 leave_scope，直到函式框架 finish 完成清理。
+                        return Ok(nested);
                     }
                 }
             }
@@ -752,12 +751,50 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_巢狀分支內的_return_動態清理尚未接通必須拒絕() {
-        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nif(true){\nvar inner:str = \"內\"\nreturn 1\n}\n}\nreturn 0\n}\n";
+    fn p18_c_巢狀未支援的動態整數運算返回仍在執行前拒絕() {
+        // int 加法由既有私有 Checker 驗證，但此 P18-C 資源切片
+        // 尚未將其運算結果交付跨層 return，不得自行推測求值。
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nif(true){\nvar inner:str = \"內\"\nreturn 1+0\n}\n}\nreturn 0\n}\n";
         assert!(matches!(
             PreparedPrivateStr::prepare(code),
             Err(PrivateStrPrepareError::Unsupported(_)),
         ));
+    }
+
+
+    #[test]
+    fn p18_c_三層巢狀返回跳過外層結果且真資源逐層退出() {
+        let code = "fn main()->int{\nvar outer:str = \"甲\"\nif(true){\nvar middle:str = \"乙\"\nif(true){\nvar leaf:str = \"丙\"\nreturn 14\n}\n}\nreturn 99\n}\n";
+        let outcome = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(14));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_巢狀_false_的_else_實際返回且未執行分支零事件() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(false){\nvar skipped:str = \"不分配\"\nreturn 1\n}else{\nvar chosen:str = \"內\"\nreturn 17\n}\n}\nreturn 9\n}\n";
+        let outcome = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(17));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2), ResourceEvent::Created(3),
+            ResourceEvent::Released(3), ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p18_c_巢狀_false_未返回而正常離域後使用外層返回() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(false){\nvar skipped:str = \"不分配\"\nreturn 1\n}\nvar later:str = \"後續\"\n}\nreturn 21\n}\n";
+        let outcome = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(21));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
     }
 
     #[test]
@@ -816,14 +853,15 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_巢狀_return_控制轉移尚未驗證仍必須保守拒絕() {
-        // 原本整個巢狀區塊都不支援；新正例已覆蓋完全相同的
-        // 純字串巢狀來源，負例只保留未證明的巢狀提前 return。
+    fn p18_c_原巢狀返回保守負例現可逐層逆序清理() {
+        // 保留原始來源；由真 Checker 與 P16 Runtime 證明跨三層返回。
         let code = "fn main()->int{\nvar outside:str = \"外\"\nif (true){\nvar local:str = \"內\"\nif (true){\nvar nested:str = \"更深\"\nreturn 1\n}\n}\nreturn 0\n}\n";
-        assert!(matches!(
-            PreparedPrivateStr::prepare(code),
-            Err(PrivateStrPrepareError::Unsupported(_)),
-        ));
+        let outcome = PreparedPrivateStr::prepare(code).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(1));
+        assert_eq!(outcome.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2), ResourceEvent::Created(3),
+            ResourceEvent::Released(3), ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
     }
 
     #[test]
