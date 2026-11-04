@@ -46,7 +46,10 @@ fn require_checked_bridge_owner(
                 .filter(|binding| binding.declaration == owner && binding.loan.is_none())
                 .collect();
             let matched_binding = sources.len() == 1
-                && sources[0].value.state() == ValueState::Available;
+                && (matches!(sources[0].value.state(),
+                    ValueState::Available | ValueState::MayBeUnavailable)
+                    || (sources[0].value.state() == ValueState::Uninitialized
+                        && sources[0].pending_fields.is_some()));
             let required = snapshot.cleanup_owners.iter().any(|item|
                 item.declaration == owner && matches!(item.need,
                     StaticCleanupNeed::Required | StaticCleanupNeed::Conditional));
