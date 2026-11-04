@@ -120,9 +120,11 @@ fn prepare_private_else_body(
             prepare_str_literal_branch(otherwise, verified),
         Some(crate::syntax_shared::ParsedElse::ElseIf(arm)) =>
             prepare_private_else_if(arm, verified),
-        _ => Err(PrivateStrPrepareError::Unsupported(
-            "此批尚未接通非真 Parser 的 else 控制來源",
-        )),
+        #[cfg(test)]
+        Some(crate::syntax_shared::ParsedElse::SyntheticTest(_)) =>
+            Err(PrivateStrPrepareError::Unsupported(
+                "Rust 手工合成 else 不能得到正式 Parser 執行許可",
+            )),
     }
 }
 
@@ -187,7 +189,7 @@ fn prepare_str_literal_branch(
                 // 真正跨層 return 僅限原 Checker 已驗證的 int 常值；
                 // 由 Runtime 以 Option<i64> 逐層退出，原 P16 資源作用域逐層清理。
                 actions.push(PrivateStrLocalAction::NestedLiteralBranch {
-                    condition: *condition, when_true, when_false,
+                    condition, when_true, when_false,
                 });
             }
             _ => return Err(PrivateStrPrepareError::Unsupported(
