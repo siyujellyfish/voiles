@@ -22,6 +22,8 @@ enum PrivateStrAction {
     },
     /// P18-B：保留真 Checker 宣告身份的已初始化 bool 純值。
     DeclareBool { identity: DeclarationId, value: bool },
+    /// P18-B：原 Checker 已驗證 var bool 直接常值重綁；分支以同一身分取最新值。
+    AssignBool { identity: DeclarationId, value: bool },
     Return(i64),
 }
 /// 具名 bool 必須已在來源中由原 Checker 確認宣告和型別；
@@ -422,6 +424,35 @@ impl PreparedPrivateStr {
                     has_resource = true;
                 }
                 StmtKind::Assign(assignment) => {
+                    if let Some(identity) = bool_bindings.get(&assignment.name).copied() {
+                        let fact = verified.plan.declarations.typed_declaration(identity)
+                            .ok_or(PrivateStrPrepareError::Unsupported(
+                                "bool 賦值缺少原 Checker 宣告身分",
+                            ))?;
+                        if fact.ty != "bool" || !fact.mutable {
+                            return Err(PrivateStrPrepareError::Unsupported(
+                                "bool 重新賦值目標不是已驗證可寫宣告",
+                            ));
+                        }
+                        let TermKind::Scalar(
+                            crate::syntax_shared::ScalarLiteral::Boolean(value),
+                        ) = &assignment.expression.kind else {
+                            return Err(PrivateStrPrepareError::Unsupported(
+                                "此切片只執行直接 bool 常值重新賦值",
+                            ));
+                        };
+                        let expected = if *value { "true" } else { "false" };
+                        if text.get(assignment.expression.start
+                            ..assignment.expression.end) != Some(expected) {
+                            return Err(PrivateStrPrepareError::Unsupported(
+                                "bool 賦值來源與原 Lexer 常值不一致",
+                            ));
+                        }
+                        operations.push(PrivateStrAction::AssignBool {
+                            identity, value: *value,
+                        });
+                        continue;
+                    }
                     if !bound.get(&assignment.name).is_some_and(|(_, mutable)| *mutable) {
                         return Err(PrivateStrPrepareError::Unsupported("賦值目標不存在或不可變"));
                     }
@@ -598,6 +629,12 @@ impl PreparedPrivateStr {
                         if bool_values.insert(*identity, *value).is_some() {
                             return Err(crate::owned_str_runtime::StrRuntimeError::DuplicateBinding);
                         }
+                    }
+                    PrivateStrAction::AssignBool { identity, value } => {
+                        let slot = bool_values.get_mut(identity).ok_or(
+                            crate::owned_str_runtime::StrRuntimeError::MissingOwner,
+                        )?;
+                        *slot = *value;
                     }
                     PrivateStrAction::LiteralBranch { condition, when_true, when_false } => {
                         let selected = match condition {
