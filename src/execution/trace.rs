@@ -73,6 +73,13 @@ pub(crate) fn audit_control_events(events: &[ControlEvent])
 }
 
 
+/// 每個 return 必須出自實際選中的 AST 分支，而非僅在函式跨度內。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReturnRoute {
+    Arm { chain: NodeSpan, index: usize },
+    Else { chain: NodeSpan },
+}
+
 /// P18-E：執行時事件與正式來源 AST 的唯一合法位置對照。
 /// 相較既有 audit_control_events 僅檢查堆疊及包含範圍，這裡要求
 /// return、if 條件與 else 必須真正在 Parser 的同角色節點出現。
@@ -87,6 +94,7 @@ struct SourceSites {
     chain_conditions: std::collections::BTreeMap<NodeSpan, Vec<NodeSpan>>,
     condition_chain: std::collections::BTreeMap<NodeSpan, (NodeSpan, usize)>,
     else_chain: std::collections::BTreeMap<NodeSpan, NodeSpan>,
+    return_routes: std::collections::BTreeMap<NodeSpan, Vec<ReturnRoute>>,
 }
 
 impl SourceSites {
@@ -99,7 +107,7 @@ impl SourceSites {
         if span.checked(source).is_none() || self.functions.insert(span, function.name.clone()).is_some() {
             return Err(ControlAuditError::EventOutsideSource);
         }
-        self.gather_block(&function.body, span, source)
+        self.gather_block(&function.body, span, source, &[])
     }
 
     fn gather_block(
@@ -107,6 +115,7 @@ impl SourceSites {
         block: &crate::parser::Block,
         function: NodeSpan,
         source: &str,
+        route: &[ReturnRoute],
     ) -> Result<(), ControlAuditError> {
         let block_span = NodeSpan::new(block.start, block.end);
         if block_span.checked(source).is_none() || !contained(function, block_span) {
@@ -120,7 +129,8 @@ impl SourceSites {
             match &statement.kind {
                 crate::parser::StmtKind::Return(expression) => {
                     if !contained(span, expression.expression.node_span())
-                        || self.returns.insert(span, function).is_some() {
+                        || self.returns.insert(span, function).is_some()
+                        || self.return_routes.insert(span, route.to_vec()).is_some() {
                         return Err(ControlAuditError::EventOutsideSource);
                     }
                 }
@@ -135,8 +145,11 @@ impl SourceSites {
                             ).is_some() {
                             return Err(ControlAuditError::EventOutsideSource);
                         }
+                        let index = ordered.len();
                         ordered.push(condition);
-                        self.gather_block(&arm.branch.body, function, source)?;
+                        let mut nested = route.to_vec();
+                        nested.push(ReturnRoute::Arm { chain: span, index });
+                        self.gather_block(&arm.branch.body, function, source, &nested)?;
                     }
                     if ordered.is_empty()
                         || self.chain_conditions.insert(span, ordered).is_some() {
@@ -149,7 +162,9 @@ impl SourceSites {
                             || self.else_chain.insert(else_span, span).is_some() {
                             return Err(ControlAuditError::EventOutsideSource);
                         }
-                        self.gather_block(otherwise, function, source)?;
+                        let mut nested = route.to_vec();
+                        nested.push(ReturnRoute::Else { chain: span });
+                        self.gather_block(otherwise, function, source, &nested)?;
                     }
                 }
                 crate::parser::StmtKind::Binding(_) |
@@ -231,9 +246,23 @@ pub(crate) fn audit_control_events_against_source(
                 }
             }
             ControlEvent::Returned { span } => {
-                if sites.returns.get(span).copied()
-                    != stack.last().map(|frame| frame.span) {
+                let frame = stack.last().ok_or(ControlAuditError::EventOutsideFunction)?;
+                if sites.returns.get(span).copied() != Some(frame.span) {
                     return Err(ControlAuditError::EventOutsideSource);
+                }
+                let route = sites.return_routes.get(span)
+                    .ok_or(ControlAuditError::EventOutsideSource)?;
+                for required in route {
+                    let permitted = match required {
+                        ReturnRoute::Arm { chain, index } => frame.branches.get(chain)
+                            .is_some_and(|actual| actual.selected
+                                && actual.checked == *index + 1 && !actual.else_entered),
+                        ReturnRoute::Else { chain } => frame.branches.get(chain)
+                            .is_some_and(|actual| actual.else_entered && !actual.selected),
+                    };
+                    if !permitted {
+                        return Err(ControlAuditError::InvalidBranchPath);
+                    }
                 }
             }
             ControlEvent::ConditionChecked { span, selected } => {
@@ -287,6 +316,73 @@ mod tests {
     }
 
 
+
+
+    #[test]
+    fn p18_e_真_if_else_返回僅可由實際選中的路徑取得() {
+        let code = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let actual = plan.execute_with_trace();
+        assert_eq!(actual.result, Ok(super::super::Value::Int(1)));
+        assert_eq!(audit_control_events_against_source(&actual.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_e_真_if_已成立時不可把合法_else_return_偽造成實際返回() {
+        let code = "fn main()->int{\nif(true){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        let crate::parser::Item::Function(func) = &plan.ast.items[0] else { panic!() };
+        let crate::parser::StmtKind::IfChain(chain) = &func.body.statements[0].kind else { panic!() };
+        let else_return = chain.otherwise.as_ref().unwrap().statements[0].node_span();
+        for event in &mut events {
+            if let ControlEvent::Returned { span } = event { *span = else_return; break; }
+        }
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_選中的_else_return_不可假冒未成立的第一分支返回() {
+        let code = "fn main()->int{\nif(false){\nreturn 1\n}else{\nreturn 2\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        let crate::parser::Item::Function(func) = &plan.ast.items[0] else { panic!() };
+        let crate::parser::StmtKind::IfChain(chain) = &func.body.statements[0].kind else { panic!() };
+        let wrong = chain.arms[0].branch.body.statements[0].node_span();
+        for event in &mut events {
+            if let ControlEvent::Returned { span } = event { *span = wrong; break; }
+        }
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_不成立分支的_return_不能取代外層確實執行的_return() {
+        let code = "fn main()->int{\nif(false){\nreturn 1\n}\nreturn 3\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let mut events = plan.execute_with_trace().events;
+        let crate::parser::Item::Function(func) = &plan.ast.items[0] else { panic!() };
+        let crate::parser::StmtKind::IfChain(chain) = &func.body.statements[0].kind else { panic!() };
+        let wrong = chain.arms[0].branch.body.statements[0].node_span();
+        for event in &mut events {
+            if let ControlEvent::Returned { span } = event { *span = wrong; break; }
+        }
+        assert_eq!(audit_control_events(&events), Ok(()));
+        assert_eq!(audit_control_events_against_source(&events, &plan.ast, code),
+            Err(ControlAuditError::InvalidBranchPath));
+    }
+
+    #[test]
+    fn p18_e_巢狀_if_else_只有實際完整祖先路徑可授權返回() {
+        let code = "fn main()->int{\nif(true){\nif(false){\nreturn 1\n}else{\nreturn 2\n}\n}\nreturn 0\n}\n";
+        let plan = super::super::PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let actual = plan.execute_with_trace();
+        assert_eq!(actual.result, Ok(super::super::Value::Int(2)));
+        assert_eq!(audit_control_events_against_source(&actual.events, &plan.ast, code), Ok(()));
+    }
 
     #[test]
     fn p18_e_真正_else_if_多段決策依原_ast_順序通過() {
