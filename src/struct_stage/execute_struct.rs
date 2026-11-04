@@ -9,7 +9,7 @@ enum PrivateStructPrepareError {
     Runtime(crate::mixed_struct_runtime::MixedError),
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum ApprovedSeed {
     Int(i64),
     Bool(bool),
@@ -31,12 +31,14 @@ impl ApprovedSeed {
         }
     }
 }
+#[derive(Debug, PartialEq, Eq)]
 struct PreparedField {
     name: String,
     kind: crate::mixed_struct_runtime::ScalarKind,
     default: Option<ApprovedSeed>,
     immutable: bool,
 }
+#[derive(Debug, PartialEq, Eq)]
 struct PreparedNamedField {
     name: String,
     seed: ApprovedSeed,
@@ -164,6 +166,20 @@ impl PreparedPrivateStruct {
         })
     }
 
+    /// P17-F 安全補強：每次進入資源執行前，都由同一正式私有 Checker
+    /// 對**原始來源**重新取得一次安全投影，核對不可由未經驗證的
+    /// Rust 內部計畫改寫任何待建立資源、預設值、具名引數或返回值。
+    /// 這會額外重跑 Checker，但不建立第二份 Parser 或改變公開語意；
+    /// 後續可改成驗證後封閉不可寫計畫以消除此成本。
+    fn is_same_prepared_payload(&self, text: &str) -> bool {
+        let Ok(fresh) = Self::prepare(text) else { return false };
+        self.binding_name == fresh.binding_name
+            && self.fields == fresh.fields
+            && self.supplied == fresh.supplied
+            && self.returned == fresh.returned
+            && self.original == fresh.original
+    }
+
     fn execute(&self) -> Result<PrivateStructOutcome, PrivateStructPrepareError> {
         self.execute_with_fault(None)
     }
@@ -177,7 +193,9 @@ impl PreparedPrivateStruct {
         if self.original.as_ref() != self.verified.source.bytes.as_slice()
             || !self.verified.plan.is_consistent(
                 &self.verified.structs, &self.verified.functions, text,
-            ) {
+            )
+            || !self.is_same_prepared_payload(text)
+        {
             return Err(PrivateStructPrepareError::SourceChanged);
         }
         let schema: Vec<_> = self.fields.iter().map(|field|
@@ -216,6 +234,71 @@ mod p17_private_struct_execution_tests {
         PreparedPrivateStruct::prepare(text).expect("合法真私有結構來源須完成 Checker")
     }
 
+
+    #[test]
+    fn p17_f_結構真原始計畫合法時可重複執行且逐次釋放資源() {
+        let code = "struct Note{\nvar label:str = \"繁體\"\nvar active:bool = true\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 3\n}\n";
+        let prepared = checked(code);
+        for _ in 0..2 {
+            let outcome = prepared.execute().unwrap();
+            assert_eq!(outcome.result, Ok(3));
+            assert_eq!(outcome.events, [
+                ResourceEvent::Created(1), ResourceEvent::Released(1),
+            ]);
+        }
+    }
+
+    #[test]
+    fn p17_f_已驗證欄位預設值內容改寫不得使用原_checker_授權資源() {
+        let code = "struct Note{\nvar label:str = \"原始\"\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 0\n}\n";
+        let mut prepared = checked(code);
+        let Some(ApprovedSeed::Str(value)) = prepared.fields[0].default.as_mut() else {
+            panic!("正式欄位應保存字串預設");
+        };
+        *value = "偽造值".to_owned();
+        assert!(matches!(
+            prepared.execute(), Err(PrivateStructPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn p17_f_已驗證具名欄位值與欄位名稱若被偷換必須事前拒絕() {
+        let code = "struct Note{\nvar a:str = \"原值\"\nvar b:str = \"原值二\"\n}\nfn main()->int{\nvar n:Note = Note(a=\"實參\")\nreturn 0\n}\n";
+        let mut prepared = checked(code);
+        prepared.supplied[0].seed = ApprovedSeed::Str("偽造".into());
+        assert!(matches!(prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged)));
+        let mut prepared = checked(code);
+        prepared.supplied[0].name = "b".into();
+        assert!(matches!(prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_f_欄位種類與不可變權限竄改不得產生結構資源事件() {
+        let code = "struct Note{\nvar title:str = \"字串\"\nvar flag:bool = true\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 0\n}\n";
+        let mut prepared = checked(code);
+        prepared.fields[0].immutable = !prepared.fields[0].immutable;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged)));
+        let mut prepared = checked(code);
+        prepared.fields[0].kind = crate::mixed_struct_runtime::ScalarKind::Bool;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_f_入口返回整數與實例名稱若被竄改不能沿用原來源() {
+        let code = "struct Note{\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar n:Note = Note()\nreturn 2\n}\n";
+        let mut prepared = checked(code);
+        prepared.returned = 9;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged)));
+        let mut prepared = checked(code);
+        prepared.binding_name = "other".into();
+        assert!(matches!(prepared.execute(),
+            Err(PrivateStructPrepareError::SourceChanged)));
+    }
     #[test]
     fn p17_f_真私有_checker_空建立式求值預設_utf8_並真正釋放() {
         let text = "struct Note{\nvar title:str = \"繁體中文\"\nvar active:bool = true\n}\nfn main()->int{\nvar note:Note = Note()\nreturn 2\n}\n";
