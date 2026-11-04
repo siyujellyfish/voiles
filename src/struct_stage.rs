@@ -384,6 +384,15 @@ struct VerifiedControlEdge {
     flow: FlowState,
 }
 
+/// G4 第二批：受限方法與普通函式分開簽出 self 借用模式及
+/// 真正成功檢查的各個 return 位置；不暗示方法執行或析構。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct VerifiedMethodSafety {
+    span: crate::common_ir::NodeSpan,
+    self_borrow: BorrowKind,
+    checked_returns: BTreeSet<crate::common_ir::NodeSpan>,
+}
+
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
@@ -394,6 +403,8 @@ struct Checker<'a, C> {
     recorded_function_exits: RefCell<BTreeMap<usize, VerifiedFunctionExit>>,
     recorded_control_edges: RefCell<BTreeMap<usize, VerifiedControlEdge>>,
     recorded_control_conflicts: RefCell<BTreeSet<usize>>,
+    recorded_method_safety: RefCell<BTreeMap<usize, VerifiedMethodSafety>>,
+    recorded_method_safety_conflicts: RefCell<BTreeSet<usize>>,
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
@@ -711,6 +722,8 @@ struct VerifiedSafetyPlan {
     /// 每筆皆由真 Checker 已成功驗證的 return/break/continue
     /// 原位交付，供正式安全計畫唯讀核對原 Parser AST 位置。
     control_edges: BTreeMap<usize, VerifiedControlEdge>,
+    /// 方法的 self/參數受限 safety 授權只由 Checker::check_method 完成後認領。
+    method_safety: BTreeMap<usize, VerifiedMethodSafety>,
     scalar_hir: crate::common_ir::VerifiedScalarHir,
     /// F01/F04：僅由真 Checker 驗證欄位／參數後簽出、與借用
     /// 資源持有者分離的型別 token 來源證據。
@@ -741,6 +754,7 @@ impl VerifiedSafetyPlan {
         Self { declarations, scalar_hir, members,
             function_exits: BTreeMap::new(),
             control_edges: BTreeMap::new(),
+            method_safety: BTreeMap::new(),
             expression_spans, reference_spans, assignment_spans }
     }
 
@@ -834,6 +848,56 @@ impl VerifiedSafetyPlan {
                     && Self::control_edge_matches_ast(&fun.body, *edge)))
     }
 
+    /// 唯讀模型交叉拒假：方法中的寫入若已由 Checker 安全核准，
+    /// self 借用模式不得被轉成唯讀；中途確定 return 後不再猜測後繼。
+    fn method_requires_write(body: &[Stmt]) -> bool {
+        let mut writable = false;
+        for statement in body {
+            match &statement.kind {
+                StmtKind::FieldAssign { receiver, .. } if receiver == "self" =>
+                    writable = true,
+                StmtKind::If { branch, no } => {
+                    writable |= Self::method_requires_write(&branch.body);
+                    if let Some(otherwise) = no {
+                        writable |= Self::method_requires_write(otherwise);
+                    }
+                }
+                StmtKind::Return(_) => return writable,
+                _ => {}
+            }
+        }
+        writable
+    }
+
+    fn method_safety_is_consistent(
+        &self, structs: &HashMap<String, StructDecl>, text: &str,
+    ) -> bool {
+        let methods: Vec<&Function> = structs.values()
+            .flat_map(|definition| definition.methods.iter()).collect();
+        self.method_safety.len() == methods.len()
+            && methods.iter().all(|method| {
+                let Some(fact) = self.method_safety.get(&method.start) else {
+                    return false;
+                };
+                let final_span = method.body.last().map(|statement| statement.node_span());
+                fact.span == crate::common_ir::NodeSpan::new(method.start, method.end)
+                    && fact.span.start < fact.span.end
+                    && fact.span.end <= text.len()
+                    && text.is_char_boundary(fact.span.start)
+                    && text.is_char_boundary(fact.span.end)
+                    && final_span.is_some_and(|span| fact.checked_returns.contains(&span))
+                    && !fact.checked_returns.is_empty()
+                    && fact.checked_returns.iter().all(|&span|
+                        Self::control_edge_matches_ast(&method.body,
+                            VerifiedControlEdge { span, flow: FlowState::Returned }))
+                    && fact.self_borrow == if Self::method_requires_write(&method.body) {
+                        BorrowKind::ExclusiveWrite
+                    } else {
+                        BorrowKind::SharedRead
+                    }
+            })
+    }
+
     /// 同一完整來源與同一 Checker 交付的兩份安全證據一起核對；
     /// 不允許橋接只看其中一份而忽略不一致的型別／借用權威。
     fn is_consistent(
@@ -856,6 +920,7 @@ impl VerifiedSafetyPlan {
                 })
             })
             && self.control_edges_are_consistent(functions, text)
+            && self.method_safety_is_consistent(structs, text)
             && self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
             && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.operations_match_verified_ast(structs, functions)
@@ -928,6 +993,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_function_exits: RefCell::new(BTreeMap::new()),
         recorded_control_edges: RefCell::new(BTreeMap::new()),
         recorded_control_conflicts: RefCell::new(BTreeSet::new()),
+        recorded_method_safety: RefCell::new(BTreeMap::new()),
+        recorded_method_safety_conflicts: RefCell::new(BTreeSet::new()),
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
@@ -971,6 +1038,13 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
+    if !checker.recorded_method_safety_conflicts.borrow().is_empty() {
+        return Err(Diagnostic {
+            kind: DiagnosticKind::Static,
+            message: "P16：同一方法的 Checker self 借用或退出義務出現來源衝突".into(),
+            span: None,
+        });
+    }
     let members = checker.recorded_member_types.into_inner();
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
@@ -987,6 +1061,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     let mut plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir, members);
     plan.function_exits = checker.recorded_function_exits.into_inner();
     plan.control_edges = checker.recorded_control_edges.into_inner();
+    plan.method_safety = checker.recorded_method_safety.into_inner();
     if !plan.is_consistent(&structs, &functions, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
