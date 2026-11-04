@@ -109,7 +109,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             })).collect();
         bindings.sort_by_key(|item| (item.scope_depth, item.declaration));
         let snapshot = VerifiedExitSnapshot {
-            edge: VerifiedControlEdge { span, flow }, bindings,
+            edge: VerifiedControlEdge { span, flow },
+            scope_sizes: vars.iter().map(|scope| scope.len()).collect(),
+            bindings,
         };
         let mut recorded = self.recorded_exit_snapshots.borrow_mut();
         let alternatives = recorded.entry(span.start).or_default();
