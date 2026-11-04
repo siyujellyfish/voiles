@@ -1,6 +1,6 @@
-//! P17-C：真正私有來源與 Checker 權限接入既有 UTF-8 資源 Runtime。
-//! 限制為「var str 常值→另一 var 的 .move()→return int 常值」單一路徑。
-//! 其它語法一律在第一次配置資源之前保守阻擋；公開 CLI 不變。
+// P17-C：真正私有來源與 Checker 權限接入既有 UTF-8 資源 Runtime。
+// 限制為「var str 常值→另一 var 的 .move()→return int 常值」單一路徑。
+// 其它語法一律在第一次配置資源之前保守阻擋；公開 CLI 不變。
 
 #[derive(Debug)]
 pub(crate) enum PrivateStrExecutionError {
