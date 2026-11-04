@@ -517,6 +517,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         })) {
             return;
         }
+        // F07/B06：借用活性是唯一 SafetyState 的一部分。
+        // 原始全域快照若已不一致，不可透過局部提早歸還把錯誤
+        // 狀態「修好」，使後續 Checker 錯把非法狀態視為已驗證。
+        if Self::active_loan_snapshot(vars).validate().is_err() {
+            return;
+        }
         let mut needed_here = BTreeSet::new();
         Self::scan_future_block_uses(rest,
             &mut Self::visible_future_sources(vars, vars.len() - 1),
@@ -530,7 +536,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 (*depth, used)
             }).collect();
 
-        for (depth, scope) in vars.iter_mut().enumerate() {
+        // 所有歸還判定都在同一份不可變後繼 use-def 集合上進行。
+        // 只修改 COW 候選，完整核對活躍借用後才整筆提交。
+        let mut proposed = vars.clone();
+        for (depth, scope) in proposed.iter_mut().enumerate() {
             let has_releasable = scope.values().any(|binding|
                 binding.loan.as_ref().is_some_and(|loan|
                     loan.active && loan.fact.source != binding.declaration_start));
@@ -538,11 +547,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 continue;
             }
             for binding in Rc::make_mut(scope).values_mut() {
-                // DerefMut 只對 SafetyState 取得可變參照；先複製外層
-                // 不可變 DeclarationId，避免同一 Binding 同時可變／不可變借用。
                 let declaration_start = binding.declaration_start;
                 if let Some(loan) = binding.loan.as_mut() {
-                    // 函式借用參數仍由函式作用域出口管理，不能提前歸還。
+                    // 參數及 self 的原有效期仍須由其函式出口負責。
                     let parameter_scope_loan =
                         loan.fact.source == declaration_start;
                     let future_use = needed_here.contains(&declaration_start)
@@ -554,6 +561,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 }
             }
+        }
+        // 靜態有效期歸還不是執行期真票據操作；這裡不觸碰 tracker。
+        if Self::active_loan_snapshot(&proposed).validate().is_ok() {
+            *vars = proposed;
         }
     }
 
