@@ -1,4 +1,4 @@
-//! P17-C：同一份真私有來源及真 Rust String 執行事件的正反測試。
+// P17-C：同一份真私有來源及真 Rust String 執行事件的正反測試。
 
 #[cfg(test)]
 mod p17_checked_private_runtime_tests {
