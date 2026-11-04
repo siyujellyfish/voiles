@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""P21-A 非公開多檔來源身分、原 Checker 驗證與 TOCTOU 防偽七項 Rust 回歸 Gate。"""
+"""P21-A 非公開多檔來源身分、原 Checker 驗證與 TOCTOU 防偽九項 Rust 回歸 Gate。"""
 
 from __future__ import annotations
 
@@ -16,6 +16,8 @@ import sys
     "p21_a_來源檢查通過後真檔案更換位元組不得沿用已驗證計畫",
     "p21_a_未知跨檔_import_語法必須保留原單檔_checker_拒絕",
     "p21_a_符號連結改指其他同內容來源仍不可沿用原檔案身分",
+    "p21_a_unix_硬連結不同正規路徑仍須判定同一實體來源",
+    "p21_a_unix_檔案被相同位元組的另一_inode_取代仍拒絕舊證據",
 )
 
 
