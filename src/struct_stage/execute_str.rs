@@ -641,6 +641,100 @@ mod p17_private_str_execution_tests {
     use crate::owned_str_runtime::{ResourceEvent, StrRuntimeError};
 
 
+
+    #[test]
+    fn p17_c_原私有來源動作計畫未變可連續真正執行並完成清理() {
+        let code = "fn main()->int{\nvar outer:str = \"外層\"\nif(true){\nvar inside:str = \"內層\"\n}\nreturn 2\n}\n";
+        let plan = PreparedPrivateStr::prepare(code).unwrap();
+        for _ in 0..2 {
+            let actual = plan.execute().unwrap();
+            assert_eq!(actual.result, Ok(2));
+            assert_eq!(actual.events, [
+                ResourceEvent::Created(1), ResourceEvent::Created(2),
+                ResourceEvent::Released(2), ResourceEvent::Released(1),
+            ]);
+        }
+    }
+
+    #[test]
+    fn p17_c_已驗證字串動作常值被換掉須先拒絕零資源分配() {
+        let code = "fn main()->int{\nvar title:str = \"合法\"\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::DeclareLiteral { text, .. } = &mut plan.operations[0]
+            else { panic!("第一項是原 Checker 字串宣告") };
+        *text = "未經來源核准的新字串".into();
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_明示_move_賦值目標或來源偷換須在持有者轉交前拒絕() {
+        let code = "fn main()->int{\nvar source:str = \"甲\"\nvar target:str = \"乙\"\ntarget = source.move()\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::AssignMoved { to, .. } = &mut plan.operations[2]
+            else { panic!("已驗證整筆 move 賦值") };
+        *to = "source".into();
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::AssignMoved { from, .. } = &mut plan.operations[2]
+            else { panic!("已驗證整筆 move 賦值") };
+        *from = "target".into();
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_具名_bool_原宣告真假及分支目標更動不可沿用舊_checker_授權() {
+        let code = "fn main()->int{\nvar allowed:bool = true\nvar outer:str = \"外\"\nif(allowed){\nvar active:str = \"內\"\n}\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::DeclareBool { value, .. } = &mut plan.operations[0]
+            else { panic!("真 bool 宣告") };
+        *value = false;
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::LiteralBranch { condition, .. } = &mut plan.operations[2]
+            else { panic!("真具名 bool 分支") };
+        *condition = PrivateBoolCondition::Constant(true);
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_未選中的_else_字串若被改寫也不得造成靜態計畫漂移() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar used:str = \"執行\"\n}else{\nvar unused:str = \"不執行\"\n}\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::LiteralBranch { when_false, .. } = &mut plan.operations[1]
+            else { panic!("真 if/else") };
+        let PrivateStrLocalAction::Declare(value) = &mut when_false.actions[0]
+            else { panic!("真 else 局部字串") };
+        value.text = "偽造的未選分支".into();
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_巢狀返回常值被竄改不得在任何資源建立後才察覺() {
+        let code = "fn main()->int{\nvar outer:str = \"外\"\nif(true){\nvar middle:str = \"中\"\nif(true){\nvar inner:str = \"內\"\nreturn 7\n}\n}\nreturn 0\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::LiteralBranch { when_true, .. } = &mut plan.operations[1]
+            else { panic!("真外層 if") };
+        let PrivateStrLocalAction::NestedLiteralBranch { when_true: inner, .. } =
+            &mut when_true.actions[1] else { panic!("真巢狀 if") };
+        inner.returned = Some(99);
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn p17_c_頂層返回值與額外插入動作都必須在執行前拒絕() {
+        let code = "fn main()->int{\nvar title:str = \"合法\"\nreturn 1\n}\n";
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        let PrivateStrAction::Return(value) = &mut plan.operations[1]
+            else { panic!("真頂層 return") };
+        *value = 8;
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+        let mut plan = PreparedPrivateStr::prepare(code).unwrap();
+        plan.operations.push(PrivateStrAction::DeclareLiteral {
+            name: "fake".into(), mutable: true, text: "不得建立".into(),
+        });
+        assert!(matches!(plan.execute(), Err(PrivateStrPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn p17_c_真私有_checker_整筆_move_覆寫現存_str_舊資源立即釋放() {
         let code = "fn main()->int{\nvar source:str = \"第一\"\nvar target:str = \"第二\"\ntarget = source.move()\nreturn 0\n}\n";
