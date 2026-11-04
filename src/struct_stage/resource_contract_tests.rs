@@ -1718,3 +1718,77 @@ mod r03_g5_實際分支提前返回證明 {
             E::Released(2), E::Released(1)]);
     }
 }
+
+
+#[cfg(test)]
+mod r03_g5_f13_同環境量測 {
+    use super::*;
+    use std::hint::black_box;
+    use std::time::Instant;
+
+    const NAMED: &str = "fn main()->int{\nvar owner:str = \"繁體中文🪼\"\nvar target:str = owner.move()\nreturn 0\n}\n";
+    const STRUCT: &str = "struct Message{\nvar first:str = \"甲預設\"\nvar second:str = \"乙預設\"\nvar third:str = \"丙預設\"\n}\nfn main()->int{\nvar item:Message = Message(second=\"乙具名\",first=\"甲具名\")\nreturn 0\n}\n";
+
+    /// 兩路都以真正同一份 Parser/Checker 為起點；完成路徑另驗證
+    /// 資源分配／真事件／清理責任。跨兩者的比值只作當次觀測，
+    /// 不拿它冒充歷史未保存的「舊版效能」或容許漏驗收。
+    fn measure_same_process(
+        name: &str, source: &str, full_bridge: impl Fn() -> usize,
+    ) {
+        let iterations: usize = 48;
+        let mut checker_ns = 0u128;
+        let mut complete_ns = 0u128;
+        // 交替執行順序，避免第一次暖機固定有利於某一側。
+        for round in 0..iterations {
+            let baseline = || {
+                let started = Instant::now();
+                let verified = verified_private_source(black_box(source)).unwrap();
+                black_box(verified.plan.function_exits.len());
+                started.elapsed().as_nanos()
+            };
+            let full = || {
+                let started = Instant::now();
+                let events = full_bridge();
+                black_box(events);
+                started.elapsed().as_nanos()
+            };
+            if round % 2 == 0 {
+                checker_ns += baseline();
+                complete_ns += full();
+            } else {
+                complete_ns += full();
+                checker_ns += baseline();
+            }
+        }
+        assert!(checker_ns > 0 && complete_ns > 0);
+        eprintln!(
+            "G5_PERFORMANCE name={} iterations={} checker_ns={} full_bridge_ns={}",
+            name, iterations, checker_ns, complete_ns,
+        );
+    }
+
+    #[test]
+    fn g5_f13_同環境具名字串源驗證對真資源事件橋接量測() {
+        measure_same_process("named_str", NAMED, || {
+            let events = trace_named_string_move_source(NAMED).unwrap();
+            assert_eq!(events, vec![
+                crate::owned_str_runtime::ResourceEvent::Created(1),
+                crate::owned_str_runtime::ResourceEvent::Moved(1),
+                crate::owned_str_runtime::ResourceEvent::Released(1),
+            ]);
+            events.len()
+        });
+    }
+
+    #[test]
+    fn g5_f13_同環境多字串結構Checker對原生逆序清理橋接量測() {
+        measure_same_process("struct_three_str", STRUCT, || {
+            let trace = trace_string_struct_source(STRUCT, "item", None).unwrap();
+            let events = &trace.resources;
+            assert_eq!(events.len(), 6);
+            assert_eq!(events[0], crate::owned_str_runtime::ResourceEvent::Created(1));
+            assert_eq!(events[5], crate::owned_str_runtime::ResourceEvent::Released(1));
+            events.len()
+        });
+    }
+}

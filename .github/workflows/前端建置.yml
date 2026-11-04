@@ -203,6 +203,10 @@ jobs:
         run: |
           python3 tools/核對G5真早退第三批.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G5／F13 真 Checker 與受限動態 UTF-8 事件兩負載同程序效能觀察
+        run: |
+          python3 tools/核對G5同環境效能.py --test-bin target/p02/p04_source_internal --check
+
       - name: G1／G2 獨立重跑 F01～F05 與真權威根因關卡
         run: |
           python3 tools/核對G1G2驗收.py --test-bin target/p02/p04_source_internal --check
