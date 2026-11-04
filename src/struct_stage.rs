@@ -334,6 +334,14 @@ enum FlowState {
     LoopTransfer,
 }
 
+/// F11/B08：真正 Checker 在已成功驗證**整個函式**後簽發的
+/// 靜態 CFG 退出分類。此證據只是可達性義務，不是已執行返回事件。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VerifiedFunctionExit {
+    span: crate::common_ir::NodeSpan,
+    flow: FlowState,
+}
+
 struct Checker<'a, C> {
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
@@ -341,6 +349,7 @@ struct Checker<'a, C> {
     function_index: HashMap<String, usize>,
     ability: C,
     /// F11 前置：真實 Checker 成功評估並完成宣告後記錄的直線具名移交。
+    recorded_function_exits: RefCell<BTreeMap<usize, VerifiedFunctionExit>>,
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
@@ -652,6 +661,9 @@ impl VerifiedDeclarationFacts {
 /// 一般 CFG 執行器，也不得由橋接自行用 AST 推斷持有者。
 struct VerifiedSafetyPlan {
     declarations: VerifiedDeclarationFacts,
+    /// 不可從真 AST 或橋接倒推；唯一從 Checker::function 成功
+    /// 的整個函式控制流驗證出口取得。方法另保留原受限安全路徑。
+    function_exits: BTreeMap<usize, VerifiedFunctionExit>,
     scalar_hir: crate::common_ir::VerifiedScalarHir,
     /// F01/F04：僅由真 Checker 驗證欄位／參數後簽出、與借用
     /// 資源持有者分離的型別 token 來源證據。
@@ -680,6 +692,7 @@ impl VerifiedSafetyPlan {
         let assignment_spans =
             scalar_hir.verified_assignments().map(|fact| fact.span).collect();
         Self { declarations, scalar_hir, members,
+            function_exits: BTreeMap::new(),
             expression_spans, reference_spans, assignment_spans }
     }
 
@@ -739,7 +752,22 @@ impl VerifiedSafetyPlan {
         &self, structs: &HashMap<String, StructDecl>, functions: &[Function],
         text: &str,
     ) -> bool {
-        self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
+        // F11：每一個被原 Checker 接受的函式都必須有唯一的真
+        // 可達退出分類；不能刪掉其中一條再拿剩餘 AST 重建。
+        // 靜態返回不意味真的執行返回或釋放 ResourceId。
+        self.function_exits.len() == functions.len()
+            && functions.iter().all(|function| {
+                self.function_exits.get(&function.start).is_some_and(|exit| {
+                    exit.span == crate::common_ir::NodeSpan::new(
+                        function.start, function.end)
+                        && exit.flow == FlowState::Returned
+                        && function.start < function.end
+                        && function.end <= text.len()
+                        && text.is_char_boundary(function.start)
+                        && text.is_char_boundary(function.end)
+                })
+            })
+            && self.scalar_hir.mode_is(crate::common_ir::FrontendMode::PrivateVerified)
             && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.operations_match_verified_ast(structs, functions)
             && self.member_sources_are_consistent(structs, functions, text)
@@ -808,6 +836,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     let checker = Checker {
         source: &source, structs: &structs, functions: &functions,
         function_index, ability,
+        recorded_function_exits: RefCell::new(BTreeMap::new()),
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
@@ -857,7 +886,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     declarations.call_borrows = checker.recorded_call_borrows.into_inner();
     // 雙帳簿與 P16 來源橋接只能拿到整份通過同一交叉驗證的計畫。
     // 真正 Checker 的資訊由此單一所有權移入，不能傳遞獨立可換的兩本表。
-    let plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir, members);
+    let mut plan = VerifiedSafetyPlan::from_checker(declarations, scalar_hir, members);
+    plan.function_exits = checker.recorded_function_exits.into_inner();
     if !plan.is_consistent(&structs, &functions, text) {
         return Err(Diagnostic {
             kind: DiagnosticKind::Static,
