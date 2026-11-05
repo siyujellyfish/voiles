@@ -1,6 +1,6 @@
 // G18／P18.1、P18.4：已核准 Copyable int 真普通函式參數子集。
 // 原私有 Lexer／Parser／Checker／TypedHIR 是唯一來源權威；
-// 本 evaluator 只執行一個真正 int 參數的直接具名返回，
+// 本 evaluator 只執行一個真正 int 參數的已核准純 int 返回運算式，
 // 不把靜態 Checker 等同已執行、亦不擴充公開 P01 CLI。
 #[derive(Debug)]
 enum PrivateScalarCallPrepareError {
@@ -13,6 +13,7 @@ enum PrivateScalarCallPrepareError {
 enum PrivateScalarCallRuntimeError {
     StateMismatch,
     InjectedFailure,
+    IntegerOverflow,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,6 +33,97 @@ struct PrivateScalarCallOutcome {
     parameter_slots_after_exit: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarReturnExpr {
+    Parameter(DeclarationId),
+    Constant(i64),
+    Addition(Box<Self>, Box<Self>),
+    Subtraction(Box<Self>, Box<Self>),
+}
+
+impl PrivateScalarReturnExpr {
+    /// 僅由真正 Checker 已交付的 int TypedHIR 準備，不在執行期
+    /// 重新猜測文法或由來源文字推論算式樹。
+    fn from_checked(term: &Term, param: &Parameter, verified: &VerifiedPrivateSource)
+        -> Result<Self, PrivateScalarCallPrepareError> {
+        use crate::common_ir::ScalarType;
+        let span = term.node_span();
+        if verified.plan.scalar_hir.expression(span)
+            .is_none_or(|fact| fact.ty != ScalarType::Int) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "int 返回運算式缺少原 Checker TypedHIR Expression 型別",
+            ));
+        }
+        match &term.kind {
+            TermKind::Name(name) => {
+                let id = DeclarationId(param.declaration_start);
+                if name != &param.name || verified.plan.scalar_hir.reference(span)
+                    .is_none_or(|fact|
+                        fact.resolved.declaration != id
+                        || fact.resolved.ty != ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start && token.end == span.end
+                            && matches!(&token.kind, TokenKind::Name(found) if found == name)
+                    ) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "返回中具名 int 引用缺少原 Checker 參數身分",
+                    ));
+                }
+                Ok(Self::Parameter(id))
+            }
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                Ok(Self::Constant(crate::syntax_shared::integer_i64(raw)
+                    .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                        "返回 int 常值超出 i64 範圍",
+                    ))?))
+            }
+            TermKind::Group(inner) =>
+                Self::from_checked(inner, param, verified),
+            TermKind::BinaryInt(binary) => {
+                let left = binary.left.node_span();
+                let right = binary.right.node_span();
+                let Some(fact) = verified.plan.scalar_hir.arithmetic(span) else {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "函式內加減缺少原 Checker 位置／運算子／來源 HIR",
+                    ));
+                };
+                if fact.left != left || fact.right != right
+                    || fact.operator != binary.operator
+                    || !matches!(fact.operator, '+' | '-') {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "函式內加減 HIR 端點或運算子遭偷換",
+                    ));
+                }
+                let left = Box::new(Self::from_checked(&binary.left, param, verified)?);
+                let right = Box::new(Self::from_checked(&binary.right, param, verified)?);
+                Ok(if fact.operator == '+' {
+                    Self::Addition(left, right)
+                } else {
+                    Self::Subtraction(left, right)
+                })
+            }
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "此私有呼叫只接通原 Checker 已核准的 Copyable int 加減及括號",
+            )),
+        }
+    }
+
+    fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
+        -> Result<i64, PrivateScalarCallRuntimeError> {
+        match self {
+            Self::Parameter(identity) =>
+                frame.get(identity).copied().ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::Constant(value) => Ok(*value),
+            Self::Addition(left, right) => left.evaluate(frame)?
+                .checked_add(right.evaluate(frame)?)
+                .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
+            Self::Subtraction(left, right) => left.evaluate(frame)?
+                .checked_sub(right.evaluate(frame)?)
+                .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
+        }
+    }
+}
+
 struct PreparedPrivateScalarCall {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -41,6 +133,7 @@ struct PreparedPrivateScalarCall {
     parameter_name: String,
     parameter_id: DeclarationId,
     parameter_return_span: crate::common_ir::NodeSpan,
+    return_expr: PrivateScalarReturnExpr,
     owner_id: Option<DeclarationId>,
     argument: i64,
 }
@@ -89,23 +182,13 @@ impl PreparedPrivateScalarCall {
                 "被呼叫者只能用已簽發的 Copyable int 參數直接返回",
             ));
         };
-        let TermKind::Name(return_name) = &return_param.expression.kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "被呼叫者返回式僅限同一合法 int 參數名稱",
-            ));
-        };
         let param_return_span = return_param.expression.node_span();
-        if return_name != &param.name || verified.plan.scalar_hir.reference(param_return_span)
-            .is_none_or(|fact|
-                fact.resolved.declaration != param_id || fact.resolved.ty != ScalarType::Int)
-            || !verified.tokens.iter().any(|token|
-                token.start == param_return_span.start && token.end == param_return_span.end
-                    && matches!(&token.kind, TokenKind::Name(name) if name == return_name)
-            ) {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "被呼叫者返回名稱不是原 Checker int Reference HIR 之參數",
-            ));
-        }
+        // 每個子節點都取自**原** Checker 的 TypedHIR；
+        // Copyable int 加減使用原正式溢位語意，絕不在準備時
+        // 把呼叫參數當成常值計算。
+        let return_expr = PrivateScalarReturnExpr::from_checked(
+            &return_param.expression, param, &verified,
+        )?;
         let main_len = main.body.statements.len();
         let StmtKind::Return(main_return) = &main.body.statements[main_len-1].kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -201,7 +284,7 @@ impl PreparedPrivateScalarCall {
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id: param_id,
-            parameter_return_span: param_return_span, owner_id, argument,
+            parameter_return_span: param_return_span, return_expr, owner_id, argument,
         })
     }
 
@@ -214,6 +297,7 @@ impl PreparedPrivateScalarCall {
             && self.parameter_name == fresh.parameter_name
             && self.parameter_id == fresh.parameter_id
             && self.parameter_return_span == fresh.parameter_return_span
+            && self.return_expr == fresh.return_expr
             && self.owner_id == fresh.owner_id
             && self.argument == fresh.argument
             && self.verified.plan.declarations.by_source
@@ -254,12 +338,15 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                match frame.get(&self.parameter_id).copied() {
-                    Some(value) => {
+                // 從本次真參數框架逐項求值；加減每個運算元
+                // 實際讀取 Copyable i64，checked_* 溢位時沒有
+                // 假 Returned 事件且仍正常執行退出與清理。
+                match self.return_expr.evaluate(&frame) {
+                    Ok(value) => {
                         events.push(PrivateScalarCallEvent::Returned(value));
                         Ok(value)
                     },
-                    None => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                    Err(error) => Err(error),
                 }
             }
         };
