@@ -490,4 +490,45 @@ mod tests {
         assert_eq!(rt.field("outer","text"),Ok(Observed::Str("繁體中文🪼")));
         assert_eq!(released(&rt.finish().unwrap()),vec![2,1]);
     }
+
+    #[test]
+    fn g18_d_真混合結構寫入_int_不移動或複製任何_utf8_資源() {
+        let mut runtime=MixedStructRuntime::new();
+        runtime.construct("owner",&all(),&[],None).unwrap();
+        let ptr=match runtime.field("owner","text").unwrap() {
+            Observed::Str(text)=>text.as_ptr(), _=>unreachable!(),
+        };
+        runtime.write_int_field("owner","num",19,true).unwrap();
+        assert_eq!(runtime.field("owner","num"),Ok(Observed::Int(19)));
+        assert_eq!(match runtime.field("owner","text").unwrap() {
+            Observed::Str(text)=>text.as_ptr(), _=>unreachable!(),
+        },ptr);
+        assert_eq!(runtime.finish().unwrap(),[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+    #[test]
+    fn g18_d_真混合結構_const_欄位或_const_接收者不能用純值覆寫() {
+        let mut runtime=MixedStructRuntime::new();
+        runtime.construct("owner",&all(),&[],None).unwrap();
+        assert_eq!(runtime.write_int_field("owner","num",12,false),
+            Err(MixedError::ImmutableReceiver));
+        assert_eq!(runtime.write_int_field("owner","flag",12,true),
+            Err(MixedError::ImmutableField));
+        assert_eq!(runtime.field("owner","num"),Ok(Observed::Int(42)));
+        assert_eq!(runtime.finish().unwrap(),[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+    #[test]
+    fn g18_d_真混合結構拒絕_int_寫入_str_並保留原資源所有權() {
+        let mut runtime=MixedStructRuntime::new();
+        runtime.construct("owner",&all(),&[],None).unwrap();
+        assert_eq!(runtime.write_int_field("owner","text",12,true),
+            Err(MixedError::TypeMismatch("text".into())));
+        assert_eq!(runtime.field("owner","text"),Ok(Observed::Str("繁體中文🪼")));
+        assert_eq!(runtime.finish().unwrap(),[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
 }
