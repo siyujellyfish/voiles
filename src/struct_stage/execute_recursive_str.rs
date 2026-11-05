@@ -392,6 +392,11 @@ impl PreparedPrivateRecursiveStr {
             && self.main_locals == fresh.main_locals
             && self.entry == fresh.entry
             && self.callees == fresh.callees
+            // is_consistent 驗證現存票據皆合法，但若整份 call_borrows
+            // 被清空，必須與重新執行原 Checker 的完整授權表比較，
+            // 不能因所有實際借用都消失便放行錯誤計畫。
+            && self.verified.plan.declarations.call_borrows
+                == fresh.verified.plan.declarations.call_borrows
     }
 
     fn execute(&self, budget: PrivateRecursiveStrBudget)
