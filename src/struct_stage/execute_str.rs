@@ -1010,8 +1010,8 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
-    fn p18_b_非純值_bool_初始式即便_checker_通過也不偷渡新求值能力() {
-        let code = "fn main()->int{\nvar first:bool = true\nvar second:bool = first\nvar outer:str = \"x\"\nif (second){\nvar x:str = \"x\"\n}\nreturn 0\n}\n";
+    fn p18_b_未授權的括號_bool_來源不可藉具名複製偷渡新求值能力() {
+        let code = "fn main()->int{\nvar first:bool = true\nvar second:bool = (first)\nvar outer:str = \"x\"\nif (second){\nvar x:str = \"x\"\n}\nreturn 0\n}\n";
         assert!(matches!(
             PreparedPrivateStr::prepare(code),
             Err(PrivateStrPrepareError::Unsupported(_)),
