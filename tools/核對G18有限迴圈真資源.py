@@ -10,6 +10,16 @@ from pathlib import Path
 
 案例 = (
     "g18_b_真_for_三次每迭代重新建立唯一_utf8_並離域釋放",
+    "g18_b_具名_var_bool_while_真重讀條件且本體改_false_後停止",
+    "g18_b_具名_false_while_零迭代且僅建外部資源",
+    "g18_b_具名_bool_重新賦值_false_到_true_選擇一次_break",
+    "g18_b_已核准_copyable_bool_名稱複製後與來源變更不構成別名",
+    "g18_b_具名_while_中的_early_return_僅清理實際選中本體與根資源",
+    "g18_c_具名_while_動態故障真清理且不補做未到達賦值",
+    "g18_b_具名_while_條件_DeclarationId_偷換必須零資源拒絕",
+    "g18_b_具名_while_沒有可證明終止時保持非公開拒絕",
+    "g18_b_具名_while_continue_不得跳過直接退出義務",
+    "g18_b_具名_const_bool_重賦值須在原_checker_先拒絕",
     "g18_b_半開空區間不建立任何假迭代資源",
     "g18_b_真_continue_每次先離域釋放再開始下一次",
     "g18_b_真_break_只執行首輪且離域釋放",
