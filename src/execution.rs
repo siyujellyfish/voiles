@@ -70,6 +70,19 @@ pub(crate) struct ExecutionOutcome {
     pub(crate) events: Vec<ControlEvent>,
 }
 
+/// D18-01-A～D：安全預算是**執行環境配置**，不是 voiles 語言
+/// 固定的最大遞迴深度；只有內部 Rust 驗證可配置，未增設 CLI。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExecutionBudget {
+    pub(crate) max_call_frames: usize,
+    pub(crate) max_steps: usize,
+}
+impl Default for ExecutionBudget {
+    fn default() -> Self {
+        Self { max_call_frames: 96, max_steps: 100_000 }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct Slot {
     value: Option<Value>,
@@ -161,6 +174,19 @@ impl PreparedProgram {
 
     /// P18-E：由實際 Runtime 產生執行紀錄；來源或 HIR 無效時絕不開始執行。
     pub(crate) fn execute_with_trace(&self) -> ExecutionOutcome {
+        self.execute_with_trace_budget(ExecutionBudget::default())
+    }
+
+    /// D18-01：只允許此已核准非公開 evaluator 更換資源預算。
+    /// 不把 Rust 預設數值宣布為 voiles 語言限制，也不靠宿主爆堆疊。
+    pub(crate) fn execute_with_trace_budget(&self, budget: ExecutionBudget)
+        -> ExecutionOutcome {
+        if budget.max_call_frames == 0 || budget.max_steps == 0 {
+            return ExecutionOutcome {
+                result: Err(RuntimeFailure::global("執行環境資源預算不可為零")),
+                events: Vec::new(),
+            };
+        }
         if !self.is_same_verified_source()
             || !self.has_original_checker_facts() {
             return ExecutionOutcome {
@@ -172,8 +198,9 @@ impl PreparedProgram {
             prepared: self,
             globals: BTreeMap::new(),
             frames: Vec::new(),
-            calls: Vec::new(),
             trace: Vec::new(),
+            budget,
+            remaining_steps: budget.max_steps,
         };
         let result = (|| {
             for item in &self.ast.items {
@@ -215,12 +242,22 @@ struct Runtime<'a> {
     globals: BTreeMap<DeclarationId, Slot>,
     // 每個函式有獨立框架，區塊依來源身分建立與退出。
     frames: Vec<Vec<BTreeMap<DeclarationId, Slot>>>,
-    // 尚未支援遞迴的內部切片，遇到循環必須安全拒絕而非爆堆疊。
-    calls: Vec<String>,
     trace: Vec<ControlEvent>,
+    budget: ExecutionBudget,
+    remaining_steps: usize,
 }
 
 impl Runtime<'_> {
+    /// 真正每次執行到語句或運算式才消耗步數，不提前計入未走過
+    /// 的 AST／CFG 控制邊。預算耗盡時交給當前函式逐層退出。
+    fn consume_step(&mut self, span: NodeSpan) -> Result<(), RuntimeFailure> {
+        if self.remaining_steps == 0 {
+            return Err(RuntimeFailure::at(span, "執行步數預算耗盡"));
+        }
+        self.remaining_steps -= 1;
+        Ok(())
+    }
+
     fn checked_declaration(&self, binding: &Binding) -> Result<Slot, RuntimeFailure> {
         let id = DeclarationId(binding.start);
         match self.prepared.resolved.declaration(id) {
@@ -272,6 +309,7 @@ impl Runtime<'_> {
 
     fn expression(&mut self, expr: &Expr) -> Result<Value, RuntimeFailure> {
         let span = expr.node_span();
+        self.consume_step(span)?;
         let fact = self.prepared.typed.expression(span)
             .ok_or_else(|| RuntimeFailure::at(span, "缺少正式 P10 型別事實"))?;
         if !self.prepared.reachable_expressions.contains(&span) {
@@ -341,6 +379,7 @@ impl Runtime<'_> {
 
     fn statements(&mut self, block: &Block) -> Result<Option<Value>, RuntimeFailure> {
         for statement in &block.statements {
+            self.consume_step(statement.node_span())?;
             match &statement.kind {
                 StmtKind::Binding(binding) => {
                     let slot = self.initialized_slot(binding)?;
@@ -407,9 +446,13 @@ impl Runtime<'_> {
 
     fn call(&mut self, name: &str, source_span: Option<NodeSpan>)
         -> Result<Value, RuntimeFailure> {
-        if self.calls.iter().any(|active| active == name) {
+        // 既有 AW06-A 直接／相互遞迴均屬合法函式呼叫。
+        // 只限制**本次執行環境**能承擔的動態真框架數；
+        // 必須在進入下一層前檢查，讓已進入的所有框架都能
+        // 在錯誤冒泡時照真來源逐層退出，從不依賴 Rust stack overflow。
+        if self.frames.len() >= self.budget.max_call_frames {
             return Err(RuntimeFailure {
-                span: source_span, reason: "遞迴尚未接入 P18 安全執行切片",
+                span: source_span, reason: "遞迴呼叫框架預算耗盡",
             });
         }
         let function = self.prepared.ast.items.iter().find_map(|item| match item {
@@ -422,11 +465,9 @@ impl Runtime<'_> {
         self.trace.push(ControlEvent::FunctionEntered {
             name: name.to_string(), span: function_span,
         });
-        self.calls.push(name.to_string());
         self.frames.push(Vec::new());
         let result = self.block(&function.body);
         self.frames.pop();
-        self.calls.pop();
         self.trace.push(ControlEvent::FunctionExited {
             name: name.to_string(), span: function_span,
             returned: matches!(&result, Ok(Some(value)) if value.matches(function.result_ty)),
@@ -595,11 +636,21 @@ mod tests {
     }
 
     #[test]
-    fn p18_尚未建立遞迴退出契約時安全拒絕_不爆堆疊() {
+    fn p18_無限遞迴耗盡預算安全拒絕_不爆堆疊() {
         let code = "fn again()->int{\nreturn again()\n}\nfn main()->int{\nreturn again()\n}\n";
         let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
-        let error = plan.execute().unwrap_err();
-        assert!(error.reason.contains("遞迴"));
+        let outcome = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 4, max_steps: 100,
+        });
+        assert_eq!(outcome.result.unwrap_err().reason, "遞迴呼叫框架預算耗盡");
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::FunctionEntered { .. })).count(), 4);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ControlEvent::FunctionExited { returned: false, .. })).count(), 4);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, ControlEvent::Returned { .. })));
+        assert_eq!(trace::audit_control_events_against_source(
+            &outcome.events, &plan.ast, code), Ok(()));
     }
     #[test]
     fn p18_多層非遞迴函式框架按實際呼叫返回() {
@@ -777,4 +828,115 @@ mod tests {
         assert!(!outcome.events.iter().any(|event| matches!(event, ControlEvent::ElseSelected { .. })));
     }
 
+
+
+    #[test]
+    fn p18_已核准直接遞迴_可由全域_bool_終止並逐框架返回() {
+        let code = "var once:bool = true\nfn again()->int{\nif (once){\nonce = false\nreturn again()\n}\nreturn 7\n}\nfn main()->int{\nreturn again()\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 3, max_steps: 100,
+        });
+        assert_eq!(outcome.result, Ok(Value::Int(7)));
+        let names: Vec<_> = outcome.events.iter().filter_map(|e| match e {
+            ControlEvent::FunctionEntered {name, ..} => Some(format!("進入:{name}")),
+            ControlEvent::FunctionExited {name, returned, ..} =>
+                Some(format!("退出:{name}:{returned}")),
+            _ => None,
+        }).collect();
+        assert_eq!(names, [
+            "進入:main", "進入:again", "進入:again",
+            "退出:again:true", "退出:again:true", "退出:main:true",
+        ]);
+        assert_eq!(trace::audit_control_events_against_source(
+            &outcome.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_已核准互相遞迴_使用原函式宣告與真動態框架() {
+        let code = "var flag:bool = true\nfn first()->int{\nif (flag){\nflag = false\nreturn second()\n}\nreturn 4\n}\nfn second()->int{\nreturn first()\n}\nfn main()->int{\nreturn first()\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 4, max_steps: 150,
+        });
+        assert_eq!(outcome.result, Ok(Value::Int(4)));
+        let call_order: Vec<_> = outcome.events.iter().filter_map(|e| match e {
+            ControlEvent::FunctionEntered {name, ..} => Some(name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(call_order, ["main", "first", "second", "first"]);
+        assert_eq!(trace::audit_control_events_against_source(
+            &outcome.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_遞迴框架預算小於合法真呼叫層數也須原子報錯() {
+        let code = "var once:bool = true\nfn again()->int{\nif(once){\nonce=false\nreturn again()\n}\nreturn 7\n}\nfn main()->int{\nreturn again()\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 2, max_steps: 100,
+        });
+        assert_eq!(outcome.result.unwrap_err().reason, "遞迴呼叫框架預算耗盡");
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, ControlEvent::FunctionExited {returned: false, ..})).count(), 2);
+        assert!(!outcome.events.iter().any(|e|
+            matches!(e, ControlEvent::Returned { .. })));
+        assert_eq!(trace::audit_control_events_against_source(
+            &outcome.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_步數預算耗盡須沿真函式逐層退出不偽造成功() {
+        let code = "fn again()->int{\nreturn again()\n}\nfn main()->int{\nreturn again()\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let outcome = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 20, max_steps: 5,
+        });
+        assert_eq!(outcome.result.unwrap_err().reason, "執行步數預算耗盡");
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, ControlEvent::FunctionEntered { .. })).count(),
+            outcome.events.iter().filter(|e|
+            matches!(e, ControlEvent::FunctionExited { returned: false, .. })).count());
+        assert_eq!(trace::audit_control_events_against_source(
+            &outcome.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_同一已核准遞迴來源使用不同預算不改變語言語意() {
+        let code = "var once:bool = true\nfn again()->int{\nif(once){\nonce=false\nreturn again()\n}\nreturn 7\n}\nfn main()->int{\nreturn again()\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        let enough = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 3, max_steps: 100,
+        });
+        let short = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 2, max_steps: 100,
+        });
+        assert_eq!(enough.result, Ok(Value::Int(7)));
+        assert_eq!(short.result.unwrap_err().reason, "遞迴呼叫框架預算耗盡");
+        assert_eq!(trace::audit_control_events_against_source(
+            &enough.events, &plan.ast, code), Ok(()));
+        assert_eq!(trace::audit_control_events_against_source(
+            &short.events, &plan.ast, code), Ok(()));
+    }
+
+    #[test]
+    fn p18_零預算與遭竄改來源不得產生假進入函式事件() {
+        let code = "fn main()->int{\nreturn 3\n}\n";
+        let plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        for budget in [
+            ExecutionBudget { max_call_frames: 0, max_steps: 20 },
+            ExecutionBudget { max_call_frames: 3, max_steps: 0 },
+        ] {
+            let result = plan.execute_with_trace_budget(budget);
+            assert!(result.result.is_err());
+            assert!(result.events.is_empty());
+        }
+        let mut plan = PreparedProgram::prepare(code.as_bytes().to_vec()).unwrap();
+        plan.source.bytes[0] = b'x';
+        let result = plan.execute_with_trace_budget(ExecutionBudget {
+            max_call_frames: 3, max_steps: 100,
+        });
+        assert!(result.result.is_err());
+        assert!(result.events.is_empty());
+    }
 }
