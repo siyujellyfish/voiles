@@ -147,6 +147,7 @@ include!("struct_stage/execute_loop.rs");
 
 // G18／P18-D：原 Checker 每次函式呼叫借用票據真正執行和出口歸還。
 include!("struct_stage/execute_call_borrow.rs");
+include!("struct_stage/execute_call_scalar.rs");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {

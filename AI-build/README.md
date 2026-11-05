@@ -117,3 +117,5 @@
 > **G18.2 for 迭代器真 int 值（2026-11-05；內部施工）**：[由原 Checker for DeclarationId 及 TypedHIR 名稱引用驗證 return i，逐輪真正記錄數值、清理 str 資源與同名遮蔽](P18-B-for迭代真整數宣告與來源回傳-20261105.md)。新增八項 Rust 真正正反，有限迴圈 Gate 23→31；G17 Passed，**G18 仍非 Passed**。
 
 > **G18.4 普通函式 BorrowTicket 讀取防護（2026-11-05，非公開施工）**：[已驗證活躍票據的來源／序號／追蹤器／種類必須在真正讀取 str 參數前通過，失效／越權／跨呼叫票據不能接觸真 UTF-8](P18-D-普通函式str借用票據實際讀取防護-20261105.md)。新增四項來源測試、四項借用核心測試，函式專項 Gate 8→12。**原 G18 仍 BlockedByDecision，P18 六項仍未正式 Passed。**
+
+> **G18.1／18.4 Copyable int 真函式傳參（2026-11-05；非公開施工）**：[原私有 Checker int 參數與 TypedHIR 引用身分→真正前向普通函式框架、i64 求值、具名參數 Copyable、直接返回和故障離域](P18-A-已核准Copyable整數函式參數真框架-20261105.md)。新增 8 項 Rust 正反與 G18 五組真來源稽核。**G18 六原項仍未正式 Passed**。
