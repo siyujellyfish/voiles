@@ -223,16 +223,21 @@ impl PreparedPrivateLoop {
                 }
                 StmtKind::Return(ret) => {
                     let span = ret.expression.node_span();
-                    if verified.plan.scalar_hir.expression(span)
-                        .is_none_or(|fact| fact.ty != crate::common_ir::ScalarType::Int) {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "return 缺少正式 P10 TypedHIR int 型別",
-                        ));
-                    }
+                    // 原 Checker 對純常值用 expression 事實、
+                    // 對具名 Iterator 用 reference 事實；兩者都是
+                    // 同一份原 TypedHIR 的不同型別證據，不能因
+                    // Name 沒有獨立 expression 而改用無驗證回傳。
                     match &ret.expression.kind {
                         TermKind::Scalar(
                             crate::syntax_shared::ScalarLiteral::Integer(raw),
                         ) => {
+                            if verified.plan.scalar_hir.expression(span)
+                                .is_none_or(|fact|
+                                    fact.ty != crate::common_ir::ScalarType::Int) {
+                                return Err(PrivateLoopPrepareError::Unsupported(
+                                    "return int 常值缺少 Checker Expression HIR",
+                                ));
+                            }
                             let value = crate::syntax_shared::integer_i64(raw)
                                 .map_err(|_| PrivateLoopPrepareError::Unsupported(
                                     "return int 超出 i64 有效範圍",
