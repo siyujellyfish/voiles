@@ -156,39 +156,48 @@ impl PreparedPrivateLoop {
                     }
                 }
                 StmtKind::While { condition, body } => {
-                    let TermKind::Scalar(
-                        crate::syntax_shared::ScalarLiteral::Boolean(value),
-                    ) = &condition.kind else {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "while 的非常值／未知迭代上界須等待正式耗盡政策",
-                        ));
-                    };
-                    let source = std::str::from_utf8(&verified.source.bytes)
-                        .map_err(|_| PrivateLoopPrepareError::SourceChanged)?;
-                    if source.get(condition.start..condition.end)
-                        != Some(if *value { "true" } else { "false" }) {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "while 條件沒有原 Lexer 真實常值來源",
-                        ));
-                    }
-                    let compiled = if *value {
-                        let actions = Self::verified_actions(&body.statements, verified, true, bool_bindings)?;
-                        // while(true) 只有每次第一個本體能直接到達
-                        // break/return，才可以證明最多只執行一次；
-                        // 未核准的 continue／重新進入一律不猜測。
-                        if !matches!(actions.last(),
-                            Some(PrivateLoopAction::Break | PrivateLoopAction::Return(_))) {
+                    // 已核准 P15：每輪重新求值、非資源副作用的 bool。
+                    // 具名來源必須由同一份私有 Checker 的 TypedHIR
+                    // Reference、Lexer token、DeclarationId 嚴格證明。
+                    let guard = verified_nested_bool(condition, verified, bool_bindings)
+                        .map_err(|_| PrivateLoopPrepareError::Unsupported(
+                            "while 條件缺少原 Checker 真 bool 型別及名稱證據",
+                        ))?;
+                    let compiled = if guard == PrivateBoolCondition::Constant(false) {
+                        // 永不走到的本體沒有執行期資源或 bool 效果。
+                        Vec::new()
+                    } else {
+                        let actions = Self::verified_actions(
+                            &body.statements, verified, true, bool_bindings,
+                        )?;
+                        // 只接受能以來源直接證明至多一次本體後退出：
+                        // (1) 直接 break／return；
+                        // (2) 具名 var bool 的末句明確改成 false，
+                        //     下次條件會真正重讀同一 DeclarationId。
+                        // 前方不可有 continue 跳過該退出義務。
+                        if actions.iter().take(actions.len().saturating_sub(1))
+                            .any(|item| matches!(item, PrivateLoopAction::Continue)) {
                             return Err(PrivateLoopPrepareError::Unsupported(
-                                "while(true) 缺少直接可證明的 break／return 終止出口",
+                                "while 的 continue 不得繞過已證明終止出口",
+                            ));
+                        }
+                        let direct_exit = matches!(actions.last(),
+                            Some(PrivateLoopAction::Break | PrivateLoopAction::Return(_)));
+                        let falsified_guard = match (guard, actions.last()) {
+                            (PrivateBoolCondition::Bound(source),
+                                Some(PrivateLoopAction::AssignBool {
+                                    identity, value: PrivateBoolCondition::Constant(false),
+                                })) => source == *identity,
+                            _ => false,
+                        };
+                        if !direct_exit && !falsified_guard {
+                            return Err(PrivateLoopPrepareError::Unsupported(
+                                "此私有 while 須有直接 break/return 或原條件明確寫為 false",
                             ));
                         }
                         actions
-                    } else {
-                        // false 本體永不執行，原 Checker 已有真 AST 和
-                        // 靜態相容性；不得要求不存在的真動態持有者。
-                        Vec::new()
                     };
-                    PrivateLoopAction::WhileConstant { value: *value, body: compiled }
+                    PrivateLoopAction::WhileCondition { condition: guard, body: compiled }
                 }
                 StmtKind::Return(ret) => {
                     let TermKind::Scalar(
