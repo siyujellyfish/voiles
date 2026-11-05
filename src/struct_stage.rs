@@ -163,6 +163,7 @@ include!("struct_stage/execute_call_borrow.rs");
 include!("struct_stage/execute_call_scalar.rs");
 // G18／P18.6：正式 Checker 已核准同步唯讀 self 的真 BorrowTicket。
 include!("struct_stage/execute_method_self.rs");
+include!("struct_stage/execute_method_overload.rs");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
