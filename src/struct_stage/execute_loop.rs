@@ -13,8 +13,14 @@ enum PrivateLoopPrepareError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateLoopAction {
     DeclareStr { name: String, mutable: bool, text: String },
+    /// 真私有 Checker 的 Copyable bool HIR；僅儲存獨立純值。
+    DeclareBool { identity: DeclarationId, value: PrivateBoolCondition },
+    AssignBool { identity: DeclarationId, value: PrivateBoolCondition },
     ForRange { lower: i64, upper: i64, body: Vec<PrivateLoopAction> },
-    WhileConstant { value: bool, body: Vec<PrivateLoopAction> },
+    WhileCondition {
+        condition: PrivateBoolCondition,
+        body: Vec<PrivateLoopAction>,
+    },
     Return(i64),
     Break,
     Continue,
@@ -38,6 +44,8 @@ struct PreparedPrivateLoop {
 struct PrivateLoopOutcome {
     result: Result<i64, crate::owned_str_runtime::StrRuntimeError>,
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
+    /// 真正每次 while 檢查的 bool 動態值，不將靜態 CFG 當執行路徑。
+    condition_checks: Vec<bool>,
 }
 
 impl PreparedPrivateLoop {
@@ -48,10 +56,54 @@ impl PreparedPrivateLoop {
 
     fn verified_actions(
         statements: &[Stmt], verified: &VerifiedPrivateSource, inside_loop: bool,
+        bool_bindings: &mut BTreeMap<String, DeclarationId>,
     ) -> Result<Vec<PrivateLoopAction>, PrivateLoopPrepareError> {
         let mut result = Vec::new();
         for statement in statements {
             let action = match &statement.kind {
+                // 根作用域的具名 bool 使用原 DeclarationId；迴圈內
+                // 不自行推定新的生命週期、遮蔽或參數型別。
+                StmtKind::Declare(decl) if decl.ty == "bool" && !inside_loop => {
+                    let identity = DeclarationId(statement.start);
+                    if !verified.plan.declarations.matches(
+                        identity, "bool", decl.mutable,
+                    ) || bool_bindings.contains_key(&decl.name) {
+                        return Err(PrivateLoopPrepareError::Unsupported(
+                            "具名 bool 宣告缺少唯一真 Checker 型別／身分",
+                        ));
+                    }
+                    let init = decl.initializer.as_ref().ok_or(
+                        PrivateLoopPrepareError::Unsupported(
+                            "此非公開迴圈切片要求 bool 明確初始化",
+                        ),
+                    )?;
+                    let value = verified_nested_bool(init, verified, bool_bindings)
+                        .map_err(|_| PrivateLoopPrepareError::Unsupported(
+                            "bool 初始化缺少正式 Lexer／TypedHIR 名稱證據",
+                        ))?;
+                    bool_bindings.insert(decl.name.clone(), identity);
+                    PrivateLoopAction::DeclareBool { identity, value }
+                }
+                StmtKind::Assign(assign) if bool_bindings.contains_key(&assign.name) => {
+                    let identity = bool_bindings[&assign.name];
+                    if !verified.plan.declarations.typed_declaration(identity)
+                        .is_some_and(|fact| fact.ty == "bool" && fact.mutable)
+                        || verified.plan.scalar_hir.assignment(statement.node_span())
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != identity
+                                || fact.resolved.ty != crate::common_ir::ScalarType::Bool)
+                    {
+                        return Err(PrivateLoopPrepareError::Unsupported(
+                            "bool 重新賦值缺少 Checker 可寫宣告與 P10 身分",
+                        ));
+                    }
+                    let value = verified_nested_bool(
+                        &assign.expression, verified, bool_bindings,
+                    ).map_err(|_| PrivateLoopPrepareError::Unsupported(
+                        "bool 重新賦值來源不是已簽發純值 HIR",
+                    ))?;
+                    PrivateLoopAction::AssignBool { identity, value }
+                }
                 StmtKind::Declare(decl) if decl.ty == "str" => {
                     let id = DeclarationId(statement.start);
                     if !verified.plan.declarations.matches(id, "str", decl.mutable) {
@@ -97,46 +149,55 @@ impl PreparedPrivateLoop {
                     let compiled = if count == 0 {
                         Vec::new()
                     } else {
-                        Self::verified_actions(&body.statements, verified, true)?
+                        Self::verified_actions(&body.statements, verified, true, bool_bindings)?
                     };
                     PrivateLoopAction::ForRange {
                         lower: start, upper: end, body: compiled,
                     }
                 }
                 StmtKind::While { condition, body } => {
-                    let TermKind::Scalar(
-                        crate::syntax_shared::ScalarLiteral::Boolean(value),
-                    ) = &condition.kind else {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "while 的非常值／未知迭代上界須等待正式耗盡政策",
-                        ));
-                    };
-                    let source = std::str::from_utf8(&verified.source.bytes)
-                        .map_err(|_| PrivateLoopPrepareError::SourceChanged)?;
-                    if source.get(condition.start..condition.end)
-                        != Some(if *value { "true" } else { "false" }) {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "while 條件沒有原 Lexer 真實常值來源",
-                        ));
-                    }
-                    let compiled = if *value {
-                        let actions = Self::verified_actions(&body.statements, verified, true)?;
-                        // while(true) 只有每次第一個本體能直接到達
-                        // break/return，才可以證明最多只執行一次；
-                        // 未核准的 continue／重新進入一律不猜測。
-                        if !matches!(actions.last(),
-                            Some(PrivateLoopAction::Break | PrivateLoopAction::Return(_))) {
+                    // 已核准 P15：每輪重新求值、非資源副作用的 bool。
+                    // 具名來源必須由同一份私有 Checker 的 TypedHIR
+                    // Reference、Lexer token、DeclarationId 嚴格證明。
+                    let guard = verified_nested_bool(condition, verified, bool_bindings)
+                        .map_err(|_| PrivateLoopPrepareError::Unsupported(
+                            "while 條件缺少原 Checker 真 bool 型別及名稱證據",
+                        ))?;
+                    let compiled = if guard == PrivateBoolCondition::Constant(false) {
+                        // 永不走到的本體沒有執行期資源或 bool 效果。
+                        Vec::new()
+                    } else {
+                        let actions = Self::verified_actions(
+                            &body.statements, verified, true, bool_bindings,
+                        )?;
+                        // 只接受能以來源直接證明至多一次本體後退出：
+                        // (1) 直接 break／return；
+                        // (2) 具名 var bool 的末句明確改成 false，
+                        //     下次條件會真正重讀同一 DeclarationId。
+                        // 前方不可有 continue 跳過該退出義務。
+                        if actions.iter().take(actions.len().saturating_sub(1))
+                            .any(|item| matches!(item, PrivateLoopAction::Continue)) {
                             return Err(PrivateLoopPrepareError::Unsupported(
-                                "while(true) 缺少直接可證明的 break／return 終止出口",
+                                "while 的 continue 不得繞過已證明終止出口",
+                            ));
+                        }
+                        let direct_exit = matches!(actions.last(),
+                            Some(PrivateLoopAction::Break | PrivateLoopAction::Return(_)));
+                        let falsified_guard = match (guard, actions.last()) {
+                            (PrivateBoolCondition::Bound(source),
+                                Some(PrivateLoopAction::AssignBool {
+                                    identity, value: PrivateBoolCondition::Constant(false),
+                                })) => source == *identity,
+                            _ => false,
+                        };
+                        if !direct_exit && !falsified_guard {
+                            return Err(PrivateLoopPrepareError::Unsupported(
+                                "此私有 while 須有直接 break/return 或原條件明確寫為 false",
                             ));
                         }
                         actions
-                    } else {
-                        // false 本體永不執行，原 Checker 已有真 AST 和
-                        // 靜態相容性；不得要求不存在的真動態持有者。
-                        Vec::new()
                     };
-                    PrivateLoopAction::WhileConstant { value: *value, body: compiled }
+                    PrivateLoopAction::WhileCondition { condition: guard, body: compiled }
                 }
                 StmtKind::Return(ret) => {
                     let TermKind::Scalar(
@@ -183,9 +244,9 @@ impl PreparedPrivateLoop {
                 "真迴圈資源子集限無參數 main()->int",
             ));
         }
-        let operations = Self::verified_actions(&main.body.statements, &verified, false)?;
+        let operations = Self::verified_actions(&main.body.statements, &verified, false, &mut BTreeMap::new())?;
         if !operations.iter().any(|op| matches!(op,
-            PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileConstant {..})) {
+            PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileCondition {..})) {
             return Err(PrivateLoopPrepareError::Unsupported("必須包含原 Checker 核准的迴圈"));
         }
         if !operations.iter().any(|op| matches!(op, PrivateLoopAction::Return(_))) {
@@ -204,10 +265,23 @@ impl PreparedPrivateLoop {
             && self.verified.plan.function_exits == fresh.verified.plan.function_exits
     }
 
+    fn bool_value(
+        value: &PrivateBoolCondition,
+        slots: &BTreeMap<DeclarationId, bool>,
+    ) -> Result<bool, crate::owned_str_runtime::StrRuntimeError> {
+        match value {
+            PrivateBoolCondition::Constant(value) => Ok(*value),
+            PrivateBoolCondition::Bound(identity) => slots.get(identity).copied()
+                .ok_or(crate::owned_str_runtime::StrRuntimeError::MissingOwner),
+        }
+    }
+
     fn run_actions(
         resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
         operations: &[PrivateLoopAction], depth: usize,
         injected_at: Option<usize>, allocations: &mut usize,
+        bool_values: &mut BTreeMap<DeclarationId, bool>,
+        condition_checks: &mut Vec<bool>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         use crate::owned_str_runtime::StrRuntimeError;
         for operation in operations {
@@ -220,10 +294,23 @@ impl PreparedPrivateLoop {
                         return Err(StrRuntimeError::EvaluationFailed);
                     }
                 }
+                PrivateLoopAction::DeclareBool { identity, value } => {
+                    let evaluated = Self::bool_value(value, bool_values)?;
+                    if bool_values.insert(*identity, evaluated).is_some() {
+                        return Err(StrRuntimeError::DuplicateBinding);
+                    }
+                }
+                PrivateLoopAction::AssignBool { identity, value } => {
+                    let evaluated = Self::bool_value(value, bool_values)?;
+                    let slot = bool_values.get_mut(identity)
+                        .ok_or(StrRuntimeError::MissingOwner)?;
+                    *slot = evaluated;
+                }
                 PrivateLoopAction::ForRange { lower, upper, body } => {
                     for _ in *lower..*upper {
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
+                            bool_values, condition_checks,
                         )?;
                         match flow {
                             PrivateLoopFlow::Normal | PrivateLoopFlow::Continue => {}
@@ -233,17 +320,31 @@ impl PreparedPrivateLoop {
                         }
                     }
                 }
-                PrivateLoopAction::WhileConstant { value, body } => {
-                    if *value {
+                PrivateLoopAction::WhileCondition { condition, body } => {
+                    loop {
+                        // 已核准 P15：每輪重新求值同一真 bool slot。
+                        let selected = Self::bool_value(condition, bool_values)?;
+                        condition_checks.push(selected);
+                        if !selected {
+                            break;
+                        }
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
+                            bool_values, condition_checks,
                         )?;
                         match flow {
-                            PrivateLoopFlow::Break => {}
+                            PrivateLoopFlow::Break => break,
                             PrivateLoopFlow::Return(value) =>
                                 return Ok(PrivateLoopFlow::Return(value)),
-                            PrivateLoopFlow::Normal | PrivateLoopFlow::Continue =>
+                            PrivateLoopFlow::Continue =>
                                 return Err(StrRuntimeError::EvaluationFailed),
+                            PrivateLoopFlow::Normal => {
+                                // 尾端 guard=false 的靜態保證，動態仍
+                                // 核對，避免無界重新進入或假回傳。
+                                if Self::bool_value(condition, bool_values)? {
+                                    return Err(StrRuntimeError::EvaluationFailed);
+                                }
+                            }
                         }
                     }
                 }
@@ -263,9 +364,14 @@ impl PreparedPrivateLoop {
         resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
         operations: &[PrivateLoopAction], depth: usize,
         injected_at: Option<usize>, allocations: &mut usize,
+        bool_values: &mut BTreeMap<DeclarationId, bool>,
+        condition_checks: &mut Vec<bool>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         resources.enter_scope();
-        let result = Self::run_actions(resources, operations, depth, injected_at, allocations);
+        let result = Self::run_actions(
+            resources, operations, depth, injected_at, allocations,
+            bool_values, condition_checks,
+        );
         // 包含 continue／break／return／真失敗，單次迭代作用域皆
         // 先釋放唯一資源，再讓控制訊號傳往上一層。
         let cleanup = resources.leave_scope();
@@ -294,8 +400,11 @@ impl PreparedPrivateLoop {
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         let mut allocations = 0;
+        let mut bool_values = BTreeMap::new();
+        let mut condition_checks = Vec::new();
         let result = match Self::run_actions(
             &mut resources, &self.operations, 0, injected_at, &mut allocations,
+            &mut bool_values, &mut condition_checks,
         ) {
             Ok(PrivateLoopFlow::Return(value)) => Ok(value),
             Ok(_) => Err(crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
@@ -305,7 +414,7 @@ impl PreparedPrivateLoop {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateLoopPrepareError::SourceChanged);
         }
-        Ok(PrivateLoopOutcome { result, events })
+        Ok(PrivateLoopOutcome { result, events, condition_checks })
     }
 }
 
@@ -473,6 +582,117 @@ mod g18_private_source_loop_tests {
         plan.verified.source.bytes[0] = b'!';
         assert!(matches!(
             plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
+        ));
+    }
+
+    // G18-B 第二批：具名 bool 按原 P15 Checker 條件每輪重新讀取。
+    #[test]
+    fn g18_b_具名_var_bool_while_真重讀條件且本體改_false_後停止() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內🪼\"\nflag = false\n}\nreturn 8\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(8));
+        assert_eq!(result.condition_checks, [true, false]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_false_while_零迭代且僅建外部資源() {
+        let source = "fn main()->int{\nvar flag:bool = false\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"未選\"\nflag = false\n}\nreturn 3\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(3));
+        assert_eq!(result.condition_checks, [false]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_bool_重新賦值_false_到_true_選擇一次_break() {
+        let source = "fn main()->int{\nvar flag:bool = false\nflag = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"真\"\nbreak\n}\nreturn 3\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(3));
+        assert_eq!(result.condition_checks, [true]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_已核准_copyable_bool_名稱複製後與來源變更不構成別名() {
+        let source = "fn main()->int{\nvar source:bool = true\nvar flag:bool = source\nsource = false\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"仍為真\"\nflag = false\n}\nreturn 4\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(4));
+        assert_eq!(result.condition_checks, [true, false]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_while_中的_early_return_僅清理實際選中本體與根資源() {
+        let source = "fn main()->int{\nconst flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內\"\nreturn 11\n}\nreturn 0\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(11));
+        assert_eq!(result.condition_checks, [true]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_c_具名_while_動態故障真清理且不補做未到達賦值() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內\"\nflag = false\n}\nreturn 0\n}\n";
+        let result = checked(source).execute_with_fault(Some(1)).unwrap();
+        assert_eq!(result.result, Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(result.condition_checks, [true]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_while_條件_DeclarationId_偷換必須零資源拒絕() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內\"\nflag = false\n}\nreturn 0\n}\n";
+        let mut plan = checked(source);
+        let PrivateLoopAction::WhileCondition {
+            condition: PrivateBoolCondition::Bound(identity), ..
+        } = &mut plan.operations[2] else {
+            panic!("必須保存原 Checker 確認的具名 bool");
+        };
+        *identity = DeclarationId(0);
+        assert!(matches!(
+            plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn g18_b_具名_while_沒有可證明終止時保持非公開拒絕() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"不能假定退出\"\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateLoop::prepare(source),
+            Err(PrivateLoopPrepareError::Unsupported(_)),
+        ));
+    }
+
+    #[test]
+    fn g18_b_具名_while_continue_不得跳過直接退出義務() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\ncontinue\nflag = false\n}\nreturn 0\n}\n";
+        assert!(PreparedPrivateLoop::prepare(source).is_err());
+    }
+
+    #[test]
+    fn g18_b_具名_const_bool_重賦值須在原_checker_先拒絕() {
+        let source = "fn main()->int{\nconst flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\nflag = false\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateLoop::prepare(source),
+            Err(PrivateLoopPrepareError::Check(_)),
         ));
     }
 }

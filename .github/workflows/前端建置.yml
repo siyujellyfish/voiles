@@ -81,7 +81,7 @@ jobs:
       - name: G17 P17.3 真私有 Checker 借用來源與動態 BorrowTicket 八項正反 Gate
         run: python3 tools/核對G17真借用票據.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.2～18.3 真 for／while 有限迴圈十三項來源與資源正反 Gate
+      - name: G18 P18.2～18.3 真 for／while 與具名 bool 二十三項來源資源正反 Gate
         run: python3 tools/核對G18有限迴圈真資源.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.1／18.4 函式參數真 BorrowTicket 八項來源正反 Gate
