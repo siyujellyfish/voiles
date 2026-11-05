@@ -57,7 +57,7 @@ def main() -> int:
         return 1
     print(f"G18 原 Checker bool 直接／互相遞迴真 UTF-8 ResourceId："
           f"{len(required)}/{len(required)} 已真正重跑；"
-          "本批仍不代表一般遞迴／跨框架借用 P18.3 正式完成。")
+          "本批已接通受限跨框架 str 借用；一般遞迴與借用完整矩陣尚未正式 Passed。")
     return 0
 
 
