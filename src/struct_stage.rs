@@ -35,7 +35,8 @@ struct StructDecl {
     source_span: crate::common_ir::NodeSpan,
     // 解析期維持原宣告順序，另建只讀名稱索引以減少重複線性搜尋。
     field_index: HashMap<String, usize>,
-    /// S20：同名方法按原宣告順序保留全部候選，禁止 HashMap 覆寫。\n    method_index: HashMap<String, Vec<usize>>,
+    /// S20：同名方法按原宣告順序保留全部候選，禁止 HashMap 覆寫。
+    method_index: HashMap<String, Vec<usize>>,
 }
 impl StructDecl {
     fn new(
