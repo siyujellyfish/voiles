@@ -70,6 +70,12 @@ from pathlib import Path
         "struct_stage::g18_private_method_self_tests::g18_f_共享_self_真欄位加法溢位受控錯誤且歸還票據",
         "struct_stage::g18_private_method_self_tests::g18_f_方法真借用存活期間發生測試故障也要先歸還票據再離域",
         "struct_stage::g18_private_method_self_tests::g18_f_偽造動態_self_來源或借用_kind_必在配置前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_f_方法真參數返回使用所選_DeclarationId_的框架值",
+        "struct_stage::g18_private_method_self_tests::g18_f_方法參數真加法在框架內求值不誤讀_self_欄位",
+        "struct_stage::g18_private_method_self_tests::g18_f_方法參數真減法與重複呼叫保留同一來源參數值",
+        "struct_stage::g18_private_method_self_tests::g18_f_方法參數真加法溢位受控錯誤且先歸還_self_票據",
+        "struct_stage::g18_private_method_self_tests::g18_f_方法參數真讀取之前故障不得報告成功返回",
+        "struct_stage::g18_private_method_self_tests::g18_f_篡改已驗證的方法參數返回身分或算術方案必在配置前拒絕",
         "struct_stage::g18_private_method_self_tests::g18_f_同名方法單_int_實參依原_checker_型別選真共享多載",
         "struct_stage::g18_private_method_self_tests::g18_f_具_int_實參的多載宣告順序不影響真方法選擇",
         "struct_stage::g18_private_method_self_tests::g18_f_具_int_實參選中獨占方法_必真更新欄位並歸還票據",
@@ -92,7 +98,7 @@ from pathlib import Path
     "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載可執行；一般參數引用及 async 調度取消細則、正向執行仍待裁決及驗收"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
 
 真執行群組 = (
