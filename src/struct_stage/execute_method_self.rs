@@ -37,6 +37,8 @@ struct PreparedPrivateSelfMethod {
     field: String,
     field_value: i64,
     field_immutable: bool,
+    /// 真方法首句可為原 Checker 已驗證的 self.int 欄位獨占寫入。
+    write_value: Option<i64>,
     method: String,
     method_span: crate::common_ir::NodeSpan,
     call_span: crate::common_ir::NodeSpan,
@@ -86,14 +88,43 @@ impl PreparedPrivateSelfMethod {
         )?;
         let method = &definition.methods[0];
         if method.result_ty != "int" || !method.params.is_empty()
-            || method.body.statements.len() != 1 {
+            || !(method.body.statements.len() == 1 || method.body.statements.len() == 2) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "僅執行原 Checker 證明之同步零參數 int 方法",
             ));
         }
-        let StmtKind::Return(returned) = &method.body.statements[0].kind else {
+        // 兩語句模式先寫真 Copyable int 欄位，再直接讀取回傳；
+        // 唯一是否可寫及 self 自動借用模式來自原 Checker MethodSafety。
+        let write_value = if method.body.statements.len() == 2 {
+            let first = &method.body.statements[0];
+            let StmtKind::FieldAssign { receiver, field: target, value } = &first.kind else {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "獨占 self 子集僅允許原 Checker 第一語句為欄位賦值",
+                ));
+            };
+            let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
+                &value.kind else {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "本期 self 寫入僅限原 Lexer 真 int 常值",
+                ));
+            };
+            if receiver != "self" || target != &field.name
+                || !verified.tokens.iter().any(|token|
+                    token.start == value.start && token.end == value.end
+                        && matches!(&token.kind, TokenKind::Integer(text) if text == raw)
+                ) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "欄位賦值的目標或整數記號未與原 Checker 方法一致",
+                ));
+            }
+            Some(crate::syntax_shared::integer_i64(raw).map_err(|_|
+                PrivateSelfMethodPrepareError::Unsupported("寫入值超出 i64 範圍")
+            )?)
+        } else { None };
+        let last = method.body.statements.last().expect("方法已證明非空");
+        let StmtKind::Return(returned) = &last.kind else {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "本期方法僅執行已核准直接 return self.int欄位",
+                "本期方法必須以已核准 return self.int欄位結束",
             ));
         };
         let TermKind::FieldRead(receiver, read_field) = &returned.expression.kind else {
@@ -106,10 +137,13 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "缺少正式 Checker 的 VerifiedMethodSafety",
             ))?;
+        let required_kind = if write_value.is_some() {
+            BorrowKind::ExclusiveWrite
+        } else { BorrowKind::SharedRead };
         if receiver != "self" || read_field != &field.name
             || method_fact.span != method_span
-            || method_fact.self_borrow != BorrowKind::SharedRead
-            || !method_fact.checked_returns.contains(&method.body.statements[0].node_span()) {
+            || method_fact.self_borrow != required_kind
+            || !method_fact.checked_returns.contains(&last.node_span()) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "返回位置、self 共享模式與原 Checker 真方法證據不一致",
             ));
@@ -168,7 +202,12 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "本次方法呼叫缺少正式 Checker call_borrows 自動 self 事實",
             ))?;
-        let loan = BorrowFact::new(owner_id, BorrowKind::SharedRead);
+        let loan = BorrowFact::new(owner_id, required_kind);
+        if write_value.is_some() && (!owner.mutable || field.immutable) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "獨占 self 僅能修改 var 接收者及 var int 欄位",
+            ));
+        }
         if facts != [loan] {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "自動 self 借用並非已核准單一共享唯讀原持有者",
@@ -185,7 +224,7 @@ impl PreparedPrivateSelfMethod {
         Ok(Self {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
-            method: method_name, method_span, call_span, loan,
+            write_value, method: method_name, method_span, call_span, loan,
         })
     }
 
@@ -197,6 +236,7 @@ impl PreparedPrivateSelfMethod {
             && self.owner_mutable == fresh.owner_mutable
             && self.field == fresh.field && self.field_value == fresh.field_value
             && self.field_immutable == fresh.field_immutable
+            && self.write_value == fresh.write_value
             && self.method == fresh.method && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.verified.plan.method_safety == fresh.verified.plan.method_safety
@@ -252,6 +292,20 @@ impl PreparedPrivateSelfMethod {
             method_entered = true;
             if fail_inside_method {
                 return Err(PrivateSelfMethodRuntimeError::InjectedFailure);
+            }
+            // 寫入屬已核准之獨占 self：先驗真 BorrowTicket 身分、
+            // 來源及權限，再寫真 MixedStructRuntime 的 Copyable int。
+            // 共用方法無此路徑；唯一資源持有者與欄位可寫性皆受保護。
+            if let Some(value) = self.write_value {
+                let authorized = tracker.check_ticket_access(
+                    ticket, BorrowKind::ExclusiveWrite,
+                ).map_err(PrivateSelfMethodRuntimeError::Ticket)?;
+                if authorized != self.owner_id {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                runtime.write_int_field(
+                    &self.owner, &self.field, value, self.owner_mutable,
+                ).map_err(PrivateSelfMethodRuntimeError::Resource)?;
             }
             // 真方法 self 欄位讀取須以存活 BorrowTicket 授權，不可
             // 僅因原 AST 名稱看似 self 而直接取用所有者。
