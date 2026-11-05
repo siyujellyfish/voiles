@@ -1,6 +1,6 @@
 // G18／P18.4、P18.6：原私有 Checker 已核准的同步零參數唯讀
 // struct 方法 self，真正 BorrowTicket 及 MixedStructRuntime Copyable int。
-// 不擴張多載、async、自動複製非 Copyable 或公開 CLI。
+// 僅接通經原 Checker 唯一選定的零參數方法多載；不擴張帶參數真執行、async 或公開 CLI。
 #[derive(Debug)]
 enum PrivateSelfMethodPrepareError {
     Check(crate::Diagnostic),
@@ -66,9 +66,9 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         let definition = verified.structs.values().next().expect("已驗證只有一結構");
-        if definition.fields.len() != 1 || definition.methods.len() != 1 {
+        if definition.fields.len() != 1 || definition.methods.is_empty() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "僅接通單一 Copyable int 欄位和零參數同步方法",
+                "僅接通單一 Copyable int 欄位及具原 Checker 簽章的同步方法",
             ));
         }
         let field = &definition.fields[0];
@@ -95,7 +95,38 @@ impl PreparedPrivateSelfMethod {
         let field_value = crate::syntax_shared::integer_i64(raw).map_err(|_|
             PrivateSelfMethodPrepareError::Unsupported("欄位 i64 常值無法安全表示"),
         )?;
-        let method = &definition.methods[0];
+        // S20 的同名方法可以有不同完整參數簽章。這裡只接通
+        // 原 main 真正呼叫的零參數候選；絕不可因宣告在第一個
+        // 位置便執行另一個多載版本或借用錯誤的 self 權限。
+        let main = &verified.functions[0];
+        let called_method = match main.body.statements.get(1) {
+            Some(statement) => match &statement.kind {
+                StmtKind::Return(returned) => match &returned.expression.kind {
+                    TermKind::MethodCall(_, name, args) if args.is_empty() => name.as_str(),
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "本期只接通真 return 的零參數同步方法呼叫",
+                    )),
+                },
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "本期主函式需以真方法呼叫返回",
+                )),
+            },
+            None => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "主函式缺少真同步方法呼叫",
+            )),
+        };
+        let mut matches = definition.methods_named(called_method)
+            .filter(|candidate| candidate.params.is_empty());
+        let method = matches.next().ok_or(PrivateSelfMethodPrepareError::Unsupported(
+            "原 Checker 無符合呼叫名稱與零參數簽章的方法",
+        ))?;
+        if matches.next().is_some() {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "無法唯一辨識零參數方法簽章",
+            ));
+        }
+        // 唯一性已驗證，先結束候選迭代器的借用，才能移交 verified。
+        drop(matches);
         if method.result_ty != "int" || !method.params.is_empty()
             || !(method.body.statements.len() == 1 || method.body.statements.len() == 2) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -209,7 +240,6 @@ impl PreparedPrivateSelfMethod {
                 "返回位置、self 共享模式與原 Checker 真方法證據不一致",
             ));
         }
-        let main = &verified.functions[0];
         if main.name != "main" || main.result_ty != "int"
             || !main.params.is_empty() || main.body.statements.len() != 2 {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -622,4 +652,70 @@ mod g18_private_method_self_tests {
                 Err(PrivateSelfMethodPrepareError::Check(_))));
         }
     }
+    fn overloaded_zero_source(reverse: bool, mutable: bool) -> String {
+        let read = "fn get()->int{\nreturn self.count+3\n}\n";
+        let other = "fn get(n:int)->int{\nself.count = 99\nreturn self.count\n}\n";
+        let methods = if reverse { format!("{other}{read}") } else { format!("{read}{other}") };
+        let owner = if mutable { "var" } else { "const" };
+        format!("struct Counter{{\nvar count:int = 7\n{methods}}}\nfn main()->int{{\n{owner} value:Counter = Counter()\nreturn value.get()\n}}\n")
+    }
+
+    #[test]
+    fn g18_f_同名方法多載真執行零參數共享_self_不誤選獨占候選() {
+        let src = overloaded_zero_source(false, false);
+        let plan = checked(&src);
+        assert_eq!(plan.loan.kind, BorrowKind::SharedRead);
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::Add(3));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        assert!(outcome.method_entered && outcome.method_exited && outcome.ticket_returned);
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_同名多載宣告顛倒仍依真呼叫靜態簽章執行() {
+        for reverse in [false, true] {
+            let plan = checked(&overloaded_zero_source(reverse, true));
+            assert_eq!(plan.execute().unwrap().result, Ok(10));
+        }
+    }
+
+    #[test]
+    fn g18_f_零參數多載的獨占_self_真的寫入而非調用具參數共享候選() {
+        let src = "struct Counter{\nvar count:int = 7\nfn change(n:int)->int{\nreturn self.count\n}\nfn change()->int{\nself.count = 9\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.change()\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
+        assert_eq!(plan.write_value, Some(9));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(9));
+        assert!(outcome.ticket_returned && outcome.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_零參數多載方法中途故障仍先歸還原_self_票據() {
+        let plan = checked(&overloaded_zero_source(true, true));
+        let outcome = plan.execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(outcome.method_entered && !outcome.method_exited && outcome.ticket_returned);
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_竄改已選多載的方法來源跨度與借用種類須在配置前拒絕() {
+        let src = overloaded_zero_source(true, true);
+        let mut plan = checked(&src);
+        plan.method_span = crate::common_ir::NodeSpan::new(0, 2);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.loan.kind = BorrowKind::ExclusiveWrite;
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_未接通的具參數多載真執行保守拒絕_不假造動態值() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\nfn get(n:int)->int{\nreturn self.count+1\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+    }
+
 }
