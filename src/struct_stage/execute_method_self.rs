@@ -1,6 +1,6 @@
 // G18／P18.4、P18.6：原私有 Checker 已核准的同步零參數唯讀
 // struct 方法 self，真正 BorrowTicket 及 MixedStructRuntime Copyable int。
-// 僅接通經原 Checker 唯一選定的零參數方法多載；不擴張帶參數真執行、async 或公開 CLI。
+// 僅接通原 Checker 已核准的同步方法、單 int 參數真值；不擴張 async 或公開 CLI。
 #[derive(Debug)]
 enum PrivateSelfMethodPrepareError {
     Check(crate::Diagnostic),
@@ -33,6 +33,10 @@ enum PrivateSelfIntReturn {
     Field,
     Add(i64),
     Subtract(i64),
+    /// 由已簽發的 Parameter TypedMember 和原來源名稱身分讀取真正框架。
+    Parameter(DeclarationId),
+    ParameterAdd(DeclarationId, i64),
+    ParameterSubtract(DeclarationId, i64),
 }
 
 struct PreparedPrivateSelfMethod {
@@ -172,8 +176,7 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         // 綁定的參數必須來自選中方法原宣告、原 Checker 已驗證
-        // 的 Parameter Member 與 DeclarationId，不能自造執行參數。
-        // 本子集方法本體只允許 self.int 讀／寫／加減，參數不被讀取。
+        // 的 Parameter Member 與原 Parser DeclarationId，不能自造執行參數。
         let argument_binding = match int_argument {
             None => None,
             Some(value) => {
@@ -233,18 +236,24 @@ impl PreparedPrivateSelfMethod {
                 "本期方法必須以已核准 return self.int欄位結束",
             ));
         };
-        // 回傳允許原 Checker 已核准的 self.int 讀取，
-        // 或 self.int 與一個真正 int 常值的 +／-。
-        // 運算結構必須與原 TypedHIR Arithmetic 端點和運算子完全一致。
-        let (return_calculation, receiver, read_field) = match &returned.expression.kind {
+        // 回傳允許原 Checker 已核准的 self.int、單一 int 參數名稱，
+        // 或兩者與真正 Lexer int 常值的加／減。方法 Checker 自己
+        // 的 MethodSafety.checked_returns 是原權威，不能重簽 HIR。
+        // 名稱讀取另以 Parser 參數起點、TypedMember 與原 Lexer
+        // 名稱 token 綁定，禁止取錯多載或讀取同名 owner。
+        let (return_calculation, self_read) = match &returned.expression.kind {
             TermKind::FieldRead(receiver, read_field) =>
-                (PrivateSelfIntReturn::Field, receiver, read_field),
+                (PrivateSelfIntReturn::Field,
+                    Some((receiver.as_str(), read_field.as_str()))),
+            TermKind::Name(_) => {
+                let id = private_self_method_parameter_reference(
+                    &verified, method, argument_binding, &returned.expression,
+                ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法返回參數沒有原 Checker 身分及 Lexer 名稱證據",
+                ))?;
+                (PrivateSelfIntReturn::Parameter(id), None)
+            }
             TermKind::BinaryInt(binary) => {
-                // 方法型別檢查使用原 Checker::method_pure_value_type，
-                // 與一般函式的 ScalarHIR 簽發路徑不同，不能為了
-                // 執行器擅自簽發另一種 P16 Arithmetic 證據。
-                // 原 VerifiedMethodSafety.checked_returns 授權整筆
-                // 方法返回；原 Parser AST 與來源區間確認真正 +／-。
                 let left_span = binary.left.node_span();
                 let right_span = binary.right.node_span();
                 let actual_operator = verified.source.bytes.get(
@@ -257,15 +266,25 @@ impl PreparedPrivateSelfMethod {
                         "方法返回的加減運算子不符合原 Parser 來源位置",
                     ));
                 }
-                let TermKind::FieldRead(receiver, read_field) = &binary.left.kind else {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法算術僅接通原 Checker self.int 為左運算元",
-                    ));
+                let (self_read, param_id) = match &binary.left.kind {
+                    TermKind::FieldRead(receiver, read_field) =>
+                        (Some((receiver.as_str(), read_field.as_str())), None),
+                    TermKind::Name(_) => {
+                        let id = private_self_method_parameter_reference(
+                            &verified, method, argument_binding, &binary.left,
+                        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法加減參數沒有原 Checker 身分及 Lexer 名稱證據",
+                        ))?;
+                        (None, Some(id))
+                    }
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法加減左端僅接通 self.int 或真正 int 參數",
+                    )),
                 };
                 let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
                     &binary.right.kind else {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法算術僅接通原 Checker int 常值為右運算元",
+                        "方法加減右端僅接通原 Checker int 常值",
                     ));
                 };
                 if !verified.tokens.iter().any(|token|
@@ -279,15 +298,19 @@ impl PreparedPrivateSelfMethod {
                 let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
                     PrivateSelfMethodPrepareError::Unsupported("方法加減 int 常值超出 i64"),
                 )?;
-                let operation = if binary.operator == '+' {
-                    PrivateSelfIntReturn::Add(literal)
-                } else {
-                    PrivateSelfIntReturn::Subtract(literal)
+                let operation = match (binary.operator, param_id) {
+                    ('+', None) => PrivateSelfIntReturn::Add(literal),
+                    ('-', None) => PrivateSelfIntReturn::Subtract(literal),
+                    ('+', Some(id)) => PrivateSelfIntReturn::ParameterAdd(id, literal),
+                    ('-', Some(id)) => PrivateSelfIntReturn::ParameterSubtract(id, literal),
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法加減運算子不合法",
+                    )),
                 };
-                (operation, receiver, read_field)
+                (operation, self_read)
             }
             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "方法返回僅接通原 Checker self.int 或其真加減算術",
+                "方法返回僅接通原 Checker self.int 或已驗證單 int 參數的真值／加減",
             )),
         };
         let method_span = NodeSpan::new(method.start, method.end);
@@ -298,7 +321,8 @@ impl PreparedPrivateSelfMethod {
         let required_kind = if write_value.is_some() {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
-        if receiver != "self" || read_field != &field.name
+        if self_read.is_some_and(|(receiver, read_field)|
+                receiver != "self" || read_field != field.name.as_str())
             || method_fact.span != method_span
             || method_fact.self_borrow != required_kind
             || !method_fact.checked_returns.contains(&last.node_span()) {
@@ -440,8 +464,8 @@ impl PreparedPrivateSelfMethod {
         let mut method_exited = false;
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
-            // 完成原 Checker int 參數的真值框架綁定；因方法本體
-            // 僅允許讀／寫 self 欄位，不得憑此宣稱一般參數引用已執行。
+            // 完成原 Checker 參數的真值框架綁定；選中來源返回時
+            // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
             if let Some((id, value)) = self.argument_binding {
                 if parameter_frame.insert(id, value).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
@@ -493,6 +517,21 @@ impl PreparedPrivateSelfMethod {
                     .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?,
                 PrivateSelfIntReturn::Subtract(rhs) => value.checked_sub(rhs)
                     .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?,
+                PrivateSelfIntReturn::Parameter(id) =>
+                    *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?,
+                PrivateSelfIntReturn::ParameterAdd(id, rhs) => {
+                    let base = *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    base.checked_add(rhs)
+                        .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
+                }
+                PrivateSelfIntReturn::ParameterSubtract(id, rhs) => {
+                    let base = *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    base.checked_sub(rhs)
+                        .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
+                }
             };
             method_exited = true;
             Ok(calculated)
@@ -518,6 +557,26 @@ impl PreparedPrivateSelfMethod {
             result, events, method_entered, method_exited, ticket_returned,
         })
     }
+}
+
+
+/// 只承認選中方法原參數名稱，且該 int 參數的型別／位置已在
+/// prepare() 由原 Checker 封存的 VerifiedTypedMember(Parameter) 核對。
+/// 此處重新核對原 Lexer Name token，不用文字比對猜測引用身分。
+fn private_self_method_parameter_reference(
+    verified: &VerifiedPrivateSource, method: &Function,
+    binding: Option<(DeclarationId, i64)>, term: &Term,
+) -> Option<DeclarationId> {
+    let TermKind::Name(name) = &term.kind else { return None; };
+    let (id, _) = binding?;
+    let param = method.params.first()?;
+    if name != &param.name || id != DeclarationId(param.declaration_start) {
+        return None;
+    }
+    verified.tokens.iter().any(|token|
+        token.start == term.start && token.end == term.end
+            && matches!(&token.kind, TokenKind::Name(actual) if actual == name)
+    ).then_some(id)
 }
 
 fn definition_name(verified: &VerifiedPrivateSource)
@@ -791,8 +850,8 @@ mod g18_private_method_self_tests {
     }
 
     #[test]
-    fn g18_f_未接通的方法參數引用真執行保守拒絕_不假造動態值() {
-        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\nfn get(n:int)->int{\nreturn n\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
+    fn g18_f_未接通的雙參數來源加法仍拒絕_不假造動態值() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\nfn get(n:int)->int{\nreturn n+n\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
     }
@@ -867,6 +926,82 @@ mod g18_private_method_self_tests {
         let bool_arg = "struct Counter{\nvar count:int = 7\nfn get(flag:bool)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(true)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(bool_arg),
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+    }
+
+    fn method_param_source(body: &str, argument: &str) -> String {
+        format!(
+            "struct Counter{{\nvar count:int = 7\nfn use()->int{{\nreturn self.count\n}}\nfn use(n:int)->int{{\n{body}\n}}\n}}\nfn main()->int{{\nconst value:Counter = Counter()\nreturn value.use({argument})\n}}\n"
+        )
+    }
+
+    #[test]
+    fn g18_f_方法真參數返回使用所選_DeclarationId_的框架值() {
+        let src = method_param_source("return n", "13");
+        let plan = checked(&src);
+        let expected = plan.argument_binding.expect("真正單一 int 參數");
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::Parameter(expected.0));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(13));
+        assert!(outcome.method_entered && outcome.method_exited && outcome.ticket_returned);
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_方法參數真加法在框架內求值不誤讀_self_欄位() {
+        let plan = checked(&method_param_source("return n+3", "13"));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(16));
+        assert!(outcome.ticket_returned && outcome.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_方法參數真減法與重複呼叫保留同一來源參數值() {
+        let plan = checked(&method_param_source("return n-4", "13"));
+        for _ in 0..3 {
+            let outcome = plan.execute().unwrap();
+            assert_eq!(outcome.result, Ok(9));
+            assert!(outcome.ticket_returned);
+        }
+    }
+
+    #[test]
+    fn g18_f_方法參數真加法溢位受控錯誤且先歸還_self_票據() {
+        let plan = checked(&method_param_source("return n+1", "9223372036854775807"));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(outcome.method_entered && !outcome.method_exited && outcome.ticket_returned);
+        assert!(outcome.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_方法參數真讀取之前故障不得報告成功返回() {
+        let plan = checked(&method_param_source("return n", "13"));
+        let failed = plan.execute_with_fault(true).unwrap();
+        assert_eq!(failed.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(failed.method_entered && !failed.method_exited && failed.ticket_returned);
+        assert_eq!(plan.execute().unwrap().result, Ok(13));
+    }
+
+    #[test]
+    fn g18_f_篡改已驗證的方法參數返回身分或算術方案必在配置前拒絕() {
+        let src = method_param_source("return n+3", "13");
+        let mut plan = checked(&src);
+        plan.return_calculation = PrivateSelfIntReturn::Parameter(DeclarationId(0));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        let id = plan.argument_binding.unwrap().0;
+        plan.return_calculation = PrivateSelfIntReturn::ParameterSubtract(id, 3);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_方法未定義的參數來源及錯誤型別須先由原_checker_拒絕() {
+        let unknown = method_param_source("return missing", "13");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&unknown),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let invalid = method_param_source("return n+true", "13");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&invalid),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
 }
