@@ -78,7 +78,7 @@ mod g18_private_method_overload_tests {
             let src = source(methods, "var owner:Counter = Counter()", "5");
             let err = verify_source_with_ability(
                 &src, crate::ownership_policy::approved_leaf_copy_permission,
-            ).unwrap_err();
+            ).err().expect("非法方法多載必須由原 Checker 拒絕");
             assert_eq!(err.kind, DiagnosticKind::Static);
             assert!(err.message.contains("S20"), "{}", err.message);
         }
@@ -91,7 +91,7 @@ mod g18_private_method_overload_tests {
         let invalid = source(methods(), "const owner:Counter = Counter()", "true");
         let err = verify_source_with_ability(
             &invalid, crate::ownership_policy::approved_leaf_copy_permission,
-        ).unwrap_err();
+        ).err().expect("非法方法多載必須由原 Checker 拒絕");
         assert_eq!(err.kind, DiagnosticKind::Static);
         assert!(err.message.contains("const 結構實例"), "{}", err.message);
     }
@@ -102,7 +102,7 @@ mod g18_private_method_overload_tests {
             let src = source(methods(), "var owner:Counter = Counter()", argument);
             let err = verify_source_with_ability(
                 &src, crate::ownership_policy::approved_leaf_copy_permission,
-            ).unwrap_err();
+            ).err().expect("非法方法多載必須由原 Checker 拒絕");
             assert_eq!(err.kind, DiagnosticKind::Static);
         }
     }
@@ -118,7 +118,7 @@ mod g18_private_method_overload_tests {
             );
             let err = verify_source_with_ability(
                 &src, crate::ownership_policy::approved_leaf_copy_permission,
-            ).unwrap_err();
+            ).err().expect("非法方法多載必須由原 Checker 拒絕");
             assert_eq!(err.kind, DiagnosticKind::Syntax);
         }
     }
