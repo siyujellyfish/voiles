@@ -70,6 +70,13 @@ struct PrivateRecursiveStrOutcome {
     loans_returned: bool,
 }
 
+
+struct PrivateRecursiveActiveFrame {
+    name: String,
+    branch_open: bool,
+    /// 屬於進入本框架的原 Checker 呼叫邊，離開時先還此 BorrowTicket。
+    ticket: Option<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
+}
 struct PreparedPrivateRecursiveStr {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -406,7 +413,8 @@ impl PreparedPrivateRecursiveStr {
             return Err(PrivateRecursiveStrPrepareError::SourceChanged);
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
-        let mut frames: Vec<(String, bool)> = Vec::new();
+        let mut frames: Vec<PrivateRecursiveActiveFrame> = Vec::new();
+        let mut tracker = crate::borrow_safety::BorrowSafety::new();
         let mut timeline = Vec::new();
         let mut steps = 0usize;
         let mut allocations = 0usize;
@@ -439,7 +447,9 @@ impl PreparedPrivateRecursiveStr {
             };
             spend(&mut steps)?;
             resources.enter_scope();
-            frames.push(("main".to_owned(), false));
+            frames.push(PrivateRecursiveActiveFrame {
+                name: "main".to_owned(), branch_open: false, ticket: None,
+            });
             timeline.push(PrivateRecursiveFrameEvent::Entered("main".to_owned()));
             declare(&self.main_locals, &mut resources, &mut steps)?;
 
@@ -453,14 +463,47 @@ impl PreparedPrivateRecursiveStr {
                 // runtime 不重新以名稱猜測參數數量或資料型別。
                 let callee = self.callees.iter().find(|fun| fun.name == next_call.name)
                     .ok_or(PrivateRecursiveStrRunError::MissingFunction)?;
+                // Call 的借用來源、權限、詞彙持有者都已由
+                // 原 Checker call_borrows 精確授權。只有真正走到
+                // 此遞迴邊時才簽發票據，不能預先借用未選分支。
+                let ticket = next_call.loan.as_ref().map(|(_, fact)|
+                    tracker.acquire(fact.source, fact.kind)
+                        .map(|ticket| (ticket, *fact))
+                        .map_err(PrivateRecursiveStrRunError::Ticket)
+                ).transpose()?;
                 resources.enter_scope();
-                frames.push((callee.name.clone(), false));
+                frames.push(PrivateRecursiveActiveFrame {
+                    name: callee.name.clone(), branch_open: false, ticket,
+                });
                 timeline.push(PrivateRecursiveFrameEvent::Entered(callee.name.clone()));
+                // 用當前整條真呼叫堆疊的 BorrowFact 核對原子票據集合；
+                // 不可只核對本層而跳過父框架仍存活的借用。
+                tracker.verify_static_snapshot(
+                    frames.iter().filter_map(|frame| frame.ticket.map(|(_, fact)| fact)),
+                ).map_err(PrivateRecursiveStrRunError::Ticket)?;
+                if let Some((name, fact)) = &next_call.loan {
+                    let ticket = frames.last().and_then(|frame|
+                        frame.ticket.map(|(ticket, _)| ticket)
+                    ).ok_or(PrivateRecursiveStrRunError::Ticket(
+                        crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+                    ))?;
+                    match read_checked_str_argument(
+                        &tracker, ticket, fact.source, &resources, name,
+                    ) {
+                        Ok(_) => {}
+                        Err(PrivateCallBorrowRuntimeError::Resource(error)) =>
+                            return Err(PrivateRecursiveStrRunError::Resource(error)),
+                        Err(PrivateCallBorrowRuntimeError::Ticket(error)) =>
+                            return Err(PrivateRecursiveStrRunError::Ticket(error)),
+                        Err(PrivateCallBorrowRuntimeError::InjectedFailure) =>
+                            return Err(PrivateRecursiveStrRunError::InjectedFailure),
+                    }
+                }
                 declare(&callee.locals, &mut resources, &mut steps)?;
                 spend(&mut steps)?; // 真正執行的 bool 參數條件判斷
                 if next_call.argument {
                     resources.enter_scope();
-                    frames.last_mut().expect("當前遞迴框架存在").1 = true;
+                    frames.last_mut().expect("當前遞迴框架存在").branch_open = true;
                     declare(&callee.branch_locals, &mut resources, &mut steps)?;
                     spend(&mut steps)?; // 真正遞迴 return 語句
                     next_call = callee.next.clone();
@@ -472,8 +515,23 @@ impl PreparedPrivateRecursiveStr {
         })();
         // 每份已進入函式的局部 OwnedUtf8 都必須依真完成順序逆序清理。
         // 如果在子呼叫準備前發生預算耗盡，絕不創造未進入的資源。
-        while let Some((name, branch_open)) = frames.pop() {
-            if branch_open {
+        while let Some(frame) = frames.pop() {
+            // 此次呼叫的借用票據必須先歸還，之後才可以清理
+            // 被呼叫者局部資源及再上層的真正所有者。
+            if let Some((ticket, fact)) = frame.ticket {
+                let active_before = std::iter::once(fact).chain(
+                    frames.iter().filter_map(|other|
+                        other.ticket.map(|(_, active)| active)
+                    ),
+                );
+                tracker.verify_static_snapshot(active_before)
+                    .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
+                tracker.finish_scope(&[ticket])
+                    .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
+                tracker.check_direct_access(fact.source)
+                    .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
+            }
+            if frame.branch_open {
                 resources.leave_scope().map_err(
                     PrivateRecursiveStrPrepareError::Cleanup,
                 )?;
@@ -482,8 +540,16 @@ impl PreparedPrivateRecursiveStr {
                 PrivateRecursiveStrPrepareError::Cleanup,
             )?;
             timeline.push(PrivateRecursiveFrameEvent::Exited {
-                name, returned: result.is_ok(),
+                name: frame.name, returned: result.is_ok(),
             });
+        }
+        let loans_returned = tracker.verify_static_snapshot(
+            std::iter::empty::<BorrowFact>(),
+        ).is_ok();
+        if !loans_returned {
+            return Err(PrivateRecursiveStrPrepareError::CleanupTicket(
+                crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+            ));
         }
         let events = resources.finish().map_err(
             PrivateRecursiveStrPrepareError::Cleanup,
@@ -491,7 +557,7 @@ impl PreparedPrivateRecursiveStr {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateRecursiveStrPrepareError::SourceChanged);
         }
-        Ok(PrivateRecursiveStrOutcome { result, events, frames: timeline })
+        Ok(PrivateRecursiveStrOutcome { result, events, frames: timeline, loans_returned })
     }
 }
 
@@ -599,4 +665,70 @@ mod g18_private_recursive_str_frames_tests {
             assert!(result.events.is_empty() && result.frames.is_empty());
         }
     }
+    fn borrowed_direct() -> &'static str {
+        "fn descend(flag:bool, payload:str)->int{\nvar local:str = \"中🪼\"\nif(flag){\nvar nested:str = \"內\"\nreturn descend(false, nested)\n}\nreturn 7\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn descend(true, root)\n}\n"
+    }
+    fn borrowed_mutual() -> &'static str {
+        "fn first(flag:bool, payload:str)->int{\nvar a:str = \"甲\"\nif(flag){\nvar a2:str = \"分支甲\"\nreturn second(true, a2)\n}\nreturn 1\n}\nfn second(flag:bool, payload:str)->int{\nvar b:str = \"乙\"\nif(flag){\nvar b2:str = \"分支乙\"\nreturn first(false, b2)\n}\nreturn 9\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn first(true, root)\n}\n"
+    }
+    #[test]
+    fn g18_c_直接遞迴真_str_參數兩層_borrowticket_先歸還再清理_utf8() {
+        let outcome = plan(borrowed_direct()).execute(budget(3, 80)).unwrap();
+        assert_eq!(outcome.result, Ok(7));
+        assert!(outcome.loans_returned);
+        assert_eq!(releases(&outcome.events), [4, 3, 2, 1]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, ResourceEvent::Moved(_))));
+    }
+    #[test]
+    fn g18_c_互相遞迴每層真_str_借用票據不重覆也不洩漏() {
+        let outcome = plan(borrowed_mutual()).execute(budget(4, 120)).unwrap();
+        assert_eq!(outcome.result, Ok(1));
+        assert!(outcome.loans_returned);
+        assert_eq!(releases(&outcome.events), [6, 5, 4, 3, 2, 1]);
+        assert_eq!(outcome.frames.iter().filter(|event|
+            matches!(event, PrivateRecursiveFrameEvent::Entered(_))).count(), 4);
+    }
+    #[test]
+    fn g18_c_跨框架借用存活時預算耗盡須先還真票據再釋放來源() {
+        let outcome = plan(borrowed_direct()).execute(budget(2, 80)).unwrap();
+        assert_eq!(outcome.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert_eq!(releases(&outcome.events), [3, 2, 1]);
+        assert!(outcome.loans_returned);
+        assert!(outcome.frames.iter().all(|event| !matches!(event,
+            PrivateRecursiveFrameEvent::Exited { returned: true, .. })));
+    }
+    #[test]
+    fn g18_c_第二層借用來源完成配置後注入錯誤仍歸還全部票據() {
+        let outcome = plan(borrowed_direct()).execute_with_fault(
+            budget(4, 80), Some(4),
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateRecursiveStrRunError::InjectedFailure));
+        assert!(outcome.loans_returned);
+        assert_eq!(releases(&outcome.events), [4, 3, 2, 1]);
+    }
+    #[test]
+    fn g18_c_竄改已核准呼叫_borrowfact_來源與_kind_在配置前拒絕() {
+        let mut prepared = plan(borrowed_direct());
+        prepared.entry.loan.as_mut().unwrap().1.source = DeclarationId(0);
+        assert!(matches!(prepared.execute(budget(3, 80)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+        let mut prepared = plan(borrowed_direct());
+        prepared.callees[0].next.loan.as_mut().unwrap().1.kind = BorrowKind::SharedRead;
+        assert!(matches!(prepared.execute(budget(3, 80)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+    }
+    #[test]
+    fn g18_c_原_checker_缺失呼叫借用票據或非法_str_來源不可真執行() {
+        let mut prepared = plan(borrowed_direct());
+        prepared.verified.plan.declarations.call_borrows.clear();
+        assert!(matches!(prepared.execute(budget(3, 80)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+        let invalid = borrowed_direct().replace("descend(false, nested)",
+            "descend(false, payload)");
+        assert!(matches!(PreparedPrivateRecursiveStr::prepare(&invalid),
+            Err(PrivateRecursiveStrPrepareError::Check(_))
+                | Err(PrivateRecursiveStrPrepareError::Unsupported(_))));
+    }
+
 }
