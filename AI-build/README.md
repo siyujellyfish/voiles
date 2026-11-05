@@ -76,7 +76,7 @@
 
 > **P18-B 真 else-if 條件鏈（施工候選）**：[僅已核准 bool 常值分支，選中支路真 UTF-8 資源、未走支路零事件](P18-B-正式條件鏈真資源求值-20261104.md)。新增五項真 Rust，專項 Gate 47 項；G17/G18 未正式完成。
 
-> **P18-B 具名 bool 巢狀條件身分（施工候選）**：[原 Checker TypedHIR `DeclarationId` 與真 Lexer 對照，防錯位／遮蔽、只執行真支路](P18-B-具名布林條件HIR來源求值-20261104.md)。新五項正反，私有 Gate 52 項，非 G18 正式完成。
+> **P18-B 具名 bool 巢狀條件身分（施工候選）**：[原 Checker 方法純值安全事實 `DeclarationId` 與真 Lexer 對照，防錯位／遮蔽、只執行真支路](P18-B-具名布林條件HIR來源求值-20261104.md)。新五項正反，私有 Gate 52 項，非 G18 正式完成。
 
 > **P17-F 結構執行計畫防偽子批候選**：[真來源原 Checker 再投影與零資源拒絕](P17-F-結構計畫防偽與零資源拒絕-20261104.md)。新增五項，結構 Gate 共 11 項；不代表 G17 已通過。
 
@@ -94,7 +94,7 @@
 
 > **G17 真返回欄位補強（2026-11-05）**：[原 Checker int TypedHIR 授權的實際結構欄位讀取與 move 後持有者返回](P17-G17-真Checker整數欄位返回與資源持有者驗收-20261105.md)。新增 6 項正反、結構 Gate 共 27 項；一般化所有權與建構仍未完整驗收。
 
-> **G17 私有 int 算術求值（2026-11-05）**：[正式 Checker TypedHIR 的結構欄位加減／括號及溢位真 UTF-8 清理](P17-G17-真TypedHIR混合結構整數運算與溢位資源清理-20261105.md)。新增五項 Rust 真來源正反，結構 Gate 32 項；未補全一般化擁有權與 P17.6，G17 尚未正式 Passed。
+> **G17 私有 int 算術求值（2026-11-05）**：[正式 Checker 方法純值安全事實 的結構欄位加減／括號及溢位真 UTF-8 清理](P17-G17-真TypedHIR混合結構整數運算與溢位資源清理-20261105.md)。新增五項 Rust 真來源正反，結構 Gate 32 項；未補全一般化擁有權與 P17.6，G17 尚未正式 Passed。
 
 > **G17／17.3 真借用票據新批（2026-11-05）**：[同一正式 Checker 的直線 `.borrow()` 安全證據 → 執行期 `BorrowTicket` 及單一 UTF-8 資源的正反](P17-G17-同源借用事實與真BorrowTicket-20261105.md)。新增八項真 Rust 來源正反，公開 P01／G6/F00 不變；完整 G17 六項仍待正式總驗收。
 
@@ -112,7 +112,7 @@
 
 > **G18 原始六項最新稽核（2026-11-05）**：[逐 P18.1～P18.6 正反、真執行與必要決策阻塞矩陣](G18-原始六項驗收差距與決策阻塞-20261105.md)；`tools/核對G18原六項驗收差距.py --audit` 真重跑四組既有 Rust，確認 18.1/2/4/5 為 `SubsetVerified`、18.3/6 為 `BlockedByDecision`（D18-01／D18-02）。**不表示 G18 Passed**，正式結案必須 `--check` 與最新 main 同 SHA 全數成功。原 G17 6/6 Passed 及公開 CLI 邊界不變。
 
-> **G18 具名 bool while 真重讀（2026-11-05；非公開施工）**：[原 P15 Checker TypedHIR 的 bool 宣告／賦值及 while 每輪真值、可證明退出、逐迭代 str 資源清理](P18-B-具名bool-while逐輪真求值與清理-20261105.md)。新增十項 Rust 真正正反，有限迴圈 Gate 13→23；原 G17 6/6 Passed 保留，**G18 仍 BlockedByDecision**。
+> **G18 具名 bool while 真重讀（2026-11-05；非公開施工）**：[原 P15 Checker 方法純值安全事實 的 bool 宣告／賦值及 while 每輪真值、可證明退出、逐迭代 str 資源清理](P18-B-具名bool-while逐輪真求值與清理-20261105.md)。新增十項 Rust 真正正反，有限迴圈 Gate 13→23；原 G17 6/6 Passed 保留，**G18 仍 BlockedByDecision**。
 
 > **G18.2 for 迭代器真 int 值（2026-11-05；內部施工）**：[由原 Checker for DeclarationId 及 TypedHIR 名稱引用驗證 return i，逐輪真正記錄數值、清理 str 資源與同名遮蔽](P18-B-for迭代真整數宣告與來源回傳-20261105.md)。新增八項 Rust 真正正反，有限迴圈 Gate 23→31；G17 Passed，**G18 仍非 Passed**。
 
@@ -128,4 +128,4 @@
 
 > **G18.6 真同步獨占 `self`（2026-11-05；非公開施工）**：[原 Checker 獨占 BorrowFact／BorrowTicket 實際授權 `var self.int欄位` 寫入後返回；`MixedStructRuntime` 保存 immutable 權限、禁止 const 與資源冒複製](P18-F-獨占self同步方法真int欄位寫入-20261105.md)。同步 self 來源 Gate 6→13，新增三項 runtime 正反。**原 G18 仍未正式 Passed。**
 
-> **G18 P18.6 同步 self int 真算術（2026-11-05）**：[原 Checker Arithmetic HIR 授權的 self.int 加減、獨占寫後真值與溢位票據清理](P18-F-同步self欄位加減真求值與溢位退出-20261105.md)。六項真正反、self Gate 13→19，G18 六原項仍未正式 Passed。
+> **G18 P18.6 同步 self int 真算術（2026-11-05）**：[原 Checker 原 Checker 方法純值型別檢查與 VerifiedMethodSafety 授權的 self.int 加減、獨占寫後真值與溢位票據清理](P18-F-同步self欄位加減真求值與溢位退出-20261105.md)。六項真正反、self Gate 13→19，G18 六原項仍未正式 Passed。
