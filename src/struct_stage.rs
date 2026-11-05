@@ -35,7 +35,8 @@ struct StructDecl {
     source_span: crate::common_ir::NodeSpan,
     // 解析期維持原宣告順序，另建只讀名稱索引以減少重複線性搜尋。
     field_index: HashMap<String, usize>,
-    method_index: HashMap<String, usize>,
+    /// S20：同名方法按原宣告順序保留全部候選，禁止 HashMap 覆寫。
+    method_index: HashMap<String, Vec<usize>>,
 }
 impl StructDecl {
     fn new(
@@ -44,15 +45,27 @@ impl StructDecl {
     ) -> Self {
         let field_index = fields.iter().enumerate()
             .map(|(index, field)| (field.name.clone(), index)).collect();
-        let method_index = methods.iter().enumerate()
-            .map(|(index, method)| (method.name.clone(), index)).collect();
+        let mut method_index: HashMap<String, Vec<usize>> = HashMap::new();
+        for (index, method) in methods.iter().enumerate() {
+            method_index.entry(method.name.clone()).or_default().push(index);
+        }
         Self { fields, methods, source_span, field_index, method_index }
     }
     fn field(&self, name: &str) -> Option<&Field> {
         self.field_index.get(name).and_then(|index| self.fields.get(*index))
     }
+    /// 只在已確認同名方法唯一時提供原有簡易查找，不能將多載
+    /// 中最後一個同名方法當成唯一結果（舊 HashMap 覆寫問題）。
     fn method(&self, name: &str) -> Option<&Function> {
-        self.method_index.get(name).and_then(|index| self.methods.get(*index))
+        let indices = self.method_index.get(name)?;
+        (indices.len() == 1).then(|| self.methods.get(indices[0])).flatten()
+    }
+    /// D18-02-A：只讀來源宣告順序候選，真正選擇須由 Checker
+    /// 的參數數量／完整靜態型別匹配，不能靠運行時值推斷。
+    fn methods_named(&self, name: &str) -> impl Iterator<Item = &Function> + '_ {
+        self.method_index.get(name).into_iter()
+            .flat_map(|indices| indices.iter())
+            .filter_map(|index| self.methods.get(*index))
     }
 }
 
@@ -1343,6 +1356,9 @@ fn inspect_with_test_ability(text: &str, ability: impl Fn(&str) -> CopyPermissio
 // 同層引入原有測試模組，以保留 Rust 測試完整識別名稱及驗收腳本過濾條件。
 #[cfg(test)]
 include!("struct_stage/tests_ownership.rs");
+// G18／S20：原 Parser／Checker 方法多載唯一靜態簽章與借用證據。
+#[cfg(test)]
+include!("struct_stage/method_overload_tests.rs");
 #[cfg(test)]
 include!("struct_stage/tests_lifetime_resources.rs");
 
