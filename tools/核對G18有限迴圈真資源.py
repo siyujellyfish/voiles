@@ -10,6 +10,14 @@ from pathlib import Path
 
 案例 = (
     "g18_b_真_for_三次每迭代重新建立唯一_utf8_並離域釋放",
+    "g18_b_真_for_iterator_返回目前迭代整數而非固定常值",
+    "g18_b_真_for_iterator_多輪實際值不含右端點",
+    "g18_b_巢狀_for_iterator_返回真內層宣告且逐層清理",
+    "g18_b_巢狀同名_for_iterator_以真宣告身份遮蔽外層而非名稱猜測",
+    "g18_b_真_for_iterator_continue_迭代每輪獨立且沒有逃逸",
+    "g18_b_空半開_for_不建立迭代器值且不執行_return",
+    "g18_b_返回已離域_for_iterator_須原_checker_先拒絕",
+    "g18_b_竄改_for_iterator_身分或_return_來源須零資源拒絕",
     "g18_b_具名_var_bool_while_真重讀條件且本體改_false_後停止",
     "g18_b_具名_false_while_零迭代且僅建外部資源",
     "g18_b_具名_bool_重新賦值_false_到_true_選擇一次_break",
