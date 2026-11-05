@@ -55,7 +55,6 @@ from pathlib import Path
         "execution::tests::p18_執行期錯誤保留真實函式退出且不冒稱_return_成功",
         "struct_stage::g18_private_scalar_call_tests::g18_c_真正參數框架中途故障必清空且不冒充成功返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
-        "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
         "execution::tests::p18_巢狀真函式的進出順序與返回值一致",
         "struct_stage::g18_private_source_loop_tests::g18_b_巢狀_for_各迭代作用域獨立釋放且順序正確",
         "struct_stage::g18_private_source_loop_tests::g18_b_擅改_for_區間或_control_必須在配置任何資源前拒絕",
@@ -65,6 +64,9 @@ from pathlib import Path
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
         "struct_stage::g18_private_method_self_tests::g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",
+        "struct_stage::g18_private_method_overload_runtime_tests::g18_f_真多載_int_參數由已選獨占方法實際寫入欄位並返回",
+        "struct_stage::g18_private_method_overload_runtime_tests::g18_f_真多載_bool_參數由原_checker_唯一選中共享方法不寫入",
+        "struct_stage::g18_private_method_overload_runtime_tests::g18_f_真多載借用存活中失敗必歸還票據和局部參數",
         "struct_stage::g18_private_method_self_tests::g18_f_獨占_self_真寫入_var_int_並以同張票據返回更新後值",
         "struct_stage::g18_private_method_self_tests::g18_f_共享_self_真欄位加法按原_checker_hir_求值",
         "struct_stage::g18_private_method_self_tests::g18_f_共享_self_真欄位加法溢位受控錯誤且歸還票據",
@@ -82,7 +84,7 @@ from pathlib import Path
     "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據可執行；方法多載完整唯一解析與 async 調度取消細則、正向執行仍待裁決及驗收"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 已核准，S20 同名 int/bool 真參數與 self BorrowTicket 已有動態子集；一般多載／async 調度、取消與正向真執行仍缺完整裁決驗收"),
 }
 
 真執行群組 = (
@@ -92,6 +94,7 @@ from pathlib import Path
     "struct_stage::g18_private_call_borrow_tests::g18_",
     "struct_stage::g18_private_scalar_call_tests::g18_",
     "struct_stage::g18_private_method_self_tests::g18_",
+    "struct_stage::g18_private_method_overload_runtime_tests::g18_",
 )
 
 
