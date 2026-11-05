@@ -71,10 +71,17 @@ impl PreparedPrivateScalarCall {
         }
         let param = &callee.params[0];
         let param_id = DeclarationId(param.declaration_start);
+        let expected_member = crate::common_ir::VerifiedTypedMember::checked_private(
+            text, crate::common_ir::NodeRole::Parameter, param.declaration_span,
+            &param.name, param.name_span, &param.ty, param.type_span, false,
+        ).ok_or(PrivateScalarCallPrepareError::Unsupported(
+            "參數缺少真 Parser 來源位置、名稱／型別 token 身分",
+        ))?;
         if !verified.plan.declarations.matches(param_id, "int", false)
-            || verified.plan.member_types.get(&param.declaration_span).is_none() {
+            || verified.plan.members.get(&expected_member.identity)
+                != Some(&expected_member) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "參數缺少正式 Checker int const 宣告及 P16 Member 型別來源證據",
+                "參數缺少原 Checker int const 宣告及 P16 Member 型別來源證據",
             ));
         }
         let StmtKind::Return(return_param) = &callee.body.statements[0].kind else {
