@@ -164,7 +164,7 @@ jobs:
       - name: G18 P18.3 已核准 AW06 真遞迴與可配置耗盡七項正反 Gate
         run: python3 tools/核對G18遞迴真框架與耗盡.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.6 真同步方法 self 共享／獨占票據十三項正反 Gate
+      - name: G18 P18.6 真同步方法 self 共享／獨占與欄位算術十九項正反 Gate
         run: python3 tools/核對G18同步方法self真借用.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
