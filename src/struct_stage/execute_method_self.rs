@@ -919,8 +919,8 @@ mod g18_private_method_self_tests {
     }
 
     #[test]
-    fn g18_f_非_int_方法實參與一般函式參數引用不冒充本次真執行子集() {
-        let other = "struct Counter{\nvar count:int = 7\nfn get(n:int)->int{\nreturn n\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
+    fn g18_f_非_int_方法實參與尚未接通的參數欄位混合算式必拒絕() {
+        let other = "struct Counter{\nvar count:int = 7\nfn get(n:int)->int{\nreturn n+self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(other),
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
         let bool_arg = "struct Counter{\nvar count:int = 7\nfn get(flag:bool)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(true)\n}\n";
