@@ -113,3 +113,5 @@
 > **G18 原始六項最新稽核（2026-11-05）**：[逐 P18.1～P18.6 正反、真執行與必要決策阻塞矩陣](G18-原始六項驗收差距與決策阻塞-20261105.md)；`tools/核對G18原六項驗收差距.py --audit` 真重跑四組既有 Rust，確認 18.1/2/4/5 為 `SubsetVerified`、18.3/6 為 `BlockedByDecision`（D18-01／D18-02）。**不表示 G18 Passed**，正式結案必須 `--check` 與最新 main 同 SHA 全數成功。原 G17 6/6 Passed 及公開 CLI 邊界不變。
 
 > **G18 具名 bool while 真重讀（2026-11-05；非公開施工）**：[原 P15 Checker TypedHIR 的 bool 宣告／賦值及 while 每輪真值、可證明退出、逐迭代 str 資源清理](P18-B-具名bool-while逐輪真求值與清理-20261105.md)。新增十項 Rust 真正正反，有限迴圈 Gate 13→23；原 G17 6/6 Passed 保留，**G18 仍 BlockedByDecision**。
+
+> **G18.2 for 迭代器真 int 值（2026-11-05；內部施工）**：[由原 Checker for DeclarationId 及 TypedHIR 名稱引用驗證 return i，逐輪真正記錄數值、清理 str 資源與同名遮蔽](P18-B-for迭代真整數宣告與來源回傳-20261105.md)。新增八項 Rust 真正正反，有限迴圈 Gate 23→31；G17 Passed，**G18 仍非 Passed**。

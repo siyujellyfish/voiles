@@ -16,12 +16,17 @@ enum PrivateLoopAction {
     /// 真私有 Checker 的 Copyable bool HIR；僅儲存獨立純值。
     DeclareBool { identity: DeclarationId, value: PrivateBoolCondition },
     AssignBool { identity: DeclarationId, value: PrivateBoolCondition },
-    ForRange { lower: i64, upper: i64, body: Vec<PrivateLoopAction> },
+    ForRange {
+        identity: DeclarationId, lower: i64, upper: i64,
+        body: Vec<PrivateLoopAction>,
+    },
     WhileCondition {
         condition: PrivateBoolCondition,
         body: Vec<PrivateLoopAction>,
     },
     Return(i64),
+    /// 僅限原 Checker 已解析的 for 區間迭代器具名返回。
+    ReturnIterator(DeclarationId),
     Break,
     Continue,
 }
@@ -46,6 +51,8 @@ struct PrivateLoopOutcome {
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
     /// 真正每次 while 檢查的 bool 動態值，不將靜態 CFG 當執行路徑。
     condition_checks: Vec<bool>,
+    /// 真正每次 for 迭代設置的 (DeclarationId, i64)，非靜態展開。
+    iterations: Vec<(DeclarationId, i64)>,
 }
 
 impl PreparedPrivateLoop {
@@ -54,12 +61,48 @@ impl PreparedPrivateLoop {
     /// 接通子集的上界，不是 voiles 語言 for 上限。
     const MAX_PRIVATE_ITERATIONS: i128 = 64;
 
+    /// 真 Checker 對已知**恰一次** for 且本體必定 return，會
+    /// 直接終止外部 CFG，後續語句的 TypedHIR 可以合法不存在。
+    /// 此處只能以已證明的直接 return 或唯一單次返回決定可達性，
+    /// break/continue 不得被錯當成功返回。
+    fn guaranteed_return(actions: &[PrivateLoopAction]) -> bool {
+        for action in actions {
+            match action {
+                PrivateLoopAction::Return(_)
+                | PrivateLoopAction::ReturnIterator(_) => return true,
+                PrivateLoopAction::Break | PrivateLoopAction::Continue => return false,
+                PrivateLoopAction::ForRange { lower, upper, body, .. }
+                    if i128::from(*upper) - i128::from(*lower) == 1
+                        && Self::guaranteed_return(body) => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn has_real_return(actions: &[PrivateLoopAction]) -> bool {
+        actions.iter().any(|action| match action {
+            PrivateLoopAction::Return(_) | PrivateLoopAction::ReturnIterator(_) => true,
+            PrivateLoopAction::ForRange { body, .. }
+                | PrivateLoopAction::WhileCondition { body, .. } =>
+                    Self::has_real_return(body),
+            _ => false,
+        })
+    }
+
     fn verified_actions(
         statements: &[Stmt], verified: &VerifiedPrivateSource, inside_loop: bool,
         bool_bindings: &mut BTreeMap<String, DeclarationId>,
+        iterator_bindings: &mut BTreeMap<String, DeclarationId>,
     ) -> Result<Vec<PrivateLoopAction>, PrivateLoopPrepareError> {
         let mut result = Vec::new();
         for statement in statements {
+            // 原 Checker 若已判定唯一迭代直接返回，後續正式
+            // AST 仍存在，但沒有可達 HIR，不能要求其求值或
+            // 偽造「已驗證」的 expression。且絕不提前觸發資源。
+            if Self::guaranteed_return(&result) {
+                break;
+            }
             let action = match &statement.kind {
                 // 根作用域的具名 bool 使用原 DeclarationId；迴圈內
                 // 不自行推定新的生命週期、遮蔽或參數型別。
@@ -124,7 +167,7 @@ impl PreparedPrivateLoop {
                         name: decl.name.clone(), mutable: decl.mutable, text: value,
                     }
                 }
-                StmtKind::ForRange { iterator_start, lower, upper, body, .. } => {
+                StmtKind::ForRange { iterator, iterator_start, lower, upper, body } => {
                     if !verified.plan.declarations.matches(
                         DeclarationId(*iterator_start), "int", false,
                     ) {
@@ -146,13 +189,26 @@ impl PreparedPrivateLoop {
                     }
                     // 空區間本體根本不會執行；原 Checker 可合法跳過
                     // 它的動態宣告，不能憑 AST 為未簽發的值建立 ResourceId。
+                    let identity = DeclarationId(*iterator_start);
                     let compiled = if count == 0 {
                         Vec::new()
                     } else {
-                        Self::verified_actions(&body.statements, verified, true, bool_bindings)?
+                        // 迭代名稱只在本體詞彙範圍內可見；即使內層
+                        // for 遮蔽同名，離開時也必須恢復外層來源。
+                        let previous = iterator_bindings.insert(iterator.clone(), identity);
+                        let prepared = Self::verified_actions(
+                            &body.statements, verified, true,
+                            bool_bindings, iterator_bindings,
+                        );
+                        if let Some(shadowed) = previous {
+                            iterator_bindings.insert(iterator.clone(), shadowed);
+                        } else {
+                            iterator_bindings.remove(iterator);
+                        }
+                        prepared?
                     };
                     PrivateLoopAction::ForRange {
-                        lower: start, upper: end, body: compiled,
+                        identity, lower: start, upper: end, body: compiled,
                     }
                 }
                 StmtKind::While { condition, body } => {
@@ -168,7 +224,8 @@ impl PreparedPrivateLoop {
                         Vec::new()
                     } else {
                         let actions = Self::verified_actions(
-                            &body.statements, verified, true, bool_bindings,
+                            &body.statements, verified, true,
+                            bool_bindings, iterator_bindings,
                         )?;
                         // 只接受能以來源直接證明至多一次本體後退出：
                         // (1) 直接 break／return；
@@ -200,23 +257,53 @@ impl PreparedPrivateLoop {
                     PrivateLoopAction::WhileCondition { condition: guard, body: compiled }
                 }
                 StmtKind::Return(ret) => {
-                    let TermKind::Scalar(
-                        crate::syntax_shared::ScalarLiteral::Integer(raw),
-                    ) = &ret.expression.kind else {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "迴圈最小真返回只接受已核准的 int 常值",
-                        ));
-                    };
-                    if verified.plan.scalar_hir.expression(ret.expression.node_span())
-                        .is_none_or(|e| e.ty != crate::common_ir::ScalarType::Int) {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "返回常值缺少正式 P10 TypedHIR 型別",
-                        ));
+                    let span = ret.expression.node_span();
+                    // 原 Checker 對純常值用 expression 事實、
+                    // 對具名 Iterator 用 reference 事實；兩者都是
+                    // 同一份原 TypedHIR 的不同型別證據，不能因
+                    // Name 沒有獨立 expression 而改用無驗證回傳。
+                    match &ret.expression.kind {
+                        TermKind::Scalar(
+                            crate::syntax_shared::ScalarLiteral::Integer(raw),
+                        ) => {
+                            if verified.plan.scalar_hir.expression(span)
+                                .is_none_or(|fact|
+                                    fact.ty != crate::common_ir::ScalarType::Int) {
+                                return Err(PrivateLoopPrepareError::Unsupported(
+                                    "return int 常值缺少 Checker Expression HIR",
+                                ));
+                            }
+                            let value = crate::syntax_shared::integer_i64(raw)
+                                .map_err(|_| PrivateLoopPrepareError::Unsupported(
+                                    "return int 超出 i64 有效範圍",
+                                ))?;
+                            PrivateLoopAction::Return(value)
+                        }
+                        TermKind::Name(name) => {
+                            let identity = iterator_bindings.get(name).copied().ok_or(
+                                PrivateLoopPrepareError::Unsupported(
+                                    "此私有 return 具名值僅支援在作用域內的 for 迭代器",
+                                ),
+                            )?;
+                            if verified.plan.scalar_hir.reference(span)
+                                .is_none_or(|fact|
+                                    fact.resolved.declaration != identity
+                                    || fact.resolved.ty != crate::common_ir::ScalarType::Int)
+                                || !verified.tokens.iter().any(|token|
+                                    token.start == span.start && token.end == span.end
+                                        && matches!(&token.kind,
+                                            TokenKind::Name(raw) if raw == name)
+                                ) {
+                                return Err(PrivateLoopPrepareError::Unsupported(
+                                    "for 迭代器返回缺少原 Checker Reference 與 Lexer 身分",
+                                ));
+                            }
+                            PrivateLoopAction::ReturnIterator(identity)
+                        }
+                        _ => return Err(PrivateLoopPrepareError::Unsupported(
+                            "此私有迴圈切片不執行未核准的返回式",
+                        )),
                     }
-                    let value = crate::syntax_shared::integer_i64(raw).map_err(|_|
-                        PrivateLoopPrepareError::Unsupported("return int 超出 i64 有效範圍"),
-                    )?;
-                    PrivateLoopAction::Return(value)
                 }
                 StmtKind::Break if inside_loop => PrivateLoopAction::Break,
                 StmtKind::Continue if inside_loop => PrivateLoopAction::Continue,
@@ -244,12 +331,15 @@ impl PreparedPrivateLoop {
                 "真迴圈資源子集限無參數 main()->int",
             ));
         }
-        let operations = Self::verified_actions(&main.body.statements, &verified, false, &mut BTreeMap::new())?;
+        let operations = Self::verified_actions(
+            &main.body.statements, &verified, false,
+            &mut BTreeMap::new(), &mut BTreeMap::new(),
+        )?;
         if !operations.iter().any(|op| matches!(op,
             PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileCondition {..})) {
             return Err(PrivateLoopPrepareError::Unsupported("必須包含原 Checker 核准的迴圈"));
         }
-        if !operations.iter().any(|op| matches!(op, PrivateLoopAction::Return(_))) {
+        if !Self::has_real_return(&operations) {
             return Err(PrivateLoopPrepareError::Unsupported("函式須有 int 返回"));
         }
         let original = verified.source.bytes.clone().into_boxed_slice();
@@ -282,6 +372,8 @@ impl PreparedPrivateLoop {
         injected_at: Option<usize>, allocations: &mut usize,
         bool_values: &mut BTreeMap<DeclarationId, bool>,
         condition_checks: &mut Vec<bool>,
+        iterator_values: &mut BTreeMap<DeclarationId, i64>,
+        iterations: &mut Vec<(DeclarationId, i64)>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         use crate::owned_str_runtime::StrRuntimeError;
         for operation in operations {
@@ -306,13 +398,23 @@ impl PreparedPrivateLoop {
                         .ok_or(StrRuntimeError::MissingOwner)?;
                     *slot = evaluated;
                 }
-                PrivateLoopAction::ForRange { lower, upper, body } => {
-                    for _ in *lower..*upper {
-                        let flow = Self::run_scoped(
+                PrivateLoopAction::ForRange { identity, lower, upper, body } => {
+                    for value in *lower..*upper {
+                        // 真動態迭代，每輪建立獨立的 int Copyable
+                        // 宣告 slot；同一 DeclarationId 不得在其生命
+                        // 週期內被第二個擁有位置重複使用。
+                        if iterator_values.insert(*identity, value).is_some() {
+                            return Err(StrRuntimeError::DuplicateBinding);
+                        }
+                        iterations.push((*identity, value));
+                        let step = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
-                            bool_values, condition_checks,
-                        )?;
-                        match flow {
+                            bool_values, condition_checks, iterator_values, iterations,
+                        );
+                        // 即使 return／break／continue 或故障，必須
+                        // 在本輪真字串離域清理完成後撤銷迭代器身分。
+                        iterator_values.remove(identity);
+                        match step? {
                             PrivateLoopFlow::Normal | PrivateLoopFlow::Continue => {}
                             PrivateLoopFlow::Break => break,
                             PrivateLoopFlow::Return(value) =>
@@ -331,6 +433,7 @@ impl PreparedPrivateLoop {
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
                             bool_values, condition_checks,
+                            iterator_values, iterations,
                         )?;
                         match flow {
                             PrivateLoopFlow::Break => break,
@@ -350,6 +453,11 @@ impl PreparedPrivateLoop {
                 }
                 PrivateLoopAction::Return(value) =>
                     return Ok(PrivateLoopFlow::Return(*value)),
+                PrivateLoopAction::ReturnIterator(identity) => {
+                    let value = iterator_values.get(identity).copied()
+                        .ok_or(StrRuntimeError::MissingOwner)?;
+                    return Ok(PrivateLoopFlow::Return(value));
+                }
                 PrivateLoopAction::Break if depth > 0 =>
                     return Ok(PrivateLoopFlow::Break),
                 PrivateLoopAction::Continue if depth > 0 =>
@@ -366,11 +474,13 @@ impl PreparedPrivateLoop {
         injected_at: Option<usize>, allocations: &mut usize,
         bool_values: &mut BTreeMap<DeclarationId, bool>,
         condition_checks: &mut Vec<bool>,
+        iterator_values: &mut BTreeMap<DeclarationId, i64>,
+        iterations: &mut Vec<(DeclarationId, i64)>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         resources.enter_scope();
         let result = Self::run_actions(
             resources, operations, depth, injected_at, allocations,
-            bool_values, condition_checks,
+            bool_values, condition_checks, iterator_values, iterations,
         );
         // 包含 continue／break／return／真失敗，單次迭代作用域皆
         // 先釋放唯一資源，再讓控制訊號傳往上一層。
@@ -402,9 +512,12 @@ impl PreparedPrivateLoop {
         let mut allocations = 0;
         let mut bool_values = BTreeMap::new();
         let mut condition_checks = Vec::new();
+        let mut iterator_values = BTreeMap::new();
+        let mut iterations = Vec::new();
         let result = match Self::run_actions(
             &mut resources, &self.operations, 0, injected_at, &mut allocations,
             &mut bool_values, &mut condition_checks,
+            &mut iterator_values, &mut iterations,
         ) {
             Ok(PrivateLoopFlow::Return(value)) => Ok(value),
             Ok(_) => Err(crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
@@ -414,7 +527,7 @@ impl PreparedPrivateLoop {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateLoopPrepareError::SourceChanged);
         }
-        Ok(PrivateLoopOutcome { result, events, condition_checks })
+        Ok(PrivateLoopOutcome { result, events, condition_checks, iterations })
     }
 }
 
@@ -693,6 +806,116 @@ mod g18_private_source_loop_tests {
         assert!(matches!(
             PreparedPrivateLoop::prepare(source),
             Err(PrivateLoopPrepareError::Check(_)),
+        ));
+    }
+
+    // G18-B：迭代器本身是已被 Checker 簽發的 int Copyable 宣告，
+    // 非只依照 for 區間重複執行相同字串本體的假迭代。
+    #[test]
+    fn g18_b_真_for_iterator_返回目前迭代整數而非固定常值() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 4..5{\nvar local:str = \"內\"\nreturn i\n}\nreturn 0\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(4));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(), [4]);
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_真_for_iterator_多輪實際值不含右端點() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 2..5{\nvar inner:str = \"甲\"\n}\nreturn 6\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(6));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [2, 3, 4]);
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2), ResourceEvent::Released(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Created(4), ResourceEvent::Released(4),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_巢狀_for_iterator_返回真內層宣告且逐層清理() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 2..3{\nvar local:str = \"局部\"\nfor j in 7..8{\nvar inner:str = \"內\"\nreturn j\n}\n}\nreturn 0\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(7));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [2, 7]);
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Created(3),
+            ResourceEvent::Released(3), ResourceEvent::Released(2),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_巢狀同名_for_iterator_以真宣告身份遮蔽外層而非名稱猜測() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 1..2{\nfor i in 9..10{\nreturn i\n}\n}\nreturn 0\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(9));
+        let ids = actual.iterations.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "同名巢狀迭代宣告必須有不同 DeclarationId");
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [1, 9]);
+        assert_eq!(actual.events,
+            [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_b_真_for_iterator_continue_迭代每輪獨立且沒有逃逸() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 1..4{\nvar inner:str = \"內\"\ncontinue\n}\nreturn 2\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(2));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [1, 2, 3]);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+    }
+
+    #[test]
+    fn g18_b_空半開_for_不建立迭代器值且不執行_return() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 2..2{\nreturn i\n}\nreturn 6\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(6));
+        assert!(actual.iterations.is_empty());
+        assert_eq!(actual.events,
+            [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_b_返回已離域_for_iterator_須原_checker_先拒絕() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..2{\nvar inner:str = \"內\"\n}\nreturn i\n}\n";
+        assert!(matches!(
+            PreparedPrivateLoop::prepare(src),
+            Err(PrivateLoopPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn g18_b_竄改_for_iterator_身分或_return_來源須零資源拒絕() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 4..5{\nreturn i\n}\nreturn 0\n}\n";
+        let mut plan = checked(src);
+        let PrivateLoopAction::ForRange { identity, .. } =
+            &mut plan.operations[1] else { panic!("必須為原 for 計畫") };
+        *identity = DeclarationId(0);
+        assert!(matches!(
+            plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
+        ));
+        let mut plan = checked(src);
+        let PrivateLoopAction::ForRange { body, .. } =
+            &mut plan.operations[1] else { panic!("必須為原 for 計畫") };
+        let PrivateLoopAction::ReturnIterator(identity) =
+            &mut body[0] else { panic!("必須為原 Checker 的具名 iterator 返回") };
+        *identity = DeclarationId(0);
+        assert!(matches!(
+            plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
         ));
     }
 }
