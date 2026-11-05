@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """G18 P18.1～P18.6 原始六項真來源稽核：--audit 核實子集，--check 嚴格正式驗收。
 
---audit 不等於 G18 Passed。一般遞迴／中止 D18-01 與方法／async D18-02
+--audit 不等於 G18 Passed。D18-01 已核准與部分真遞迴執行，方法／async D18-02
 仍未核准時，必須明確回報 BlockedByDecision，不能以保守拒絕替代
 原始六項的正反真執行驗收。
 """
@@ -37,7 +37,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
-        "execution::tests::p18_尚未建立遞迴退出契約時安全拒絕_不爆堆疊",
+        "execution::tests::p18_無限遞迴耗盡預算安全拒絕_不爆堆疊",
+        "execution::tests::p18_已核准直接遞迴_可由全域_bool_終止並逐框架返回",
+        "execution::tests::p18_已核准互相遞迴_使用原函式宣告與真動態框架",
+        "execution::tests::p18_步數預算耗盡須沿真函式逐層退出不偽造成功",
         "struct_stage::g18_private_source_loop_tests::g18_c_第二次迭代真資源故障必回滾當次及外層持有者",
         "struct_stage::g18_private_call_borrow_tests::g18_c_被呼叫函式真借用存活時故障必先歸還票據再釋放擁有者",
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
@@ -69,7 +72,7 @@ from pathlib import Path
 狀態 = {
     "P18.1": ("SubsetVerified", "無參數函式、str 借用與前向 Copyable int 真傳參／群組加減已接通；一般參數及呼叫圖仍缺完整矩陣"),
     "P18.2": ("SubsetVerified", "真 if／else-if 與可證明的有限 for/while 子集；一般動態迴圈尚未驗收"),
-    "P18.3": ("Incomplete", "D18-01-A～D 已核准合法遞迴與可配置執行預算；真遞迴框架、耗盡、逆序清理正反仍未完成"),
+    "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 已核准唯一簽章／self／VB15 保守借用原則；非同步調度取消細節與正向真執行仍待裁決、施工"),
