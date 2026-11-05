@@ -238,11 +238,8 @@ impl PreparedPrivateCallBorrow {
         let execution = match (execution, released) {
             (Err(error), _) => Err(error),
             (Ok(_), Err(error)) => Err(error),
-            (Ok(value), Ok(())) => {
-                tracker.check_direct_access(self.owner_id)
-                    .map_err(PrivateCallBorrowRuntimeError::Ticket)?;
-                Ok(value)
-            }
+            (Ok(value), Ok(())) => tracker.check_direct_access(self.owner_id)
+                .map_err(PrivateCallBorrowRuntimeError::Ticket).map(|()| value),
         };
         let events = runtime.finish().map_err(PrivateCallBorrowPrepareError::Cleanup)?;
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
