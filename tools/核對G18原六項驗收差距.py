@@ -65,6 +65,7 @@ from pathlib import Path
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
         "struct_stage::g18_private_method_self_tests::g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",
+        "struct_stage::g18_private_method_self_tests::g18_f_獨占_self_真寫入_var_int_並以同張票據返回更新後值",
         "struct_stage::g18_private_method_self_tests::g18_f_方法真借用存活期間發生測試故障也要先歸還票據再離域",
         "struct_stage::g18_private_method_self_tests::g18_f_偽造動態_self_來源或借用_kind_必在配置前拒絕",
     ),
@@ -79,7 +80,7 @@ from pathlib import Path
     "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，唯讀同步 self 真票據可執行；方法多載完整唯一解析與 async 調度取消細則、正向執行仍待裁決及驗收"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據可執行；方法多載完整唯一解析與 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
 
 真執行群組 = (

@@ -81,6 +81,8 @@ pub(crate) enum MixedError {
     IncompleteStruct,
     NonCopyableStruct,
     MissingField,
+    ImmutableField,
+    ImmutableReceiver,
     NoInnerScope,
     Resource(StrRuntimeError),
 }
@@ -92,7 +94,7 @@ enum StoredValue {
     Str(OwnedUtf8),
 }
 #[derive(Debug)]
-struct StoredField { name:String, value:StoredValue }
+struct StoredField { name:String, value:StoredValue, immutable:bool }
 #[derive(Debug)]
 struct MixedOwned {
     // 真正完成求值的順序，不能用 struct 宣告順序代替。
@@ -204,7 +206,11 @@ impl MixedStructRuntime {
                     ));
                 }
             };
-            pending.fields.push(StoredField {name:step.field.clone(),value});
+            let immutable = fields.iter().find(|field|field.name==step.field)
+                .expect("真求值計畫欄位必在已驗證型別清單").immutable;
+            pending.fields.push(StoredField {
+                name:step.field.clone(), value, immutable,
+            });
             if fail_after==Some(step.field.as_str()) {
                 Self::release_value(&mut self.ledger,pending);
                 return Err(MixedError::EvaluationFailed(step.field));
@@ -226,6 +232,25 @@ impl MixedStructRuntime {
             StoredValue::Bool(b)=>Observed::Bool(*b),
             StoredValue::Str(resource)=>Observed::Str(resource.text()),
         })
+    }
+    /// G18／D18-02-B：僅經原 Checker 確認 var self 獨占票據
+    /// 後才允許更新 Copyable int 欄位；欄位的 const 權限由
+    /// 真建構計畫保存到 runtime，不准只靠呼叫者傳入的旗標。
+    /// 本操作不改 OwnedUtf8 資源，不產生假的 ResourceEvent。
+    pub(crate) fn write_int_field(
+        &mut self, owner:&str, field:&str, value:i64, receiver_mutable:bool,
+    )->Result<(),MixedError> {
+        if !receiver_mutable { return Err(MixedError::ImmutableReceiver); }
+        let (i,j)=self.valid_whole(owner)?;
+        let member=self.scopes[i][j].owned.as_mut()
+            .expect("已驗證完整持有者").fields.iter_mut()
+            .find(|member|member.name==field).ok_or(MixedError::MissingField)?;
+        if member.immutable { return Err(MixedError::ImmutableField); }
+        let StoredValue::Int(old)=&mut member.value else {
+            return Err(MixedError::TypeMismatch(field.to_owned()));
+        };
+        *old=value;
+        Ok(())
     }
     fn valid_whole(&self,name:&str)->Result<(usize,usize),MixedError> {
         let (i,j)=self.locate(name)?;
@@ -260,7 +285,7 @@ impl MixedStructRuntime {
             return Err(MixedError::NonCopyableStruct);
         }
         let fields=original.fields.iter().map(|field|StoredField {
-            name:field.name.clone(),
+            name:field.name.clone(), immutable:field.immutable,
             value:match &field.value {
                 StoredValue::Int(n)=>StoredValue::Int(*n),
                 StoredValue::Bool(b)=>StoredValue::Bool(*b),
@@ -464,5 +489,46 @@ mod tests {
         assert_eq!(released(rt.events()),vec![2]);
         assert_eq!(rt.field("outer","text"),Ok(Observed::Str("繁體中文🪼")));
         assert_eq!(released(&rt.finish().unwrap()),vec![2,1]);
+    }
+
+    #[test]
+    fn g18_d_真混合結構寫入_int_不移動或複製任何_utf8_資源() {
+        let mut runtime=MixedStructRuntime::new();
+        runtime.construct("owner",&all(),&[],None).unwrap();
+        let ptr=match runtime.field("owner","text").unwrap() {
+            Observed::Str(text)=>text.as_ptr(), _=>unreachable!(),
+        };
+        runtime.write_int_field("owner","num",19,true).unwrap();
+        assert_eq!(runtime.field("owner","num"),Ok(Observed::Int(19)));
+        assert_eq!(match runtime.field("owner","text").unwrap() {
+            Observed::Str(text)=>text.as_ptr(), _=>unreachable!(),
+        },ptr);
+        assert_eq!(runtime.finish().unwrap(),[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+    #[test]
+    fn g18_d_真混合結構_const_欄位或_const_接收者不能用純值覆寫() {
+        let mut runtime=MixedStructRuntime::new();
+        runtime.construct("owner",&all(),&[],None).unwrap();
+        assert_eq!(runtime.write_int_field("owner","num",12,false),
+            Err(MixedError::ImmutableReceiver));
+        assert_eq!(runtime.write_int_field("owner","flag",12,true),
+            Err(MixedError::ImmutableField));
+        assert_eq!(runtime.field("owner","num"),Ok(Observed::Int(42)));
+        assert_eq!(runtime.finish().unwrap(),[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
+    }
+    #[test]
+    fn g18_d_真混合結構拒絕_int_寫入_str_並保留原資源所有權() {
+        let mut runtime=MixedStructRuntime::new();
+        runtime.construct("owner",&all(),&[],None).unwrap();
+        assert_eq!(runtime.write_int_field("owner","text",12,true),
+            Err(MixedError::TypeMismatch("text".into())));
+        assert_eq!(runtime.field("owner","text"),Ok(Observed::Str("繁體中文🪼")));
+        assert_eq!(runtime.finish().unwrap(),[
+            ResourceEvent::Created(1),ResourceEvent::Released(1),
+        ]);
     }
 }

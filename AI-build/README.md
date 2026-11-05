@@ -125,3 +125,5 @@
 > **G18-P18.3 真 AW06 遞迴（2026-11-05；私有 evaluator 施工）**：[合法直接／互相遞迴、可配置框架與步數預算、受控耗盡逐層退出、無限遞迴不爆宿主堆疊](P18-C-AW06真遞迴框架與預算耗盡-20261105.md)；七項 Rust 正反來源 Gate。**仍未完成 str／BorrowTicket 遞迴資源清理，不得將 P18.3 或 G18 六項標記 Passed。**
 
 > **G18 P18.6 已核准同步方法 self 真票據（2026-11-05；私有施工）**：[原 Checker VerifiedMethodSafety + call_borrows_at → 真 BorrowTicket → MixedStructRuntime Copyable int 欄位讀取／返回及錯誤離域](P18-F-同步方法self真借用與Copyable欄位讀取-20261105.md)；六項 Rust 正反，G18 六來源群真重跑。**非多載／async 完整驗收，P18.6 仍未 Passed。**
+
+> **G18.6 真同步獨占 `self`（2026-11-05；非公開施工）**：[原 Checker 獨占 BorrowFact／BorrowTicket 實際授權 `var self.int欄位` 寫入後返回；`MixedStructRuntime` 保存 immutable 權限、禁止 const 與資源冒複製](P18-F-獨占self同步方法真int欄位寫入-20261105.md)。同步 self 來源 Gate 6→13，新增三項 runtime 正反。**原 G18 仍未正式 Passed。**
