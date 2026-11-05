@@ -161,5 +161,5 @@ jobs:
       - name: G18 P18.1／18.4 Copyable int 函式參數加減溢位十六項真正反 Gate
         run: python3 tools/核對G18純值函式參數真框架.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.1～P18.6 真來源與未決 D18-01／D18-02 六原項嚴格差距稽核
+      - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
         run: python3 tools/核對G18原六項驗收差距.py --test-bin target/p02/p04_source_internal --audit
