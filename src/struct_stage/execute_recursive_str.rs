@@ -68,13 +68,18 @@ struct PrivateRecursiveStrOutcome {
     frames: Vec<PrivateRecursiveFrameEvent>,
     /// 原動態 tracker 真空集合快照，非自行標記的 bool。
     loans_returned: bool,
+    /// 唯讀的原真資源 UTF-8 位元組觀測；不複製 str，也不轉交所有權。
+    borrowed_lengths: Vec<usize>,
 }
 
 
 struct PrivateRecursiveActiveFrame {
     name: String,
     branch_open: bool,
-    /// 屬於進入本框架的原 Checker 呼叫邊，離開時先還此 BorrowTicket。
+    /// 本框架獨立的動態借用追蹤器。DeclarationId 是靜態詞彙位置，
+    /// 不得將不同重入實例的同一宣告合併到全域借用表。
+    issued: crate::borrow_safety::BorrowSafety,
+    /// 本框架進入時由父框架 issued 真簽發的票據；必須還給同一追蹤器。
     ticket: Option<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
 }
 struct PreparedPrivateRecursiveStr {
@@ -419,8 +424,8 @@ impl PreparedPrivateRecursiveStr {
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         let mut frames: Vec<PrivateRecursiveActiveFrame> = Vec::new();
-        let mut tracker = crate::borrow_safety::BorrowSafety::new();
         let mut timeline = Vec::new();
+        let mut borrowed_lengths = Vec::new();
         let mut steps = 0usize;
         let mut allocations = 0usize;
         let result = (|| -> Result<i64, PrivateRecursiveStrRunError> {
@@ -454,6 +459,7 @@ impl PreparedPrivateRecursiveStr {
             resources.enter_scope();
             frames.push(PrivateRecursiveActiveFrame {
                 name: "main".to_owned(), branch_open: false, ticket: None,
+                issued: crate::borrow_safety::BorrowSafety::new(),
             });
             timeline.push(PrivateRecursiveFrameEvent::Entered("main".to_owned()));
             declare(&self.main_locals, &mut resources, &mut steps)?;
@@ -471,31 +477,38 @@ impl PreparedPrivateRecursiveStr {
                 // Call 的借用來源、權限、詞彙持有者都已由
                 // 原 Checker call_borrows 精確授權。只有真正走到
                 // 此遞迴邊時才簽發票據，不能預先借用未選分支。
+                // 只從「實際擁有此 str 的父呼叫實例」借出票據；
+                // 不能將相同詞彙 DeclarationId 的不同遞迴框架合併。
                 let ticket = next_call.loan.as_ref().map(|(_, fact)|
-                    tracker.acquire(fact.source, fact.kind)
+                    frames.last_mut().expect("父框架存在").issued
+                        .acquire(fact.source, fact.kind)
                         .map(|ticket| (ticket, *fact))
                         .map_err(PrivateRecursiveStrRunError::Ticket)
                 ).transpose()?;
+                // 此形狀的每個框架最多一個已發出的子呼叫；
+                // 所有在同一框架中的額外票據必須先經 HC14 衝突檢查。
+                frames.last().expect("父框架存在").issued.verify_static_snapshot(
+                    next_call.loan.iter().map(|(_, fact)| *fact),
+                ).map_err(PrivateRecursiveStrRunError::Ticket)?;
                 resources.enter_scope();
                 frames.push(PrivateRecursiveActiveFrame {
                     name: callee.name.clone(), branch_open: false, ticket,
+                    issued: crate::borrow_safety::BorrowSafety::new(),
                 });
                 timeline.push(PrivateRecursiveFrameEvent::Entered(callee.name.clone()));
-                // 用當前整條真呼叫堆疊的 BorrowFact 核對原子票據集合；
-                // 不可只核對本層而跳過父框架仍存活的借用。
-                tracker.verify_static_snapshot(
-                    frames.iter().filter_map(|frame| frame.ticket.map(|(_, fact)| fact)),
-                ).map_err(PrivateRecursiveStrRunError::Ticket)?;
                 if let Some((name, fact)) = &next_call.loan {
                     let ticket = frames.last().and_then(|frame|
                         frame.ticket.map(|(ticket, _)| ticket)
                     ).ok_or(PrivateRecursiveStrRunError::Ticket(
                         crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
                     ))?;
+                    let parent = &frames[frames.len() - 2];
+                    // 借用事實同時匹配父實例的追蹤器與原 Lexer str 名稱；
+                    // 不以子框架自己新造的 tracker 冒充既有借用。
                     match read_checked_str_argument(
-                        &tracker, ticket, fact.source, &resources, name,
+                        &parent.issued, ticket, fact.source, &resources, name,
                     ) {
-                        Ok(_) => {}
+                        Ok(length) => borrowed_lengths.push(length),
                         Err(PrivateCallBorrowRuntimeError::Resource(error)) =>
                             return Err(PrivateRecursiveStrRunError::Resource(error)),
                         Err(PrivateCallBorrowRuntimeError::Ticket(error)) =>
@@ -520,20 +533,24 @@ impl PreparedPrivateRecursiveStr {
         })();
         // 每份已進入函式的局部 OwnedUtf8 都必須依真完成順序逆序清理。
         // 如果在子呼叫準備前發生預算耗盡，絕不創造未進入的資源。
+        let mut verified_frame_trackers = 0usize;
         while let Some(frame) = frames.pop() {
-            // 此次呼叫的借用票據必須先歸還，之後才可以清理
-            // 被呼叫者局部資源及再上層的真正所有者。
+            // 即使子框架與父框架在原檔具有相同 DeclarationId，
+            // 每個動態框架的 issued 必須各自完整歸零。
+            frame.issued.verify_static_snapshot(std::iter::empty::<BorrowFact>())
+                .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
+            verified_frame_trackers += 1;
             if let Some((ticket, fact)) = frame.ticket {
-                let active_before = std::iter::once(fact).chain(
-                    frames.iter().filter_map(|other|
-                        other.ticket.map(|(_, active)| active)
+                let parent = frames.last_mut().ok_or(
+                    PrivateRecursiveStrPrepareError::CleanupTicket(
+                        crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
                     ),
-                );
-                tracker.verify_static_snapshot(active_before)
+                )?;
+                // 票據的 tracker_id／serial／BorrowKind 必須與原父框架一致，
+                // 否則 finish_scope_verified 在動態資源離域前保守拒絕。
+                parent.issued.finish_scope_verified(&[ticket], &[fact])
                     .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
-                tracker.finish_scope(&[ticket])
-                    .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
-                tracker.check_direct_access(fact.source)
+                parent.issued.check_direct_access(fact.source)
                     .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
             }
             if frame.branch_open {
@@ -548,9 +565,9 @@ impl PreparedPrivateRecursiveStr {
                 name: frame.name, returned: result.is_ok(),
             });
         }
-        let loans_returned = tracker.verify_static_snapshot(
-            std::iter::empty::<BorrowFact>(),
-        ).is_ok();
+        let loans_returned = verified_frame_trackers == timeline.iter().filter(
+            |event| matches!(event, PrivateRecursiveFrameEvent::Entered(_))
+        ).count();
         if !loans_returned {
             return Err(PrivateRecursiveStrPrepareError::CleanupTicket(
                 crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
@@ -562,7 +579,7 @@ impl PreparedPrivateRecursiveStr {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateRecursiveStrPrepareError::SourceChanged);
         }
-        Ok(PrivateRecursiveStrOutcome { result, events, frames: timeline, loans_returned })
+        Ok(PrivateRecursiveStrOutcome { result, events, frames: timeline, loans_returned, borrowed_lengths })
     }
 }
 
@@ -734,6 +751,54 @@ mod g18_private_recursive_str_frames_tests {
         assert!(matches!(PreparedPrivateRecursiveStr::prepare(&invalid),
             Err(PrivateRecursiveStrPrepareError::Check(_))
                 | Err(PrivateRecursiveStrPrepareError::Unsupported(_))));
+    }
+
+    fn repeated_borrowed_reentry() -> &'static str {
+        "fn descend(flag:bool, payload:str)->int{\nvar repeated:str = \"同名各框架\"\nif(flag){\nvar nested:str = \"繁體每層\"\nreturn descend(true, nested)\n}\nreturn 7\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn descend(true, root)\n}\n"
+    }
+    #[test]
+    fn g18_c_深層重入同一宣告來源須各有動態_borrow_tracker_且受控耗盡() {
+        let outcome = plan(repeated_borrowed_reentry())
+            .execute(budget(6, 100)).unwrap();
+        assert_eq!(outcome.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert!(outcome.loans_returned);
+        assert_eq!(outcome.borrowed_lengths, [3, 12, 12, 12, 12]);
+        assert_eq!(releases(&outcome.events), (1..=11).rev().collect::<Vec<_>>());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
+        assert_eq!(outcome.frames.iter().filter(|event|
+            matches!(event, PrivateRecursiveFrameEvent::Exited { returned: false, .. }))
+            .count(), 6);
+    }
+    #[test]
+    fn g18_c_跨框架相同原宣告位置的唯讀和獨占票據不能誤互斥() {
+        let text = repeated_borrowed_reentry()
+            .replace("var nested:str", "const nested:str");
+        let outcome = plan(&text).execute(budget(6, 100)).unwrap();
+        assert_eq!(outcome.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert!(outcome.loans_returned);
+        assert_eq!(releases(&outcome.events), (1..=11).rev().collect::<Vec<_>>());
+        assert_eq!(outcome.borrowed_lengths.len(), 5);
+    }
+    #[test]
+    fn g18_c_深層重入步數耗盡各框架票據與所有者全部逆序歸還() {
+        let outcome = plan(repeated_borrowed_reentry())
+            .execute(budget(12, 16)).unwrap();
+        assert_eq!(outcome.result, Err(PrivateRecursiveStrRunError::StepBudget));
+        assert!(outcome.loans_returned);
+        assert!(outcome.events.iter().any(|event|
+            matches!(event, ResourceEvent::Created(_))));
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
+        assert!(!outcome.frames.iter().any(|event|
+            matches!(event, PrivateRecursiveFrameEvent::Exited { returned: true, .. })));
+    }
+    #[test]
+    fn g18_c_重入框架內故障不以共用靜態宣告身份錯誤解鎖() {
+        let outcome = plan(repeated_borrowed_reentry())
+            .execute_with_fault(budget(12, 100), Some(7)).unwrap();
+        assert_eq!(outcome.result, Err(PrivateRecursiveStrRunError::InjectedFailure));
+        assert!(outcome.loans_returned);
+        assert_eq!(releases(&outcome.events), (1..=7).rev().collect::<Vec<_>>());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
     }
 
 }
