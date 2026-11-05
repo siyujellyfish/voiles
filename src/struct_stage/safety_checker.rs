@@ -699,6 +699,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error("方法整數加減右運算元必須為 int", right));
                 }
                 debug_assert!(*operator == '+' || *operator == '-');
+                // 方法純值 Checker 原本只確認型別，卻沒有簽發
+                // 與一般函式相同的 Arithmetic TypedHIR，導致
+                // 真同步 self 執行器無法取得可追溯的運算授權。
+                // 必須等左右型別均核准後才記錄，失敗不留證據。
+                self.recorded_scalar_hir.borrow_mut().record_arithmetic(
+                    crate::common_ir::VerifiedScalarArithmetic {
+                        span: term.node_span(),
+                        left: left.node_span(),
+                        right: right.node_span(),
+                        operator: *operator,
+                    });
+                self.recorded_scalar_hir.borrow_mut().record_expression(
+                    term.node_span(), crate::common_ir::ScalarType::Int,
+                );
                 Ok("int".to_string())
             }
             _ => Err(self.error("方法值來源尚未證明可安全獨立求值", term)),
