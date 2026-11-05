@@ -878,6 +878,33 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(mode)
     }
 
+    /// D18-02-A：只為「選擇多個同名方法候選」取得靜態型別，
+    /// 不執行 .move()、讀取資源、簽發票據或改變任何 Scopes。
+    /// 無法唯一判定的表達式必拒絕，不能退回舊的最後一個同名方法。
+    fn method_argument_type_without_effect(
+        &self, term: &Term, vars: &Scopes,
+    ) -> Option<String> {
+        match &term.kind {
+            TermKind::Scalar(literal) => Some(literal.type_name().to_owned()),
+            TermKind::Literal(ty) => Some((*ty).to_owned()),
+            TermKind::Group(inner) =>
+                self.method_argument_type_without_effect(inner, vars),
+            TermKind::Name(name) | TermKind::Move(name) =>
+                Self::lookup(vars, name).map(|binding| binding.ty.clone()),
+            TermKind::BinaryInt(binary) => {
+                let left = self.method_argument_type_without_effect(&binary.left, vars)?;
+                let right = self.method_argument_type_without_effect(&binary.right, vars)?;
+                (left == "int" && right == "int").then(|| "int".to_owned())
+            }
+            TermKind::FieldRead(receiver, field) => {
+                let source = Self::lookup(vars, receiver)?;
+                let definition = self.structs.get(&source.ty)?;
+                definition.field(field).map(|found| found.ty.clone())
+            }
+            _ => None,
+        }
+    }
+
     /// 方法引數依來源順序在取得 self 借用前求值。
     /// 已核准 Copyable 參數可接受具名整筆 .move()；求值後必須
     /// 再查核接收者仍有效。仍禁止未完成的再借用／巢狀呼叫資源副作用。
@@ -1053,9 +1080,39 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     bound.value.read().map_err(|err| self.model_error(err, term))?;
                     bound.ty.clone()
                 };
-                let method = self.structs.get(&owner_type)
-                    .and_then(|def| def.method(name))
+                let definition = self.structs.get(&owner_type)
                     .ok_or_else(|| self.error("找不到結構上的合法方法", term))?;
+                let candidates: Vec<&Function> = definition.methods_named(name).collect();
+                let method = match candidates.as_slice() {
+                    [] => return Err(self.error("找不到結構上的合法方法", term)),
+                    [only] => *only,
+                    // S20／D18-02-A：原 Parser 允許同名不同參數簽章，
+                    // 但同名多載只能由靜態型別與順序找出唯一候選。
+                    // 不依回傳型別區分，也不在執行期依值搜尋。
+                    _ => {
+                        let static_types = args.iter().map(|arg|
+                            self.method_argument_type_without_effect(arg, vars)
+                        ).collect::<Option<Vec<_>>>()
+                            .ok_or_else(|| self.error(
+                                "S20：方法多載引數缺少可安全判定的靜態型別", term,
+                            ))?;
+                        let matching: Vec<&Function> = candidates.iter().copied()
+                            .filter(|method| {
+                                method.params.len() == static_types.len()
+                                    && method.params.iter().zip(&static_types)
+                                        .all(|(param, ty)| param.ty == *ty)
+                            }).collect();
+                        match matching.as_slice() {
+                            [unique] => *unique,
+                            [] => return Err(self.error(
+                                "S20：找不到參數簽章完全相符的同名方法", term,
+                            )),
+                            _ => return Err(self.error(
+                                "S20：方法多載簽章無法唯一解析", term,
+                            )),
+                        }
+                    }
+                };
                 let mode = self.check_method(&owner_type, method)?;
                 if method.params.len() != args.len() {
                     return Err(self.error("P13：方法引數數量不符", term));
@@ -2147,7 +2204,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             }
         }
         for definition in self.structs.values() {
+            // S20／D18-02-A：完整型別序列才構成方法多載簽章；
+            // 不把參數名稱或返回型別當作消歧條件，也不能因
+            // 第一個同名方法合法便放過第二個重複宣告。
+            let mut signatures = HashSet::new();
             for method in &definition.methods {
+                let signature = (method.name.as_str(), method.params.iter()
+                    .map(|parameter| parameter.ty.as_str()).collect::<Vec<_>>());
+                if !signatures.insert(signature) {
+                    return Err(Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "S20：方法名稱與完整參數型別簽章重複".into(),
+                        span: Some(self.source.span(method.start, method.end)),
+                    });
+                }
                 if !self.known_type(&method.result_ty) {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P13：方法回傳型別不存在".into(), span: None });
