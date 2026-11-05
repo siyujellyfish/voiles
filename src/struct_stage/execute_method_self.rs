@@ -791,8 +791,8 @@ mod g18_private_method_self_tests {
     }
 
     #[test]
-    fn g18_f_未接通的具參數多載真執行保守拒絕_不假造動態值() {
-        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\nfn get(n:int)->int{\nreturn self.count+1\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
+    fn g18_f_未接通的方法參數引用真執行保守拒絕_不假造動態值() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\nfn get(n:int)->int{\nreturn n\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
     }
