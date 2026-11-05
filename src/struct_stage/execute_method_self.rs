@@ -558,4 +558,67 @@ mod g18_private_method_self_tests {
         assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
             Err(PrivateSelfMethodPrepareError::Check(_))));
     }
+
+    #[test]
+    fn g18_f_共享_self_真欄位加法按原_checker_hir_求值() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count+3\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.loan.kind, BorrowKind::SharedRead);
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::Add(3));
+        let actual = plan.execute().unwrap();
+        assert_eq!(actual.result, Ok(10));
+        assert!(actual.method_entered && actual.method_exited && actual.ticket_returned);
+        assert!(actual.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_獨占_self_寫入後真欄位減法按最新值計算() {
+        let src = "struct Counter{\nvar count:int = 2\nfn change()->int{\nself.count = 20\nreturn self.count-4\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.change()\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::Subtract(4));
+        let actual = plan.execute().unwrap();
+        assert_eq!(actual.result, Ok(16));
+        assert!(actual.method_entered && actual.method_exited && actual.ticket_returned);
+    }
+
+    #[test]
+    fn g18_f_共享_self_真欄位加法溢位受控錯誤且歸還票據() {
+        let src = "struct Counter{\nvar count:int = 9223372036854775807\nfn get()->int{\nreturn self.count+1\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(actual.method_entered && !actual.method_exited && actual.ticket_returned);
+        assert!(actual.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_獨占_self_真欄位減法溢位亦不得保留借用() {
+        let src = "struct Counter{\nvar count:int = 0\nfn change()->int{\nself.count = 0\nreturn self.count-9223372036854775807-2\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.change()\n}\n";
+        // 本子集只接通 self.field ± 一個原 Checker int 常值；
+        // 巢狀運算不得冒充已執行，必須在配置前拒絕。
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_f_竄改已核准方法算術運算子或常值須在配置前拒絕() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count+3\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let mut plan = checked(src);
+        plan.return_calculation = PrivateSelfIntReturn::Subtract(3);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(src);
+        plan.return_calculation = PrivateSelfIntReturn::Add(999);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_錯誤方法加法型別與未知欄位由原_checker_拒絕() {
+        for src in [
+            "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count+true\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n",
+            "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.missing+1\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+                Err(PrivateSelfMethodPrepareError::Check(_))));
+        }
+    }
 }
