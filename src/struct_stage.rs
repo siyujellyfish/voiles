@@ -142,6 +142,9 @@ include!("struct_stage/execute_struct.rs");
 // G17／P17.3：同一私有 Checker 的直線借用票據與真 UTF-8 資源實驗。
 include!("struct_stage/execute_borrow.rs");
 
+// G18／P18-B/C：已驗證有限 for／while 真控制與 P16 UTF-8 清理。
+include!("struct_stage/execute_loop.rs");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
