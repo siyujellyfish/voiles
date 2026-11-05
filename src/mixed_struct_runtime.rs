@@ -11,13 +11,47 @@ use crate::struct_eval_plan::{self,FieldInfo,Origin,PlanError};
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
 pub(crate) enum ScalarKind { Int, Bool, Str }
 
+/// 僅能從已核准原 Lexer/Parser 及正式 TypedHIR 交付的純整數種子。
+/// 這不是新的語法 AST；只在原 VB16 求值計畫實際走到該欄位時執行。
+#[derive(Debug,Clone,PartialEq,Eq)]
+pub(crate) enum CheckedIntSeed {
+    Constant(i64),
+    Binary { operator: char, left: Box<CheckedIntSeed>, right: Box<CheckedIntSeed> },
+}
+impl CheckedIntSeed {
+    pub(crate) fn evaluate(&self) -> Result<i64,MixedError> {
+        match self {
+            Self::Constant(n) => Ok(*n),
+            Self::Binary {operator,left,right} => {
+                let l = left.evaluate()?;
+                let r = right.evaluate()?;
+                let result = match operator {
+                    '+' => l.checked_add(r),
+                    '-' => l.checked_sub(r),
+                    _ => None,
+                };
+                result.ok_or_else(|| MixedError::EvaluationFailed(
+                    "已驗證整數求值發生執行期溢位".to_owned(),
+                ))
+            }
+        }
+    }
+}
+
 #[derive(Debug,Clone,Copy,PartialEq,Eq)]
-pub(crate) enum SeedValue<'a> { Int(i64), Bool(bool), Str(&'a str) }
+pub(crate) enum SeedValue<'a> {
+    Int(i64), Bool(bool), Str(&'a str),
+    IntExpression(&'a CheckedIntSeed),
+    /// 正式 Checker 已驗證具名覆蓋，不可把未執行預設值當成真效果。
+    Skipped(ScalarKind),
+}
 impl SeedValue<'_> {
     fn kind(self)->ScalarKind {
         match self {
-            Self::Int(_)=>ScalarKind::Int,Self::Bool(_)=>ScalarKind::Bool,
+            Self::Int(_) | Self::IntExpression(_) => ScalarKind::Int,
+            Self::Bool(_)=>ScalarKind::Bool,
             Self::Str(_)=>ScalarKind::Str,
+            Self::Skipped(kind)=>kind,
         }
     }
 }
@@ -146,6 +180,15 @@ impl MixedStructRuntime {
             };
             let value=match seed {
                 SeedValue::Int(value)=>StoredValue::Int(value),
+                SeedValue::IntExpression(expr)=>match expr.evaluate() {
+                    Ok(value)=>StoredValue::Int(value),
+                    Err(err)=>{
+                        // 已完成的具名／預設 UTF-8 先依 VB16 逆序釋放，
+                        // 不能讓未完成的純值求值遺失資源責任。
+                        Self::release_value(&mut self.ledger,pending);
+                        return Err(err);
+                    }
+                },
                 SeedValue::Bool(value)=>StoredValue::Bool(value),
                 SeedValue::Str(text)=>match self.ledger.create_detached(text) {
                     Ok(resource)=>StoredValue::Str(resource),
@@ -154,6 +197,12 @@ impl MixedStructRuntime {
                         return Err(MixedError::Resource(err));
                     }
                 },
+                SeedValue::Skipped(_) => {
+                    Self::release_value(&mut self.ledger,pending);
+                    return Err(MixedError::EvaluationFailed(
+                        "不能執行已由合法具名值覆蓋的欄位預設".to_owned(),
+                    ));
+                }
             };
             pending.fields.push(StoredField {name:step.field.clone(),value});
             if fail_after==Some(step.field.as_str()) {
