@@ -40,6 +40,11 @@ from pathlib import Path
         "execution::tests::p18_無限遞迴耗盡預算安全拒絕_不爆堆疊",
         "execution::tests::p18_已核准直接遞迴_可由全域_bool_終止並逐框架返回",
         "execution::tests::p18_已核准互相遞迴_使用原函式宣告與真動態框架",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_c_真直接遞迴每層_utf8_所有者按呼叫及分支逆序清理",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_c_真互相遞迴各層和分支資源跨框架清理不重覆",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_c_遞迴框架預算耗盡須釋放已建立_utf8_且不得假成功",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_c_遞迴步數預算耗盡即使分支開啟仍逐層逆序清理",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_c_真第二層局部_utf8_建立後注入故障逐層回滾",
         "execution::tests::p18_步數預算耗盡須沿真函式逐層退出不偽造成功",
         "struct_stage::g18_private_source_loop_tests::g18_c_第二次迭代真資源故障必回滾當次及外層持有者",
         "struct_stage::g18_private_call_borrow_tests::g18_c_被呼叫函式真借用存活時故障必先歸還票據再釋放擁有者",
@@ -95,7 +100,7 @@ from pathlib import Path
 狀態 = {
     "P18.1": ("SubsetVerified", "無參數函式、str 借用與前向 Copyable int 真傳參／群組加減已接通；一般參數及呼叫圖仍缺完整矩陣"),
     "P18.2": ("SubsetVerified", "真 if／else-if 與可證明的有限 for/while 子集；一般動態迴圈尚未驗收"),
-    "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
+    "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 無資源遞迴、私有 Checker bool 參數直接／互相遞迴與 str 真逐框架清理已接通；跨框架借用、一般簽章／遞迴資源完整矩陣仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
@@ -107,6 +112,7 @@ from pathlib import Path
     "struct_stage::g18_private_source_loop_tests::g18_",
     "struct_stage::g18_private_call_borrow_tests::g18_",
     "struct_stage::g18_private_scalar_call_tests::g18_",
+    "struct_stage::g18_private_recursive_str_frames_tests::g18_",
     "struct_stage::g18_private_method_self_tests::g18_",
 )
 
