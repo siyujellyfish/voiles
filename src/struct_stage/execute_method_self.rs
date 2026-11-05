@@ -420,4 +420,74 @@ mod g18_private_method_self_tests {
                 Err(PrivateSelfMethodPrepareError::Check(_))));
         }
     }
+
+    #[test]
+    fn g18_f_獨占_self_真寫入_var_int_並以同張票據返回更新後值() {
+        let src = "struct Counter{\nvar count:int = 1\nfn set()->int{\nself.count = 9\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
+        assert_eq!(plan.write_value, Some(9));
+        let actual = plan.execute().unwrap();
+        assert_eq!(actual.result, Ok(9));
+        assert!(actual.method_entered && actual.method_exited);
+        assert!(actual.ticket_returned);
+        assert!(actual.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_獨占_self_真寫入後重跑同一已驗證來源不保留前次狀態() {
+        let src = "struct Counter{\nvar count:int = 2\nfn set()->int{\nself.count = 17\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
+        let plan = checked(src);
+        for _ in 0..3 {
+            let actual = plan.execute().unwrap();
+            assert_eq!(actual.result, Ok(17));
+            assert!(actual.ticket_returned && actual.events.is_empty());
+        }
+    }
+
+    #[test]
+    fn g18_f_獨占_self_執行中故障必歸還票據且不報成功返回() {
+        let src = "struct Counter{\nvar count:int = 7\nfn set()->int{\nself.count = 8\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
+        let plan = checked(src);
+        let failure = plan.execute_with_fault(true).unwrap();
+        assert_eq!(failure.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(failure.method_entered);
+        assert!(!failure.method_exited);
+        assert!(failure.ticket_returned);
+        assert!(failure.events.is_empty());
+        let ok = plan.execute().unwrap();
+        assert_eq!(ok.result, Ok(8));
+    }
+
+    #[test]
+    fn g18_f_const_接收者不能以獨占_self_修改原欄位() {
+        let src = "struct Counter{\nvar count:int = 7\nfn set()->int{\nself.count = 8\nreturn self.count\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.set()\n}\n";
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_f_const_欄位即使接收者為_var_也不能由方法覆寫() {
+        let src = "struct Counter{\nconst count:int = 7\nfn set()->int{\nself.count = 8\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_f_篡改已驗證的獨占_self_票據或寫入值在動態配置前拒絕() {
+        let src = "struct Counter{\nvar count:int = 7\nfn set()->int{\nself.count = 8\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
+        let mut changed = checked(src);
+        changed.loan.kind = BorrowKind::SharedRead;
+        assert!(matches!(changed.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut changed = checked(src);
+        changed.write_value = Some(999);
+        assert!(matches!(changed.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_獨占_self_寫入禁止非_int_值不藉執行器自行轉型() {
+        let src = "struct Counter{\nvar count:int = 7\nfn set()->int{\nself.count = true\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
 }
