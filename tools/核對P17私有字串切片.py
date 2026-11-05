@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""核對六十五項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
+"""核對七十一項 P17-C／P18-B／P18-C／P18-E 私有真 Checker→OwnedStrRuntime 來源執行案例存在且已由全量 Rust 執行。"""
 
 from __future__ import annotations
 
@@ -12,6 +12,12 @@ from pathlib import Path
     "p17_c_真私有_checker_來源驅動字串建立移動再初始化並逆序清理",
     "p17_c_原私有來源動作計畫未變可連續真正執行並完成清理",
     "p18_b_已驗證_var_bool_從_true_改為_false_只執行_else_資源",
+    "p18_b_具名_bool_copyable_直接初始化另一個宣告並真正選中分支",
+    "p18_b_具名_bool_重新賦值複製另一宣告的動態值改選_else",
+    "p18_b_複製後來源_bool_變動不應使先前目的地成為別名",
+    "p18_b_已驗證_bool_不可從尚未初始化或錯誤型別名稱偷取值",
+    "p18_b_const_bool_不得以具名值複製繞過不可變賦值禁令",
+    "p18_b_具名_bool_複製動作來源身份被替換時預先拒絕",
     "p18_b_已驗證_var_bool_從_false_改為_true_真正提前返回且清理",
     "p18_b_同一_bool_多次重新賦值須以真正最後值選擇分支",
     "p18_b_兩個具名_bool_else_if_重新賦值後僅執行最後_else",
