@@ -192,12 +192,15 @@ impl PreparedPrivateScalarCall {
                 "此子集不允許未執行的額外主函式語句",
             ));
         }
+        // 先將原 AST 的已核准身分投影成獨立值，再移交
+        // VerifiedPrivateSource；不得保留對其內部函式的懸空借用。
+        let callee_span = NodeSpan::new(callee.start, callee.end);
+        let callee_name = callee.name.clone();
+        let parameter_name = param.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            verified, original, call_span,
-            callee_span: NodeSpan::new(callee.start, callee.end),
-            callee_name: callee.name.clone(),
-            parameter_name: param.name.clone(), parameter_id: param_id,
+            verified, original, call_span, callee_span, callee_name,
+            parameter_name, parameter_id: param_id,
             parameter_return_span: param_return_span, owner_id, argument,
         })
     }
