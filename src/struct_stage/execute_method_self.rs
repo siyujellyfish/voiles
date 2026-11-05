@@ -182,7 +182,7 @@ impl PreparedPrivateSelfMethod {
                 let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
                     PrivateSelfMethodPrepareError::Unsupported("方法加減 int 常值超出 i64"),
                 )?;
-                let operation = if fact.operator == '+' {
+                let operation = if binary.operator == '+' {
                     PrivateSelfIntReturn::Add(literal)
                 } else {
                     PrivateSelfIntReturn::Subtract(literal)
