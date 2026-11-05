@@ -125,6 +125,8 @@ impl PreparedPrivateSelfMethod {
                 "無法唯一辨識零參數方法簽章",
             ));
         }
+        // 唯一性已驗證，先結束候選迭代器的借用，才能移交 verified。
+        drop(matches);
         if method.result_ty != "int" || !method.params.is_empty()
             || !(method.body.statements.len() == 1 || method.body.statements.len() == 2) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
