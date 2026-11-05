@@ -75,7 +75,7 @@ jobs:
       - name: P18-B Copyable bool 真 HIR 名稱來源及 str 動態分支七十一項正反 Gate
         run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
 
-      - name: G17／P17.6 具名與預設整數真求值、覆蓋不執行、溢位回滾三三十八項正反 Gate
+      - name: G17／P17.6 具名與預設整數真求值、覆蓋不執行、溢位回滾三十九項正反 Gate
         run: python3 tools/核對P17結構建立切片.py --test-bin target/p02/p04_source_internal
 
       - name: G17 P17.3 真私有 Checker 借用來源與動態 BorrowTicket 八項正反 Gate
@@ -164,7 +164,7 @@ jobs:
       - name: G18 P18.3 已核准 AW06 真遞迴與可配置耗盡七項正反 Gate
         run: python3 tools/核對G18遞迴真框架與耗盡.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.6 真同步方法 self 共享／獨占與欄位算術十九項正反 Gate
+      - name: G18 P18.6 真同步 self／方法多載／整數參數返回三十八項正反 Gate
         run: python3 tools/核對G18同步方法self真借用.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.6 S20 同名方法靜態唯一簽章九項來源正反 Gate
