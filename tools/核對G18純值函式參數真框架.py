@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的八項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的十六項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,14 @@ from pathlib import Path
 
 案例 = (
     "g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
+    "g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
+    "g18_a_真函式_copyable_int_參數多次引用每次都取同一實際值",
+    "g18_a_真函式_群組與左右結合加減_依原_checker_來源_hir_計算",
+    "g18_a_具名_copyable_int_實參傳入函式後參與真減法",
+    "g18_c_函式參數真加法溢位不能假造_return_且確實離域",
+    "g18_c_函式參數真減法溢位亦不可留下框架或偽造成功事件",
+    "g18_a_竄改編譯後_true_arithmetic_運算樹必在執行前拒絕",
+    "g18_a_非法_bool_參與_int_加法與字面值不足均由原_checker_拒絕",
     "g18_a_具名_const_int_實參以原_checker_引用身分綁定函式參數",
     "g18_a_具名_var_int_合法_copyable_不因函式返回消耗持有者",
     "g18_c_真正參數框架中途故障必清空且不冒充成功返回",
