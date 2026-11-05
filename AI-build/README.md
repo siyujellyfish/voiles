@@ -123,3 +123,5 @@
 > **G18 語意決策核准（2026-11-05）**：[D18-01-A～D 遞迴／可配置安全預算／錯誤逐框架清理；D18-02-A～D 方法唯一靜態簽章、既有自動 self、跨 await 守衛與分段 async](G18-D18-01-D18-02-核准語意與工程邊界-20261105.md)。前述原則已由使用者採納；遞迴與 async 工程證據尚未完成，非同步調度／取消具體語意仍不得推定，G18 未 Passed。
 
 > **G18-P18.3 真 AW06 遞迴（2026-11-05；私有 evaluator 施工）**：[合法直接／互相遞迴、可配置框架與步數預算、受控耗盡逐層退出、無限遞迴不爆宿主堆疊](P18-C-AW06真遞迴框架與預算耗盡-20261105.md)；七項 Rust 正反來源 Gate。**仍未完成 str／BorrowTicket 遞迴資源清理，不得將 P18.3 或 G18 六項標記 Passed。**
+
+> **G18 P18.6 已核准同步方法 self 真票據（2026-11-05；私有施工）**：[原 Checker VerifiedMethodSafety + call_borrows_at → 真 BorrowTicket → MixedStructRuntime Copyable int 欄位讀取／返回及錯誤離域](P18-F-同步方法self真借用與Copyable欄位讀取-20261105.md)；六項 Rust 正反，G18 六來源群真重跑。**非多載／async 完整驗收，P18.6 仍未 Passed。**

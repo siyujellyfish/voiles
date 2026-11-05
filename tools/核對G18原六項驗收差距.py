@@ -61,9 +61,13 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_擅改_for_區間或_control_必須在配置任何資源前拒絕",
         "struct_stage::g18_private_call_borrow_tests::g18_d_偽造函式借用的_source_或_Kind_在資源建立前拒絕",
     ),
-    # 18.6 需要真 method/self／多載／async 的核准簽章與生命週期。
-    # 沒有這些真執行正反時不得填入名稱冒充已完成。
-    "P18.6": (),
+    # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
+    # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
+    "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",
+        "struct_stage::g18_private_method_self_tests::g18_f_方法真借用存活期間發生測試故障也要先歸還票據再離域",
+        "struct_stage::g18_private_method_self_tests::g18_f_偽造動態_self_來源或借用_kind_必在配置前拒絕",
+    ),
 }
 
 # 原始必需項目實際驗收狀態，並非設計時理想值。
@@ -75,7 +79,7 @@ from pathlib import Path
     "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 已核准唯一簽章／self／VB15 保守借用原則；非同步調度取消細節與正向真執行仍待裁決、施工"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，唯讀同步 self 真票據可執行；方法多載完整唯一解析與 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
 
 真執行群組 = (
@@ -84,6 +88,7 @@ from pathlib import Path
     "struct_stage::g18_private_source_loop_tests::g18_",
     "struct_stage::g18_private_call_borrow_tests::g18_",
     "struct_stage::g18_private_scalar_call_tests::g18_",
+    "struct_stage::g18_private_method_self_tests::g18_",
 )
 
 
