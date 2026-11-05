@@ -367,9 +367,16 @@ impl Parser<'_> {
             }
             if self.keyword("fn") {
                 let fun = self.function()?;
-                if !names.insert(fun.name.clone()) {
+                // S20 已允許依參數簽章區分同名方法，但欄位與方法
+                // 仍共用名稱空間：若先前只見過同名方法可保留，
+                // 若已見同名欄位則維持原已核准的衝突。
+                if !names.insert(fun.name.clone())
+                    && !methods.iter().any(|existing: &Function|
+                        existing.name == fun.name) {
                     return Err(self.syntax("欄位與方法不得共用名稱"));
                 }
+                // 相同簽章是否重複由真正 Checker 作靜態驗證，
+                // 不能由此 Parser 偷選第一個或最後一個方法。
                 methods.push(fun);
             } else {
                 if !self.keyword("var") && !self.keyword("const") {
