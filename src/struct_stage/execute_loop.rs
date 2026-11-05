@@ -768,4 +768,114 @@ mod g18_private_source_loop_tests {
             Err(PrivateLoopPrepareError::Check(_)),
         ));
     }
+
+    // G18-B：迭代器本身是已被 Checker 簽發的 int Copyable 宣告，
+    // 非只依照 for 區間重複執行相同字串本體的假迭代。
+    #[test]
+    fn g18_b_真_for_iterator_返回目前迭代整數而非固定常值() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 4..5{\nvar local:str = \"內\"\nreturn i\n}\nreturn 0\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(4));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(), [4]);
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_真_for_iterator_多輪實際值不含右端點() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 2..5{\nvar inner:str = \"甲\"\n}\nreturn 6\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(6));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [2, 3, 4]);
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2), ResourceEvent::Released(2),
+            ResourceEvent::Created(3), ResourceEvent::Released(3),
+            ResourceEvent::Created(4), ResourceEvent::Released(4),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_巢狀_for_iterator_返回真內層宣告且逐層清理() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 2..3{\nvar local:str = \"局部\"\nfor j in 7..8{\nvar inner:str = \"內\"\nreturn j\n}\n}\nreturn 0\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(7));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [2, 7]);
+        assert_eq!(actual.events, [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Created(3),
+            ResourceEvent::Released(3), ResourceEvent::Released(2),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_巢狀同名_for_iterator_以真宣告身份遮蔽外層而非名稱猜測() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 1..2{\nfor i in 9..10{\nreturn i\n}\n}\nreturn 0\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(9));
+        let ids = actual.iterations.iter().map(|(id, _)| *id).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1], "同名巢狀迭代宣告必須有不同 DeclarationId");
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [1, 9]);
+        assert_eq!(actual.events,
+            [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_b_真_for_iterator_continue_迭代每輪獨立且沒有逃逸() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 1..4{\nvar inner:str = \"內\"\ncontinue\n}\nreturn 2\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(2));
+        assert_eq!(actual.iterations.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            [1, 2, 3]);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+    }
+
+    #[test]
+    fn g18_b_空半開_for_不建立迭代器值且不執行_return() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 2..2{\nreturn i\n}\nreturn 6\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Ok(6));
+        assert!(actual.iterations.is_empty());
+        assert_eq!(actual.events,
+            [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_b_返回已離域_for_iterator_須原_checker_先拒絕() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..2{\nvar inner:str = \"內\"\n}\nreturn i\n}\n";
+        assert!(matches!(
+            PreparedPrivateLoop::prepare(src),
+            Err(PrivateLoopPrepareError::Check(_)),
+        ));
+    }
+
+    #[test]
+    fn g18_b_竄改_for_iterator_身分或_return_來源須零資源拒絕() {
+        let src = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 4..5{\nreturn i\n}\nreturn 0\n}\n";
+        let mut plan = checked(src);
+        let PrivateLoopAction::ForRange { identity, .. } =
+            &mut plan.operations[1] else { panic!("必須為原 for 計畫") };
+        *identity = DeclarationId(0);
+        assert!(matches!(
+            plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
+        ));
+        let mut plan = checked(src);
+        let PrivateLoopAction::ForRange { body, .. } =
+            &mut plan.operations[1] else { panic!("必須為原 for 計畫") };
+        let PrivateLoopAction::ReturnIterator(identity) =
+            &mut body[0] else { panic!("必須為原 Checker 的具名 iterator 返回") };
+        *identity = DeclarationId(0);
+        assert!(matches!(
+            plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
+        ));
+    }
 }
