@@ -794,4 +794,89 @@ mod p17_private_struct_execution_tests {
         ));
     }
 
+    #[test]
+    fn p17_f_具名整數來源算式必須按真_typed_hir_運算後才建構() {
+        let source = "struct Note{\nvar count:int = 1\nvar label:str = \"中文\"\n}\nfn main()->int{\nvar note:Note = Note(count=(7 + 5))\nreturn note.count\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(12));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_未覆蓋整數預設括號加減在該欄位順序真正求值() {
+        let source = "struct Note{\nvar count:int = (8 - 3) + 2\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar note:Note = Note()\nreturn note.count\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(7));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_被具名覆蓋的整數預設溢位式不能先行執行() {
+        let source = "struct Note{\nvar count:int = 9223372036854775807 + 1\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar note:Note = Note(count=9)\nreturn note.count\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(9));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_具名_utf8_先建立後預設_int_運算溢位須原子逆序清理() {
+        let source = "struct Note{\nvar count:int = 9223372036854775807 + 1\nvar label:str = \"預設\"\n}\nfn main()->int{\nvar note:Note = Note(label=\"具名\")\nreturn 0\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert!(matches!(
+            result.result,
+            Err(crate::mixed_struct_runtime::MixedError::EvaluationFailed(_)),
+        ));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_先完成的預設字串在後續整數運算溢位仍必釋放() {
+        let source = "struct Note{\nvar label:str = \"中文\"\nvar count:int = 9223372036854775807 + 1\n}\nfn main()->int{\nvar note:Note = Note()\nreturn 0\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert!(matches!(
+            result.result,
+            Err(crate::mixed_struct_runtime::MixedError::EvaluationFailed(_)),
+        ));
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn p17_f_真整數欄位求值投影運算子被替換必須先於配置拒絕() {
+        use crate::mixed_struct_runtime::CheckedIntSeed;
+        let source = "struct Note{\nvar count:int = 4 + 3\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar note:Note = Note()\nreturn note.count\n}\n";
+        let mut plan = checked(source);
+        let Some(ApprovedSeed::IntExpression(CheckedIntSeed::Binary {operator,..})) =
+            plan.fields[0].default.as_mut() else {
+            panic!("真 Checker 應交付未覆蓋欄位的 int 算術計畫");
+        };
+        *operator = '-';
+        assert!(matches!(
+            plan.execute(), Err(PrivateStructPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn p17_f_已覆蓋欄位的預設不允許冒充有真執行權限() {
+        let source = "struct Note{\nvar count:int = 2 + 3\nvar label:str = \"安全\"\n}\nfn main()->int{\nvar note:Note = Note(count=8)\nreturn note.count\n}\n";
+        let mut plan = checked(source);
+        assert!(matches!(
+            plan.fields[0].default,
+            Some(ApprovedSeed::Skipped(crate::mixed_struct_runtime::ScalarKind::Int)),
+        ));
+        plan.fields[0].default = Some(ApprovedSeed::Int(5));
+        assert!(matches!(
+            plan.execute(), Err(PrivateStructPrepareError::SourceChanged),
+        ));
+    }
+
 }
