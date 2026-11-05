@@ -13,8 +13,14 @@ enum PrivateLoopPrepareError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateLoopAction {
     DeclareStr { name: String, mutable: bool, text: String },
+    /// 真私有 Checker 的 Copyable bool HIR；僅儲存獨立純值。
+    DeclareBool { identity: DeclarationId, value: PrivateBoolCondition },
+    AssignBool { identity: DeclarationId, value: PrivateBoolCondition },
     ForRange { lower: i64, upper: i64, body: Vec<PrivateLoopAction> },
-    WhileConstant { value: bool, body: Vec<PrivateLoopAction> },
+    WhileCondition {
+        condition: PrivateBoolCondition,
+        body: Vec<PrivateLoopAction>,
+    },
     Return(i64),
     Break,
     Continue,
@@ -38,6 +44,8 @@ struct PreparedPrivateLoop {
 struct PrivateLoopOutcome {
     result: Result<i64, crate::owned_str_runtime::StrRuntimeError>,
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
+    /// 真正每次 while 檢查的 bool 動態值，不將靜態 CFG 當執行路徑。
+    condition_checks: Vec<bool>,
 }
 
 impl PreparedPrivateLoop {
@@ -48,10 +56,54 @@ impl PreparedPrivateLoop {
 
     fn verified_actions(
         statements: &[Stmt], verified: &VerifiedPrivateSource, inside_loop: bool,
+        bool_bindings: &mut BTreeMap<String, DeclarationId>,
     ) -> Result<Vec<PrivateLoopAction>, PrivateLoopPrepareError> {
         let mut result = Vec::new();
         for statement in statements {
             let action = match &statement.kind {
+                // 根作用域的具名 bool 使用原 DeclarationId；迴圈內
+                // 不自行推定新的生命週期、遮蔽或參數型別。
+                StmtKind::Declare(decl) if decl.ty == "bool" && !inside_loop => {
+                    let identity = DeclarationId(statement.start);
+                    if !verified.plan.declarations.matches(
+                        identity, "bool", decl.mutable,
+                    ) || bool_bindings.contains_key(&decl.name) {
+                        return Err(PrivateLoopPrepareError::Unsupported(
+                            "具名 bool 宣告缺少唯一真 Checker 型別／身分",
+                        ));
+                    }
+                    let init = decl.initializer.as_ref().ok_or(
+                        PrivateLoopPrepareError::Unsupported(
+                            "此非公開迴圈切片要求 bool 明確初始化",
+                        ),
+                    )?;
+                    let value = verified_nested_bool(init, verified, bool_bindings)
+                        .map_err(|_| PrivateLoopPrepareError::Unsupported(
+                            "bool 初始化缺少正式 Lexer／TypedHIR 名稱證據",
+                        ))?;
+                    bool_bindings.insert(decl.name.clone(), identity);
+                    PrivateLoopAction::DeclareBool { identity, value }
+                }
+                StmtKind::Assign(assign) if bool_bindings.contains_key(&assign.name) => {
+                    let identity = bool_bindings[&assign.name];
+                    if !verified.plan.declarations.typed_declaration(identity)
+                        .is_some_and(|fact| fact.ty == "bool" && fact.mutable)
+                        || verified.plan.scalar_hir.assignment(statement.node_span())
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != identity
+                                || fact.resolved.ty != crate::common_ir::ScalarType::Bool)
+                    {
+                        return Err(PrivateLoopPrepareError::Unsupported(
+                            "bool 重新賦值缺少 Checker 可寫宣告與 P10 身分",
+                        ));
+                    }
+                    let value = verified_nested_bool(
+                        &assign.expression, verified, bool_bindings,
+                    ).map_err(|_| PrivateLoopPrepareError::Unsupported(
+                        "bool 重新賦值來源不是已簽發純值 HIR",
+                    ))?;
+                    PrivateLoopAction::AssignBool { identity, value }
+                }
                 StmtKind::Declare(decl) if decl.ty == "str" => {
                     let id = DeclarationId(statement.start);
                     if !verified.plan.declarations.matches(id, "str", decl.mutable) {
@@ -97,7 +149,7 @@ impl PreparedPrivateLoop {
                     let compiled = if count == 0 {
                         Vec::new()
                     } else {
-                        Self::verified_actions(&body.statements, verified, true)?
+                        Self::verified_actions(&body.statements, verified, true, bool_bindings)?
                     };
                     PrivateLoopAction::ForRange {
                         lower: start, upper: end, body: compiled,
@@ -120,7 +172,7 @@ impl PreparedPrivateLoop {
                         ));
                     }
                     let compiled = if *value {
-                        let actions = Self::verified_actions(&body.statements, verified, true)?;
+                        let actions = Self::verified_actions(&body.statements, verified, true, bool_bindings)?;
                         // while(true) 只有每次第一個本體能直接到達
                         // break/return，才可以證明最多只執行一次；
                         // 未核准的 continue／重新進入一律不猜測。
@@ -183,7 +235,7 @@ impl PreparedPrivateLoop {
                 "真迴圈資源子集限無參數 main()->int",
             ));
         }
-        let operations = Self::verified_actions(&main.body.statements, &verified, false)?;
+        let operations = Self::verified_actions(&main.body.statements, &verified, false, &mut BTreeMap::new())?;
         if !operations.iter().any(|op| matches!(op,
             PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileConstant {..})) {
             return Err(PrivateLoopPrepareError::Unsupported("必須包含原 Checker 核准的迴圈"));
