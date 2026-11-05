@@ -103,3 +103,5 @@
 > **G17 正式六原項驗收候選（2026-11-05）**：[P17.1～P17.6 逐項真來源正反、執行期 BorrowTicket／ResourceId、內部錯誤與具名預設求值追溯](G17-原始六項正式驗收證據-20261105.md)。CI 新增 `tools/核對G17正式總驗收.py`，只在新 main 同 SHA 真實成功後標記 Passed；本分支仍是 PassedCandidate，原 P18～P22 及公開 CLI 均不提前開放。
 
 > **G17 正式主線證據（2026-11-05）**：原 P17.1～P17.6 已依 [正式 G17 Gate](G17-原始六項正式驗收證據-20261105.md) 在 `main a158cea0221b3e3bfeed83b04b82651258ddc579` 正式 Passed，三項必要 CI success；原 `AI-build/建構階段.md` 六項勾選。P18～P22 繼續依原相依施工，不更動公開 MVP-A。
+
+> **G18／P18-B Copyable bool 真值複製（2026-11-05；施工）**：[原私有 Checker 的 TypedHIR、DeclarationId 授權具名 bool 初始化及賦值](P18-B-具名Copyable布林複製求值-20261105.md)，執行依當下 bool 純值選擇真 UTF-8 資源分支。新增六項真正 Rust 正反，P17-C/P18-B/C/E Gate 65→71。原 G17 6／6 Passed 及 P01/G6 不變；**G18 六項尚未完整驗收**。
