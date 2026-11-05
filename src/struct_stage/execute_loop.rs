@@ -332,6 +332,8 @@ impl PreparedPrivateLoop {
         injected_at: Option<usize>, allocations: &mut usize,
         bool_values: &mut BTreeMap<DeclarationId, bool>,
         condition_checks: &mut Vec<bool>,
+        iterator_values: &mut BTreeMap<DeclarationId, i64>,
+        iterations: &mut Vec<(DeclarationId, i64)>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         use crate::owned_str_runtime::StrRuntimeError;
         for operation in operations {
@@ -356,13 +358,23 @@ impl PreparedPrivateLoop {
                         .ok_or(StrRuntimeError::MissingOwner)?;
                     *slot = evaluated;
                 }
-                PrivateLoopAction::ForRange { lower, upper, body } => {
-                    for _ in *lower..*upper {
-                        let flow = Self::run_scoped(
+                PrivateLoopAction::ForRange { identity, lower, upper, body } => {
+                    for value in *lower..*upper {
+                        // 真動態迭代，每輪建立獨立的 int Copyable
+                        // 宣告 slot；同一 DeclarationId 不得在其生命
+                        // 週期內被第二個擁有位置重複使用。
+                        if iterator_values.insert(*identity, value).is_some() {
+                            return Err(StrRuntimeError::DuplicateBinding);
+                        }
+                        iterations.push((*identity, value));
+                        let step = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
-                            bool_values, condition_checks,
-                        )?;
-                        match flow {
+                            bool_values, condition_checks, iterator_values, iterations,
+                        );
+                        // 即使 return／break／continue 或故障，必須
+                        // 在本輪真字串離域清理完成後撤銷迭代器身分。
+                        iterator_values.remove(identity);
+                        match step? {
                             PrivateLoopFlow::Normal | PrivateLoopFlow::Continue => {}
                             PrivateLoopFlow::Break => break,
                             PrivateLoopFlow::Return(value) =>
@@ -381,6 +393,7 @@ impl PreparedPrivateLoop {
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
                             bool_values, condition_checks,
+                            iterator_values, iterations,
                         )?;
                         match flow {
                             PrivateLoopFlow::Break => break,
@@ -400,6 +413,11 @@ impl PreparedPrivateLoop {
                 }
                 PrivateLoopAction::Return(value) =>
                     return Ok(PrivateLoopFlow::Return(*value)),
+                PrivateLoopAction::ReturnIterator(identity) => {
+                    let value = iterator_values.get(identity).copied()
+                        .ok_or(StrRuntimeError::MissingOwner)?;
+                    return Ok(PrivateLoopFlow::Return(value));
+                }
                 PrivateLoopAction::Break if depth > 0 =>
                     return Ok(PrivateLoopFlow::Break),
                 PrivateLoopAction::Continue if depth > 0 =>
@@ -416,11 +434,13 @@ impl PreparedPrivateLoop {
         injected_at: Option<usize>, allocations: &mut usize,
         bool_values: &mut BTreeMap<DeclarationId, bool>,
         condition_checks: &mut Vec<bool>,
+        iterator_values: &mut BTreeMap<DeclarationId, i64>,
+        iterations: &mut Vec<(DeclarationId, i64)>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         resources.enter_scope();
         let result = Self::run_actions(
             resources, operations, depth, injected_at, allocations,
-            bool_values, condition_checks,
+            bool_values, condition_checks, iterator_values, iterations,
         );
         // 包含 continue／break／return／真失敗，單次迭代作用域皆
         // 先釋放唯一資源，再讓控制訊號傳往上一層。
@@ -452,9 +472,12 @@ impl PreparedPrivateLoop {
         let mut allocations = 0;
         let mut bool_values = BTreeMap::new();
         let mut condition_checks = Vec::new();
+        let mut iterator_values = BTreeMap::new();
+        let mut iterations = Vec::new();
         let result = match Self::run_actions(
             &mut resources, &self.operations, 0, injected_at, &mut allocations,
             &mut bool_values, &mut condition_checks,
+            &mut iterator_values, &mut iterations,
         ) {
             Ok(PrivateLoopFlow::Return(value)) => Ok(value),
             Ok(_) => Err(crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
@@ -464,7 +487,7 @@ impl PreparedPrivateLoop {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateLoopPrepareError::SourceChanged);
         }
-        Ok(PrivateLoopOutcome { result, events, condition_checks })
+        Ok(PrivateLoopOutcome { result, events, condition_checks, iterations })
     }
 }
 
