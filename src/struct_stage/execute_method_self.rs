@@ -143,20 +143,21 @@ impl PreparedPrivateSelfMethod {
             TermKind::FieldRead(receiver, read_field) =>
                 (PrivateSelfIntReturn::Field, receiver, read_field),
             TermKind::BinaryInt(binary) => {
-                use crate::common_ir::ScalarType;
-                let span = returned.expression.node_span();
-                let fact = verified.plan.scalar_hir.arithmetic(span)
-                    .ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法欄位加減缺少原 Checker Arithmetic HIR",
-                    ))?;
-                if fact.left != binary.left.node_span()
-                    || fact.right != binary.right.node_span()
-                    || fact.operator != binary.operator
-                    || !matches!(fact.operator, '+' | '-') 
-                    || verified.plan.scalar_hir.expression(span)
-                        .is_none_or(|value| value.ty != ScalarType::Int) {
+                // 方法型別檢查使用原 Checker::method_pure_value_type，
+                // 與一般函式的 ScalarHIR 簽發路徑不同，不能為了
+                // 執行器擅自簽發另一種 P16 Arithmetic 證據。
+                // 原 VerifiedMethodSafety.checked_returns 授權整筆
+                // 方法返回；原 Parser AST 與來源區間確認真正 +／-。
+                let left_span = binary.left.node_span();
+                let right_span = binary.right.node_span();
+                let actual_operator = verified.source.bytes.get(
+                    left_span.end..right_span.start,
+                ).and_then(|raw| std::str::from_utf8(raw).ok())
+                    .map(str::trim);
+                if !matches!(binary.operator, '+' | '-')
+                    || actual_operator != Some(if binary.operator == '+' { "+" } else { "-" }) {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法返回的加減運算子或原 HIR 端點不一致",
+                        "方法返回的加減運算子不符合原 Parser 來源位置",
                     ));
                 }
                 let TermKind::FieldRead(receiver, read_field) = &binary.left.kind else {
