@@ -139,6 +139,9 @@ include!("struct_stage/execute_str.rs");
 // P17-F：只有真私有來源才可構成混合欄位執行計畫。
 include!("struct_stage/execute_struct.rs");
 
+// G17／P17.3：同一私有 Checker 的直線借用票據與真 UTF-8 資源實驗。
+include!("struct_stage/execute_borrow.rs");
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
     fact: BorrowFact,
@@ -513,6 +516,7 @@ struct Checker<'a, C> {
     recorded_method_safety_conflicts: RefCell<BTreeSet<usize>>,
     recorded_exit_snapshots: RefCell<BTreeMap<usize, Vec<VerifiedExitSnapshot>>>,
     recorded_direct_moves: RefCell<BTreeSet<(DeclarationId, DeclarationId)>>,
+    recorded_direct_borrows: RefCell<BTreeMap<DeclarationId, BorrowFact>>,
     /// 真正通過 Checker 的參數、宣告與迭代身分，而不是事後掃描 AST。
     recorded_declarations: RefCell<BTreeMap<DeclarationId, crate::common_ir::TypedDeclaration<String>>>,
     /// F01：真正私有 Checker 已驗證的欄位／方法及函式參數
@@ -587,6 +591,9 @@ struct VerifiedDeclarationFacts {
     call_borrows: BTreeMap<usize, VerifiedCallBorrowPlan>,
     /// 目前僅記錄 Checker 已接受、同一函式直線語句中的具名整筆移動。
     direct_moves: BTreeSet<(DeclarationId, DeclarationId)>,
+    /// 僅保存 Checker 已接受的直線 borrow 宣告：目標 ID 對原來源 BorrowFact。
+    /// 不是實際簽發的 BorrowTicket，也不代表巢狀分支一定執行。
+    direct_borrows: BTreeMap<DeclarationId, BorrowFact>,
     /// 僅保存 Checker 成功提交的具名整筆返回來源及 return 運算式位置。
     named_returns: BTreeSet<(DeclarationId, usize)>,
     field_writes: BTreeSet<(DeclarationId, usize, String)>,
@@ -601,7 +608,7 @@ impl VerifiedDeclarationFacts {
         field_writes: BTreeSet<(DeclarationId, usize, String)>,
     ) -> Self {
         Self { by_source, call_borrows: BTreeMap::new(),
-            direct_moves, named_returns, field_writes }
+            direct_moves, direct_borrows: BTreeMap::new(), named_returns, field_writes }
     }
 
     /// 公私雙 Checker 共用的完整宣告 HIR。避免驗證資源證據時
@@ -644,6 +651,16 @@ impl VerifiedDeclarationFacts {
                     .is_some_and(|(from, to)| from.declaration == *source
                         && to.declaration == *target && from.ty == to.ty)
         })
+        && self.direct_borrows.iter().all(|(alias, fact)| {
+            fact.source != *alias && fact.source.0 < alias.0
+                && self.by_source.get(&fact.source).zip(self.by_source.get(alias))
+                    .is_some_and(|(from, to)| from.declaration == fact.source
+                        && to.declaration == *alias && from.ty == to.ty
+                        && from.mutable == to.mutable
+                        && matches!((from.mutable, fact.kind),
+                            (true, BorrowKind::ExclusiveWrite)
+                            | (false, BorrowKind::SharedRead)))
+        })
         && self.named_returns.iter().all(|(source, return_start)| {
             return_positions.insert(*return_start)
                 && self.by_source.contains_key(source) && *return_start >= source.0
@@ -684,15 +701,21 @@ impl VerifiedDeclarationFacts {
         fn visit(
             statements: &[Stmt],
             direct_targets: &mut BTreeSet<DeclarationId>,
+            borrow_targets: &mut BTreeSet<DeclarationId>,
             named_returns: &mut BTreeSet<usize>,
             field_writes: &mut BTreeSet<(usize, String)>,
         ) {
             for statement in statements {
                 match &statement.kind {
                     StmtKind::Declare(declaration) => {
-                        if matches!(declaration.initializer.as_ref().map(|term| &term.kind),
-                            Some(TermKind::Move(_))) {
-                            direct_targets.insert(DeclarationId(statement.start));
+                        match declaration.initializer.as_ref().map(|term| &term.kind) {
+                            Some(TermKind::Move(_)) => {
+                                direct_targets.insert(DeclarationId(statement.start));
+                            }
+                            Some(TermKind::Borrow(_)) => {
+                                borrow_targets.insert(DeclarationId(statement.start));
+                            }
+                            _ => {}
                         }
                     }
                     StmtKind::Return(term) => {
@@ -704,13 +727,13 @@ impl VerifiedDeclarationFacts {
                         field_writes.insert((statement.start, field.clone()));
                     }
                     StmtKind::If { branch, no } => {
-                        visit(&branch.body, direct_targets, named_returns, field_writes);
+                        visit(&branch.body, direct_targets, borrow_targets, named_returns, field_writes);
                         if let Some(otherwise) = no {
-                            visit(otherwise.as_slice(), direct_targets, named_returns, field_writes);
+                            visit(otherwise.as_slice(), direct_targets, borrow_targets, named_returns, field_writes);
                         }
                     }
                     StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } => {
-                        visit(body, direct_targets, named_returns, field_writes);
+                        visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
                     StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
@@ -718,14 +741,16 @@ impl VerifiedDeclarationFacts {
         }
 
         let mut direct_targets = BTreeSet::new();
+        let mut borrow_targets = BTreeSet::new();
         let mut named_returns = BTreeSet::new();
         let mut field_writes = BTreeSet::new();
         for function in functions.iter().chain(
             structs.values().flat_map(|definition| definition.methods.iter())
         ) {
-            visit(&function.body, &mut direct_targets, &mut named_returns, &mut field_writes);
+            visit(&function.body, &mut direct_targets, &mut borrow_targets, &mut named_returns, &mut field_writes);
         }
         self.direct_moves.iter().all(|(_, target)| direct_targets.contains(target))
+            && self.direct_borrows.keys().all(|target| borrow_targets.contains(target))
             && self.named_returns.iter().all(|(_, at)| named_returns.contains(at))
             && self.field_writes.iter().all(|(_, at, field)|
                 field_writes.contains(&(*at, field.clone())))
@@ -1151,6 +1176,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_method_safety_conflicts: RefCell::new(BTreeSet::new()),
         recorded_exit_snapshots: RefCell::new(BTreeMap::new()),
         recorded_direct_moves: RefCell::new(BTreeSet::new()),
+        recorded_direct_borrows: RefCell::new(BTreeMap::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
         recorded_member_conflicts: RefCell::new(BTreeSet::new()),
@@ -1203,11 +1229,14 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
     let members = checker.recorded_member_types.into_inner();
     let by_source = checker.recorded_declarations.into_inner();
     let direct_moves = checker.recorded_direct_moves.into_inner();
+    let direct_borrows = checker.recorded_direct_borrows.into_inner();
     let named_returns = checker.recorded_named_returns.into_inner();
     let field_writes = checker.recorded_field_writes.into_inner();
     let scalar_hir = checker.recorded_scalar_hir.into_inner();
     let mut declarations = VerifiedDeclarationFacts::from_checker(
         by_source, direct_moves, named_returns, field_writes);
+    // 原始 F11 四參數建構契約不變；這份借用事實只能由 Checker 出口交付。
+    declarations.direct_borrows = direct_borrows;
     // 只由真正 Checker 在每次已驗證的呼叫出口交付來源事實，
     // 不從任何 AST 呼叫外形或模擬資源事件逆向重建。
     declarations.call_borrows = checker.recorded_call_borrows.into_inner();
