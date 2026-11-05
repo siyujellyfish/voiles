@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法唯讀 self 真 BorrowTicket 六項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 十三項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
@@ -10,6 +10,13 @@ from pathlib import Path
 
 案例 = (
     "g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",
+    "g18_f_獨占_self_真寫入_var_int_並以同張票據返回更新後值",
+    "g18_f_獨占_self_真寫入後重跑同一已驗證來源不保留前次狀態",
+    "g18_f_獨占_self_執行中故障必歸還票據且不報成功返回",
+    "g18_f_const_接收者不能以獨占_self_修改原欄位",
+    "g18_f_const_欄位即使接收者為_var_也不能由方法覆寫",
+    "g18_f_篡改已驗證的獨占_self_票據或寫入值在動態配置前拒絕",
+    "g18_f_獨占_self_寫入禁止非_int_值不藉執行器自行轉型",
     "g18_f_合法_const_結構接收者共享_self_不需可寫權限",
     "g18_f_方法真借用存活期間發生測試故障也要先歸還票據再離域",
     "g18_f_偽造動態_self_來源或借用_kind_必在配置前拒絕",
