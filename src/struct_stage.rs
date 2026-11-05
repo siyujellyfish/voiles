@@ -1355,6 +1355,9 @@ fn inspect_with_test_ability(text: &str, ability: impl Fn(&str) -> CopyPermissio
 // 同層引入原有測試模組，以保留 Rust 測試完整識別名稱及驗收腳本過濾條件。
 #[cfg(test)]
 include!("struct_stage/tests_ownership.rs");
+// G18／S20：原 Parser／Checker 方法多載唯一靜態簽章與借用證據。
+#[cfg(test)]
+include!("struct_stage/method_overload_tests.rs");
 #[cfg(test)]
 include!("struct_stage/tests_lifetime_resources.rs");
 
