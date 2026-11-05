@@ -242,6 +242,28 @@ impl BorrowSafety {
         )
     }
 
+    /// G18／P18.4：函式參數或方法 self 的真正讀寫只能
+    /// 憑仍存在的 BorrowTicket 授權。追蹤器、來源、序號和
+    /// 借用種類必須同時與本次動態追蹤表完全吻合；共享票據
+    /// 只能唯讀，獨占票據可讀寫。這不是原所有者的直接存取。
+    pub(crate) fn check_ticket_access(
+        &self, ticket: BorrowTicket, requested: BorrowKind,
+    ) -> Result<DeclarationId, BorrowSafetyError> {
+        if ticket.tracker_id != self.tracker_id {
+            return Err(BorrowSafetyError::InvalidRelease);
+        }
+        let active = self.active.get(&ticket.declaration)
+            .and_then(|loans| loans.get(&ticket.serial));
+        if active != Some(&ticket.kind) {
+            return Err(BorrowSafetyError::InvalidRelease);
+        }
+        if requested == BorrowKind::ExclusiveWrite
+            && ticket.kind != BorrowKind::ExclusiveWrite {
+            return Err(BorrowSafetyError::BorrowConflict);
+        }
+        Ok(ticket.declaration)
+    }
+
     pub(crate) fn release(&mut self, ticket: BorrowTicket)
         -> Result<(), BorrowSafetyError> {
         if ticket.tracker_id != self.tracker_id {
@@ -772,5 +794,64 @@ mod p15_6_一般最後使用點與方法作用域歸還區分 {
         assert_eq!(safety.check_direct_access(receiver), Err(BorrowSafetyError::SourceIsBorrowed));
         safety.finish_scope(&[ticket]).unwrap();
         assert!(safety.check_direct_access(receiver).is_ok());
+    }
+
+    #[test]
+    fn g18_d_真共享票據只准借用唯讀而不授權原持有者存取() {
+        let id = DeclarationId(8401);
+        let mut tracker = BorrowSafety::new();
+        let ticket = tracker.acquire(id, BorrowKind::SharedRead).unwrap();
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::SharedRead), Ok(id));
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::ExclusiveWrite),
+            Err(BorrowSafetyError::BorrowConflict));
+        assert_eq!(tracker.check_direct_access(id),
+            Err(BorrowSafetyError::SourceIsBorrowed));
+        tracker.release(ticket).unwrap();
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(tracker.check_direct_access(id), Ok(()));
+    }
+
+    #[test]
+    fn g18_d_獨占票據確實能授權借用讀寫但離域後失效() {
+        let id = DeclarationId(8402);
+        let mut tracker = BorrowSafety::new();
+        let ticket = tracker.acquire(id, BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::SharedRead), Ok(id));
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::ExclusiveWrite), Ok(id));
+        tracker.finish_scope_verified(&[ticket],
+            &[BorrowFact::new(id, BorrowKind::ExclusiveWrite)]).unwrap();
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::InvalidRelease));
+    }
+
+    #[test]
+    fn g18_d_不同追蹤器票據不能作另一次函式的參數存取能力() {
+        let id = DeclarationId(8403);
+        let mut first = BorrowSafety::new();
+        let mut second = BorrowSafety::new();
+        let original = first.acquire(id, BorrowKind::SharedRead).unwrap();
+        let other = second.acquire(id, BorrowKind::SharedRead).unwrap();
+        assert_eq!(second.check_ticket_access(original, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(first.check_ticket_access(other, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(first.check_ticket_access(original, BorrowKind::SharedRead), Ok(id));
+    }
+
+    #[test]
+    fn g18_d_多個獨立共享票據其中一個歸還後不得憑過期序號讀取() {
+        let id = DeclarationId(8404);
+        let mut tracker = BorrowSafety::new();
+        let a = tracker.acquire(id, BorrowKind::SharedRead).unwrap();
+        let b = tracker.acquire(id, BorrowKind::SharedRead).unwrap();
+        tracker.release(a).unwrap();
+        assert_eq!(tracker.check_ticket_access(a, BorrowKind::SharedRead),
+            Err(BorrowSafetyError::InvalidRelease));
+        assert_eq!(tracker.check_ticket_access(b, BorrowKind::SharedRead), Ok(id));
+        assert_eq!(tracker.check_direct_access(id),
+            Err(BorrowSafetyError::SourceIsBorrowed));
+        tracker.release(b).unwrap();
+        assert_eq!(tracker.check_direct_access(id), Ok(()));
     }
 }
