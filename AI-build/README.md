@@ -127,3 +127,5 @@
 > **G18 P18.6 已核准同步方法 self 真票據（2026-11-05；私有施工）**：[原 Checker VerifiedMethodSafety + call_borrows_at → 真 BorrowTicket → MixedStructRuntime Copyable int 欄位讀取／返回及錯誤離域](P18-F-同步方法self真借用與Copyable欄位讀取-20261105.md)；六項 Rust 正反，G18 六來源群真重跑。**非多載／async 完整驗收，P18.6 仍未 Passed。**
 
 > **G18.6 真同步獨占 `self`（2026-11-05；非公開施工）**：[原 Checker 獨占 BorrowFact／BorrowTicket 實際授權 `var self.int欄位` 寫入後返回；`MixedStructRuntime` 保存 immutable 權限、禁止 const 與資源冒複製](P18-F-獨占self同步方法真int欄位寫入-20261105.md)。同步 self 來源 Gate 6→13，新增三項 runtime 正反。**原 G18 仍未正式 Passed。**
+
+> **G18.6 S20 同名方法靜態唯一選擇（2026-11-05，非公開施工）**：[真 Parser 保留多載候選、原 Checker 僅依參數完整靜態型別唯一選擇，重複簽章與欄位／方法同名拒絕，保留共享／獨占 self 安全證據](P18-F-S20方法多載靜態唯一簽章選擇-20261105.md)。新增 9 項 Rust 來源正反與專用 Gate；**不是多載動態執行，更非原 P18.6 Passed**。
