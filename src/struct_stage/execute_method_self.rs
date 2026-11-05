@@ -185,10 +185,15 @@ impl PreparedPrivateSelfMethod {
                 ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
                     "方法參數缺少真 Parser／Lexer 位置及型別",
                 ))?;
-                if !verified.plan.declarations.matches(param_id, "int", false)
-                    || verified.plan.members.get(&member.identity) != Some(&member) {
+                // 方法參數的原 Checker 權威是已封存的
+                // VerifiedTypedMember(Parameter) 與方法 safety；
+                // 不同於一般函式，方法目前未把參數建立為
+                // VerifiedDeclarationFacts 的詞彙 Binding。
+                // DeclarationId 取自同一 Parser 的參數來源起點，
+                // 不得要求不存在的另一份 Checker 宣告事實。
+                if verified.plan.members.get(&member.identity) != Some(&member) {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法參數缺少原 Checker DeclarationId／TypedMember",
+                        "方法參數缺少原 Checker 的已驗證 Parameter 型別與位置",
                     ));
                 }
                 Some((param_id, value))
@@ -848,6 +853,9 @@ mod g18_private_method_self_tests {
         assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan = checked(&src);
         plan.argument_binding = Some((DeclarationId(0), 4));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.verified.plan.members.clear();
         assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
 
