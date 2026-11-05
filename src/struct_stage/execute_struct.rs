@@ -14,13 +14,18 @@ enum ApprovedSeed {
     Int(i64),
     Bool(bool),
     Str(String),
+    /// 從真正 Checker 的 int TypedHIR 逐節點授權，僅於執行到該欄位求值。
+    IntExpression(crate::mixed_struct_runtime::CheckedIntSeed),
+    /// 由正式 VB16 具名覆蓋決定不走此預設，禁止建立任何假資源。
+    Skipped(crate::mixed_struct_runtime::ScalarKind),
 }
 impl ApprovedSeed {
     fn kind(&self) -> crate::mixed_struct_runtime::ScalarKind {
         use crate::mixed_struct_runtime::ScalarKind;
-        match self { Self::Int(_) => ScalarKind::Int,
+        match self { Self::Int(_) | Self::IntExpression(_) => ScalarKind::Int,
             Self::Bool(_) => ScalarKind::Bool,
             Self::Str(_) => ScalarKind::Str,
+            Self::Skipped(kind) => *kind,
         }
     }
     fn runtime(&self) -> crate::mixed_struct_runtime::SeedValue<'_> {
@@ -28,6 +33,8 @@ impl ApprovedSeed {
         match self { Self::Int(n) => SeedValue::Int(*n),
             Self::Bool(b) => SeedValue::Bool(*b),
             Self::Str(text) => SeedValue::Str(text.as_str()),
+            Self::IntExpression(expr) => SeedValue::IntExpression(expr),
+            Self::Skipped(kind) => SeedValue::Skipped(*kind),
         }
     }
 }
@@ -99,23 +106,73 @@ struct PrivateStructOutcome {
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
 }
 
-/// 只能消耗真 Lexer／Parser 和 Checker 同來源之純值字面形式。
-fn approved_seed(term: &Term, tokens: &[Token])
+/// 只接受真正私有 Checker 已求值的純 int 表達式來源證據。
+/// BinaryInt 左右跨度、原運算子必須與正式 P10 TypedHIR 完全一致。
+fn approved_int_seed(
+    term: &Term, verified: &VerifiedPrivateSource,
+) -> Result<crate::mixed_struct_runtime::CheckedIntSeed, PrivateStructPrepareError> {
+    use crate::common_ir::ScalarType;
+    use crate::mixed_struct_runtime::CheckedIntSeed;
+    if !verified.plan.scalar_hir.expression(term.node_span())
+        .is_some_and(|fact| fact.ty == ScalarType::Int)
+    {
+        return Err(PrivateStructPrepareError::Unsupported(
+            "結構欄位純整數來源缺少正式 Checker 的 TypedHIR",
+        ));
+    }
+    match &term.kind {
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+            crate::syntax_shared::integer_i64(n)
+                .map(CheckedIntSeed::Constant)
+                .map_err(|_| PrivateStructPrepareError::Unsupported(
+                    "欄位整數值超出已驗證範圍",
+                )),
+        TermKind::Group(inner) => approved_int_seed(inner, verified),
+        TermKind::BinaryInt(binary) => {
+            let proof = verified.plan.scalar_hir.arithmetic(term.node_span())
+                .ok_or(PrivateStructPrepareError::Unsupported(
+                    "結構欄位算術沒有正式 Checker 的原運算子身分",
+                ))?;
+            if proof.left != binary.left.node_span()
+                || proof.right != binary.right.node_span()
+                || proof.operator != binary.operator
+                || !matches!(binary.operator, '+' | '-')
+            {
+                return Err(PrivateStructPrepareError::Unsupported(
+                    "欄位算術來源與原 Checker HIR 不一致",
+                ));
+            }
+            Ok(CheckedIntSeed::Binary {
+                operator: binary.operator,
+                left: Box::new(approved_int_seed(&binary.left, verified)?),
+                right: Box::new(approved_int_seed(&binary.right, verified)?),
+            })
+        }
+        _ => Err(PrivateStructPrepareError::Unsupported(
+            "欄位求值仍只核准獨立純整數常值、括號與加減",
+        )),
+    }
+}
+
+/// 原 Parser／Lexer 已驗證的欄位種子；不接受任意函式／借用／副作用。
+fn approved_seed(term: &Term, verified: &VerifiedPrivateSource)
     -> Result<ApprovedSeed, PrivateStructPrepareError> {
     match &term.kind {
         TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
             crate::syntax_shared::integer_i64(n)
                 .map(ApprovedSeed::Int)
                 .map_err(|_| PrivateStructPrepareError::Unsupported("整數值超出已驗證範圍")),
+        TermKind::Group(_) | TermKind::BinaryInt(_) =>
+            approved_int_seed(term, verified).map(ApprovedSeed::IntExpression),
         TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) =>
             Ok(ApprovedSeed::Bool(*b)),
-        TermKind::Literal("str") => private_str_literal(term, tokens)
+        TermKind::Literal("str") => private_str_literal(term, &verified.tokens)
             .map(ApprovedSeed::Str)
             .map_err(|_| PrivateStructPrepareError::Unsupported(
                 "字串建立式缺少真 Lexer token",
             )),
         _ => Err(PrivateStructPrepareError::Unsupported(
-            "這個切片只接受已核准純值字面值",
+            "這個切片只接受已核准純值／已驗證整數運算式",
         )),
     }
 }
@@ -242,8 +299,16 @@ impl PreparedPrivateStruct {
                     "此切片尚未支援巢狀結構／float／未知資源型別",
                 )),
             };
-            let default = field.default.as_ref()
-                .map(|term| approved_seed(term, &verified.tokens)).transpose()?;
+            // VB16-01-A：真正具名覆蓋的預設既沒有 Checker 真可達
+            // TypedHIR，也不得被提前求值或假造資源。保留型別但顯式
+            // 標為 Skipped，P16 計畫若誤執行它會立即失敗。
+            let overridden = named.iter().any(|(name, _)| name == &field.name);
+            let default = if overridden {
+                field.default.as_ref().map(|_| ApprovedSeed::Skipped(kind))
+            } else {
+                field.default.as_ref()
+                    .map(|term| approved_seed(term, &verified)).transpose()?
+            };
             if default.as_ref().is_some_and(|seed| seed.kind() != kind) {
                 return Err(PrivateStructPrepareError::Unsupported("欄位預設與宣告型別不一致"));
             }
@@ -256,7 +321,7 @@ impl PreparedPrivateStruct {
         for (name, expression) in named {
             let field = fields.iter().find(|field| &field.name == name)
                 .ok_or(PrivateStructPrepareError::Unsupported("具名欄位不在已驗證結構中"))?;
-            let seed = approved_seed(expression, &verified.tokens)?;
+            let seed = approved_seed(expression, &verified)?;
             if seed.kind() != field.kind {
                 return Err(PrivateStructPrepareError::Unsupported("具名欄位值型別不符"));
             }
