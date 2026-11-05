@@ -246,7 +246,7 @@ impl PreparedPrivateLoop {
         }
         let operations = Self::verified_actions(&main.body.statements, &verified, false, &mut BTreeMap::new())?;
         if !operations.iter().any(|op| matches!(op,
-            PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileConstant {..})) {
+            PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileCondition {..})) {
             return Err(PrivateLoopPrepareError::Unsupported("必須包含原 Checker 核准的迴圈"));
         }
         if !operations.iter().any(|op| matches!(op, PrivateLoopAction::Return(_))) {
@@ -265,10 +265,23 @@ impl PreparedPrivateLoop {
             && self.verified.plan.function_exits == fresh.verified.plan.function_exits
     }
 
+    fn bool_value(
+        value: &PrivateBoolCondition,
+        slots: &BTreeMap<DeclarationId, bool>,
+    ) -> Result<bool, crate::owned_str_runtime::StrRuntimeError> {
+        match value {
+            PrivateBoolCondition::Constant(value) => Ok(*value),
+            PrivateBoolCondition::Bound(identity) => slots.get(identity).copied()
+                .ok_or(crate::owned_str_runtime::StrRuntimeError::MissingOwner),
+        }
+    }
+
     fn run_actions(
         resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
         operations: &[PrivateLoopAction], depth: usize,
         injected_at: Option<usize>, allocations: &mut usize,
+        bool_values: &mut BTreeMap<DeclarationId, bool>,
+        condition_checks: &mut Vec<bool>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         use crate::owned_str_runtime::StrRuntimeError;
         for operation in operations {
@@ -281,10 +294,23 @@ impl PreparedPrivateLoop {
                         return Err(StrRuntimeError::EvaluationFailed);
                     }
                 }
+                PrivateLoopAction::DeclareBool { identity, value } => {
+                    let evaluated = Self::bool_value(value, bool_values)?;
+                    if bool_values.insert(*identity, evaluated).is_some() {
+                        return Err(StrRuntimeError::DuplicateBinding);
+                    }
+                }
+                PrivateLoopAction::AssignBool { identity, value } => {
+                    let evaluated = Self::bool_value(value, bool_values)?;
+                    let slot = bool_values.get_mut(identity)
+                        .ok_or(StrRuntimeError::MissingOwner)?;
+                    *slot = evaluated;
+                }
                 PrivateLoopAction::ForRange { lower, upper, body } => {
                     for _ in *lower..*upper {
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
+                            bool_values, condition_checks,
                         )?;
                         match flow {
                             PrivateLoopFlow::Normal | PrivateLoopFlow::Continue => {}
@@ -294,17 +320,31 @@ impl PreparedPrivateLoop {
                         }
                     }
                 }
-                PrivateLoopAction::WhileConstant { value, body } => {
-                    if *value {
+                PrivateLoopAction::WhileCondition { condition, body } => {
+                    loop {
+                        // 已核准 P15：每輪重新求值同一真 bool slot。
+                        let selected = Self::bool_value(condition, bool_values)?;
+                        condition_checks.push(selected);
+                        if !selected {
+                            break;
+                        }
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
+                            bool_values, condition_checks,
                         )?;
                         match flow {
-                            PrivateLoopFlow::Break => {}
+                            PrivateLoopFlow::Break => break,
                             PrivateLoopFlow::Return(value) =>
                                 return Ok(PrivateLoopFlow::Return(value)),
-                            PrivateLoopFlow::Normal | PrivateLoopFlow::Continue =>
+                            PrivateLoopFlow::Continue =>
                                 return Err(StrRuntimeError::EvaluationFailed),
+                            PrivateLoopFlow::Normal => {
+                                // 尾端 guard=false 的靜態保證，動態仍
+                                // 核對，避免無界重新進入或假回傳。
+                                if Self::bool_value(condition, bool_values)? {
+                                    return Err(StrRuntimeError::EvaluationFailed);
+                                }
+                            }
                         }
                     }
                 }
@@ -324,9 +364,14 @@ impl PreparedPrivateLoop {
         resources: &mut crate::owned_str_runtime::OwnedStrRuntime,
         operations: &[PrivateLoopAction], depth: usize,
         injected_at: Option<usize>, allocations: &mut usize,
+        bool_values: &mut BTreeMap<DeclarationId, bool>,
+        condition_checks: &mut Vec<bool>,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         resources.enter_scope();
-        let result = Self::run_actions(resources, operations, depth, injected_at, allocations);
+        let result = Self::run_actions(
+            resources, operations, depth, injected_at, allocations,
+            bool_values, condition_checks,
+        );
         // 包含 continue／break／return／真失敗，單次迭代作用域皆
         // 先釋放唯一資源，再讓控制訊號傳往上一層。
         let cleanup = resources.leave_scope();
@@ -355,8 +400,11 @@ impl PreparedPrivateLoop {
         }
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         let mut allocations = 0;
+        let mut bool_values = BTreeMap::new();
+        let mut condition_checks = Vec::new();
         let result = match Self::run_actions(
             &mut resources, &self.operations, 0, injected_at, &mut allocations,
+            &mut bool_values, &mut condition_checks,
         ) {
             Ok(PrivateLoopFlow::Return(value)) => Ok(value),
             Ok(_) => Err(crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
@@ -366,7 +414,7 @@ impl PreparedPrivateLoop {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateLoopPrepareError::SourceChanged);
         }
-        Ok(PrivateLoopOutcome { result, events })
+        Ok(PrivateLoopOutcome { result, events, condition_checks })
     }
 }
 
