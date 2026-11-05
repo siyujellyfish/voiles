@@ -115,3 +115,5 @@
 > **G18 具名 bool while 真重讀（2026-11-05；非公開施工）**：[原 P15 Checker TypedHIR 的 bool 宣告／賦值及 while 每輪真值、可證明退出、逐迭代 str 資源清理](P18-B-具名bool-while逐輪真求值與清理-20261105.md)。新增十項 Rust 真正正反，有限迴圈 Gate 13→23；原 G17 6/6 Passed 保留，**G18 仍 BlockedByDecision**。
 
 > **G18.2 for 迭代器真 int 值（2026-11-05；內部施工）**：[由原 Checker for DeclarationId 及 TypedHIR 名稱引用驗證 return i，逐輪真正記錄數值、清理 str 資源與同名遮蔽](P18-B-for迭代真整數宣告與來源回傳-20261105.md)。新增八項 Rust 真正正反，有限迴圈 Gate 23→31；G17 Passed，**G18 仍非 Passed**。
+
+> **G18.4 普通函式 BorrowTicket 讀取防護（2026-11-05，非公開施工）**：[已驗證活躍票據的來源／序號／追蹤器／種類必須在真正讀取 str 參數前通過，失效／越權／跨呼叫票據不能接觸真 UTF-8](P18-D-普通函式str借用票據實際讀取防護-20261105.md)。新增四項來源測試、四項借用核心測試，函式專項 Gate 8→12。**原 G18 仍 BlockedByDecision，P18 六項仍未正式 Passed。**
