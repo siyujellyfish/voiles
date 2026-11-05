@@ -22,6 +22,7 @@ from pathlib import Path
         "execution::tests::p18_多層非遞迴函式框架按實際呼叫返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_群組與左右結合加減_依原_checker_來源_hir_計算",
         "struct_stage::g18_private_scalar_call_tests::g18_a_具名_const_int_實參以原_checker_引用身分綁定函式參數",
         "execution::tests::p18_同一已驗證函式可重複呼叫且每次只執行實際路徑",
@@ -51,6 +52,7 @@ from pathlib import Path
         "execution::tests::p18_執行期錯誤保留真實函式退出且不冒稱_return_成功",
         "struct_stage::g18_private_scalar_call_tests::g18_c_真正參數框架中途故障必清空且不冒充成功返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
         "execution::tests::p18_巢狀真函式的進出順序與返回值一致",
         "struct_stage::g18_private_source_loop_tests::g18_b_巢狀_for_各迭代作用域獨立釋放且順序正確",
         "struct_stage::g18_private_source_loop_tests::g18_b_擅改_for_區間或_control_必須在配置任何資源前拒絕",
@@ -67,10 +69,10 @@ from pathlib import Path
 狀態 = {
     "P18.1": ("SubsetVerified", "無參數函式、str 借用與前向 Copyable int 真傳參／群組加減已接通；一般參數及呼叫圖仍缺完整矩陣"),
     "P18.2": ("SubsetVerified", "真 if／else-if 與可證明的有限 for/while 子集；一般動態迴圈尚未驗收"),
-    "P18.3": ("BlockedByDecision", "D18-01：遞迴深度／中止與執行耗盡之資源清理政策尚未核准"),
+    "P18.3": ("Incomplete", "D18-01-A～D 已核准合法遞迴與可配置執行預算；真遞迴框架、耗盡、逆序清理正反仍未完成"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02：方法多載與 async／跨 await／例外生命週期缺明確語意與真執行證據"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 已核准唯一簽章／self／VB15 保守借用原則；非同步調度取消細節與正向真執行仍待裁決、施工"),
 }
 
 真執行群組 = (
