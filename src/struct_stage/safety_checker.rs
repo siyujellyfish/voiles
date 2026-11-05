@@ -699,6 +699,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error("方法整數加減右運算元必須為 int", right));
                 }
                 debug_assert!(*operator == '+' || *operator == '-');
+
                 Ok("int".to_string())
             }
             _ => Err(self.error("方法值來源尚未證明可安全獨立求值", term)),

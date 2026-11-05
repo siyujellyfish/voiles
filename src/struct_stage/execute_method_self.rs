@@ -15,6 +15,7 @@ enum PrivateSelfMethodRuntimeError {
     Ticket(crate::borrow_safety::BorrowSafetyError),
     WrongReceiver,
     InjectedFailure,
+    IntegerOverflow,
 }
 
 #[derive(Debug)]
@@ -25,6 +26,13 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateSelfIntReturn {
+    Field,
+    Add(i64),
+    Subtract(i64),
 }
 
 struct PreparedPrivateSelfMethod {
@@ -39,6 +47,7 @@ struct PreparedPrivateSelfMethod {
     field_immutable: bool,
     /// 真方法首句可為原 Checker 已驗證的 self.int 欄位獨占寫入。
     write_value: Option<i64>,
+    return_calculation: PrivateSelfIntReturn,
     method: String,
     method_span: crate::common_ir::NodeSpan,
     call_span: crate::common_ir::NodeSpan,
@@ -127,10 +136,62 @@ impl PreparedPrivateSelfMethod {
                 "本期方法必須以已核准 return self.int欄位結束",
             ));
         };
-        let TermKind::FieldRead(receiver, read_field) = &returned.expression.kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "方法返回值必須是原 Parser 的 self 欄位讀取",
-            ));
+        // 回傳允許原 Checker 已核准的 self.int 讀取，
+        // 或 self.int 與一個真正 int 常值的 +／-。
+        // 運算結構必須與原 TypedHIR Arithmetic 端點和運算子完全一致。
+        let (return_calculation, receiver, read_field) = match &returned.expression.kind {
+            TermKind::FieldRead(receiver, read_field) =>
+                (PrivateSelfIntReturn::Field, receiver, read_field),
+            TermKind::BinaryInt(binary) => {
+                // 方法型別檢查使用原 Checker::method_pure_value_type，
+                // 與一般函式的 ScalarHIR 簽發路徑不同，不能為了
+                // 執行器擅自簽發另一種 P16 Arithmetic 證據。
+                // 原 VerifiedMethodSafety.checked_returns 授權整筆
+                // 方法返回；原 Parser AST 與來源區間確認真正 +／-。
+                let left_span = binary.left.node_span();
+                let right_span = binary.right.node_span();
+                let actual_operator = verified.source.bytes.get(
+                    left_span.end..right_span.start,
+                ).and_then(|raw| std::str::from_utf8(raw).ok())
+                    .map(str::trim);
+                if !matches!(binary.operator, '+' | '-')
+                    || actual_operator != Some(if binary.operator == '+' { "+" } else { "-" }) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法返回的加減運算子不符合原 Parser 來源位置",
+                    ));
+                }
+                let TermKind::FieldRead(receiver, read_field) = &binary.left.kind else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法算術僅接通原 Checker self.int 為左運算元",
+                    ));
+                };
+                let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
+                    &binary.right.kind else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法算術僅接通原 Checker int 常值為右運算元",
+                    ));
+                };
+                if !verified.tokens.iter().any(|token|
+                    token.start == binary.right.start && token.end == binary.right.end
+                        && matches!(&token.kind, TokenKind::Integer(text) if text == raw)
+                ) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法加減的整數 token 不屬於原 Parser／Checker 來源",
+                    ));
+                }
+                let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                    PrivateSelfMethodPrepareError::Unsupported("方法加減 int 常值超出 i64"),
+                )?;
+                let operation = if binary.operator == '+' {
+                    PrivateSelfIntReturn::Add(literal)
+                } else {
+                    PrivateSelfIntReturn::Subtract(literal)
+                };
+                (operation, receiver, read_field)
+            }
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "方法返回僅接通原 Checker self.int 或其真加減算術",
+            )),
         };
         let method_span = NodeSpan::new(method.start, method.end);
         let method_fact = verified.plan.method_safety.get(&method.start)
@@ -224,7 +285,7 @@ impl PreparedPrivateSelfMethod {
         Ok(Self {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
-            write_value, method: method_name, method_span, call_span, loan,
+            write_value, return_calculation, method: method_name, method_span, call_span, loan,
         })
     }
 
@@ -237,6 +298,7 @@ impl PreparedPrivateSelfMethod {
             && self.field == fresh.field && self.field_value == fresh.field_value
             && self.field_immutable == fresh.field_immutable
             && self.write_value == fresh.write_value
+            && self.return_calculation == fresh.return_calculation
             && self.method == fresh.method && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.verified.plan.method_safety == fresh.verified.plan.method_safety
@@ -318,8 +380,15 @@ impl PreparedPrivateSelfMethod {
                 .map_err(PrivateSelfMethodRuntimeError::Resource)? else {
                 return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
             };
+            let calculated = match self.return_calculation {
+                PrivateSelfIntReturn::Field => value,
+                PrivateSelfIntReturn::Add(rhs) => value.checked_add(rhs)
+                    .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?,
+                PrivateSelfIntReturn::Subtract(rhs) => value.checked_sub(rhs)
+                    .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?,
+            };
             method_exited = true;
-            Ok(value)
+            Ok(calculated)
         })();
         // 不論成功與否，先按原 Checker 動態 self BorrowFact 原子歸還，
         // 再釋放真正結構資源；失敗不可偽裝成功 return。
@@ -489,5 +558,68 @@ mod g18_private_method_self_tests {
         let src = "struct Counter{\nvar count:int = 7\nfn set()->int{\nself.count = true\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
             Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_f_共享_self_真欄位加法按原_checker_hir_求值() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count+3\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.loan.kind, BorrowKind::SharedRead);
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::Add(3));
+        let actual = plan.execute().unwrap();
+        assert_eq!(actual.result, Ok(10));
+        assert!(actual.method_entered && actual.method_exited && actual.ticket_returned);
+        assert!(actual.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_獨占_self_寫入後真欄位減法按最新值計算() {
+        let src = "struct Counter{\nvar count:int = 2\nfn change()->int{\nself.count = 20\nreturn self.count-4\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.change()\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::Subtract(4));
+        let actual = plan.execute().unwrap();
+        assert_eq!(actual.result, Ok(16));
+        assert!(actual.method_entered && actual.method_exited && actual.ticket_returned);
+    }
+
+    #[test]
+    fn g18_f_共享_self_真欄位加法溢位受控錯誤且歸還票據() {
+        let src = "struct Counter{\nvar count:int = 9223372036854775807\nfn get()->int{\nreturn self.count+1\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let actual = checked(src).execute().unwrap();
+        assert_eq!(actual.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(actual.method_entered && !actual.method_exited && actual.ticket_returned);
+        assert!(actual.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_獨占_self_真欄位減法溢位亦不得保留借用() {
+        let src = "struct Counter{\nvar count:int = 0\nfn change()->int{\nself.count = 0\nreturn self.count-9223372036854775807-2\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.change()\n}\n";
+        // 本子集只接通 self.field ± 一個原 Checker int 常值；
+        // 巢狀運算不得冒充已執行，必須在配置前拒絕。
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_f_竄改已核准方法算術運算子或常值須在配置前拒絕() {
+        let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count+3\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let mut plan = checked(src);
+        plan.return_calculation = PrivateSelfIntReturn::Subtract(3);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(src);
+        plan.return_calculation = PrivateSelfIntReturn::Add(999);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_錯誤方法加法型別與未知欄位由原_checker_拒絕() {
+        for src in [
+            "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count+true\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n",
+            "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.missing+1\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
+                Err(PrivateSelfMethodPrepareError::Check(_))));
+        }
     }
 }
