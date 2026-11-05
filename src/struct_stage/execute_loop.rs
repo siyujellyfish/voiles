@@ -61,6 +61,35 @@ impl PreparedPrivateLoop {
     /// 接通子集的上界，不是 voiles 語言 for 上限。
     const MAX_PRIVATE_ITERATIONS: i128 = 64;
 
+    /// 真 Checker 對已知**恰一次** for 且本體必定 return，會
+    /// 直接終止外部 CFG，後續語句的 TypedHIR 可以合法不存在。
+    /// 此處只能以已證明的直接 return 或唯一單次返回決定可達性，
+    /// break/continue 不得被錯當成功返回。
+    fn guaranteed_return(actions: &[PrivateLoopAction]) -> bool {
+        for action in actions {
+            match action {
+                PrivateLoopAction::Return(_)
+                | PrivateLoopAction::ReturnIterator(_) => return true,
+                PrivateLoopAction::Break | PrivateLoopAction::Continue => return false,
+                PrivateLoopAction::ForRange { lower, upper, body, .. }
+                    if i128::from(*upper) - i128::from(*lower) == 1
+                        && Self::guaranteed_return(body) => return true,
+                _ => {}
+            }
+        }
+        false
+    }
+
+    fn has_real_return(actions: &[PrivateLoopAction]) -> bool {
+        actions.iter().any(|action| match action {
+            PrivateLoopAction::Return(_) | PrivateLoopAction::ReturnIterator(_) => true,
+            PrivateLoopAction::ForRange { body, .. }
+                | PrivateLoopAction::WhileCondition { body, .. } =>
+                    Self::has_real_return(body),
+            _ => false,
+        })
+    }
+
     fn verified_actions(
         statements: &[Stmt], verified: &VerifiedPrivateSource, inside_loop: bool,
         bool_bindings: &mut BTreeMap<String, DeclarationId>,
@@ -68,6 +97,12 @@ impl PreparedPrivateLoop {
     ) -> Result<Vec<PrivateLoopAction>, PrivateLoopPrepareError> {
         let mut result = Vec::new();
         for statement in statements {
+            // 原 Checker 若已判定唯一迭代直接返回，後續正式
+            // AST 仍存在，但沒有可達 HIR，不能要求其求值或
+            // 偽造「已驗證」的 expression。且絕不提前觸發資源。
+            if Self::guaranteed_return(&result) {
+                break;
+            }
             let action = match &statement.kind {
                 // 根作用域的具名 bool 使用原 DeclarationId；迴圈內
                 // 不自行推定新的生命週期、遮蔽或參數型別。
@@ -304,7 +339,7 @@ impl PreparedPrivateLoop {
             PrivateLoopAction::ForRange {..} | PrivateLoopAction::WhileCondition {..})) {
             return Err(PrivateLoopPrepareError::Unsupported("必須包含原 Checker 核准的迴圈"));
         }
-        if !operations.iter().any(|op| matches!(op, PrivateLoopAction::Return(_))) {
+        if !Self::has_real_return(&operations) {
             return Err(PrivateLoopPrepareError::Unsupported("函式須有 int 返回"));
         }
         let original = verified.source.bytes.clone().into_boxed_slice();
