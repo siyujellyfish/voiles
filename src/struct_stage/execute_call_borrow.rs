@@ -18,6 +18,29 @@ enum PrivateCallBorrowRuntimeError {
     InjectedFailure,
 }
 
+/// 只允許仍活躍的真 BorrowTicket 讀取已由原 Checker 繫結的參數。
+/// 此函式不改動 OwnedStrRuntime 所有權，不複製或重新宣告資源。
+/// source_id／owner 只能來自 PreparedPrivateCallBorrow 的原核准計畫。
+fn read_checked_str_argument(
+    tracker: &crate::borrow_safety::BorrowSafety,
+    ticket: crate::borrow_safety::BorrowTicket,
+    source_id: DeclarationId,
+    runtime: &crate::owned_str_runtime::OwnedStrRuntime,
+    owner: &str,
+) -> Result<usize, PrivateCallBorrowRuntimeError> {
+    let authorized = tracker
+        .check_ticket_access(ticket, BorrowKind::SharedRead)
+        .map_err(PrivateCallBorrowRuntimeError::Ticket)?;
+    if authorized != source_id {
+        return Err(PrivateCallBorrowRuntimeError::Ticket(
+            crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+        ));
+    }
+    runtime.read(owner)
+        .map(|text| text.len())
+        .map_err(PrivateCallBorrowRuntimeError::Resource)
+}
+
 struct PreparedPrivateCallBorrow {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -216,12 +239,19 @@ impl PreparedPrivateCallBorrow {
             original_facts.push(self.loan);
             tracker.verify_static_snapshot(original_facts.iter().copied())
                 .map_err(PrivateCallBorrowRuntimeError::Ticket)?;
-            tracker.check_direct_access(self.owner_id)
-                .expect_err("真函式借用期間持有者直接操作必須被封鎖");
-            // str 參數是已簽發票據的非擁有視圖。此處只讀真 UTF-8
-            // 資源位元組長度；不作新的 String 克隆或虛構 Created。
-            observed_utf8_bytes = Some(runtime.read(&self.owner)
-                .map_err(PrivateCallBorrowRuntimeError::Resource)?.len());
+            match tracker.check_direct_access(self.owner_id) {
+                Err(crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed) => {}
+                Err(other) => return Err(PrivateCallBorrowRuntimeError::Ticket(other)),
+                Ok(()) => return Err(PrivateCallBorrowRuntimeError::Ticket(
+                    crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+                )),
+            }
+            // 先由真票據的 tracker／序號／種類／來源授權，再觸及
+            // OwnedStrRuntime 唯一真 UTF-8；錯誤時不產生讀取事件、
+            // 不繞過借用、也不靠 debug assert 當安全條件。
+            observed_utf8_bytes = Some(read_checked_str_argument(
+                &tracker, ticket, self.owner_id, &runtime, &self.owner,
+            )?);
             call_entered = true;
             if fail_inside_callee {
                 return Err(PrivateCallBorrowRuntimeError::InjectedFailure);
@@ -349,5 +379,93 @@ mod g18_private_call_borrow_tests {
         let mut plan = checked(source);
         plan.verified.source.bytes[0] = b'x';
         assert!(matches!(plan.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+    }
+    #[test]
+    fn g18_d_函式借用讀取先驗證動態票據_歸還後禁止重用() {
+        use crate::borrow_safety::BorrowSafety;
+        use crate::owned_str_runtime::OwnedStrRuntime;
+        let owner = DeclarationId(3001);
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("source", false, "正體🪼").unwrap();
+        let mut tracker = BorrowSafety::new();
+        let ticket = tracker.acquire(owner, BorrowKind::SharedRead).unwrap();
+        assert_eq!(read_checked_str_argument(
+            &tracker, ticket, owner, &runtime, "source",
+        ), Ok("正體🪼".len()));
+        assert_eq!(tracker.check_direct_access(owner),
+            Err(crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed));
+        tracker.release(ticket).unwrap();
+        assert_eq!(read_checked_str_argument(
+            &tracker, ticket, owner, &runtime, "source",
+        ), Err(PrivateCallBorrowRuntimeError::Ticket(
+            crate::borrow_safety::BorrowSafetyError::InvalidRelease,
+        )));
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_函式實參的真借用票據不能跨動態_tracker_存取() {
+        use crate::borrow_safety::BorrowSafety;
+        use crate::owned_str_runtime::OwnedStrRuntime;
+        let id = DeclarationId(3002);
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("source", true, "唯一").unwrap();
+        let mut first = BorrowSafety::new();
+        let mut other = BorrowSafety::new();
+        let ticket = first.acquire(id, BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(read_checked_str_argument(&other, ticket, id, &runtime, "source"),
+            Err(PrivateCallBorrowRuntimeError::Ticket(
+                crate::borrow_safety::BorrowSafetyError::InvalidRelease,
+            )));
+        assert_eq!(read_checked_str_argument(&first, ticket, id, &runtime, "source"),
+            Ok("唯一".len()));
+        first.release(ticket).unwrap();
+        assert_eq!(other.check_direct_access(id), Ok(()));
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_同追蹤器另一持有者的有效票據不得假扮此函式參數() {
+        use crate::borrow_safety::BorrowSafety;
+        use crate::owned_str_runtime::OwnedStrRuntime;
+        let true_owner = DeclarationId(3003);
+        let different = DeclarationId(3004);
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("source", false, "甲🪼").unwrap();
+        let mut tracker = BorrowSafety::new();
+        let wrong = tracker.acquire(different, BorrowKind::SharedRead).unwrap();
+        assert_eq!(read_checked_str_argument(
+            &tracker, wrong, true_owner, &runtime, "source",
+        ), Err(PrivateCallBorrowRuntimeError::Ticket(
+            crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+        )));
+        assert_eq!(tracker.check_direct_access(true_owner), Ok(()));
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_函式共享借用不提升獨占權限且不複製_str_資源() {
+        use crate::borrow_safety::BorrowSafety;
+        use crate::owned_str_runtime::OwnedStrRuntime;
+        let id = DeclarationId(3005);
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("source", false, "甲").unwrap();
+        let mut tracker = BorrowSafety::new();
+        let ticket = tracker.acquire(id, BorrowKind::SharedRead).unwrap();
+        assert_eq!(tracker.check_ticket_access(ticket, BorrowKind::ExclusiveWrite),
+            Err(crate::borrow_safety::BorrowSafetyError::BorrowConflict));
+        assert_eq!(read_checked_str_argument(
+            &tracker, ticket, id, &runtime, "source",
+        ), Ok("甲".len()));
+        tracker.release(ticket).unwrap();
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
     }
 }
