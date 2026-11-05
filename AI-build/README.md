@@ -111,3 +111,5 @@
 > **G18／P18-D 普通函式 str 參數真 BorrowTicket（2026-11-05）**：[原 Checker 已核准 call_borrows 與動態共享／獨占票據交接、return／故障後完整歸還](P18-普通函式str參數真借用票據與錯誤清理-20261105.md)。八項 Rust 來源正反，保留 G17 6／6、F00/G6；**G18 六原項仍未正式完成**。
 
 > **G18 原始六項最新稽核（2026-11-05）**：[逐 P18.1～P18.6 正反、真執行與必要決策阻塞矩陣](G18-原始六項驗收差距與決策阻塞-20261105.md)；`tools/核對G18原六項驗收差距.py --audit` 真重跑四組既有 Rust，確認 18.1/2/4/5 為 `SubsetVerified`、18.3/6 為 `BlockedByDecision`（D18-01／D18-02）。**不表示 G18 Passed**，正式結案必須 `--check` 與最新 main 同 SHA 全數成功。原 G17 6/6 Passed 及公開 CLI 邊界不變。
+
+> **G18 具名 bool while 真重讀（2026-11-05；非公開施工）**：[原 P15 Checker TypedHIR 的 bool 宣告／賦值及 while 每輪真值、可證明退出、逐迭代 str 資源清理](P18-B-具名bool-while逐輪真求值與清理-20261105.md)。新增十項 Rust 真正正反，有限迴圈 Gate 13→23；原 G17 6/6 Passed 保留，**G18 仍 BlockedByDecision**。
