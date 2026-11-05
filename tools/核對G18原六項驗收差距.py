@@ -70,6 +70,11 @@ from pathlib import Path
         "struct_stage::g18_private_method_self_tests::g18_f_共享_self_真欄位加法溢位受控錯誤且歸還票據",
         "struct_stage::g18_private_method_self_tests::g18_f_方法真借用存活期間發生測試故障也要先歸還票據再離域",
         "struct_stage::g18_private_method_self_tests::g18_f_偽造動態_self_來源或借用_kind_必在配置前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_f_同名方法多載真執行零參數共享_self_不誤選獨占候選",
+        "struct_stage::g18_private_method_self_tests::g18_f_同名多載宣告顛倒仍依真呼叫靜態簽章執行",
+        "struct_stage::g18_private_method_self_tests::g18_f_零參數多載的獨占_self_真的寫入而非調用具參數共享候選",
+        "struct_stage::g18_private_method_self_tests::g18_f_零參數多載方法中途故障仍先歸還原_self_票據",
+        "struct_stage::g18_private_method_self_tests::g18_f_竄改已選多載的方法來源跨度與借用種類須在配置前拒絕",
     ),
 }
 
@@ -82,7 +87,7 @@ from pathlib import Path
     "P18.3": ("Incomplete", "D18-01-A～D 的 AW06 零參數直接／相互遞迴、執行預算／故障逐框架退出已有真正正反；str／借用遞迴資源完整責任與一般簽章仍待驗收"),
     "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據可執行；方法多載完整唯一解析與 async 調度取消細則、正向執行仍待裁決及驗收"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數多載可執行；具參數多載真值及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
 
 真執行群組 = (
