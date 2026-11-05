@@ -72,7 +72,7 @@ jobs:
       - name: P17／P18 真求值、P09/P10/P11 來源權威與控制邊六十一項正反 Gate
         run: python3 tools/核對G17內部切片.py --test-bin target/p02/p04_source_internal
 
-      - name: P17-C／P18-B/C/E 真 str 與可寫 bool 動態分支六十五項正反 Gate
+      - name: P18-B Copyable bool 真 HIR 名稱來源及 str 動態分支七十一項正反 Gate
         run: python3 tools/核對P17私有字串切片.py --test-bin target/p02/p04_source_internal
 
       - name: G17／P17.6 具名與預設整數真求值、覆蓋不執行、溢位回滾三十九項正反 Gate
