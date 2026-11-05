@@ -473,4 +473,90 @@ mod g18_private_scalar_call_tests {
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
+
+    // G18 P18.1 第二批：函式內的算術不是靜態算好的常值，
+    // 每個運算元都須從當次合法 Copyable int 參數槽取值。
+    #[test]
+    fn g18_a_真函式_copyable_int_參數參與加法且回傳動態值() {
+        let src = "fn step(value:int)->int{\nreturn value+3\n}\nfn main()->int{\nreturn step(9)\n}\n";
+        let plan = checked(src);
+        let result = plan.execute().unwrap();
+        assert_eq!(result.result, Ok(12));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert!(result.events.contains(&PrivateScalarCallEvent::Returned(12)));
+    }
+
+    #[test]
+    fn g18_a_真函式_copyable_int_參數多次引用每次都取同一實際值() {
+        let src = "fn twice(value:int)->int{\nreturn value+value\n}\nfn main()->int{\nreturn twice(11)\n}\n";
+        let result = checked(src).execute().unwrap();
+        assert_eq!(result.result, Ok(22));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_a_真函式_群組與左右結合加減_依原_checker_來源_hir_計算() {
+        let src = "fn mix(value:int)->int{\nreturn (value+2)-(value-1)\n}\nfn main()->int{\nreturn mix(10)\n}\n";
+        let result = checked(src).execute().unwrap();
+        assert_eq!(result.result, Ok(3));
+    }
+
+    #[test]
+    fn g18_a_具名_copyable_int_實參傳入函式後參與真減法() {
+        let src = "fn minus(value:int)->int{\nreturn value-3\n}\nfn main()->int{\nconst owner:int = 10\nreturn minus(owner)\n}\n";
+        let plan = checked(src);
+        assert!(plan.owner_id.is_some());
+        let result = plan.execute().unwrap();
+        assert_eq!(result.result, Ok(7));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_c_函式參數真加法溢位不能假造_return_且確實離域() {
+        let src = "fn inc(value:int)->int{\nreturn value+1\n}\nfn main()->int{\nreturn inc(9223372036854775807)\n}\n";
+        let result = checked(src).execute().unwrap();
+        assert_eq!(result.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert!(!result.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(result.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "inc".into(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_c_函式參數真減法溢位亦不可留下框架或偽造成功事件() {
+        let src = "fn minus(value:int)->int{\nreturn value-9223372036854775807-2\n}\nfn main()->int{\nreturn minus(0)\n}\n";
+        let result = checked(src).execute().unwrap();
+        assert_eq!(result.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert_eq!(result.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))).count(), 0);
+    }
+
+    #[test]
+    fn g18_a_竄改編譯後_true_arithmetic_運算樹必在執行前拒絕() {
+        let src = "fn inc(value:int)->int{\nreturn value+1\n}\nfn main()->int{\nreturn inc(2)\n}\n";
+        let mut prepared = checked(src);
+        prepared.return_expr = PrivateScalarReturnExpr::Constant(999);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(src);
+        prepared.return_expr = PrivateScalarReturnExpr::Subtraction(
+            Box::new(PrivateScalarReturnExpr::Parameter(prepared.parameter_id)),
+            Box::new(PrivateScalarReturnExpr::Constant(1)),
+        );
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_非法_bool_參與_int_加法與字面值不足均由原_checker_拒絕() {
+        let bad_type = "fn wrong(value:int)->int{\nreturn value+true\n}\nfn main()->int{\nreturn wrong(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(bad_type),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let bad_name = "fn wrong(value:int)->int{\nreturn value+missing\n}\nfn main()->int{\nreturn wrong(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(bad_name),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
 }
