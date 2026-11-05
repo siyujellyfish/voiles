@@ -584,4 +584,115 @@ mod g18_private_source_loop_tests {
             plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
         ));
     }
+
+    // G18-B 第二批：具名 bool 按原 P15 Checker 條件每輪重新讀取。
+    #[test]
+    fn g18_b_具名_var_bool_while_真重讀條件且本體改_false_後停止() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內🪼\"\nflag = false\n}\nreturn 8\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(8));
+        assert_eq!(result.condition_checks, [true, false]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_false_while_零迭代且僅建外部資源() {
+        let source = "fn main()->int{\nvar flag:bool = false\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"未選\"\nflag = false\n}\nreturn 3\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(3));
+        assert_eq!(result.condition_checks, [false]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_bool_重新賦值_false_到_true_選擇一次_break() {
+        let source = "fn main()->int{\nvar flag:bool = false\nflag = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"真\"\nbreak\n}\nreturn 3\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(3));
+        assert_eq!(result.condition_checks, [true]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_已核准_copyable_bool_名稱複製後與來源變更不構成別名() {
+        let source = "fn main()->int{\nvar source:bool = true\nvar flag:bool = source\nsource = false\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"仍為真\"\nflag = false\n}\nreturn 4\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(4));
+        assert_eq!(result.condition_checks, [true, false]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_while_中的_early_return_僅清理實際選中本體與根資源() {
+        let source = "fn main()->int{\nconst flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內\"\nreturn 11\n}\nreturn 0\n}\n";
+        let result = checked(source).execute().unwrap();
+        assert_eq!(result.result, Ok(11));
+        assert_eq!(result.condition_checks, [true]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_c_具名_while_動態故障真清理且不補做未到達賦值() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內\"\nflag = false\n}\nreturn 0\n}\n";
+        let result = checked(source).execute_with_fault(Some(1)).unwrap();
+        assert_eq!(result.result, Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(result.condition_checks, [true]);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Released(2), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_b_具名_while_條件_DeclarationId_偷換必須零資源拒絕() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"內\"\nflag = false\n}\nreturn 0\n}\n";
+        let mut plan = checked(source);
+        let PrivateLoopAction::WhileCondition {
+            condition: PrivateBoolCondition::Bound(identity), ..
+        } = &mut plan.operations[2] else {
+            panic!("必須保存原 Checker 確認的具名 bool");
+        };
+        *identity = DeclarationId(0);
+        assert!(matches!(
+            plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
+        ));
+    }
+
+    #[test]
+    fn g18_b_具名_while_沒有可證明終止時保持非公開拒絕() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"不能假定退出\"\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateLoop::prepare(source),
+            Err(PrivateLoopPrepareError::Unsupported(_)),
+        ));
+    }
+
+    #[test]
+    fn g18_b_具名_while_continue_不得跳過直接退出義務() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\ncontinue\nflag = false\n}\nreturn 0\n}\n";
+        assert!(PreparedPrivateLoop::prepare(source).is_err());
+    }
+
+    #[test]
+    fn g18_b_具名_const_bool_重賦值須在原_checker_先拒絕() {
+        let source = "fn main()->int{\nconst flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\nflag = false\n}\nreturn 0\n}\n";
+        assert!(matches!(
+            PreparedPrivateLoop::prepare(source),
+            Err(PrivateLoopPrepareError::Check(_)),
+        ));
+    }
 }
