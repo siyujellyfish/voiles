@@ -566,7 +566,7 @@ impl PreparedPrivateScalarCall {
 
         // main 的所有前置語句須真為已核准的 Copyable int 常值初始化。
         // 正常詞彙遮蔽／任意賦值另待 P18.2，不把尚未執行的語句跳過。
-        let (main_return, main_prefix) = main.body.statements.split_last()
+        let (last_statement, main_prefix) = main.body.statements.split_last()
             .expect("已確認 main 非空");
         let mut owners = BTreeMap::<String, (DeclarationId, i64)>::new();
         let mut main_owners = Vec::new();
@@ -611,7 +611,7 @@ impl PreparedPrivateScalarCall {
             main_owners.push((id, value));
         }
 
-        let StmtKind::Return(main_return) = &main_return.kind else {
+        let StmtKind::Return(_) = &last_statement.kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "main 最後一筆必須是真普通函式呼叫 return",
             ));
