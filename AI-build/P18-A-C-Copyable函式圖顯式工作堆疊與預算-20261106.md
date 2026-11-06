@@ -28,3 +28,14 @@
 - 專用真 Gate 由 39 項增至 43 項；G18 原六項的 P18.1、P18.3、P18.5 真來源追溯同步納入，不以子批綠燈宣告任何原項 Passed。
 - 本批不是整個 V1 完成：仍待跨一般條件／迴圈／資源、多種合法根呼叫型態、複雜返回與 mixed parameters 的原始完整正反矩陣。未核准語意及 async 不變，公開 MVP-A CLI 亦不變。
 - 驗收條件：PR 最新 HEAD 三項必要 CI completed/success，確認作者、main base、mergeable 後 Squash merge；在新 main 同 SHA 真重跑 G18 --audit、G17/G6/F00 回歸。後續 V1 批次應繼續拓展已核准合法來源，最後才可標 P18.1 Passed。
+
+
+---
+
+## V1-B：跨函式巢狀實參真正求值即時事件（2026-11-06）
+
+- 基線 main 18c24260efcada67084f5ad92cfadf96c2731cc3（#565 已通過三必要 CI 並 Squash merge）。原 Copyable int 真顯式工作堆疊會在所有子實參求值完畢、準備進入目標函式 EnterCall 時才批次產生 ArgumentEvaluated 事件：若第一實參已求值、第二實參溢位，第一實參的真事件會消失，與 P18.1／P18.5「只記錄真正已走到的控制及求值」不一致。
+- 新增非語言層的 RecordArgument 動態工作堆疊任務：每個原 Parser 實參由左至右完成 Evaluate 後立即記錄真值，不等待 EnterCall；若下一實參失敗，保留已完成的事件，但目標函式不產生假的 FunctionEntered／Returned。記錄事件本身不消耗另一步 voiles 語意預算，因此 D18-01 原可配置耗盡政策不因證據記錄改變。
+- 新正反兩項：兩個兄弟葉函式的多層引數 2／2／3／4／5 必依真求值序列發出且不重複；第二個巢狀實參溢位時第一已完成結果 3 必保留、尚未進入的 pair 零進入事件，全部已進入框架均退出、不殘留參數。
+- 原專項真 Gate 43→45 項，G18 原 P18.1／18.5 真來源追溯同步增加。維持原 Lexer／Parser／Checker／TypedHIR、防偽和預算，無新公開語法或例外語意；本子批**不是 V1／G18 正式結案**。
+- 先在最新 PR HEAD 核對三項 CI completed/success 與 PR 身分／base／mergeable，再 Squash merge；新 main 同 SHA 重新驗證 G17／G6／F00、G18 --audit，維持原六項 0/6 Passed 直至完整 Gate。
