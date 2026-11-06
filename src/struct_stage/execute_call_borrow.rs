@@ -1344,3 +1344,187 @@ impl PreparedPrivateMoveCall {
         })
     }
 }
+
+#[cfg(test)]
+mod g18_private_owned_move_call_tests {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+
+    fn checked(source: &str) -> PreparedPrivateMoveCall {
+        PreparedPrivateMoveCall::prepare(source)
+            .expect("原私有 Checker 應核准具名整筆 move 及函式實參轉交")
+    }
+
+    fn one_move() -> &'static str {
+        "fn consume(payload:str)->int{\nreturn 7\n}\nfn main()->int{\nvar source:str = \"中文🪼\"\nreturn consume(source.move())\n}\n"
+    }
+
+    fn consumed_in_callee() -> &'static str {
+        "fn consume(payload:str)->int{\nvar owned:str = payload.move()\nreturn 7\n}\nfn main()->int{\nvar source:str = \"中文🪼\"\nreturn consume(source.move())\n}\n"
+    }
+
+    fn nested_move() -> &'static str {
+        "fn first(p:str)->int{\nreturn second(p.move())\n}\nfn second(q:str)->int{\nreturn third(q.move())\n}\nfn third(r:str)->int{\nvar final:str = r.move()\nreturn 9\n}\nfn main()->int{\nvar source:str = \"中文🪼\"\nreturn first(source.move())\n}\n"
+    }
+
+    fn recursive_move() -> &'static str {
+        "fn repeat(p:str)->int{\nreturn repeat(p.move())\n}\nfn main()->int{\nvar source:str = \"逐層\"\nreturn repeat(source.move())\n}\n"
+    }
+
+    #[test]
+    fn g18_d_原_checker_明確_move_普通函式實參轉交同一真_utf8_不複製() {
+        let out = checked(one_move()).execute(PrivateMoveCallBudget::default()).unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1), ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.slots_after_exit, 0);
+        assert_eq!(out.frames, [
+            PrivateMoveCallFrameEvent::Entered("main".into()),
+            PrivateMoveCallFrameEvent::Entered("consume".into()),
+            PrivateMoveCallFrameEvent::Exited { name: "consume".into(), returned: true },
+            PrivateMoveCallFrameEvent::Exited { name: "main".into(), returned: true },
+        ]);
+    }
+
+    #[test]
+    fn g18_d_被呼叫者真的再次_move_參數至局部唯一所有者退出才釋放一次() {
+        let out = checked(consumed_in_callee())
+            .execute(PrivateMoveCallBudget::default()).unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1),
+            ResourceEvent::Moved(1), ResourceEvent::Released(1),
+        ]);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+        assert_eq!(out.slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_c_多函式逐層_move_同一_resourceid_末端真正釋放且返回逐框架退出() {
+        let out = checked(nested_move())
+            .execute(PrivateMoveCallBudget::default()).unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert_eq!(out.events, [
+            ResourceEvent::Created(1), ResourceEvent::Moved(1),
+            ResourceEvent::Moved(1), ResourceEvent::Moved(1),
+            ResourceEvent::Moved(1), ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.frames.iter().filter_map(|ev| match ev {
+            PrivateMoveCallFrameEvent::Exited { name, returned: true } => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>(), ["third", "second", "first", "main"]);
+    }
+
+    #[test]
+    fn g18_c_合法自我遞迴每層轉交唯一_utf8_受框架預算安全耗盡() {
+        let out = checked(recursive_move()).execute(
+            PrivateMoveCallBudget { max_call_frames: 5, max_steps: 80 },
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateMoveCallRunError::CallBudget));
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, ResourceEvent::Created(_))).count(), 1);
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, ResourceEvent::Moved(_))).count(), 4);
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, ResourceEvent::Released(_))).count(), 1);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+        assert_eq!(out.frames.iter().filter(|e|
+            matches!(e, PrivateMoveCallFrameEvent::Exited { returned: false, .. })).count(), 5);
+    }
+
+    #[test]
+    fn g18_c_跨函式_move_步數預算耗盡不得假成功或雙重釋放() {
+        let out = checked(nested_move()).execute(
+            PrivateMoveCallBudget { max_call_frames: 10, max_steps: 4 },
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateMoveCallRunError::StepBudget));
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, ResourceEvent::Created(_))).count(), 1);
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, ResourceEvent::Released(_))).count(), 1);
+        assert!(out.events.iter().any(|e| matches!(e, ResourceEvent::Moved(1))));
+        assert_eq!(out.slots_after_exit, 0);
+        assert!(out.frames.iter().all(|e| !matches!(e,
+            PrivateMoveCallFrameEvent::Exited { returned: true, .. })));
+    }
+
+    #[test]
+    fn g18_c_真移動之前及連續轉交之後注入故障都由目前所有者清理一次() {
+        let prepared = checked(nested_move());
+        for at in [0, 1, 2, 3, 4] {
+            let out = prepared.execute_with_fault(
+                PrivateMoveCallBudget::default(), Some(at),
+            ).unwrap();
+            assert_eq!(out.result, Err(PrivateMoveCallRunError::InjectedFailure));
+            assert_eq!(out.events.iter().filter(|e|
+                matches!(e, ResourceEvent::Moved(_))).count(), at);
+            assert_eq!(out.events.iter().filter(|e|
+                matches!(e, ResourceEvent::Created(_))).count(), 1);
+            assert_eq!(out.events.iter().filter(|e|
+                matches!(e, ResourceEvent::Released(_))).count(), 1);
+            assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+            assert!(out.frames.iter().all(|e| !matches!(e,
+                PrivateMoveCallFrameEvent::Exited { returned: true, .. })));
+        }
+    }
+
+    #[test]
+    fn g18_c_零函式框架或零步數預算在配置真_utf8_前受控拒絕() {
+        let prepared = checked(one_move());
+        for budget in [
+            PrivateMoveCallBudget { max_call_frames: 0, max_steps: 30 },
+            PrivateMoveCallBudget { max_call_frames: 3, max_steps: 0 },
+        ] {
+            let out = prepared.execute(budget).unwrap();
+            assert!(out.result.is_err());
+            assert!(out.events.is_empty() && out.frames.is_empty());
+            assert_eq!(out.slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_d_移動後原來源再次使用與漏掉明確_move_必由原_checker_拒絕() {
+        for source in [
+            consumed_in_callee().replace("consume(source.move())", "consume(source)"),
+            consumed_in_callee().replace(
+                "return consume(source.move())",
+                "var another:str = source.move()\nreturn consume(source.move())",
+            ),
+            consumed_in_callee().replace(
+                "var owned:str = payload.move()",
+                "var owned:str = payload.move()\nvar again:str = payload.move()",
+            ),
+        ] {
+            assert!(matches!(PreparedPrivateMoveCall::prepare(&source),
+                Err(PrivateMoveCallPrepareError::Check(_))), "{source}");
+        }
+    }
+
+    #[test]
+    fn g18_d_非法借用別名不能以_move_變成真正所有者() {
+        let src = "fn consume(payload:str)->int{\nvar owned:str = payload.move()\nreturn 7\n}\nfn main()->int{\nvar source:str = \"甲\"\nconst alias:str = source.borrow()\nreturn consume(alias.move())\n}\n";
+        assert!(matches!(PreparedPrivateMoveCall::prepare(src),
+            Err(PrivateMoveCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_d_更改已核准轉交函式或字串原值必須零執行前拒絕() {
+        let mut p = checked(nested_move());
+        p.callees[1].name = "偽造函式".into();
+        assert!(matches!(p.execute(PrivateMoveCallBudget::default()),
+            Err(PrivateMoveCallPrepareError::SourceChanged)));
+        let mut p = checked(nested_move());
+        p.callees[2].body = PrivateMoveCallBody::Return {
+            into_local: Some("假所有者".into()), value: 9,
+        };
+        assert!(matches!(p.execute(PrivateMoveCallBudget::default()),
+            Err(PrivateMoveCallPrepareError::SourceChanged)));
+        let mut p = checked(nested_move());
+        p.owner_text = "偽造字串".into();
+        assert!(matches!(p.execute(PrivateMoveCallBudget::default()),
+            Err(PrivateMoveCallPrepareError::SourceChanged)));
+        assert_eq!(checked(nested_move())
+            .execute(PrivateMoveCallBudget::default()).unwrap().result, Ok(9));
+    }
+}
