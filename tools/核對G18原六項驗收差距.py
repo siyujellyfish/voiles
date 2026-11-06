@@ -20,6 +20,14 @@ from pathlib import Path
 證據 = {
     "P18.1": (
         "execution::tests::p18_多層非遞迴函式框架按實際呼叫返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_雙_copyable_int_參數依原_checker_宣告順序逐一綁定",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_三個_int_參數在同一真框架內逐項參與原_hir_算式",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_同一個_const_int_持有者作兩個實參屬_copyable_不消耗",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_多個具名_var_const_int_和常值實參按照原宣告身分傳遞",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_多參數整數溢位不可回傳成功且所有動態參數清空",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_多參數真框架測試故障不殘留參數也不假冒_return",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
@@ -108,10 +116,10 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
-    "P18.1": ("SubsetVerified", "無參數函式、str 借用與前向 Copyable int 真傳參／群組加減已接通；一般參數及呼叫圖仍缺完整矩陣"),
+    "P18.1": ("SubsetVerified", "已接通無參數函式、str 預設借用與前向一至三 Copyable int 真傳參／群組加減溢位；巢狀多函式參數呼叫圖及完整正反尚缺"),
     "P18.2": ("SubsetVerified", "真 if／else-if 與可證明的有限 for/while 子集；一般動態迴圈尚未驗收"),
     "P18.3": ("Incomplete", "D18-01 的 AW06 無資源遞迴、原私有 Checker bool 遞迴 str 真 ResourceId 與跨框架 str 參數 BorrowTicket 逐層歸還已接通；一般參數／結構與完整矩陣仍待驗收"),
-    "P18.4": ("SubsetVerified", "單一 str 參數 BorrowTicket 實際受控讀取及 Copyable int 真傳遞；多型別、self／逃逸仍缺完整正反"),
+    "P18.4": ("SubsetVerified", "str 預設借用真票據、逐框架重入與一至三 Copyable int 實參按宣告身分傳遞；混合型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
