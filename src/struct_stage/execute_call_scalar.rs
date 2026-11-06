@@ -433,9 +433,29 @@ impl PreparedPrivateScalarCall {
                 "main 最後語句須真正返回一個具名函式呼叫",
             ));
         };
-        // A2/F02：main 的 name() 也由同一原 Parser 保留為待決零引數節點；
-        // 仍必須以原 Checker 核准的唯一普通函式宣告消歧。
-        let source_name = match &ret.expression.kind {
+        // V1：main 的括號 return 同樣是原 Checker 已核准的 int 表達式。
+        // 逐層核對真 TypedHIR、Lexer 左右括號，保留最內層的原 AST
+        // 才能將零／多參數函式交給同一個動態呼叫框架，不自行猜測語法。
+        let mut return_call = &ret.expression;
+        while let TermKind::Group(inner) = &return_call.kind {
+            let span = return_call.node_span();
+            if verified.plan.scalar_hir.expression(span)
+                .is_none_or(|fact| fact.ty != ScalarType::Int)
+                || !verified.tokens.iter().any(|token|
+                    token.start == span.start
+                        && matches!(token.kind, TokenKind::Symbol('(')))
+                || !verified.tokens.iter().any(|token|
+                    token.end == span.end
+                        && matches!(token.kind, TokenKind::Symbol(')'))) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "main 括號返回缺少真 Checker int HIR 與原 Lexer 詞彙",
+                ));
+            }
+            return_call = inner;
+        }
+        // A2/F02：零參數 name() 仍以原完整函式宣告分類，
+        // 非函式或結構建構式不得混入此受限純值執行器。
+        let source_name = match &return_call.kind {
             TermKind::Call(call) => call.name.as_str(),
             TermKind::UnresolvedZeroArgs(name) => name.as_str(),
             _ => return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -596,7 +616,7 @@ impl PreparedPrivateScalarCall {
                 "main 最後一筆必須是真普通函式呼叫 return",
             ));
         };
-        let (call_name, call_arguments): (&str, &[Term]) = match &main_return.expression.kind {
+        let (call_name, call_arguments): (&str, &[Term]) = match &return_call.kind {
             TermKind::Call(call) => (call.name.as_str(), call.arguments.as_slice()),
             TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[]),
             _ => return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -608,7 +628,7 @@ impl PreparedPrivateScalarCall {
                 "原 Parser 呼叫名稱／參數個數與真 Checker 函式簽章不符",
             ));
         }
-        let call_span = main_return.expression.node_span();
+        let call_span = return_call.node_span();
         if verified.plan.scalar_hir.expression(call_span)
             .is_none_or(|fact| fact.ty != ScalarType::Int)
             || verified.plan.declarations.call_borrows_at(call_span)
@@ -1632,5 +1652,56 @@ mod g18_private_scalar_call_tests {
         assert_ne!(prepared.original.as_ref(), changed.as_bytes());
     }
 
+
+
+    #[test]
+    fn g18_a_main_括號返回帶參數普通函式依原_checker_真求值() {
+        let src = "fn inc(value:int)->int{\nreturn value+1\n}\nfn main()->int{\nreturn (((inc(7))))\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(8));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let arguments = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(arguments, [7]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_多層括號零參數前向函式返回不虛構參數() {
+        let src = "fn main()->int{\nreturn (((value())))\n}\nfn value()->int{\nreturn 23\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.parameter_id.is_none());
+        assert!(prepared.argument.is_none());
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(23));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ArgumentEvaluated(_)
+                | PrivateScalarCallEvent::ParameterBound(..))).count(), 0);
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_a_main_括號返回的真內層呼叫跨度不得竄改() {
+        let src = "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn ((id(6)))\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+        prepared.call_span = crate::common_ir::NodeSpan::new(0, 2);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_main_括號返回錯型別與不存在函式由原_checker_拒絕() {
+        for src in [
+            "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn ((id(true)))\n}\n",
+            "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn ((missing(6)))\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
 
 }
