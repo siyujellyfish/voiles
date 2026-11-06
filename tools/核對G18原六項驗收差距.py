@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_普通函式返回值與常值相加由同一真動態工作堆疊完成",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_兩個兄弟函式合成返回必照原_checker_左右順序執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_多層括號包含函式複合返回保持原_parser_int_來源",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_巢狀實參先返回後可合法復用唯一框架額度",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態實參的來源框架不占用唯一使用者函式預算",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_原_checker_算術實參於真動態框架依順序求值",
@@ -95,6 +98,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_子函式已真返回後最外層算術溢位不得冒充成功",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_多兄弟複合返回不得假造單一根函式故障注入",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_同名巢狀實參故障只能中斷真正外層函式框架",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_不同名子函式先成功後故障只注入根函式綁定",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_真正被呼叫者本體巢狀超單框架預算不可虛構葉函式進入",
@@ -203,6 +208,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_複合返回工作計畫被竄改必在任何函式執行前拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_複合函式返回與非法型別或未知名稱仍由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態算式已驗證工作計畫遭竄改必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態實參非法型別或未知名稱仍須由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_初始化來源錯型別或未宣告及尚未初始化仍靜態拒絕",
