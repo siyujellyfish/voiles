@@ -98,7 +98,6 @@ impl PrivateScalarReturnExpr {
                         "巢狀呼叫沒有原 Checker 具名宣告",
                     ))?;
                 if target.name == "main" || target.result_ty != "int"
-                    || target.params.is_empty()
                     || target.params.len() != call.arguments.len()
                     || target.params.iter().any(|param| param.ty != "int")
                     || verified.plan.declarations.call_borrows_at(span)
@@ -112,6 +111,32 @@ impl PrivateScalarReturnExpr {
                     arguments.push(Self::from_checked(argument, params, verified)?);
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
+            }
+            TermKind::UnresolvedZeroArgs(name) => {
+                // A2/F02：裸 name() 在 Parser 無法先判斷是建構式或零參數函式；
+                // 只有正式 Checker 分類、完整函式宣告和 int TypedHIR
+                // 全部一致時，才可交給原顯式動態框架執行。
+                // 此純值切片若存在任一結構已於 prepare 入口拒絕，
+                // 不得藉此把 Struct() 擅自改判為普通函式。
+                let target = verified.functions.iter()
+                    .find(|fun| fun.name == *name && fun.name != "main")
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                        "零參數來源缺少原 Checker 唯一普通函式宣告",
+                    ))?;
+                if target.result_ty != "int" || !target.params.is_empty()
+                    || verified.plan.declarations.call_borrows_at(span)
+                        .is_some_and(|facts| !facts.is_empty())
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(&token.kind, TokenKind::Name(found) if found == name))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "零參數呼叫缺少原 Parser／Checker 完整簽章或詞彙來源",
+                    ));
+                }
+                Ok(Self::Call { name: name.clone(), arguments: Vec::new() })
             }
             TermKind::BinaryInt(binary) => {
                 let left = binary.left.node_span();
@@ -447,7 +472,6 @@ impl PreparedPrivateScalarCall {
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
-                || function.params.is_empty()
                 || function.params.iter().any(|param| param.ty != "int")
                 || function.body.statements.len() != 1 {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1314,5 +1338,74 @@ mod g18_private_scalar_call_tests {
         }).collect::<Vec<_>>();
         assert_eq!(exits, ["leaf", "leaf", "both"]);
     }
+
+
+    #[test]
+    fn g18_a_零參數前向葉函式與_copyable_int_父框架真返回() {
+        let src = "fn plus(n:int)->int{\nreturn n+fixed()\n}\nfn main()->int{\nreturn plus(5)\n}\nfn fixed()->int{\nreturn 7\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(12));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["plus", "fixed"]);
+        let returned = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::Returned(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(returned, [7, 12]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_零參數函式重複呼叫不重用動態框架且保留真求值順序() {
+        let src = "fn fixed()->int{\nreturn 4\n}\nfn add(n:int)->int{\nreturn fixed()+n+fixed()\n}\nfn main()->int{\nreturn add(5)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(13));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["add", "fixed", "fixed"]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "fixed")).count(), 2);
+    }
+
+    #[test]
+    fn g18_c_零參數自遞迴由真框架預算受控中止不虛構返回() {
+        let src = "fn loop()->int{\nreturn loop()\n}\nfn entry(n:int)->int{\nreturn n+loop()\n}\nfn main()->int{\nreturn entry(1)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 4, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 4);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                returned: false, ..
+            })).count(), 4);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+    }
+
+    #[test]
+    fn g18_a_零參數子函式原宣告來源遭竄改必在動態執行前拒絕() {
+        let src = "fn fixed()->int{\nreturn 7\n}\nfn plus(n:int)->int{\nreturn n+fixed()\n}\nfn main()->int{\nreturn plus(5)\n}\n";
+        let mut prepared = checked(src);
+        let zero = prepared.nested_callees.iter_mut()
+            .find(|f| f.name == "fixed").expect("原 Checker 的零參數函式");
+        assert!(zero.parameters.is_empty());
+        zero.parameters.push(DeclarationId(usize::MAX));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 
 }
