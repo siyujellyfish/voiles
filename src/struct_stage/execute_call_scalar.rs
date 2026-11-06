@@ -298,10 +298,23 @@ impl PreparedPrivateScalarCall {
                         values.push(value);
                     }
                     PrivateScalarTask::EnterCall(name, argc) => {
-                        let callee = self.nested_callees.iter()
-                            .find(|fun| fun.name == name)
-                            .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                        if callee.parameters.len() != argc || values.len() < argc {
+                        // 遞迴可呼叫最初被 main 選中的函式；
+                        // 它與其他原 Checker 函式均須使用各自參數宣告身分。
+                        let mut root_params = Vec::new();
+                        let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
+                            = if name == self.callee_name {
+                                root_params.push(self.parameter_id);
+                                root_params.extend(
+                                    self.additional_arguments.iter().map(|(id, _, _)| *id),
+                                );
+                                (root_params, &self.return_expr)
+                            } else {
+                                let callee = self.nested_callees.iter()
+                                    .find(|fun| fun.name == name)
+                                    .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                (callee.parameters.clone(), &callee.result)
+                            };
+                        if parameter_ids.len() != argc || values.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if frames.len() >= budget.max_call_frames {
@@ -313,7 +326,7 @@ impl PreparedPrivateScalarCall {
                         }
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
-                        for (id, value) in callee.parameters.iter().zip(evaluated) {
+                        for (id, value) in parameter_ids.iter().zip(evaluated) {
                             if locals.insert(*id, value).is_some() {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
@@ -323,7 +336,7 @@ impl PreparedPrivateScalarCall {
                             name: name.to_owned(), values: locals,
                         });
                         tasks.push(PrivateScalarTask::ExitCall);
-                        tasks.push(PrivateScalarTask::Evaluate(&callee.result));
+                        tasks.push(PrivateScalarTask::Evaluate(result_expr));
                     }
                     PrivateScalarTask::ExitCall => {
                         if frames.len() <= 1 {
@@ -1165,10 +1178,27 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_c_函式圖存在原_checker_合法循環時本非遞迴切片不得偷偷執行() {
+    fn g18_c_函式圖合法互相遞迴須受控預算耗盡並逐動態框架退出() {
         let src = "fn alpha(x:int)->int{\nreturn beta(x)\n}\nfn beta(y:int)->int{\nreturn alpha(y)\n}\nfn main()->int{\nreturn alpha(1)\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        let prepared = checked(src);
+        let outcome = prepared.execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 5, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["alpha", "beta", "alpha", "beta", "alpha"]);
+        let exited = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionExited { name, returned: false } =>
+                Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(exited, ["alpha", "beta", "alpha", "beta", "alpha"]);
+        assert!(!outcome.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::Returned(_))));
     }
 
     #[test]
@@ -1179,6 +1209,110 @@ mod g18_private_scalar_call_tests {
         let unknown = graph_source().replace("leaf(a+b)", "missing(a+b)");
         assert!(matches!(PreparedPrivateScalarCall::prepare(&unknown),
             Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位() {
+        let src = "fn repeat(x:int)->int{\nreturn repeat(x)\n}\nfn main()->int{\nreturn repeat(4)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 8, max_steps: 500 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionEntered(_))).count(), 8);
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionExited { returned: false, .. })).count(), 8);
+        assert!(!outcome.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::Returned(_))));
+    }
+
+    #[test]
+    fn g18_a_合法前向六層以上_copyable_int_函式真逐層返回() {
+        let mut src = String::new();
+        for i in 0..9 {
+            let target = if i == 8 {
+                "n+1".to_owned()
+            } else {
+                format!("f{}(n)", i+1)
+            };
+            src.push_str(&format!("fn f{i}(n:int)->int{{\nreturn {target}\n}}\n"));
+        }
+        src.push_str("fn main()->int{\nreturn f0(12)\n}\n");
+        let outcome = checked(&src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(13));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionEntered(_))).count(), 9);
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionExited { returned: true, .. })).count(), 9);
+    }
+
+    #[test]
+    fn g18_a_五個_copyable_int_真參數不應被內部三參數上界拒絕() {
+        let src = "fn sum(a:int,b:int,c:int,d:int,e:int)->int{\nreturn a+b+c+d+e\n}\nfn main()->int{\nreturn sum(1,2,3,4,5)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(15));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::ParameterBound(..))).count(), 5);
+    }
+
+    #[test]
+    fn g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出() {
+        let src = "fn repeat(x:int)->int{\nreturn repeat(x)\n}\nfn main()->int{\nreturn repeat(9)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 200, max_steps: 8 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        let entered = outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionEntered(_))).count();
+        let exited = outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionExited { returned: false, .. })).count();
+        assert!(entered >= 2);
+        assert_eq!(entered, exited);
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_c_零框架或零步數預算不得偽造任何真函式進入() {
+        let checked = checked(graph_source());
+        for budget in [
+            PrivateScalarExecutionBudget { max_call_frames: 0, max_steps: 100 },
+            PrivateScalarExecutionBudget { max_call_frames: 100, max_steps: 0 },
+        ] {
+            let outcome = checked.execute_with_budget(budget).unwrap();
+            assert!(outcome.result.is_err());
+            assert!(outcome.events.is_empty());
+            assert_eq!(outcome.parameter_slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_a_未被選取的合法遞迴函式不得造成其他正向函式拒絕() {
+        let src = "fn unused(x:int)->int{\nreturn unused(x)\n}\nfn good(y:int)->int{\nreturn y+2\n}\nfn main()->int{\nreturn good(7)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 2, max_steps: 30 },
+        ).unwrap();
+        assert_eq!(outcome.result, Ok(9));
+        assert_eq!(outcome.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionEntered(name) if name == "unused")).count(), 0);
+    }
+
+    #[test]
+    fn g18_c_有界步數的兩個巢狀兄弟呼叫僅在實際出現時建立獨立框架() {
+        let src = "fn leaf(x:int)->int{\nreturn x+1\n}\nfn both(a:int,b:int)->int{\nreturn leaf(a)+leaf(b)\n}\nfn main()->int{\nreturn both(1,2)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 2, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Ok(5));
+        let exits = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionExited { name, returned: true } => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(exits, ["leaf", "leaf", "both"]);
     }
 
 }
