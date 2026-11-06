@@ -60,3 +60,13 @@
 - 實際執行仍由原 Lexer／Parser／Checker／TypedHIR 核准；每層 Group 精確核對原 AST 節點 int 型別、開閉括號 token 來源，然後使用真正內層常值或 DeclarationId，不引入第二套語法分析或隱含轉型。
 - 新增三項真正反：兩個括號常值 int 參數的實際綁定與返回、多層括號包住具名 const int 仍保持唯一原宣告身分、括號 bool／不存在名稱必由原 Checker 拒絕。原 Copyable int 函式 Gate 49→52，G18 原 P18.1、18.5 來源追溯更新。
 - 本批不支援任意尚未實作的引數算術或具有其他動態效果的實參；V1 與原 P18 六項不提前 Passed。PR 需最新 HEAD 三項 CI completed/success、作者／main base／mergeable 核對後 Squash merge，再於新 main SHA 重驗。
+
+
+---
+
+## V1-F：未使用純值宣告正反，接續 Group 實參（2026-11-06）
+
+- 原 V1-E／PR #568 已在主線 `aee0a1b451db22123ae24a221583ff5ab3802d24` 合併括號 int 真求值，故以**最新主線重新施作**原 #569 的獨立缺口，避免同時修改 G18 測試清單時互相覆蓋；保留 V1-E 三項 Group 正反。
+- 原純值 main 處理在 `verified.plan`、Lexer、TypedHIR 和 DeclarationId 已逐筆核准前置 `const／var int = 整數常值` 後，仍要求其每筆必在函式實參中使用；這違反 Copyable 無資源且合法未使用的宣告語意。此次只移除「未使用即拒絕」人為限制；不放行非 int／非字面、有資源或任意有副作用的語句。
+- 修正既有錯誤反例為合法結果 3，保留錯型別與參數個數的原 Checker 拒絕；新增兩項真 Rust 正反：多個未使用 int 混合具名實參應真返回 4、竄改未使用 `main_owners` 原值必在分配動態框架前 `SourceChanged`。
+- 原正反 Gate 在 V1-E 52 項基礎上增至 **54 項**，G18 原 P18.1 追溯、CI 名稱與此 AI-build 同步。保持原六項 0／6 正式 Passed；最新 PR HEAD 三必要 CI 成功後 Squash merge，新 main 同 SHA 複驗。
