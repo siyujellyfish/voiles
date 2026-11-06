@@ -623,9 +623,18 @@ impl PreparedPrivateScalarCall {
         }
         // A2/F02：零參數 name() 仍以原完整函式宣告分類，
         // 非函式或結構建構式不得混入此受限純值執行器。
+        // V1：main 前置已核准 int 初始化也可能包含唯一真函式呼叫；
+        // 即使最後只是 return 先前取得的 Copyable 結果，仍可由
+        // 原 Parser AST 找到同一已核准函式圖，不猜測字串名稱。
         let source_name = PrivateScalarReturnExpr::first_source_call(return_call)
+            .or_else(|| main.body.statements.iter().find_map(|statement| {
+                if let StmtKind::Declare(owner) = &statement.kind {
+                    owner.initializer.as_ref()
+                        .and_then(PrivateScalarReturnExpr::first_source_call)
+                } else { None }
+            }))
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
-                "main return 缺少原 Parser 真具名函式呼叫",
+                "main 來源缺少原 Parser 真具名函式呼叫",
             ))?;
         let callee = verified.functions.iter()
             .find(|fun| fun.name == source_name && fun.name != "main")
@@ -733,6 +742,21 @@ impl PreparedPrivateScalarCall {
             .expect("已確認 main 非空");
         let mut owners = BTreeMap::<String, (DeclarationId, i64)>::new();
         let mut main_owners = Vec::new();
+        // 非字面／名稱的合法 main int 初始化可能含算術、真函式
+        // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
+        let needs_main_local_runtime = main_prefix.iter().any(|statement| {
+            if let StmtKind::Declare(owner) = &statement.kind {
+                if let Some(initializer) = &owner.initializer {
+                    let mut inner = initializer;
+                    while let TermKind::Group(next) = &inner.kind { inner = next; }
+                    return !matches!(&inner.kind,
+                        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
+                        | TermKind::Name(_));
+                }
+            }
+            false
+        }) || PrivateScalarReturnExpr::first_source_call(return_call).is_none();
+        if !needs_main_local_runtime {
         for statement in main_prefix {
             let StmtKind::Declare(owner) = &statement.kind else {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -818,6 +842,7 @@ impl PreparedPrivateScalarCall {
             owners.insert(owner.name.clone(), (id, value));
             main_owners.push((id, value));
         }
+        }
 
         let StmtKind::Return(_) = &last_statement.kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -831,6 +856,8 @@ impl PreparedPrivateScalarCall {
                 TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[], true),
                 // main 可 return 原 Checker 已核准的多函式 int 算式，
                 // 但仍不得把純算術當成已有函式動態證據。
+                TermKind::BinaryInt(_) | TermKind::Name(_) if needs_main_local_runtime =>
+                    (source_name, &[], false),
                 TermKind::BinaryInt(_) => (source_name, &[], false),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "main 最後一筆須為已核准 int 函式或函式複合返回式",
@@ -854,7 +881,8 @@ impl PreparedPrivateScalarCall {
         // 已核准的 main 動態 int 表達式與巢狀具名函式呼叫不能在
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
-        let needs_dynamic = !direct_call || call_arguments.iter().any(|argument| {
+        let needs_dynamic = needs_main_local_runtime || !direct_call
+            || call_arguments.iter().any(|argument| {
             let mut inner = argument;
             while let TermKind::Group(nested) = &inner.kind {
                 inner = nested;
@@ -863,7 +891,13 @@ impl PreparedPrivateScalarCall {
                 TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
                 | TermKind::Name(_))
         });
-        let main_dynamic_call = if needs_dynamic {
+        let mut main_dynamic_inits = Vec::new();
+        let main_dynamic_call = if needs_main_local_runtime {
+            let (inits, result, _) =
+                Self::prepare_function_locals(main, &verified)?;
+            main_dynamic_inits = inits;
+            Some(result)
+        } else if needs_dynamic {
             let bindings = owners.iter().map(|(name, (id, _))|
                 (name.clone(), *id)
             ).collect::<BTreeMap<_, _>>();
