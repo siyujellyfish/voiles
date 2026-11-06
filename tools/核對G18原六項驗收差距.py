@@ -45,6 +45,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_空步數預算必須在任一真_utf8_建立前拒絕",
         "struct_stage::g18_private_source_loop_tests::g18_c_巢狀_for_執行預算耗盡必清理全部已走到的迭代資源",
         "struct_stage::g18_private_source_loop_tests::g18_b_while_條件零迭代仍依真檢查消耗預算而非靜態略過",
+        "struct_stage::g18_private_source_loop_tests::g18_b_具名_while_無須靜態終止改由執行期預算安全中止",
+        "struct_stage::g18_private_source_loop_tests::g18_b_具名_while_continue_每輪先清理真資源再回到條件受控耗盡",
         "struct_stage::g18_private_source_loop_tests::g18_b_真_for_三次每迭代重新建立唯一_utf8_並離域釋放",
         "struct_stage::g18_private_source_loop_tests::g18_b_真_continue_每次先離域釋放再開始下一次",
         "struct_stage::g18_private_source_loop_tests::g18_b_真_while_false_不執行未走過的字串建構",
@@ -123,7 +125,7 @@ from pathlib import Path
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
     "P18.1": ("SubsetVerified", "已接通無參數函式、str 預設借用與前向一至三 Copyable int 真傳參／群組加減溢位；巢狀多函式參數呼叫圖及完整正反尚缺"),
-    "P18.2": ("SubsetVerified", "真 if／else-if、合法任意 i64 半開 for 已改用可配置執行步數預算與 ResourceId 逐輪清理；while 一般動態終止與跨巢狀控制仍待驗收"),
+    "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "D18-01 的 AW06 無資源遞迴、原私有 Checker bool 遞迴 str 真 ResourceId 與跨框架 str 參數 BorrowTicket 逐層歸還已接通；一般參數／結構與完整矩陣仍待驗收"),
     "P18.4": ("SubsetVerified", "str 預設借用真票據、逐框架重入與一至三 Copyable int 實參按宣告身分傳遞；混合型別、self／逃逸仍缺完整正反"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
