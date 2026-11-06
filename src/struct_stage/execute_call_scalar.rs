@@ -1,6 +1,6 @@
 // G18／P18.1、P18.4：已核准 Copyable int 真普通函式參數子集。
 // 原私有 Lexer／Parser／Checker／TypedHIR 是唯一來源權威；
-// 本 evaluator 只執行一個真正 int 參數的已核准純 int 返回運算式，
+// 本 evaluator 執行一至三個真正 Copyable int 參數的已核准純 int 返回運算式，
 // 不把靜態 Checker 等同已執行、亦不擴充公開 P01 CLI。
 #[derive(Debug)]
 enum PrivateScalarCallPrepareError {
@@ -44,7 +44,7 @@ enum PrivateScalarReturnExpr {
 impl PrivateScalarReturnExpr {
     /// 僅由真正 Checker 已交付的 int TypedHIR 準備，不在執行期
     /// 重新猜測文法或由來源文字推論算式樹。
-    fn from_checked(term: &Term, param: &Parameter, verified: &VerifiedPrivateSource)
+    fn from_checked(term: &Term, params: &[Parameter], verified: &VerifiedPrivateSource)
         -> Result<Self, PrivateScalarCallPrepareError> {
         use crate::common_ir::ScalarType;
         let span = term.node_span();
@@ -56,8 +56,13 @@ impl PrivateScalarReturnExpr {
         }
         match &term.kind {
             TermKind::Name(name) => {
+                let param = params.iter().find(|param| &param.name == name).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "返回名稱不是本次已核准函式的 Copyable int 參數",
+                    ),
+                )?;
                 let id = DeclarationId(param.declaration_start);
-                if name != &param.name || verified.plan.scalar_hir.reference(span)
+                if verified.plan.scalar_hir.reference(span)
                     .is_none_or(|fact|
                         fact.resolved.declaration != id
                         || fact.resolved.ty != ScalarType::Int)
@@ -78,7 +83,7 @@ impl PrivateScalarReturnExpr {
                     ))?))
             }
             TermKind::Group(inner) =>
-                Self::from_checked(inner, param, verified),
+                Self::from_checked(inner, params, verified),
             TermKind::BinaryInt(binary) => {
                 let left = binary.left.node_span();
                 let right = binary.right.node_span();
@@ -94,8 +99,8 @@ impl PrivateScalarReturnExpr {
                         "函式內加減 HIR 端點或運算子遭偷換",
                     ));
                 }
-                let left = Box::new(Self::from_checked(&binary.left, param, verified)?);
-                let right = Box::new(Self::from_checked(&binary.right, param, verified)?);
+                let left = Box::new(Self::from_checked(&binary.left, params, verified)?);
+                let right = Box::new(Self::from_checked(&binary.right, params, verified)?);
                 Ok(if fact.operator == '+' {
                     Self::Addition(left, right)
                 } else {
@@ -136,6 +141,10 @@ struct PreparedPrivateScalarCall {
     return_expr: PrivateScalarReturnExpr,
     owner_id: Option<DeclarationId>,
     argument: i64,
+    /// 其餘參數從同一原 Checker 函式簽章依宣告順序綁定。
+    additional_arguments: Vec<(DeclarationId, i64, Option<DeclarationId>)>,
+    /// 已在主函式真正按順序建立的 Copyable int 詞彙持有者。
+    main_owners: Vec<(DeclarationId, i64)>,
 }
 
 impl PreparedPrivateScalarCall {
@@ -154,55 +163,104 @@ impl PreparedPrivateScalarCall {
         let callee = verified.functions.iter().find(|fun| fun.name != "main")
             .ok_or(PrivateScalarCallPrepareError::Unsupported("缺少被呼叫函式"))?;
         if main.result_ty != "int" || !main.params.is_empty()
-            || callee.result_ty != "int" || callee.params.len() != 1
-            || callee.params[0].ty != "int"
+            || callee.result_ty != "int" || !(1..=3).contains(&callee.params.len())
+            || callee.params.iter().any(|param| param.ty != "int")
             || callee.body.statements.len() != 1
-            || !(main.body.statements.len() == 1 || main.body.statements.len() == 2) {
+            || !(1..=4).contains(&main.body.statements.len()) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "只執行原 Checker 證明的一 int 參數直接具名返回",
+                "只接通已核准一至三個 Copyable int 參數及單一返回式",
             ));
+        }
+        // 對函式簽章每一個 Parameter，不以名稱猜測或忽略後續參數；
+        // 原 P16 TypedMember 及 Checker DeclarationId 皆須逐項相符。
+        for param in &callee.params {
+            let id = DeclarationId(param.declaration_start);
+            let member = crate::common_ir::VerifiedTypedMember::checked_private(
+                text, crate::common_ir::NodeRole::Parameter,
+                param.declaration_span, &param.name, param.name_span,
+                &param.ty, param.type_span, false,
+            ).ok_or(PrivateScalarCallPrepareError::Unsupported(
+                "多參數缺少原 Parser／Lexer 的名稱與 int 型別身分",
+            ))?;
+            if !verified.plan.declarations.matches(id, "int", false)
+                || verified.plan.members.get(&member.identity) != Some(&member) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "多參數缺少原 Checker const int 宣告及 P16 型別來源事實",
+                ));
+            }
         }
         let param = &callee.params[0];
         let param_id = DeclarationId(param.declaration_start);
-        let expected_member = crate::common_ir::VerifiedTypedMember::checked_private(
-            text, crate::common_ir::NodeRole::Parameter, param.declaration_span,
-            &param.name, param.name_span, &param.ty, param.type_span, false,
-        ).ok_or(PrivateScalarCallPrepareError::Unsupported(
-            "參數缺少真 Parser 來源位置、名稱／型別 token 身分",
-        ))?;
-        if !verified.plan.declarations.matches(param_id, "int", false)
-            || verified.plan.members.get(&expected_member.identity)
-                != Some(&expected_member) {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "參數缺少原 Checker int const 宣告及 P16 Member 型別來源證據",
-            ));
-        }
         let StmtKind::Return(return_param) = &callee.body.statements[0].kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "被呼叫者只能用已簽發的 Copyable int 參數直接返回",
+                "本子集要求被呼叫函式直接執行原 Checker 核准的返回式",
             ));
         };
         let param_return_span = return_param.expression.node_span();
-        // 每個子節點都取自**原** Checker 的 TypedHIR；
-        // Copyable int 加減使用原正式溢位語意，絕不在準備時
-        // 把呼叫參數當成常值計算。
         let return_expr = PrivateScalarReturnExpr::from_checked(
-            &return_param.expression, param, &verified,
+            &return_param.expression, &callee.params, &verified,
         )?;
-        let main_len = main.body.statements.len();
-        let StmtKind::Return(main_return) = &main.body.statements[main_len-1].kind else {
+
+        // main 的所有前置語句須真為已核准的 Copyable int 常值初始化。
+        // 正常詞彙遮蔽／任意賦值另待 P18.2，不把尚未執行的語句跳過。
+        let (main_return, main_prefix) = main.body.statements.split_last()
+            .expect("已確認 main 非空");
+        let mut owners = BTreeMap::<String, (DeclarationId, i64)>::new();
+        let mut main_owners = Vec::new();
+        for statement in main_prefix {
+            let StmtKind::Declare(owner) = &statement.kind else {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "多參數 main 前置語句僅接受真正 int 初始化宣告",
+                ));
+            };
+            let id = DeclarationId(statement.start);
+            let Some(init) = &owner.initializer else {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "main int 詞彙持有者尚未初始化",
+                ));
+            };
+            let TermKind::Scalar(
+                crate::syntax_shared::ScalarLiteral::Integer(raw),
+            ) = &init.kind else {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "此子集只接通原 Checker 已核准的 int 字面初始化",
+                ));
+            };
+            if owner.ty != "int"
+                || !verified.plan.declarations.matches(id, "int", owner.mutable)
+                || verified.plan.scalar_hir.expression(init.node_span())
+                    .is_none_or(|fact| fact.ty != ScalarType::Int)
+                || owners.contains_key(&owner.name)
+                || !verified.tokens.iter().any(|token|
+                    token.start == init.start && token.end == init.end
+                        && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
+                ) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "main 具名 int 初始值缺少唯一 Checker／Lexer／TypedHIR 身分",
+                ));
+            }
+            let value = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                PrivateScalarCallPrepareError::Unsupported(
+                    "main int 詞彙初始化值超出 i64",
+                ),
+            )?;
+            owners.insert(owner.name.clone(), (id, value));
+            main_owners.push((id, value));
+        }
+
+        let StmtKind::Return(main_return) = &main_return.kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "主函式尾端須為真正普通函式呼叫的返回",
+                "main 最後一筆必須是真普通函式呼叫 return",
             ));
         };
         let TermKind::Call(call) = &main_return.expression.kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "主函式必須真正呼叫一個已核准的 int 函式",
+                "main 最後一筆須真正呼叫已核准的 int 函式",
             ));
         };
-        if call.name != callee.name || call.arguments.len() != 1 {
+        if call.name != callee.name || call.arguments.len() != callee.params.len() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "函式名稱／參數個數不符合正式 Parser 及 Checker",
+                "原 Parser 呼叫名稱／參數個數與真 Checker 函式簽章不符",
             ));
         }
         let call_span = main_return.expression.node_span();
@@ -211,72 +269,71 @@ impl PreparedPrivateScalarCall {
             || verified.plan.declarations.call_borrows_at(call_span)
                 .is_some_and(|facts| !facts.is_empty()) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "呼叫缺少 int TypedHIR 或 Copyable 實參被誤作非 Copyable 借用",
+                "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
             ));
         }
-        let arg = &call.arguments[0];
-        let (argument, owner_id) = match &arg.kind {
-            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
-                if verified.plan.scalar_hir.expression(arg.node_span())
-                    .is_none_or(|fact| fact.ty != ScalarType::Int) {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "int 引數常值缺少原 Checker Expression HIR",
-                    ));
-                }
-                (crate::syntax_shared::integer_i64(raw).map_err(|_|
-                    PrivateScalarCallPrepareError::Unsupported("int 引數超出 i64 範圍"),
-                )?, None)
-            }
-            TermKind::Name(name) if main_len == 2 => {
-                let first = &main.body.statements[0];
-                let StmtKind::Declare(owner) = &first.kind else {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "具名 Copyable 實參的持有者必須為真已核准宣告",
-                    ));
-                };
-                let owner_id = DeclarationId(first.start);
-                let Some(initializer) = owner.initializer.as_ref() else {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "int 持有者必須在執行前有合法初始值",
-                    ));
-                };
-                let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
-                    &initializer.kind else {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "此私有執行子集僅接通已驗證的獨立 int 常值宣告",
-                    ));
-                };
-                if name != &owner.name || owner.ty != "int"
-                    || !verified.plan.declarations.matches(owner_id, "int", owner.mutable)
-                    || verified.plan.scalar_hir.reference(arg.node_span())
-                        .is_none_or(|fact|
-                            fact.resolved.declaration != owner_id
-                            || fact.resolved.ty != ScalarType::Int)
-                    || verified.plan.scalar_hir.expression(initializer.node_span())
+        let mut all_arguments = Vec::new();
+        let mut used_names = std::collections::BTreeSet::<DeclarationId>::new();
+        for (arg, parameter) in call.arguments.iter().zip(&callee.params) {
+            let (value, owner_id) = match &arg.kind {
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(raw),
+                ) => {
+                    if verified.plan.scalar_hir.expression(arg.node_span())
                         .is_none_or(|fact| fact.ty != ScalarType::Int)
-                    || !verified.tokens.iter().any(|token|
-                        token.start == arg.start && token.end == arg.end
-                            && matches!(&token.kind, TokenKind::Name(found) if found == name)
-                    ) {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "實參沒有與原 Checker int DeclarationId／Reference HIR 綁定",
-                    ));
+                        || !verified.tokens.iter().any(|token|
+                            token.start == arg.start && token.end == arg.end
+                                && matches!(&token.kind,
+                                    TokenKind::Integer(found) if found == raw)
+                        ) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "參數 int 常值缺少原 Lexer／Checker TypeHIR",
+                        ));
+                    }
+                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "函式 int 實參超出 i64",
+                        ),
+                    )?, None)
                 }
-                (crate::syntax_shared::integer_i64(raw).map_err(|_|
-                    PrivateScalarCallPrepareError::Unsupported("初始 int 常值超出 i64"),
-                )?, Some(owner_id))
-            }
-            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                "此私有子集的 int 實參只能是已驗證常值或具名 Copyable int",
-            )),
-        };
-        if main_len == 2 && owner_id.is_none() {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "此子集不允許未執行的額外主函式語句",
+                TermKind::Name(name) => {
+                    let (id, value) = owners.get(name).copied().ok_or(
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "具名 Copyable int 實參不是原 main 已初始化所有者",
+                        ),
+                    )?;
+                    if verified.plan.scalar_hir.reference(arg.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != id
+                            || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == arg.start && token.end == arg.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
+                        ) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "多參數實參未繫結原 Checker DeclarationId／Reference HIR",
+                        ));
+                    }
+                    used_names.insert(id);
+                    (value, Some(id))
+                }
+                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "Copyable int 參數僅接通已驗證字面或具名來源",
+                )),
+            };
+            all_arguments.push((
+                DeclarationId(parameter.declaration_start), value, owner_id,
             ));
         }
-        // 先將原 AST 的已核准身分投影成獨立值，再移交
-        // VerifiedPrivateSource；不得保留對其內部函式的懸空借用。
+        // 確保每筆 main 宣告在此執行切片真被作為引數取值，
+        // 不可悄悄跳過未支援的多餘有作用語句。
+        if main_owners.iter().any(|(id, _)| !used_names.contains(id)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "main 有尚未在本真執行路徑使用的 int 宣告",
+            ));
+        }
+        let (parameter_id, argument, owner_id) = all_arguments[0];
+        let additional_arguments = all_arguments[1..].to_vec();
         let callee_span = NodeSpan::new(callee.start, callee.end);
         let callee_name = callee.name.clone();
         let parameter_name = param.name.clone();
@@ -285,6 +342,7 @@ impl PreparedPrivateScalarCall {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id: param_id,
             parameter_return_span: param_return_span, return_expr, owner_id, argument,
+            additional_arguments, main_owners,
         })
     }
 
@@ -300,6 +358,10 @@ impl PreparedPrivateScalarCall {
             && self.return_expr == fresh.return_expr
             && self.owner_id == fresh.owner_id
             && self.argument == fresh.argument
+            && self.additional_arguments == fresh.additional_arguments
+            && self.main_owners == fresh.main_owners
+            && self.verified.plan.declarations.call_borrows
+                == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
                 == fresh.verified.plan.declarations.by_source
             && self.verified.plan.function_exits == fresh.verified.plan.function_exits
@@ -322,34 +384,35 @@ impl PreparedPrivateScalarCall {
             ) || !self.matches_source(source) {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         }
-        let mut events = vec![
-            PrivateScalarCallEvent::ArgumentEvaluated(self.argument),
-            PrivateScalarCallEvent::FunctionEntered(self.callee_name.clone()),
-        ];
-        // 真呼叫框架只以原 Checker 參數 DeclarationId 存放 Copyable
-        // i64；不能用引數文字名稱建立另一個假的宣告或借用票據。
+        // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
+        // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
+        let mut events = Vec::new();
+        events.push(PrivateScalarCallEvent::ArgumentEvaluated(self.argument));
+        for (_, argument, _) in &self.additional_arguments {
+            events.push(PrivateScalarCallEvent::ArgumentEvaluated(*argument));
+        }
+        events.push(PrivateScalarCallEvent::FunctionEntered(self.callee_name.clone()));
         let mut frame = BTreeMap::<DeclarationId, i64>::new();
-        let result = if frame.insert(self.parameter_id, self.argument).is_some() {
-            Err(PrivateScalarCallRuntimeError::StateMismatch)
-        } else {
-            events.push(PrivateScalarCallEvent::ParameterBound(
-                self.parameter_id, self.argument,
-            ));
+        let mut result = Ok(());
+        for (id, argument) in std::iter::once((self.parameter_id, self.argument))
+            .chain(self.additional_arguments.iter().map(|(id, value, _)| (*id, *value))) {
+            if frame.insert(id, argument).is_some() {
+                result = Err(PrivateScalarCallRuntimeError::StateMismatch);
+                break;
+            }
+            events.push(PrivateScalarCallEvent::ParameterBound(id, argument));
+        }
+        let result = result.and_then(|()| {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                // 從本次真參數框架逐項求值；加減每個運算元
-                // 實際讀取 Copyable i64，checked_* 溢位時沒有
-                // 假 Returned 事件且仍正常執行退出與清理。
-                match self.return_expr.evaluate(&frame) {
-                    Ok(value) => {
-                        events.push(PrivateScalarCallEvent::Returned(value));
-                        Ok(value)
-                    },
-                    Err(error) => Err(error),
-                }
+                self.return_expr.evaluate(&frame)
             }
-        };
+        });
+        if let Ok(value) = result {
+            events.push(PrivateScalarCallEvent::Returned(value));
+        }
+
         // 經正常 Return 或錯誤分支都要離開此呼叫的參數作用域。
         frame.clear();
         events.push(PrivateScalarCallEvent::FunctionExited {
