@@ -164,7 +164,7 @@ jobs:
       - name: G18 P18.3 已核准 AW06 真遞迴與可配置耗盡七項正反 Gate
         run: python3 tools/核對G18遞迴真框架與耗盡.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.3 真 str BorrowTicket／多 int 多函式遞迴三十五項正反 Gate
+      - name: G18 P18.3／18.4 真多 str BorrowTicket 與多 int 遞迴四十三項 Gate
         run: python3 tools/核對G18遞迴真資源逐框架.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.6 真同步 self／方法多載／整數參數返回三十八項正反 Gate
