@@ -1475,4 +1475,81 @@ mod g18_private_scalar_call_tests {
     }
 
 
+
+    #[test]
+    fn g18_a_main_零參數呼叫真正建立空參數框架並返回() {
+        let src = "fn value()->int{\nreturn 9\n}\nfn main()->int{\nreturn value()\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.parameter_id.is_none());
+        assert!(prepared.argument.is_none());
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(9));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events, vec![
+            PrivateScalarCallEvent::FunctionEntered("value".to_owned()),
+            PrivateScalarCallEvent::Returned(9),
+            PrivateScalarCallEvent::FunctionExited {
+                name: "value".to_owned(), returned: true,
+            },
+        ]);
+    }
+
+    #[test]
+    fn g18_a_main_零參數前向函式串接巢狀真返回() {
+        let src = "fn first()->int{\nreturn second()\n}\nfn main()->int{\nreturn first()\n}\nfn second()->int{\nreturn 11\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(11));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(_)
+                | PrivateScalarCallEvent::ParameterBound(..)
+        )));
+        let enters = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(enters, ["first", "second"]);
+        let returns = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::Returned(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(returns, [11, 11]);
+    }
+
+    #[test]
+    fn g18_c_main_零參數根函式直接遞迴預算耗盡及逐框架退出() {
+        let src = "fn repeat()->int{\nreturn repeat()\n}\nfn main()->int{\nreturn repeat()\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 4, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(_)
+        )).count(), 4);
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited { returned: false, .. }
+        )).count(), 4);
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+                | PrivateScalarCallEvent::ArgumentEvaluated(_)
+                | PrivateScalarCallEvent::ParameterBound(..)
+        )));
+    }
+
+    #[test]
+    fn g18_a_main_零參數來源被偽造一個參數必執行前拒絕() {
+        let src = "fn value()->int{\nreturn 9\n}\nfn main()->int{\nreturn value()\n}\n";
+        let mut prepared = checked(src);
+        assert!(prepared.parameter_id.is_none());
+        prepared.parameter_id = Some(DeclarationId(usize::MAX));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(src);
+        prepared.argument = Some(123);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
 }
