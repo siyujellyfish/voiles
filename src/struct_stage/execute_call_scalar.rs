@@ -301,21 +301,26 @@ struct PrivateScalarNestedCallee {
     result: PrivateScalarReturnExpr,
 }
 
+/// 原 Checker 根呼叫每一個實參的真宣告身分和待動態求值 HIR。
+/// 不預先折疊算術、不放置假的 i64 或參數宣告身分。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateMainCallArgument {
+    parameter_id: DeclarationId,
+    expression: PrivateScalarReturnExpr,
+    direct_owner: Option<DeclarationId>,
+}
+
 struct PreparedPrivateScalarCall {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
     call_span: crate::common_ir::NodeSpan,
     callee_span: crate::common_ir::NodeSpan,
     callee_name: String,
-    parameter_name: Option<String>,
-    parameter_id: Option<DeclarationId>,
     parameter_return_span: crate::common_ir::NodeSpan,
     return_expr: PrivateScalarReturnExpr,
-    owner_id: Option<DeclarationId>,
-    argument: Option<i64>,
-    /// 其餘參數從同一原 Checker 函式簽章依宣告順序綁定。
-    additional_arguments: Vec<(DeclarationId, i64, Option<DeclarationId>)>,
-    /// 已在主函式真正按順序建立的 Copyable int 詞彙持有者。
+    /// 真實引數 AST／TypedHIR 在 execute 依原書寫順序求值。
+    main_arguments: Vec<PrivateMainCallArgument>,
+    /// main 已初始化的原 DeclarationId／Copyable int 持有者。
     main_owners: Vec<(DeclarationId, i64)>,
     /// 同一完整來源中原 Parser／Checker 已驗證的其餘參數函式。
     nested_callees: Vec<PrivateScalarNestedCallee>,
@@ -434,11 +439,8 @@ impl PreparedPrivateScalarCall {
                         let mut root_params = Vec::new();
                         let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
                             = if name == self.callee_name {
-                                if let Some(id) = self.parameter_id {
-                                    root_params.push(id);
-                                }
                                 root_params.extend(
-                                    self.additional_arguments.iter().map(|(id, _, _)| *id),
+                                    self.main_arguments.iter().map(|arg| arg.parameter_id),
                                 );
                                 (root_params, &self.return_expr)
                             } else {
