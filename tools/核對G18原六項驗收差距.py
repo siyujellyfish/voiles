@@ -85,6 +85,14 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_call_borrow_tests::g18_d_混合_const_str_與_copyable_int_同框架真借用及_hir_加法返回",
+        "struct_stage::g18_private_call_borrow_tests::g18_d_混合_int_在前_var_str_在後_仍以真獨占票據與參數身分執行",
+        "struct_stage::g18_private_call_borrow_tests::g18_d_混合函式重複呼叫不消耗_str_持有者也不重用上次_int_參數框架",
+        "struct_stage::g18_private_call_borrow_tests::g18_c_混合借用期間_int_加法溢位須歸還票據及真_utf8_資源",
+        "struct_stage::g18_private_call_borrow_tests::g18_c_混合函式真借用與_int_參數已綁定後故障仍原子歸還清理",
+        "struct_stage::g18_private_call_borrow_tests::g18_d_篡改混合函式_int_值與_DeclarationId_或_hir_返回必須配置前拒絕",
+        "struct_stage::g18_private_call_borrow_tests::g18_d_混合函式刪除原_checker_真借用表不得使用舊參數票據",
+        "struct_stage::g18_private_call_borrow_tests::g18_d_混合呼叫錯誤型別個數與具名非授權_int_實參必保守拒絕",
         "struct_stage::g18_private_call_borrow_tests::g18_d_正式_checker_var_str_參數獨占借用不複製源_resource_id",
         "struct_stage::g18_private_scalar_call_tests::g18_a_具名_var_int_合法_copyable_不因函式返回消耗持有者",
         "struct_stage::g18_private_call_borrow_tests::g18_d_來源借用別名再作函式實參須由_checker_保守拒絕",
@@ -135,7 +143,7 @@ from pathlib import Path
     "P18.1": ("SubsetVerified", "已接通原 Checker 前向一至三 Copyable int 及最高三層非循環真參數呼叫圖、重複葉函式、算術與溢位逐框架退出；一般複雜呼叫圖與所有已核准模式仍缺完整正反"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "D18-01 的 AW06 無資源遞迴、原私有 Checker bool 遞迴 str 真 ResourceId 與跨框架 str 參數 BorrowTicket 逐層歸還已接通；一般參數／結構與完整矩陣仍待驗收"),
-    "P18.4": ("SubsetVerified", "str 預設借用真票據、逐框架重入與一至三 Copyable int 實參按宣告身分傳遞；混合型別、self／逃逸仍缺完整正反"),
+    "P18.4": ("SubsetVerified", "真 str BorrowTicket 與 Copyable int 同次函式混合雙參數／不同宣告順序、算術溢位安全退出已接通；一般整筆移動、跨呼叫混合資源與完整 self／逃逸矩陣尚缺"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
