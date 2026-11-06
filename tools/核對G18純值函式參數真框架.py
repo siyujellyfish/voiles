@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的八十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的九十三項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_函式參數與多個純值區域初始化依_checker_順序真返回",
+    "g18_a_巢狀函式各自區域宣告不與父框架參數混用",
+    "g18_a_真動態_main_實參進入帶區域宣告函式仍唯一返回",
+    "g18_c_函式區域算術溢位必退出而不得虛構返回",
+    "g18_c_局部整數宣告跨多個遞迴框架不得共用儲存位置",
+    "g18_a_函式區域宣告工作計畫遭偽造必在執行前拒絕",
+    "g18_a_函式區域初始化錯誤型別與未知參照由原_checker_拒絕",
     "g18_a_main_普通函式返回值與常值相加由同一真動態工作堆疊完成",
     "g18_a_main_兩個兄弟函式合成返回必照原_checker_左右順序執行",
     "g18_a_main_多層括號包含函式複合返回保持原_parser_int_來源",
