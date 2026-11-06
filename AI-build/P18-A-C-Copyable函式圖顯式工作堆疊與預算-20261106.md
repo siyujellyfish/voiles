@@ -81,3 +81,13 @@
 - 新四項 Rust 正反：三層括號包裹帶 int 參數呼叫返回 8；三層括號包裹零參數前向呼叫返回 23 且零假 ArgumentEvaluated／ParameterBound；篡改原內層 Call source span 必在任何動態框架前拒絕；錯參數型別與未知函式仍由原 Checker 拒絕。
 - 專項 Gate 54→58，G18 原 P18.1／18.5 追溯、CI 與 AI-build 同步；僅使用已核准來源，不新增公開 CLI、異常或語法。**V1／P18 六原項仍非正式 Passed。**
 - 驗收需 PR 最新 HEAD 三必要 CI completed/success，作者／base／mergeable 與 Squash merge 核對；合併後新 main 同 SHA 再驗 G17／G6／F00、G18 --audit。
+
+
+---
+
+## V1-H：main 合法括號 int 純值初始化（2026-11-06）
+
+- 基線 main `47f27814910e45ffba6155ee10d164b95a0f6731`（#571 正式三必要 CI completed/success 後已 Squash merge）。原 main Copyable int 宣告僅接受 `TermKind::Scalar(Integer)`，合法 `const base:int = ((((6))))` 被私有執行器誤判 Unsupported；而原 Checker 已可證其為 int 的純常值來源。
+- 僅對原 `TermKind::Group` 逐層驗證 Lexer 左右括號 UTF-8 精確跨度、已核准 Checker int TypedHIR，再取最內層原 Integer Literal 與同源 Lexer Token；沒有進行任意算術的 prepare-time 預先求值，沒有新的語法或放寬資源安全。
+- 四項真來源 Rust 正反：具名 Copyable 多層 Group 初始化後真函式返回 7、未使用 Group int 宣告不阻擋零參數函式返回 17、Group bool／未宣告名稱仍由 Checker 拒絕、Group 初始化持有者值竄改在動態框架前 SourceChanged。
+- 專項 Gate 58→62，G18 原 P18.1／P18.5 真來源、CI 與 AI-build 同步。尚非 V1/P18 完整驗收；主線最新 PR HEAD 三必要 CI success／Squash 後同 SHA 需再次驗證。

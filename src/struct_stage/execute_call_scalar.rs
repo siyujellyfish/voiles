@@ -582,20 +582,39 @@ impl PreparedPrivateScalarCall {
                     "main int 詞彙持有者尚未初始化",
                 ));
             };
+            // Group 常值仍須逐層經原 Lexer／Checker 證明為 int；
+            // 只移除無副作用括號，不把任意式子在 prepare 階段預求值。
+            let mut actual_init = init;
+            while let TermKind::Group(inner) = &actual_init.kind {
+                let span = actual_init.node_span();
+                if verified.plan.scalar_hir.expression(span)
+                    .is_none_or(|fact| fact.ty != ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "main Group 初始化缺少真 Checker int HIR 或括號詞彙",
+                    ));
+                }
+                actual_init = inner;
+            }
             let TermKind::Scalar(
                 crate::syntax_shared::ScalarLiteral::Integer(raw),
-            ) = &init.kind else {
+            ) = &actual_init.kind else {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "此子集只接通原 Checker 已核准的 int 字面初始化",
+                    "此子集只接通原 Checker 已核准的純 int 常值或括號常值初始化",
                 ));
             };
             if owner.ty != "int"
                 || !verified.plan.declarations.matches(id, "int", owner.mutable)
-                || verified.plan.scalar_hir.expression(init.node_span())
+                || verified.plan.scalar_hir.expression(actual_init.node_span())
                     .is_none_or(|fact| fact.ty != ScalarType::Int)
                 || owners.contains_key(&owner.name)
                 || !verified.tokens.iter().any(|token|
-                    token.start == init.start && token.end == init.end
+                    token.start == actual_init.start && token.end == actual_init.end
                         && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
                 ) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1702,6 +1721,53 @@ mod g18_private_scalar_call_tests {
             assert!(matches!(PreparedPrivateScalarCall::prepare(src),
                 Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
         }
+    }
+
+
+    #[test]
+    fn g18_a_main_具名_copyable_int_多層括號初始化仍真傳入函式() {
+        let src = "fn inc(x:int)->int{\nreturn x+1\n}\nfn main()->int{\nconst base:int = ((((6))))\nreturn inc(base)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 1);
+        assert_eq!(prepared.main_owners[0].1, 6);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(7));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_a_main_未使用的合法_group_int_初始化不應阻擋零參數函式() {
+        let src = "fn fixed()->int{\nreturn 17\n}\nfn main()->int{\nvar unused:int = ((8))\nreturn fixed()\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 1);
+        assert_eq!(prepared.main_owners[0].1, 8);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(17));
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(_)
+                | PrivateScalarCallEvent::ParameterBound(..)
+        )).count(), 0);
+    }
+
+    #[test]
+    fn g18_a_main_括號初始化為布林或缺失名稱仍由原_checker_拒絕() {
+        for src in [
+            "fn id(x:int)->int{\nreturn x\n}\nfn main()->int{\nconst owner:int = ((true))\nreturn id(owner)\n}\n",
+            "fn id(x:int)->int{\nreturn x\n}\nfn main()->int{\nconst owner:int = ((missing))\nreturn id(owner)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_a_main_括號初始化持有者遭竄改不得建立動態框架() {
+        let src = "fn id(x:int)->int{\nreturn x\n}\nfn main()->int{\nvar owner:int = (((9)))\nreturn id(owner)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(9));
+        prepared.main_owners[0].1 = 90;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 }

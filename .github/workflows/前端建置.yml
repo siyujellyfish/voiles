@@ -158,7 +158,7 @@ jobs:
       - name: G17 原始 P17.1～P17.6 同 SHA 六項真執行與安全正反正式驗收
         run: python3 tools/核對G17正式總驗收.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.1／18.3／18.4 Copyable int 括號根返回與未使用純值五十八項真 Gate
+      - name: G18 P18.1／18.3／18.4 Copyable int Group int 初始化與安全框架六十二項真 Gate
         run: python3 tools/核對G18純值函式參數真框架.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.3 已核准 AW06 真遞迴與可配置耗盡七項正反 Gate
