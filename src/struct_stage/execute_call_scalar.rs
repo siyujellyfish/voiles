@@ -14,6 +14,9 @@ enum PrivateScalarCallRuntimeError {
     StateMismatch,
     InjectedFailure,
     IntegerOverflow,
+    /// D18-01：是本次呼叫環境預算耗盡，非語言固定遞迴深度。
+    CallBudget,
+    StepBudget,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,7 +98,7 @@ impl PrivateScalarReturnExpr {
                         "巢狀呼叫沒有原 Checker 具名宣告",
                     ))?;
                 if target.name == "main" || target.result_ty != "int"
-                    || !(1..=3).contains(&target.params.len())
+                    || target.params.is_empty()
                     || target.params.len() != call.arguments.len()
                     || target.params.iter().any(|param| param.ty != "int")
                     || verified.plan.declarations.call_borrows_at(span)
@@ -200,87 +203,162 @@ struct PreparedPrivateScalarCall {
     nested_callees: Vec<PrivateScalarNestedCallee>,
 }
 
-impl PreparedPrivateScalarCall {
-    fn graph_is_acyclic<'a>(
-        name: &str, graph: &[(&'a str, &'a PrivateScalarReturnExpr)],
-        active: &mut std::collections::BTreeSet<String>,
-        completed: &mut std::collections::BTreeSet<String>,
-    ) -> bool {
-        if completed.contains(name) { return true; }
-        if !active.insert(name.to_owned()) { return false; }
-        let Some((_, expression)) = graph.iter().find(|(key, _)| *key == name) else {
-            return false;
-        };
-        let mut calls = Vec::new();
-        expression.collect_calls(&mut calls);
-        if calls.iter().any(|called|
-            !Self::graph_is_acyclic(called, graph, active, completed)) {
-            return false;
-        }
-        active.remove(name);
-        completed.insert(name.to_owned());
-        true
-    }
+/// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
+#[derive(Debug, Clone, Copy)]
+struct PrivateScalarExecutionBudget {
+    max_call_frames: usize,
+    max_steps: usize,
+}
 
-    /// 每個巢狀被呼叫者使用獨立的真參數 DeclarationId 動態 slot；
-    /// 呼叫返回與錯誤均先退出子框架，不得沿用父框架名稱查值。
+impl Default for PrivateScalarExecutionBudget {
+    fn default() -> Self {
+        Self { max_call_frames: 128, max_steps: 100_000 }
+    }
+}
+
+struct PrivateScalarActiveFrame {
+    name: String,
+    values: BTreeMap<DeclarationId, i64>,
+}
+
+/// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
+/// 上逐項求值，呼叫時由動態框架保存真正參數值。
+enum PrivateScalarTask<'a> {
+    Evaluate(&'a PrivateScalarReturnExpr),
+    Apply(char),
+    EnterCall(&'a str, usize),
+    ExitCall,
+}
+
+impl PreparedPrivateScalarCall {
+    /// 顯式 expression 工作堆疊＋真函式框架。合法遞迴亦走同一路徑，
+    /// 預算耗盡時從最內層逐一退出；禁止依賴宿主 Rust 呼叫堆疊。
     fn evaluate_graph(
-        &self, expr: &PrivateScalarReturnExpr,
-        frame: &BTreeMap<DeclarationId, i64>,
+        &self,
+        expr: &PrivateScalarReturnExpr,
+        initial_frame: &BTreeMap<DeclarationId, i64>,
         events: &mut Vec<PrivateScalarCallEvent>,
+        budget: PrivateScalarExecutionBudget,
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
-        match expr {
-            PrivateScalarReturnExpr::Call { name, arguments } => {
-                let callee = self.nested_callees.iter()
-                    .find(|fun| fun.name == *name)
-                    .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                if callee.parameters.len() != arguments.len() {
-                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        let mut frames = vec![PrivateScalarActiveFrame {
+            name: self.callee_name.clone(), values: initial_frame.clone(),
+        }];
+        let mut tasks = vec![PrivateScalarTask::Evaluate(expr)];
+        let mut values = Vec::<i64>::new();
+        let mut steps = 0usize;
+        let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
+            while let Some(task) = tasks.pop() {
+                if steps >= budget.max_steps {
+                    return Err(PrivateScalarCallRuntimeError::StepBudget);
                 }
-                // 所有參數表達式先在原父框架按順序求值；
-                // 求值失敗時不可假造已進入的子函式。
-                let mut evaluated = Vec::new();
-                for argument in arguments {
-                    evaluated.push(self.evaluate_graph(argument, frame, events)?);
-                }
-                for argument in &evaluated {
-                    events.push(PrivateScalarCallEvent::ArgumentEvaluated(*argument));
-                }
-                events.push(PrivateScalarCallEvent::FunctionEntered(name.clone()));
-                let mut nested_frame = BTreeMap::new();
-                let mut bound = Ok(());
-                for (id, value) in callee.parameters.iter().zip(evaluated) {
-                    if nested_frame.insert(*id, value).is_some() {
-                        bound = Err(PrivateScalarCallRuntimeError::StateMismatch);
-                        break;
+                steps += 1;
+                match task {
+                    PrivateScalarTask::Evaluate(term) => match term {
+                        PrivateScalarReturnExpr::Parameter(id) => {
+                            let value = frames.last()
+                                .and_then(|frame| frame.values.get(id).copied())
+                                .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            values.push(value);
+                        }
+                        PrivateScalarReturnExpr::Constant(value) => values.push(*value),
+                        PrivateScalarReturnExpr::Addition(left, right) => {
+                            tasks.push(PrivateScalarTask::Apply('+'));
+                            tasks.push(PrivateScalarTask::Evaluate(right));
+                            tasks.push(PrivateScalarTask::Evaluate(left));
+                        }
+                        PrivateScalarReturnExpr::Subtraction(left, right) => {
+                            tasks.push(PrivateScalarTask::Apply('-'));
+                            tasks.push(PrivateScalarTask::Evaluate(right));
+                            tasks.push(PrivateScalarTask::Evaluate(left));
+                        }
+                        PrivateScalarReturnExpr::Call { name, arguments } => {
+                            // 所有子呼叫實參在父框架從左到右求值；
+                            // 其中任何一項錯誤時，尚未 Enter 的函式
+                            // 不得產生假的進入或返回事件。
+                            tasks.push(PrivateScalarTask::EnterCall(
+                                name, arguments.len(),
+                            ));
+                            for argument in arguments.iter().rev() {
+                                tasks.push(PrivateScalarTask::Evaluate(argument));
+                            }
+                        }
+                    },
+                    PrivateScalarTask::Apply(operator) => {
+                        let right = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let left = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let value = match operator {
+                            '+' => left.checked_add(right),
+                            '-' => left.checked_sub(right),
+                            _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                        }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
+                        values.push(value);
                     }
-                    events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
+                    PrivateScalarTask::EnterCall(name, argc) => {
+                        let callee = self.nested_callees.iter()
+                            .find(|fun| fun.name == name)
+                            .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                        if callee.parameters.len() != argc || values.len() < argc {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        if frames.len() >= budget.max_call_frames {
+                            return Err(PrivateScalarCallRuntimeError::CallBudget);
+                        }
+                        let evaluated = values.split_off(values.len() - argc);
+                        for value in &evaluated {
+                            events.push(PrivateScalarCallEvent::ArgumentEvaluated(*value));
+                        }
+                        events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
+                        let mut locals = BTreeMap::new();
+                        for (id, value) in callee.parameters.iter().zip(evaluated) {
+                            if locals.insert(*id, value).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
+                        }
+                        frames.push(PrivateScalarActiveFrame {
+                            name: name.to_owned(), values: locals,
+                        });
+                        tasks.push(PrivateScalarTask::ExitCall);
+                        tasks.push(PrivateScalarTask::Evaluate(&callee.result));
+                    }
+                    PrivateScalarTask::ExitCall => {
+                        if frames.len() <= 1 {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let mut frame = frames.pop().expect("真子框架仍存在");
+                        events.push(PrivateScalarCallEvent::Returned(value));
+                        frame.values.clear();
+                        events.push(PrivateScalarCallEvent::FunctionExited {
+                            name: frame.name, returned: true,
+                        });
+                        values.push(value);
+                    }
                 }
-                let result = bound.and_then(|()|
-                    self.evaluate_graph(&callee.result, &nested_frame, events));
-                if let Ok(value) = result {
-                    events.push(PrivateScalarCallEvent::Returned(value));
-                }
-                nested_frame.clear();
+            }
+            if frames.len() != 1 || values.len() != 1 {
+                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+            }
+            Ok(values[0])
+        })();
+        if result.is_err() {
+            // 執行期預算／溢位／狀態錯誤皆不得偽裝成 return。
+            // 逐層清除已真正進入的參數框架，不退出未曾進入的函式。
+            while frames.len() > 1 {
+                let mut frame = frames.pop().expect("已進入的子框架");
+                frame.values.clear();
                 events.push(PrivateScalarCallEvent::FunctionExited {
-                    name: name.clone(), returned: result.is_ok(),
+                    name: frame.name, returned: false,
                 });
-                result
             }
-            PrivateScalarReturnExpr::Addition(left, right) => {
-                let left = self.evaluate_graph(left, frame, events)?;
-                let right = self.evaluate_graph(right, frame, events)?;
-                left.checked_add(right).ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)
-            }
-            PrivateScalarReturnExpr::Subtraction(left, right) => {
-                let left = self.evaluate_graph(left, frame, events)?;
-                let right = self.evaluate_graph(right, frame, events)?;
-                left.checked_sub(right).ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)
-            }
-            PrivateScalarReturnExpr::Parameter(id) => frame.get(id).copied()
-                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
-            PrivateScalarReturnExpr::Constant(value) => Ok(*value),
         }
+        result
     }
 
     fn prepare(text: &str) -> Result<Self, PrivateScalarCallPrepareError> {
@@ -288,13 +366,11 @@ impl PreparedPrivateScalarCall {
         let verified = verify_source_with_ability(
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateScalarCallPrepareError::Check)?;
-        // 只接通可靜態證明無環的少量真正函式圖；合法遞迴由
-        // 另一個具備顯式預算／清理的已核准執行切片處理。
-        // 四函式上界是本內部切片的安全工程限額，不是語言限制。
-        if !verified.structs.is_empty()
-            || !(2..=4).contains(&verified.functions.len()) {
+        // 此私有切片只限制已核准的純 int／單 return 執行形狀，
+        // 不再以固定函式數量或呼叫圖是否成環，拒絕合法 Checker 來源。
+        if !verified.structs.is_empty() || verified.functions.len() < 2 {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "巢狀 Copyable int 非循環圖限 main 與最多三個已核准函式",
+                "Copyable int 真執行須具備 main 及已核准的普通函式",
             ));
         }
         let main = verified.functions.iter().find(|fun| fun.name == "main")
@@ -318,10 +394,10 @@ impl PreparedPrivateScalarCall {
                 "main 呼叫缺少原 Checker 具名函式宣告",
             ))?;
         if main.result_ty != "int" || !main.params.is_empty()
-            || callee.result_ty != "int" || !(1..=3).contains(&callee.params.len())
+            || callee.result_ty != "int" || callee.params.is_empty()
             || callee.params.iter().any(|param| param.ty != "int")
             || callee.body.statements.len() != 1
-            || !(1..=4).contains(&main.body.statements.len()) {
+            || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "只接通已核准一至三個 Copyable int 參數及單一返回式",
             ));
@@ -358,7 +434,7 @@ impl PreparedPrivateScalarCall {
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
-                || !(1..=3).contains(&function.params.len())
+                || function.params.is_empty()
                 || function.params.iter().any(|param| param.ty != "int")
                 || function.body.statements.len() != 1 {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -398,18 +474,19 @@ impl PreparedPrivateScalarCall {
                 )?,
             });
         }
-        // 三個層級以內、沒有環的真正已驗證函式呼叫圖。
-        // 循環圖本身仍可屬合法 voiles；僅不由這個尚未整合
-        // P18.3 遞迴工作堆疊的私有純值切片承擔。
+        // 每個可達或不可達的已編譯函式 Call 必須在同一份
+        // Checker 真來源中有完整目標；允許已核准直接／互相遞迴。
+        // 是否真正執行由來源控制流決定，安全耗盡由 runtime 預算決定。
         let mut graph: Vec<(&str, &PrivateScalarReturnExpr)> =
             vec![(&callee.name, &return_expr)];
         graph.extend(nested_callees.iter().map(|fun| (fun.name.as_str(), &fun.result)));
-        let mut visited = std::collections::BTreeSet::new();
-        for (name, _) in &graph {
-            if !Self::graph_is_acyclic(name, &graph,
-                &mut std::collections::BTreeSet::new(), &mut visited) {
+        for (_, expression) in &graph {
+            let mut calls = Vec::new();
+            expression.collect_calls(&mut calls);
+            if calls.iter().any(|called|
+                !graph.iter().any(|(name, _)| name == called)) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "這個 Copyable int 切片要求所有已驗證函式呼叫圖無環且目標存在",
+                    "巢狀具名呼叫缺少原 Checker 真函式宣告或完整簽章",
                 ));
             }
         }
@@ -583,12 +660,25 @@ impl PreparedPrivateScalarCall {
     }
 
     fn execute(&self) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
-        self.execute_with_fault(false)
+        self.execute_with_budget_and_fault(PrivateScalarExecutionBudget::default(), false)
     }
 
-    /// 本故障只用於測試真正執行中的參數框架清理，不代表 voiles except 語意。
+    fn execute_with_budget(&self, budget: PrivateScalarExecutionBudget)
+        -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        self.execute_with_budget_and_fault(budget, false)
+    }
+
+    /// 測試故障僅為真參數框架清理驗證，不授權 voiles except 語意。
     fn execute_with_fault(&self, fail_after_binding: bool)
         -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        self.execute_with_budget_and_fault(
+            PrivateScalarExecutionBudget::default(), fail_after_binding,
+        )
+    }
+
+    fn execute_with_budget_and_fault(
+        &self, budget: PrivateScalarExecutionBudget, fail_after_binding: bool,
+    ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
         let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         };
@@ -597,6 +687,17 @@ impl PreparedPrivateScalarCall {
                 &self.verified.structs, &self.verified.functions, source,
             ) || !self.matches_source(source) {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
+        }
+        // 即使原 Checker 合法遞迴，零執行預算也不得製造假的函式進入。
+        if budget.max_call_frames == 0 || budget.max_steps == 0 {
+            return Ok(PrivateScalarCallOutcome {
+                result: Err(if budget.max_call_frames == 0 {
+                    PrivateScalarCallRuntimeError::CallBudget
+                } else {
+                    PrivateScalarCallRuntimeError::StepBudget
+                }),
+                events: Vec::new(), parameter_slots_after_exit: 0,
+            });
         }
         // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
         // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
@@ -620,7 +721,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget)
             }
         });
         if let Ok(value) = result {
