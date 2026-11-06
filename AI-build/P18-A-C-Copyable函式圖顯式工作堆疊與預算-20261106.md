@@ -70,3 +70,14 @@
 - 原純值 main 處理在 `verified.plan`、Lexer、TypedHIR 和 DeclarationId 已逐筆核准前置 `const／var int = 整數常值` 後，仍要求其每筆必在函式實參中使用；這違反 Copyable 無資源且合法未使用的宣告語意。此次只移除「未使用即拒絕」人為限制；不放行非 int／非字面、有資源或任意有副作用的語句。
 - 修正既有錯誤反例為合法結果 3，保留錯型別與參數個數的原 Checker 拒絕；新增兩項真 Rust 正反：多個未使用 int 混合具名實參應真返回 4、竄改未使用 `main_owners` 原值必在分配動態框架前 `SourceChanged`。
 - 原正反 Gate 在 V1-E 52 項基礎上增至 **54 項**，G18 原 P18.1 追溯、CI 名稱與此 AI-build 同步。保持原六項 0／6 正式 Passed；最新 PR HEAD 三必要 CI 成功後 Squash merge，新 main 同 SHA 複驗。
+
+
+---
+
+## V1-G：main 已核准括號包裹的函式 return 真執行（2026-11-06）
+
+- 基線 main `514b8a72fa5de60b61ec8e6f0b24f54412877908`（#570 的 Group 實參＋未使用純整數合流），原合法 `return (((id(7))))`／`return ((value()))` 在 main 根返回只依 `TermKind::Call／UnresolvedZeroArgs` 辨識而 `Unsupported`。此為 V1 合法函式返回的舊切片限制，並非語言規格禁止括號。
+- 工程只於原 main Return AST 逐層剝除 `Group`，每一層先核對原 Checker int TypedHIR、Lexer 真左／右括號 Token 與 UTF-8 半開跨度；最內層仍必須由原 Checker 唯一函式名稱、完整 Copyable int 參數簽章、零借用及真 HIR 授權。真正呼叫跨度採最內層原 Parser 節點，不以來源字串推測新語法。
+- 新四項 Rust 正反：三層括號包裹帶 int 參數呼叫返回 8；三層括號包裹零參數前向呼叫返回 23 且零假 ArgumentEvaluated／ParameterBound；篡改原內層 Call source span 必在任何動態框架前拒絕；錯參數型別與未知函式仍由原 Checker 拒絕。
+- 專項 Gate 54→58，G18 原 P18.1／18.5 追溯、CI 與 AI-build 同步；僅使用已核准來源，不新增公開 CLI、異常或語法。**V1／P18 六原項仍非正式 Passed。**
+- 驗收需 PR 最新 HEAD 三必要 CI completed/success，作者／base／mergeable 與 Squash merge 核對；合併後新 main 同 SHA 再驗 G17／G6／F00、G18 --audit。
