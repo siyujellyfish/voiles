@@ -280,7 +280,7 @@ fn private_recursive_str_call(
     // 完整 BorrowFact 序列。不可只核對第一張而跳過後續來源／Kind。
     let source_facts = verified.plan.declarations.call_borrows_at(term.node_span());
     let expected: Vec<BorrowFact> = loans.iter().map(|(_, fact)| *fact).collect();
-    if source_facts.map_or(!expected.is_empty(), |facts| facts != expected) {
+    if source_facts.map_or(!expected.is_empty(), |facts| facts != expected.as_slice()) {
         return Err(PrivateRecursiveStrPrepareError::Unsupported(
             "混合遞迴整張 Checker call_borrows 與真 str 引數序列不符",
         ));
