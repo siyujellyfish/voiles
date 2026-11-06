@@ -19,6 +19,8 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_具名_copyable_int_多層括號初始化仍真傳入函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_未使用的合法_group_int_初始化不應阻擋零參數函式",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號返回帶參數普通函式依原_checker_真求值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_多層括號零參數前向函式返回不虛構參數",
         "struct_stage::g18_private_scalar_call_tests::g18_a_數個未使用純值宣告與具名實參各自保留來源身分",
@@ -188,6 +190,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號初始化為布林或缺失名稱仍由原_checker_拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號初始化持有者遭竄改不得建立動態框架",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號返回的真內層呼叫跨度不得竄改",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號返回錯型別與不存在函式由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號布林與未知名稱不可充當合法_int_實參",
