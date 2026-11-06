@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態整數初始化應真執行後再傳入普通函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_函式結果可先存入區域再用純值算術返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_前向零參數結果可作為初始化再跨局部複製",
         "struct_stage::g18_private_scalar_call_tests::g18_a_兩筆真區域初始化與逆序離域事件保持同源宣告身分",
         "struct_stage::g18_private_scalar_call_tests::g18_a_函式參數與多個純值區域初始化依_checker_順序真返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_巢狀函式各自區域宣告不與父框架參數混用",
@@ -102,6 +105,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_動態初始化中後筆溢位不得跳過前筆真離域",
         "struct_stage::g18_private_scalar_call_tests::g18_c_第二局部初始化運算溢位只釋放已完成宣告",
         "struct_stage::g18_private_scalar_call_tests::g18_c_遞迴中相同靜態局部宣告每個動態框架均獨立初始化及離域",
         "struct_stage::g18_private_scalar_call_tests::g18_c_函式區域算術溢位必退出而不得虛構返回",
@@ -216,6 +220,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_真動態初始化計畫被篡改必在執行前拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_非法動態初始化型別及未宣告來源仍交由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_函式區域宣告工作計畫遭偽造必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_函式區域初始化錯誤型別與未知參照由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_複合返回工作計畫被竄改必在任何函式執行前拒絕",
