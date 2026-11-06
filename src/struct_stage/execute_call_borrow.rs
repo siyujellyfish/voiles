@@ -733,7 +733,7 @@ mod g18_private_call_borrow_tests {
     }
 
     #[test]
-    fn g18_d_混合呼叫錯誤型別個數與具名非授權_int_實參必保守拒絕() {
+    fn g18_d_混合呼叫錯誤型別個數與多餘未執行宣告必保守拒絕() {
         for src in [
             "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nreturn measure(owner,true)\n}\n",
             "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nreturn measure(owner)\n}\n",
