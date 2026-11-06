@@ -19,6 +19,7 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態實參的來源框架不占用唯一使用者函式預算",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_原_checker_算術實參於真動態框架依順序求值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_具名_copyable_算術與巢狀普通函式依真來源求值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數葉函式作為複合實參須先真返回再綁定目標",
@@ -93,6 +94,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_同名巢狀實參故障只能中斷真正外層函式框架",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_不同名子函式先成功後故障只注入根函式綁定",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_巢狀實參使用唯一預算後根函式不得虛構進入",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_第二算術實參溢位保留前一完成事件且不可進入目標",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_算術實參步數預算耗盡不會補寫未完成參數事件",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_動態實參綁定後故障須先退出真根框架",
