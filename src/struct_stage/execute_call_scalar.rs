@@ -51,6 +51,18 @@ impl PrivateScalarReturnExpr {
     /// 重新猜測文法或由來源文字推論算式樹。
     fn from_checked(term: &Term, params: &[Parameter], verified: &VerifiedPrivateSource)
         -> Result<Self, PrivateScalarCallPrepareError> {
+        let bindings = params.iter().map(|param|
+            (param.name.clone(), DeclarationId(param.declaration_start))
+        ).collect::<BTreeMap<_, _>>();
+        Self::from_checked_bindings(term, &bindings, verified)
+    }
+
+    /// 共用原 Checker 的 DeclarationId 編譯函式參數及 main 既有 int 持有者。
+    fn from_checked_bindings(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
         use crate::common_ir::ScalarType;
         let span = term.node_span();
         if verified.plan.scalar_hir.expression(span)
@@ -61,12 +73,11 @@ impl PrivateScalarReturnExpr {
         }
         match &term.kind {
             TermKind::Name(name) => {
-                let param = params.iter().find(|param| &param.name == name).ok_or(
+                let id = *bindings.get(name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
-                        "返回名稱不是本次已核准函式的 Copyable int 參數",
+                        "int 名稱不是本次原 Checker 已核准的 Copyable int 來源",
                     ),
                 )?;
-                let id = DeclarationId(param.declaration_start);
                 if verified.plan.scalar_hir.reference(span)
                     .is_none_or(|fact|
                         fact.resolved.declaration != id
@@ -82,13 +93,31 @@ impl PrivateScalarReturnExpr {
                 Ok(Self::Parameter(id))
             }
             TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start && token.end == span.end
+                        && matches!(&token.kind, TokenKind::Integer(found) if found == raw)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "int 常值缺少原 Lexer 來源",
+                    ));
+                }
                 Ok(Self::Constant(crate::syntax_shared::integer_i64(raw)
                     .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
                         "返回 int 常值超出 i64 範圍",
                     ))?))
             }
-            TermKind::Group(inner) =>
-                Self::from_checked(inner, params, verified),
+            TermKind::Group(inner) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start
+                        && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "int Group 缺少原 Lexer 左右括號來源",
+                    ));
+                }
+                Self::from_checked_bindings(inner, bindings, verified)
+            },
             TermKind::Call(call) => {
                 // 由原 Parser 真函式宣告／Checker HIR 決定簽章。
                 // 不允許用字面來源重新推測或合成隱含轉型。
@@ -108,7 +137,7 @@ impl PrivateScalarReturnExpr {
                 }
                 let mut arguments = Vec::new();
                 for argument in &call.arguments {
-                    arguments.push(Self::from_checked(argument, params, verified)?);
+                    arguments.push(Self::from_checked_bindings(argument, bindings, verified)?);
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
@@ -153,8 +182,12 @@ impl PrivateScalarReturnExpr {
                         "函式內加減 HIR 端點或運算子遭偷換",
                     ));
                 }
-                let left = Box::new(Self::from_checked(&binary.left, params, verified)?);
-                let right = Box::new(Self::from_checked(&binary.right, params, verified)?);
+                let left = Box::new(Self::from_checked_bindings(
+                    &binary.left, bindings, verified,
+                )?);
+                let right = Box::new(Self::from_checked_bindings(
+                    &binary.right, bindings, verified,
+                )?);
                 Ok(if fact.operator == '+' {
                     Self::Addition(left, right)
                 } else {
@@ -226,6 +259,11 @@ struct PreparedPrivateScalarCall {
     main_owners: Vec<(DeclarationId, i64)>,
     /// 同一完整來源中原 Parser／Checker 已驗證的其餘參數函式。
     nested_callees: Vec<PrivateScalarNestedCallee>,
+    /// 真 main 實參中含原 Checker int 算式／巢狀呼叫時，
+    /// 共用顯式工作堆疊執行，不能先預算出假 int 結果。
+    main_dynamic_call: Option<PrivateScalarReturnExpr>,
+    /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
+    callee_parameter_ids: Vec<DeclarationId>,
 }
 
 /// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
@@ -266,6 +304,7 @@ impl PreparedPrivateScalarCall {
         initial_frame: &BTreeMap<DeclarationId, i64>,
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
+        fail_after_root_binding: bool,
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
@@ -338,16 +377,9 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarTask::EnterCall(name, argc) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let mut root_params = Vec::new();
                         let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
                             = if name == self.callee_name {
-                                if let Some(id) = self.parameter_id {
-                                    root_params.push(id);
-                                }
-                                root_params.extend(
-                                    self.additional_arguments.iter().map(|(id, _, _)| *id),
-                                );
-                                (root_params, &self.return_expr)
+                                (self.callee_parameter_ids.clone(), &self.return_expr)
                             } else {
                                 let callee = self.nested_callees.iter()
                                     .find(|fun| fun.name == name)
@@ -360,6 +392,7 @@ impl PreparedPrivateScalarCall {
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
+                        let first_call_in_graph = frames.len() == 1;
                         let evaluated = values.split_off(values.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
@@ -372,6 +405,9 @@ impl PreparedPrivateScalarCall {
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                         });
+                        if fail_after_root_binding && first_call_in_graph {
+                            return Err(PrivateScalarCallRuntimeError::InjectedFailure);
+                        }
                         tasks.push(PrivateScalarTask::ExitCall);
                         tasks.push(PrivateScalarTask::Evaluate(result_expr));
                     }
@@ -682,7 +718,35 @@ impl PreparedPrivateScalarCall {
                 "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
             ));
         }
+        // 已核准的 main 動態 int 表達式與巢狀具名函式呼叫不能在
+        // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
+        // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
+        let needs_dynamic = call_arguments.iter().any(|argument| {
+            let mut inner = argument;
+            while let TermKind::Group(nested) = &inner.kind {
+                inner = nested;
+            }
+            !matches!(&inner.kind,
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
+                | TermKind::Name(_))
+        });
+        let main_dynamic_call = if needs_dynamic {
+            let bindings = owners.iter().map(|(name, (id, _))|
+                (name.clone(), *id)
+            ).collect::<BTreeMap<_, _>>();
+            let arguments = call_arguments.iter().map(|argument|
+                PrivateScalarReturnExpr::from_checked_bindings(
+                    argument, &bindings, &verified,
+                )
+            ).collect::<Result<Vec<_>, _>>()?;
+            Some(PrivateScalarReturnExpr::Call {
+                name: callee.name.clone(), arguments,
+            })
+        } else {
+            None
+        };
         let mut all_arguments = Vec::new();
+        if main_dynamic_call.is_none() {
         for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
             // 已核准的 Group 由原 Parser/TypedHIR 提供完整來源，
             // 不額外解釋未核准的表達式或改變 Copyable 權限。
@@ -752,6 +816,7 @@ impl PreparedPrivateScalarCall {
                 DeclarationId(parameter.declaration_start), value, owner_id,
             ));
         }
+        }
         // 前置宣告已逐筆由原 Checker、Lexer 與 int TypedHIR 驗證為
         // 無資源的純整數常值初始化；即使未被用作實參，也不能
         // 將合法宣告誤判成「未執行語句」。其身分與值仍納入防偽。
@@ -763,12 +828,16 @@ impl PreparedPrivateScalarCall {
         let callee_span = NodeSpan::new(callee.start, callee.end);
         let callee_name = callee.name.clone();
         let parameter_name = param.map(|param| param.name.clone());
+        let callee_parameter_ids = callee.params.iter().map(|param|
+            DeclarationId(param.declaration_start)
+        ).collect();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id,
             parameter_return_span: param_return_span, return_expr, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
+            main_dynamic_call, callee_parameter_ids,
         })
     }
 
@@ -787,6 +856,8 @@ impl PreparedPrivateScalarCall {
             && self.additional_arguments == fresh.additional_arguments
             && self.main_owners == fresh.main_owners
             && self.nested_callees == fresh.nested_callees
+            && self.main_dynamic_call == fresh.main_dynamic_call
+            && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
@@ -838,6 +909,23 @@ impl PreparedPrivateScalarCall {
         // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
         // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
         let mut events = Vec::new();
+        if let Some(dynamic_call) = &self.main_dynamic_call {
+            let main_frame: BTreeMap<DeclarationId, i64> =
+                self.main_owners.iter().copied().collect();
+            // 這個額外的 frame 只代表執行器的 main 來源持有者；
+            // 不是函式呼叫，不能占用 D18-01 的函式框架額度。
+            let adjusted_budget = PrivateScalarExecutionBudget {
+                max_call_frames: budget.max_call_frames.saturating_add(1),
+                max_steps: budget.max_steps,
+            };
+            let result = self.evaluate_graph(
+                dynamic_call, &main_frame, &mut events,
+                adjusted_budget, fail_after_binding,
+            );
+            return Ok(PrivateScalarCallOutcome {
+                result, events, parameter_slots_after_exit: 0,
+            });
+        }
         if let Some(argument) = self.argument {
             events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
         }
@@ -859,7 +947,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false)
             }
         });
         if let Ok(value) = result {
@@ -1851,6 +1939,134 @@ mod g18_private_scalar_call_tests {
         prepared.main_owners[1].1 = 31;
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+    #[test]
+    fn g18_a_main_原_checker_算術實參於真動態框架依順序求值() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,7-4)\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.main_dynamic_call.is_some());
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(6));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [3, 3]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "sum")).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_具名_copyable_算術與巢狀普通函式依真來源求值() {
+        let src = "fn inc(v:int)->int{\nreturn v+1\n}\nfn combine(a:int,b:int)->int{\nreturn a-b\n}\nfn main()->int{\nconst origin:int = 5\nreturn combine(inc(origin),inc(2+1))\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 1);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(2));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let enters = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(enters, ["inc", "inc", "combine"]);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [5, 6, 3, 4]);
+    }
+
+    #[test]
+    fn g18_a_main_零參數葉函式作為複合實參須先真返回再綁定目標() {
+        let src = "fn fixed()->int{\nreturn 4\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(fixed(),6)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["fixed", "sum"]);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [4, 6]);
+    }
+
+    #[test]
+    fn g18_c_main_第二算術實參溢位保留前一完成事件且不可進入目標() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nconst high:int = 9223372036854775807\nreturn sum(5+1,high+1)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [6]);
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(_)
+                | PrivateScalarCallEvent::Returned(_)
+                | PrivateScalarCallEvent::ParameterBound(..)
+        )));
+    }
+
+    #[test]
+    fn g18_c_main_算術實參步數預算耗盡不會補寫未完成參數事件() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,3+4)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 5, max_steps: 6 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [3]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))));
+    }
+
+    #[test]
+    fn g18_c_main_動態實參綁定後故障須先退出真根框架() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,4)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))).count(), 2);
+        assert_eq!(outcome.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "sum".to_owned(), returned: false,
+        }));
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(prepared.execute().unwrap().result, Ok(7));
+    }
+
+    #[test]
+    fn g18_a_main_動態算式已驗證工作計畫遭竄改必在執行前拒絕() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,3)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+        prepared.main_dynamic_call = Some(PrivateScalarReturnExpr::Constant(99));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_main_動態實參非法型別或未知名稱仍須由原_checker_拒絕() {
+        for src in [
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(true+2,3)\n}\n",
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(2+missing,3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
     }
 
 }

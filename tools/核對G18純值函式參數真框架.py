@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的六十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的七十四項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_main_原_checker_算術實參於真動態框架依順序求值",
+    "g18_a_main_具名_copyable_算術與巢狀普通函式依真來源求值",
+    "g18_a_main_零參數葉函式作為複合實參須先真返回再綁定目標",
+    "g18_c_main_第二算術實參溢位保留前一完成事件且不可進入目標",
+    "g18_c_main_算術實參步數預算耗盡不會補寫未完成參數事件",
+    "g18_c_main_動態實參綁定後故障須先退出真根框架",
+    "g18_a_main_動態算式已驗證工作計畫遭竄改必在執行前拒絕",
+    "g18_a_main_動態實參非法型別或未知名稱仍須由原_checker_拒絕",
     "g18_a_main_已核准_copyable_int_名稱初始化串接真傳參",
     "g18_a_main_括號名稱初始化與未使用副本不消耗來源",
     "g18_a_main_初始化來源錯型別或未宣告及尚未初始化仍靜態拒絕",
