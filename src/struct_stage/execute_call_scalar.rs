@@ -869,28 +869,50 @@ impl PreparedPrivateScalarCall {
         // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
         // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
         let mut events = Vec::new();
-        if let Some(argument) = self.argument {
-            events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
+        let mut main_frame = BTreeMap::<DeclarationId, i64>::new();
+        for (id, value) in &self.main_owners {
+            if main_frame.insert(*id, *value).is_some() {
+                return Ok(PrivateScalarCallOutcome {
+                    result: Err(PrivateScalarCallRuntimeError::StateMismatch),
+                    events, parameter_slots_after_exit: 0,
+                });
+            }
         }
-        for (_, argument, _) in &self.additional_arguments {
-            events.push(PrivateScalarCallEvent::ArgumentEvaluated(*argument));
+        // Root 所有實參依原 Parser 左至右真正求值。第二實參溢位
+        // 或預算耗盡時，保留已完成引數事件但絕不虛構 callee Enter。
+        let mut consumed_steps = 0usize;
+        let mut evaluated = Vec::new();
+        for argument in &self.main_arguments {
+            let value = match argument.expression.evaluate_main(
+                &main_frame, &mut consumed_steps, budget.max_steps,
+            ) {
+                Ok(value) => value,
+                Err(error) => return Ok(PrivateScalarCallOutcome {
+                    result: Err(error), events, parameter_slots_after_exit: 0,
+                }),
+            };
+            events.push(PrivateScalarCallEvent::ArgumentEvaluated(value));
+            evaluated.push((argument.parameter_id, value));
         }
         events.push(PrivateScalarCallEvent::FunctionEntered(self.callee_name.clone()));
         let mut frame = BTreeMap::<DeclarationId, i64>::new();
         let mut result = Ok(());
-        for (id, argument) in self.parameter_id.zip(self.argument).into_iter()
-            .chain(self.additional_arguments.iter().map(|(id, value, _)| (*id, *value))) {
+        for (id, argument) in evaluated {
             if frame.insert(id, argument).is_some() {
                 result = Err(PrivateScalarCallRuntimeError::StateMismatch);
                 break;
             }
             events.push(PrivateScalarCallEvent::ParameterBound(id, argument));
         }
+        let remaining_budget = PrivateScalarExecutionBudget {
+            max_call_frames: budget.max_call_frames,
+            max_steps: budget.max_steps.saturating_sub(consumed_steps),
+        };
         let result = result.and_then(|()| {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, remaining_budget)
             }
         });
         if let Ok(value) = result {
