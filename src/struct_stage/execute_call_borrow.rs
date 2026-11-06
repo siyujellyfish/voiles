@@ -1881,3 +1881,157 @@ impl PreparedPrivateMixedOwnershipCall {
         })
     }
 }
+
+#[cfg(test)]
+mod g18_private_mixed_ownership_call_tests {
+    use super::*;
+    use crate::owned_str_runtime::ResourceEvent;
+
+    fn checked(text: &str) -> PreparedPrivateMixedOwnershipCall {
+        PreparedPrivateMixedOwnershipCall::prepare(text)
+            .expect("原 Checker 應核准不同來源的明確 move 與 str 預設借用")
+    }
+    fn move_first() -> &'static str {
+        "fn consume(owned:str,watch:str)->int{\nvar local:str = owned.move()\nreturn 11\n}\nfn main()->int{\nvar source:str = \"真正所有者🪼\"\nconst observer:str = \"唯讀借用\"\nreturn consume(source.move(),observer)\n}\n"
+    }
+    fn borrow_first() -> &'static str {
+        "fn consume(watch:str,owned:str)->int{\nvar local:str = owned.move()\nreturn 11\n}\nfn main()->int{\nvar source:str = \"真正所有者🪼\"\nconst observer:str = \"唯讀借用\"\nreturn consume(observer,source.move())\n}\n"
+    }
+
+    #[test]
+    fn g18_d_同一真函式先_move_後共享借用_兩資源身分分離且各釋放一次() {
+        let plan = checked(move_first());
+        assert!(plan.move_first);
+        assert_eq!(plan.loan.kind, BorrowKind::SharedRead);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert_eq!(out.observed_borrowed_bytes, Some("唯讀借用".len()));
+        assert!(out.ticket_returned);
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(1), ResourceEvent::Moved(1),
+            ResourceEvent::Released(1), ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_同一真函式先_shared_borrow_後_move_不交換原_parser_求值次序() {
+        let plan = checked(borrow_first());
+        assert!(!plan.move_first);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert_eq!(out.observed_borrowed_bytes, Some("唯讀借用".len()));
+        assert!(out.ticket_returned);
+        assert_eq!(out.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(1), ResourceEvent::Moved(1),
+            ResourceEvent::Released(1), ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_獨占_var_str_借用與另一獨立來源整筆_move_可同次合法存在() {
+        let text = move_first().replace("const observer:str", "var observer:str");
+        let plan = checked(&text);
+        assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.ticket_returned);
+        assert_eq!(out.observed_borrowed_bytes, Some("唯讀借用".len()));
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Released(_))).count(), 2);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+    }
+
+    #[test]
+    fn g18_c_混合借用與_move_在每個原引數及函式內故障點仍清兩資源() {
+        for text in [move_first(), borrow_first()] {
+            let plan = checked(text);
+            for at in [0, 1, 2, 3] {
+                let out = plan.execute_with_fault(Some(at)).unwrap();
+                assert_eq!(out.result, Err(PrivateMixedOwnershipRunError::InjectedFailure));
+                assert_eq!(out.events.iter().filter(|event|
+                    matches!(event, ResourceEvent::Created(_))).count(), 2);
+                assert_eq!(out.events.iter().filter(|event|
+                    matches!(event, ResourceEvent::Released(_))).count(), 2);
+                assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+                assert!(out.ticket_returned);
+                assert_eq!(out.parameter_slots_after_exit, 0);
+                if at == 0 {
+                    assert_eq!(out.observed_borrowed_bytes, None);
+                    assert!(!out.events.iter().any(|event|
+                        matches!(event, ResourceEvent::Moved(_))));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn g18_c_混合轉交函式未再移動內部參數仍由被呼叫者離域釋放() {
+        let text = move_first().replace("var local:str = owned.move()\n", "");
+        let plan = checked(&text);
+        assert!(plan.callee_local.is_none());
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.ticket_returned);
+        assert_eq!(out.events, [
+            ResourceEvent::Created(1), ResourceEvent::Created(2),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Released(1), ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_同一來源先借用再移動或先移動再借用必由原_checker_拒絕() {
+        for invalid in [
+            move_first().replace("source.move(),observer", "source.move(),source"),
+            borrow_first().replace("observer,source.move()", "source,source.move()"),
+        ] {
+            assert!(matches!(PreparedPrivateMixedOwnershipCall::prepare(&invalid),
+                Err(PrivateMixedOwnershipPrepareError::Check(_))), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn g18_d_借用別名不能冒充所有者移動_錯型別及漏參數仍拒絕() {
+        let alias = move_first().replace(
+            "return consume(source.move(),observer)",
+            "const alias:str = observer.borrow()\nreturn consume(source.move(),alias)",
+        );
+        assert!(matches!(PreparedPrivateMixedOwnershipCall::prepare(&alias),
+            Err(PrivateMixedOwnershipPrepareError::Check(_))
+              | Err(PrivateMixedOwnershipPrepareError::Unsupported(_))));
+        for invalid in [
+            move_first().replace("source.move(),observer", "source.move(),true"),
+            move_first().replace("source.move(),observer", "source.move()"),
+        ] {
+            assert!(matches!(PreparedPrivateMixedOwnershipCall::prepare(&invalid),
+                Err(PrivateMixedOwnershipPrepareError::Check(_))), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn g18_d_竄改借用_kind_或_move_來源參數身份都必須真資源建立前拒絕() {
+        let mut plan = checked(move_first());
+        plan.loan.kind = BorrowKind::ExclusiveWrite;
+        assert!(matches!(plan.execute(),
+            Err(PrivateMixedOwnershipPrepareError::SourceChanged)));
+        let mut plan = checked(move_first());
+        plan.moved_param_id = DeclarationId(0);
+        assert!(matches!(plan.execute(),
+            Err(PrivateMixedOwnershipPrepareError::SourceChanged)));
+        let mut plan = checked(move_first());
+        plan.borrowed_param_id = DeclarationId(0);
+        assert!(matches!(plan.execute(),
+            Err(PrivateMixedOwnershipPrepareError::SourceChanged)));
+        let mut plan = checked(move_first());
+        plan.verified.plan.declarations.call_borrows.clear();
+        assert!(matches!(plan.execute(),
+            Err(PrivateMixedOwnershipPrepareError::SourceChanged)));
+        let mut plan = checked(move_first());
+        plan.owners[0].text = "偽造 UTF-8".into();
+        assert!(matches!(plan.execute(),
+            Err(PrivateMixedOwnershipPrepareError::SourceChanged)));
+    }
+}
