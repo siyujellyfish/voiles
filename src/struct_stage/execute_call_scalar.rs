@@ -233,9 +233,9 @@ enum PrivateScalarTask<'a> {
 impl PreparedPrivateScalarCall {
     /// 顯式 expression 工作堆疊＋真函式框架。合法遞迴亦走同一路徑，
     /// 預算耗盡時從最內層逐一退出；禁止依賴宿主 Rust 呼叫堆疊。
-    fn evaluate_graph(
-        &self,
-        expr: &PrivateScalarReturnExpr,
+    fn evaluate_graph<'a>(
+        &'a self,
+        expr: &'a PrivateScalarReturnExpr,
         initial_frame: &BTreeMap<DeclarationId, i64>,
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
