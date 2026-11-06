@@ -1206,4 +1206,108 @@ mod g18_private_recursive_str_frames_tests {
         }
     }
 
+    fn double_loan_direct() -> &'static str {
+        "fn descend(flag:bool,left:str,right:str,n:int,m:int)->int{\nvar local:str = \"層\"\nif(flag){\nvar inner1:str = \"內甲\"\nvar inner2:str = \"內乙\"\nreturn descend(false,inner1,inner2,m,n)\n}\nreturn n-m\n}\nfn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nreturn descend(true,first,second,10,3)\n}\n"
+    }
+
+    #[test]
+    fn g18_d_兩個獨立_var_str_加雙_int_跨遞迴真票據全序列及逆序清理() {
+        let out = plan(double_loan_direct()).execute(budget(4, 120)).unwrap();
+        assert_eq!(out.result, Ok(-7));
+        assert_eq!(out.bound_int_values, [
+            ("descend".to_owned(), 10), ("descend".to_owned(), 3),
+            ("descend".to_owned(), 3), ("descend".to_owned(), 10),
+        ]);
+        assert_eq!(out.borrowed_lengths, [
+            "甲".len(), "乙".len(), "內甲".len(), "內乙".len(),
+        ]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), (1..=6).rev().collect::<Vec<_>>());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+    }
+
+    #[test]
+    fn g18_d_同函式兩個_const_str_共享借用同一來源須用兩張真票據歸還() {
+        let text = "fn descend(flag:bool,left:str,right:str,n:int)->int{\nvar local:str = \"層\"\nif(flag){\nconst next:str = \"內\"\nreturn descend(false,next,next,n)\n}\nreturn n\n}\nfn main()->int{\nconst root:str = \"根\"\nreturn descend(true,root,root,5)\n}\n";
+        let out = plan(text).execute(budget(4, 120)).unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert_eq!(out.borrowed_lengths, ["根".len(), "根".len(), "內".len(), "內".len()]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+        assert!(!out.events.iter().any(|event| matches!(event, ResourceEvent::Moved(_))));
+    }
+
+    #[test]
+    fn g18_d_兩個_str_與_int_不同比例順序之互相遞迴仍真借用並返回() {
+        let text = "fn first(flag:bool,a:str,b:str,n:int)->int{\nvar local:str = \"一\"\nif(flag){\nvar left:str = \"左\"\nvar right:str = \"右\"\nreturn second(false,n,left,right)\n}\nreturn n+1\n}\nfn second(flag:bool,n:int,a:str,b:str)->int{\nvar local:str = \"二\"\nif(flag){\nvar left:str = \"左\"\nvar right:str = \"右\"\nreturn first(false,left,right,n)\n}\nreturn n-1\n}\nfn main()->int{\nvar one:str = \"甲\"\nvar two:str = \"乙\"\nreturn first(true,one,two,8)\n}\n";
+        let out = plan(text).execute(budget(4, 120)).unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.bound_int_values, [("first".to_owned(), 8), ("second".to_owned(), 8)]);
+        assert_eq!(out.borrowed_lengths, ["甲".len(), "乙".len(), "左".len(), "右".len()]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), (1..=6).rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn g18_c_兩張真_str_票據存活時框架預算耗盡仍全部原子歸還() {
+        let out = plan(double_loan_direct()).execute(budget(2, 120)).unwrap();
+        assert_eq!(out.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert_eq!(out.borrowed_lengths, ["甲".len(), "乙".len()]);
+        assert_eq!(out.bound_int_values.len(), 2);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [5, 4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_c_兩張真_str_票據已簽發後動態故障不留任何資源() {
+        let out = plan(double_loan_direct()).execute_with_fault(
+            budget(4, 120), Some(6),
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateRecursiveStrRunError::InjectedFailure));
+        assert_eq!(out.borrowed_lengths, ["甲".len(), "乙".len(), "內甲".len(), "內乙".len()]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), (1..=6).rev().collect::<Vec<_>>());
+        assert!(out.frames.iter().all(|event| !matches!(event,
+            PrivateRecursiveFrameEvent::Exited { returned: true, .. })));
+    }
+
+    #[test]
+    fn g18_d_兩張借用中第二張_source_或_kind_被竄改必在配置前拒絕() {
+        let mut p = plan(double_loan_direct());
+        p.entry.loans[1].1.source = DeclarationId(0);
+        assert!(matches!(p.execute(budget(4, 120)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+        let mut p = plan(double_loan_direct());
+        p.callees[0].next.loans[1].1.kind = BorrowKind::SharedRead;
+        assert!(matches!(p.execute(budget(4, 120)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+        let mut p = plan(double_loan_direct());
+        p.verified.plan.declarations.call_borrows.clear();
+        assert!(matches!(p.execute(budget(4, 120)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_d_同個可寫_str_來源同次傳兩個獨占參數須原_checker_拒絕() {
+        let invalid = double_loan_direct().replace(
+            "descend(true,first,second,10,3)",
+            "descend(true,first,first,10,3)",
+        );
+        assert!(matches!(PreparedPrivateRecursiveStr::prepare(&invalid),
+            Err(PrivateRecursiveStrPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_d_雙_str_呼叫漏參數及錯誤型別仍由原_checker_拒絕() {
+        for invalid in [
+            double_loan_direct().replace("descend(true,first,second,10,3)",
+                "descend(true,first,10,3)"),
+            double_loan_direct().replace("descend(false,inner1,inner2,m,n)",
+                "descend(false,inner1,true,m,n)"),
+        ] {
+            assert!(matches!(PreparedPrivateRecursiveStr::prepare(&invalid),
+                Err(PrivateRecursiveStrPrepareError::Check(_))), "{invalid}");
+        }
+    }
+
 }
