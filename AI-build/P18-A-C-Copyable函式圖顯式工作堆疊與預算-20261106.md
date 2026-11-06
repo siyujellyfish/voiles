@@ -102,3 +102,15 @@
 - 新增四項真來源 Rust 正反：三段 int 名稱拷貝再真傳參返回 7、Group name 與未使用副本不消耗來源且零虛構引數、bool／未知／未初始化靜態負例，以及竄改複製後持有者 DeclarationId／值皆 SourceChanged 零動態執行。
 - 函式真 Gate 62→66 項；G18 原 P18.1／P18.5 稽核清單、必要 CI 名稱與本 AI-build 同步，其他語言或公開執行入口未調整。**尚非 V1 完整驗收，P18 六原項仍 0/6 Passed。**
 - 只在最新 PR HEAD 三必要 CI completed/success、作者／base／mergeable 核實後 Squash merge；合併後新 main 同 SHA 再核實 G17／G6／F00 與 G18 `--audit`，不得將 `--audit` 當 `--check`。
+
+
+---
+
+## V1-J：main 真動態整數算式／巢狀呼叫實參交接（2026-11-06）
+
+- 基線 main `33625380aebcdc9d7748611e0babc4e12e63fb5a`，#573 已在原三必要 CI completed/success 後 Squash merge。先前 `main` 呼叫實參僅支援 int 字面、具名 int 及外層 Group，**合法原 Checker int 加減與子函式實參**被私有執行器誤拒；不能在 Prepare 階段猜測或預算動態值。
+- 保留原 Lexer／Parser／Checker／TypedHIR 作唯一權威。將既有 `PrivateScalarReturnExpr` 的具名來源解析抽成 `from_checked_bindings`：普通函式參數與 main 已初始化 int 持有者都使用原 Checker Reference HIR 的唯一 `DeclarationId`，算術只接受 HIR 核准的整數加減、原左右端點／運算子；Group／Literal 逐層核對真 Lexer Token；呼叫使用原 Parser／Checker 全簽章，不自行放寬借用／型別。
+- 當 main 實參含原 Checker 算式或巢狀函式，將真 `Call` 與子實參編成唯一動態工作計畫 `main_dynamic_call`，以原 `main_owners` 建立執行期來源框架，沿用既有**顯式 expression 工作堆疊與真函式框架**逐個求值；每個實參完成即記錄事件，溢位、步數／框架預算及注入故障均逐框架退出，不補寫未曾真正產生的參數／返回。額外的 main 來源框架不是函式，不計入使用者核准的 D18-01 可配置函式額度。
+- 原先簡單字面／具名實參的 66 項真測試、身分對照與事件保持原樣；新路徑只處理尚未接通的真動態實參。新增 `callee_parameter_ids` 源自原被呼叫函式的所有正式 Parameter DeclarationId，避免為動態實參虛構靜態值；`matches_source` 在任何執行前比對完整動態計畫、參數簽章和原全量安全計畫。
+- 新增八項 Rust 正反：`sum(1+2,7-4)`、具名 int 混合巢狀 `inc`、零參數葉函式作為引數、第二實參溢位保留第一已完成事件、步數耗盡零假進入、真參數綁定後故障逆序退出、動態 HIR 計畫遭改先拒、錯型別與未知名稱原 Checker 拒絕。專用 Gate **66→74**，G18 原 P18.1／P18.3／P18.5 動態來源追溯同步納入。
+- **此批不代表全部一般合法函式／控制流程已覆蓋**；V1/P18 原六項維持 SubsetVerified／Incomplete／BlockedByDecision、0/6 正式 Passed。只在最新 PR HEAD 文件、Rust 建置與完整架構測試全 completed/success、作者／base／mergeable 核對後 Squash merge，新 main 同 SHA 重跑 G17／G6／F00 與 G18 `--audit`。
