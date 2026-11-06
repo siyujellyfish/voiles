@@ -132,3 +132,14 @@
 - 首輪必要 CI 的 P04 真 Rust 測試指出原反例 `sum(inc(1),3)` 在「最多一個真函式框架」下可正常返回 5。這是正確的已核准語意：子函式 `inc` 已先退出，後續 `sum` 可重用同一執行環境額度。**不得為使錯誤測試通過而更動執行器拒絕合法來源**。
 - 修正正例為 `g18_a_main_巢狀實參先返回後可合法復用唯一框架額度`，確認兩次真 Entered／Exited 與來源值順序；另新增真正同時巢狀的負例 `outer(1+2)` 內部尚需呼叫 `leaf(x)`，同時只有一框架額度時必 `CallBudget` 且 `leaf` 零進入、`outer` 失敗退出。
 - 專用 Gate 由初版 78 **修正為 79** 項；G18 原 P18.1／P18.3 來源對照與必要 CI 名稱同步修改。此為測試契約修正，不改 D18-01 的配置預算語意、不冒充 V1／G18 正式 Passed。
+
+
+---
+
+## V1-L：main 直接複合函式返回的真動態交接（2026-11-06）
+
+- 基線 main `0f9fe71c8b83994bd6ccd93a4d983248f9f48e2e`（#575 已修正 D18-01 同時框架預算並 Squash merge）；原 main 返回只能是最外層 `Call`／`UnresolvedZeroArgs`，儘管原 Checker 已核准 `return inc(5)+2`、`return inc(2)+inc(4)` 或 Group 包裹的 int 算式。此為私有 evaluator 的合法函式結果再運算覆蓋缺口。
+- 只使用原 Parser int AST 搜尋具名 `Call`／`UnresolvedZeroArgs` 以取得原已核准函式圖，不將純算術冒充函式驗收。選中的函式仍需原 Checker 已核准的完整 int 參數簽章、TypedHIR／Parameter 身分；其餘同一來源所有合法函式由既有巢狀呼叫表管理。對 main `BinaryInt` 根返回使用 `from_checked_bindings`，逐層核對已核准 arithmetic HIR 端點／運算子、名稱 Reference HIR／DeclarationId、真 Lexer 字面與 Group Token，**所有運算在顯式工作堆疊執行時才求值**。
+- 由於 `return inc(2)+inc(4)` 並無唯一「根函式」可供內部測試 `execute_with_fault(true)` 指定綁定後故障，該測試專用要求明確 Unsupported，禁止假造或默默忽略；正式正常執行、溢位和 D18-01 執行預算仍依真來源與真事件。
+- 新增七項真 Rust 正反：函式結果與常值相加；兄弟函式左至右兩次真正返回；多層 Group 複合返回；子函式成功後外層算術溢位而不假造最後 Return；竄改編譯動態樹執行前拒絕；型別錯誤／未知名稱仍由 Checker 拒絕；多兄弟複合返回無單一根故障點時不得默默跳過故障。專項 Gate 79→86，G18 原 P18.1／P18.3／P18.5 與 CI／AI-build 同步。
+- **未更動** P13～P16、Move／BorrowTicket／ResourceId、安全退出的核准語意，亦未發布 P22 CLI 或先決定 D18-02 async 細節；V1／G18 原六項仍不提前 Passed。PR 最新 HEAD 三必要 CI completed/success／作者、base、mergeable 核對後 Squash merge，合併 main 同 SHA 重跑 G17／G6／F00 與 G18 `--audit`。
