@@ -214,12 +214,12 @@ struct PreparedPrivateScalarCall {
     call_span: crate::common_ir::NodeSpan,
     callee_span: crate::common_ir::NodeSpan,
     callee_name: String,
-    parameter_name: String,
-    parameter_id: DeclarationId,
+    parameter_name: Option<String>,
+    parameter_id: Option<DeclarationId>,
     parameter_return_span: crate::common_ir::NodeSpan,
     return_expr: PrivateScalarReturnExpr,
     owner_id: Option<DeclarationId>,
-    argument: i64,
+    argument: Option<i64>,
     /// 其餘參數從同一原 Checker 函式簽章依宣告順序綁定。
     additional_arguments: Vec<(DeclarationId, i64, Option<DeclarationId>)>,
     /// 已在主函式真正按順序建立的 Copyable int 詞彙持有者。
@@ -341,7 +341,9 @@ impl PreparedPrivateScalarCall {
                         let mut root_params = Vec::new();
                         let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
                             = if name == self.callee_name {
-                                root_params.push(self.parameter_id);
+                                if let Some(id) = self.parameter_id {
+                                    root_params.push(id);
+                                }
                                 root_params.extend(
                                     self.additional_arguments.iter().map(|(id, _, _)| *id),
                                 );
@@ -431,23 +433,27 @@ impl PreparedPrivateScalarCall {
                 "main 最後語句須真正返回一個具名函式呼叫",
             ));
         };
-        let TermKind::Call(source_call) = &ret.expression.kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
+        // A2/F02：main 的 name() 也由同一原 Parser 保留為待決零引數節點；
+        // 仍必須以原 Checker 核准的唯一普通函式宣告消歧。
+        let source_name = match &ret.expression.kind {
+            TermKind::Call(call) => call.name.as_str(),
+            TermKind::UnresolvedZeroArgs(name) => name.as_str(),
+            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                 "main return 不是原 Parser 真具名函式呼叫",
-            ));
+            )),
         };
         let callee = verified.functions.iter()
-            .find(|fun| fun.name == source_call.name && fun.name != "main")
+            .find(|fun| fun.name == source_name && fun.name != "main")
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
                 "main 呼叫缺少原 Checker 具名函式宣告",
             ))?;
         if main.result_ty != "int" || !main.params.is_empty()
-            || callee.result_ty != "int" || callee.params.is_empty()
+            || callee.result_ty != "int"
             || callee.params.iter().any(|param| param.ty != "int")
             || callee.body.statements.len() != 1
             || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "只接通已核准一至三個 Copyable int 參數及單一返回式",
+                "只接通已核准 Copyable int 完整簽章與單一返回式",
             ));
         }
         // 對函式簽章每一個 Parameter，不以名稱猜測或忽略後續參數；
@@ -468,7 +474,7 @@ impl PreparedPrivateScalarCall {
                 ));
             }
         }
-        let param = &callee.params[0];
+        let param = callee.params.first();
         let StmtKind::Return(return_param) = &callee.body.statements[0].kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "本子集要求被呼叫函式直接執行原 Checker 核准的返回式",
@@ -590,12 +596,14 @@ impl PreparedPrivateScalarCall {
                 "main 最後一筆必須是真普通函式呼叫 return",
             ));
         };
-        let TermKind::Call(call) = &main_return.expression.kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
+        let (call_name, call_arguments): (&str, &[Term]) = match &main_return.expression.kind {
+            TermKind::Call(call) => (call.name.as_str(), call.arguments.as_slice()),
+            TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[]),
+            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                 "main 最後一筆須真正呼叫已核准的 int 函式",
-            ));
+            )),
         };
-        if call.name != callee.name || call.arguments.len() != callee.params.len() {
+        if call_name != callee.name || call_arguments.len() != callee.params.len() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "原 Parser 呼叫名稱／參數個數與真 Checker 函式簽章不符",
             ));
@@ -611,7 +619,7 @@ impl PreparedPrivateScalarCall {
         }
         let mut all_arguments = Vec::new();
         let mut used_names = std::collections::BTreeSet::<DeclarationId>::new();
-        for (arg, parameter) in call.arguments.iter().zip(&callee.params) {
+        for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
             let (value, owner_id) = match &arg.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(raw),
@@ -669,11 +677,14 @@ impl PreparedPrivateScalarCall {
                 "main 有尚未在本真執行路徑使用的 int 宣告",
             ));
         }
-        let (parameter_id, argument, owner_id) = all_arguments[0];
-        let additional_arguments = all_arguments[1..].to_vec();
+        let (parameter_id, argument, owner_id) = match all_arguments.first().copied() {
+            Some((id, value, owner)) => (Some(id), Some(value), owner),
+            None => (None, None, None),
+        };
+        let additional_arguments = all_arguments.iter().skip(1).copied().collect();
         let callee_span = NodeSpan::new(callee.start, callee.end);
         let callee_name = callee.name.clone();
-        let parameter_name = param.name.clone();
+        let parameter_name = param.map(|param| param.name.clone());
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
@@ -749,14 +760,16 @@ impl PreparedPrivateScalarCall {
         // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
         // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
         let mut events = Vec::new();
-        events.push(PrivateScalarCallEvent::ArgumentEvaluated(self.argument));
+        if let Some(argument) = self.argument {
+            events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
+        }
         for (_, argument, _) in &self.additional_arguments {
             events.push(PrivateScalarCallEvent::ArgumentEvaluated(*argument));
         }
         events.push(PrivateScalarCallEvent::FunctionEntered(self.callee_name.clone()));
         let mut frame = BTreeMap::<DeclarationId, i64>::new();
         let mut result = Ok(());
-        for (id, argument) in std::iter::once((self.parameter_id, self.argument))
+        for (id, argument) in self.parameter_id.zip(self.argument).into_iter()
             .chain(self.additional_arguments.iter().map(|(id, value, _)| (*id, *value))) {
             if frame.insert(id, argument).is_some() {
                 result = Err(PrivateScalarCallRuntimeError::StateMismatch);
@@ -809,7 +822,7 @@ mod g18_private_scalar_call_tests {
         assert_eq!(result.events, [
             PrivateScalarCallEvent::ArgumentEvaluated(7),
             PrivateScalarCallEvent::FunctionEntered("forward".into()),
-            PrivateScalarCallEvent::ParameterBound(prepared.parameter_id, 7),
+            PrivateScalarCallEvent::ParameterBound(prepared.parameter_id.expect("已驗證唯一 int 參數"), 7),
             PrivateScalarCallEvent::Returned(7),
             PrivateScalarCallEvent::FunctionExited {
                 name: "forward".into(), returned: true,
@@ -822,7 +835,7 @@ mod g18_private_scalar_call_tests {
         let src = "fn identity(item:int)->int{\nreturn item\n}\nfn main()->int{\nconst n:int = 8\nreturn identity(n)\n}\n";
         let prepared = checked(src);
         assert!(prepared.owner_id.is_some());
-        assert_ne!(prepared.owner_id, Some(prepared.parameter_id));
+        assert_ne!(prepared.owner_id, prepared.parameter_id);
         let result = prepared.execute().unwrap();
         assert_eq!(result.result, Ok(8));
         assert_eq!(result.parameter_slots_after_exit, 0);
@@ -878,11 +891,11 @@ mod g18_private_scalar_call_tests {
     #[test]
     fn g18_a_竄改已驗證參數_declarationid_和返回值必須零執行拒絕() {
         let mut prepared = checked(literal_src());
-        prepared.parameter_id = DeclarationId(0);
+        prepared.parameter_id = Some(DeclarationId(0));
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
         let mut prepared = checked(literal_src());
-        prepared.argument = 999;
+        prepared.argument = Some(999);
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
@@ -968,7 +981,7 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
         let mut prepared = checked(src);
         prepared.return_expr = PrivateScalarReturnExpr::Subtraction(
-            Box::new(PrivateScalarReturnExpr::Parameter(prepared.parameter_id)),
+            Box::new(PrivateScalarReturnExpr::Parameter(prepared.parameter_id.expect("已驗證 int 參數"))),
             Box::new(PrivateScalarReturnExpr::Constant(1)),
         );
         assert!(matches!(prepared.execute(),
@@ -1000,12 +1013,12 @@ mod g18_private_scalar_call_tests {
         assert_eq!(outcome.events[1], PrivateScalarCallEvent::ArgumentEvaluated(9));
         assert!(matches!(outcome.events[2], PrivateScalarCallEvent::FunctionEntered(_)));
         assert_eq!(outcome.events[3], PrivateScalarCallEvent::ParameterBound(
-            prepared.parameter_id, 7,
+            prepared.parameter_id.expect("已驗證 int 參數"), 7,
         ));
         assert_eq!(outcome.events[4], PrivateScalarCallEvent::ParameterBound(
             prepared.additional_arguments[0].0, 9,
         ));
-        assert_ne!(prepared.parameter_id, prepared.additional_arguments[0].0);
+        assert_ne!(prepared.parameter_id.expect("已驗證 int 參數"), prepared.additional_arguments[0].0);
     }
 
     #[test]
