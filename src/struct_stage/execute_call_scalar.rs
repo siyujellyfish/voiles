@@ -2597,4 +2597,91 @@ mod g18_private_scalar_call_tests {
             matches!(event, PrivateScalarCallEvent::Returned(_))).count(), 0);
     }
 
+
+    #[test]
+    fn g18_a_main_動態整數初始化應真執行後再傳入普通函式() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst base:int = 2+3\nreturn inc(base)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_dynamic_inits.len(), 1);
+        assert!(prepared.main_owners.is_empty());
+        let id = prepared.main_dynamic_inits[0].declaration;
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalInitialized(id, 5)));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(id)));
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "inc")).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_函式結果可先存入區域再用純值算術返回() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst result:int = inc(4)\nreturn result+1\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_dynamic_inits.len(), 1);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        let local = prepared.main_dynamic_inits[0].declaration;
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalInitialized(local, 5)));
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(5))).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_前向零參數結果可作為初始化再跨局部複製() {
+        let src = "fn main()->int{\nconst first:int = fixed()\nvar copy:int = first\nreturn inc(copy)\n}\nfn inc(n:int)->int{\nreturn n+1\n}\nfn fixed()->int{\nreturn 8\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_dynamic_inits.len(), 2);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        let inits = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalInitialized(id, value) => Some((*id, *value)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(inits.len(), 2);
+        assert_eq!(inits.iter().map(|(_, value)| *value).collect::<Vec<_>>(), [8, 8]);
+    }
+
+    #[test]
+    fn g18_c_main_動態初始化中後筆溢位不得跳過前筆真離域() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst one:int = inc(1)\nconst too_big:int = 9223372036854775807+one\nreturn inc(one)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_dynamic_inits.len(), 2);
+        let first = prepared.main_dynamic_inits[0].declaration;
+        let second = prepared.main_dynamic_inits[1].declaration;
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalInitialized(first, 2)));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(first)));
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::LocalInitialized(id, _)
+                | PrivateScalarCallEvent::LocalScopeEnded(id) if *id == second
+        )));
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "inc")).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_真動態初始化計畫被篡改必在執行前拒絕() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst base:int = 2+3\nreturn inc(base)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+        prepared.main_dynamic_inits[0].value = PrivateScalarReturnExpr::Constant(500);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_main_非法動態初始化型別及未宣告來源仍交由原_checker_拒絕() {
+        for src in [
+            "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst base:int = true+3\nreturn inc(base)\n}\n",
+            "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst base:int = missing+3\nreturn inc(base)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
 }
