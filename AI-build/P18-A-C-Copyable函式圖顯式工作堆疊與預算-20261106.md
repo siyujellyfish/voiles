@@ -23,7 +23,7 @@
 ## V1-A：合法零參數巢狀函式圖與遞迴驗收子批（2026-11-06）
 
 - 基線：V0 文件 PR #564 已 Squash merge 的 main ae6faee485a643a65aef7d8a75376bb1f1070d3c；原本純值呼叫圖仍在 Prepare 階段把所有**巢狀零參數函式**一律 Unsupported，雖然 AW06／P01 原 Checker 已允許，與 P18.1 的已核准合法函式呼叫不一致。
-- 工程：只移除對巢狀函式和巢狀 TermKind::Call 的舊 params.is_empty 人為限制；保留 main 已核准參數函式、完整原 Checker 簽章／TypedHIR 檢查、BorrowFact 不得混入純值、各函式唯一 DeclarationId、可配置框架／步數預算及顯式工作堆疊。
+- 工程：移除對巢狀函式的舊 params.is_empty 人為限制，並依原 A2/F02 Parser 的 TermKind::UnresolvedZeroArgs 分類與正式 Checker 函式宣告，核對完整 int TypedHIR、零參數簽章及精確 Lexer 名稱／右括號詞彙來源後，才轉為原顯式工作堆疊 Call；遇 struct、借用或非 int 仍不准偷渡。保留 main 已核准參數函式、原 Checker 簽章、各函式唯一 DeclarationId 與可配置預算。
 - 真實正反新增四項：零參數前向葉函式與帶參數父框架混合真返回、零參數葉函式兩次獨立動態呼叫與事件順序、零參數自遞迴 CallBudget 且每次 Entered 都有非成功 Exited、子函式參數宣告身份篡改必在配置動態框架前 SourceChanged。
 - 專用真 Gate 由 39 項增至 43 項；G18 原六項的 P18.1、P18.3、P18.5 真來源追溯同步納入，不以子批綠燈宣告任何原項 Passed。
 - 本批不是整個 V1 完成：仍待跨一般條件／迴圈／資源、多種合法根呼叫型態、複雜返回與 mixed parameters 的原始完整正反矩陣。未核准語意及 async 不變，公開 MVP-A CLI 亦不變。
