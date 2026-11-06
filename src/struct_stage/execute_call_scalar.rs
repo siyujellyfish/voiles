@@ -276,6 +276,69 @@ impl PrivateScalarReturnExpr {
         }
     }
 
+    /// 根呼叫的算術真正在動態環境求值，絕不於 Prepare 折疊。
+    /// 顯式工作堆疊避免大量括號／算術節點依賴 Rust 宿主遞迴；
+    /// 原 Parser 左至右順序及 D18-01 每次環境步數預算保持一致。
+    fn evaluate_main(
+        &self,
+        frame: &BTreeMap<DeclarationId, i64>,
+        steps: &mut usize,
+        max_steps: usize,
+    ) -> Result<i64, PrivateScalarCallRuntimeError> {
+        enum PureTask<'a> {
+            Evaluate(&'a PrivateScalarReturnExpr),
+            Apply(char),
+        }
+        let mut tasks = vec![PureTask::Evaluate(self)];
+        let mut values = Vec::<i64>::new();
+        while let Some(task) = tasks.pop() {
+            match task {
+                PureTask::Evaluate(expr) => match expr {
+                    Self::Parameter(id) => values.push(
+                        frame.get(id).copied().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?,
+                    ),
+                    Self::Constant(value) => values.push(*value),
+                    Self::Addition(left, right) | Self::Subtraction(left, right) => {
+                        tasks.push(PureTask::Apply(if matches!(expr, Self::Addition(..)) {
+                            '+'
+                        } else {
+                            '-'
+                        }));
+                        tasks.push(PureTask::Evaluate(right));
+                        tasks.push(PureTask::Evaluate(left));
+                    }
+                    Self::Call { .. } => {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch)
+                    }
+                },
+                PureTask::Apply(operator) => {
+                    if *steps >= max_steps {
+                        return Err(PrivateScalarCallRuntimeError::StepBudget);
+                    }
+                    *steps += 1;
+                    let right = values.pop().ok_or(
+                        PrivateScalarCallRuntimeError::StateMismatch,
+                    )?;
+                    let left = values.pop().ok_or(
+                        PrivateScalarCallRuntimeError::StateMismatch,
+                    )?;
+                    let value = match operator {
+                        '+' => left.checked_add(right),
+                        '-' => left.checked_sub(right),
+                        _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                    }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
+                    values.push(value);
+                }
+            }
+        }
+        if values.len() != 1 {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+        Ok(values[0])
+    }
+
     fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
             Self::Call { name, arguments } => {
