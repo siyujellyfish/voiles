@@ -9,6 +9,14 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_d_混合_const_str_與_copyable_int_同框架真借用及_hir_加法返回",
+    "g18_d_混合_int_在前_var_str_在後_仍以真獨占票據與參數身分執行",
+    "g18_d_混合函式重複呼叫不消耗_str_持有者也不重用上次_int_參數框架",
+    "g18_c_混合借用期間_int_加法溢位須歸還票據及真_utf8_資源",
+    "g18_c_混合函式真借用與_int_參數已綁定後故障仍原子歸還清理",
+    "g18_d_篡改混合函式_int_值與_DeclarationId_或_hir_返回必須配置前拒絕",
+    "g18_d_混合函式刪除原_checker_真借用表不得使用舊參數票據",
+    "g18_d_混合呼叫錯誤型別個數與具名非授權_int_實參必保守拒絕",
     "g18_d_正式_checker_const_str_參數共享借用真票據與返回值",
     "g18_d_函式借用讀取先驗證動態票據_歸還後禁止重用",
     "g18_d_函式實參的真借用票據不能跨動態_tracker_存取",
@@ -47,8 +55,17 @@ def main() -> int:
     if missing:
         print("G18 函式參數借用 Rust 正反缺漏：" + "、".join(missing), file=sys.stderr)
         return 1
-    print(f"G18 真函式 call_borrows→BorrowTicket：{len(expected)}/{len(expected)}，"
-          "正式 Rust 全量已實際執行；仍非 G18 六原項 Passed。")
+    run = subprocess.run(
+        [str(args.test_bin.resolve()), "--test-threads=2",
+         "struct_stage::g18_private_call_borrow_tests::"],
+        text=True, encoding="utf-8", capture_output=True, check=False,
+    )
+    if run.returncode or f"{len(expected)} passed; 0 failed;" not in run.stdout:
+        print("G18 函式真借用與 Copyable int 混合 Gate 未全過：" +
+              run.stdout + run.stderr, file=sys.stderr)
+        return 1
+    print(f"G18 真函式 str BorrowTicket／Copyable int 同框架："
+          f"{len(expected)}/{len(expected)} 已真正重跑，仍非 G18 六原項 Passed。")
     return 0
 
 

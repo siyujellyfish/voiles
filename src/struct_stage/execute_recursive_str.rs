@@ -515,6 +515,14 @@ impl PreparedPrivateRecursiveStr {
                             return Err(PrivateRecursiveStrRunError::Ticket(error)),
                         Err(PrivateCallBorrowRuntimeError::InjectedFailure) =>
                             return Err(PrivateRecursiveStrRunError::InjectedFailure),
+                        // 純讀取 helper 本身不會產生整數計算／槽狀態
+                        // 錯誤；若共用 enum 日後新增路徑，仍必須保守
+                        // 拒絕，不可誤報成功的 str 借用存取。
+                        Err(PrivateCallBorrowRuntimeError::StateMismatch
+                            | PrivateCallBorrowRuntimeError::IntegerOverflow) =>
+                            return Err(PrivateRecursiveStrRunError::Ticket(
+                                crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+                            )),
                     }
                 }
                 declare(&callee.locals, &mut resources, &mut steps)?;
