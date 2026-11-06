@@ -2203,4 +2203,93 @@ mod g18_private_scalar_call_tests {
         }));
     }
 
+
+    #[test]
+    fn g18_a_main_普通函式返回值與常值相加由同一真動態工作堆疊完成() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn inc(5)+2\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.main_dynamic_call.is_some());
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(6))).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "inc")).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_兩個兄弟函式合成返回必照原_checker_左右順序執行() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn inc(2)+inc(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        let args = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [2, 4]);
+        let returns = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::Returned(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(returns, [3, 5]);
+    }
+
+    #[test]
+    fn g18_a_main_多層括號包含函式複合返回保持原_parser_int_來源() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn ((inc(3)+inc(4)))\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 2);
+    }
+
+    #[test]
+    fn g18_c_main_子函式已真返回後最外層算術溢位不得冒充成功() {
+        let src = "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nconst high:int = 9223372036854775807\nreturn id(high)+1\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(9223372036854775807)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "id"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_複合返回工作計畫被竄改必在任何函式執行前拒絕() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn inc(2)+3\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+        prepared.main_dynamic_call = Some(PrivateScalarReturnExpr::Constant(999));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_main_複合函式返回與非法型別或未知名稱仍由原_checker_拒絕() {
+        for src in [
+            "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn inc(1)+true\n}\n",
+            "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn inc(1)+missing\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_c_main_多兄弟複合返回不得假造單一根函式故障注入() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn inc(2)+inc(4)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(8));
+        assert!(matches!(prepared.execute_with_fault(true),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
 }
