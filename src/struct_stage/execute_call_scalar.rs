@@ -2124,18 +2124,18 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_c_main_巢狀實參使用唯一預算後根函式不得虛構進入() {
+    fn g18_a_main_巢狀實參先返回後可合法復用唯一框架額度() {
         let src = "fn inc(x:int)->int{\nreturn x+1\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(inc(1),3)\n}\n";
         let outcome = checked(src).execute_with_budget(
             PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
         ).unwrap();
-        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.result, Ok(5));
         assert_eq!(outcome.parameter_slots_after_exit, 0);
         let entered = outcome.events.iter().filter_map(|event| match event {
             PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
             _ => None,
         }).collect::<Vec<_>>();
-        assert_eq!(entered, ["inc"]);
+        assert_eq!(entered, ["inc", "sum"]);
         let args = outcome.events.iter().filter_map(|event| match event {
             PrivateScalarCallEvent::ArgumentEvaluated(value) => Some(*value),
             _ => None,
@@ -2145,6 +2145,31 @@ mod g18_private_scalar_call_tests {
             matches!(event, PrivateScalarCallEvent::FunctionExited {
                 name, returned: true
             } if name == "inc")).count(), 1);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "sum")).count(), 1);
+    }
+
+
+    #[test]
+    fn g18_c_main_真正被呼叫者本體巢狀超單框架預算不可虛構葉函式進入() {
+        let src = "fn leaf(x:int)->int{\nreturn x+1\n}\nfn outer(x:int)->int{\nreturn leaf(x)\n}\nfn main()->int{\nreturn outer(1+2)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["outer"]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(outcome.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "outer".into(), returned: false,
+        }));
     }
 
 }
