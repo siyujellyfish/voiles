@@ -165,3 +165,21 @@
 - 這些是 **Copyable int 作用域可觀察事件，不是 ResourceId／ReleaseEvent，不得拿來充當 P18.3 str 資源釋放證據**；原 Checker DeclarationId、BorrowTicket 安全及任何公開 CLI 均不變。一般呼叫的根框架、巢狀子框架與 main 動態實參框架在正常／異常退出時都使用同一真初始化／逆序離域演算法，未成功初始化者零事件。
 - 新增三項真 Rust 正反：兩筆區域初始化 4、6 與反向離域順序；第二筆運算溢位時只回收已完成第一筆，絕不造假第二筆；直接遞迴跨三真框架，儘管靜態 DeclarationId 相同，各次的值仍為 2、3、4，預算耗盡後恰三次離域、零假返回。
 - 專項 Gate 93→96 項；G18 原 P18.1／P18.3 追溯、CI 與 AI-build 同步，P18 正式原六項仍 **0/6 Passed**。僅最新 PR HEAD 三必要 CI 全 success，核對身分／base／mergeable 後 Squash merge，再以新 main 同 SHA 驗證，不以專用事件代替正式資源模型。
+
+
+---
+
+## V1-O：main 已核准動態 int 初始化與函式結果暫存（2026-11-06）
+
+- 基線 main `5713e252a063ae34dbe062604fa8b41d6c53249f`（#578 新增 Copyable int 真初始化／離域事件並通過同 SHA 完整 CI）。先前只允許 main 的前置 `var／const int` 由整數字面、括號字面、已初始化 int 名稱直接產生，而 `const base:int=2+3; return inc(base)` 以及 `const result:int=inc(4); return result+1` 均為原 Checker 核准的合法純值流程，私有執行器卻 Unsupported。
+- 本批不更動 Lexer／Parser／Checker／TypedHIR 或語言規格：如果 main 前置宣告含合法 int 算式或函式呼叫，**所有前置 int 宣告交由既有 `prepare_function_locals(main,...)` 逐筆編譯成 `main_dynamic_inits`**；其值只在真執行階段以原 `DeclarationId`、Reference HIR、Arithmetic HIR、Lexer Token 與顯式工作堆疊求得。原既有字面／名稱純值快速路徑保持不變。
+- main 最終 `return` 即使只引用先前函式結果的具名 int，也能從前置宣告的原 Parser AST 找到已核准普通函式圖並依同一原 Checker 型別決議執行；不允許將**完全沒有函式呼叫**的純 main 算式冒稱為 P18.1 函式驗收。前置動態宣告發生溢位、步數耗盡時，不跳過已完成宣告的逆序離域，也不執行尚未可達的後續函式呼叫。
+- `main_dynamic_call` 是原動態 main return 工作計畫，`main_dynamic_inits` 具有獨立來源一致性比對；使用同一 `evaluate_graph` 在最初 main int 來源框架先依序執行宣告、再返回；這個 main 來源框架不計入可配置 D18-01 使用者函式框架數。沒有新增 str 資源／借用語意，現有 P13～P16 安全界線與公開 CLI 不變。
+- 六項真 Rust 正反：main `2+3` 初始化後傳參、函式結果存入 const 再純算術 return、前向零參數函式結果與 Copyable 副本、第二初始化運算溢位且只清理已完成宣告、竄改動態初始化計畫執行前 SourceChanged、錯型別與未知名稱維持原 Checker 拒絕。專項 Gate **96→102**，G18 原 P18.1／P18.3／P18.5、CI 與 AI-build 同步。
+- 本批仍是 V1 子集，不以增加正反案例宣稱原 P18.1 正式 Passed；P18 原六項保持 0/6。依 PR 最新 HEAD 三項必要 CI completed/success、作者/base/mergeable 核對後 Squash merge，新 main 同 SHA 再驗。
+
+
+### V1-O 首輪 CI 數值預期修正
+
+- P04 Rust 測試首次執行的 1548 項已通過，惟新測試 `inc(4)` 返回 5 後 `main` 的 `return result+1`，原斷言誤寫為 7。實際正確結果 **6**；執行器與原 Checker 的已核准整數加法一致。
+- 僅將此項測試預期修正為 6，保留對 `Returned(5)`、唯一真函式執行與局部初始化的檢查。**不能為符合錯誤測試而更動計算語意**；以修訂後最新 HEAD 三必要 CI 重新驗收，未成功前不得合併。
