@@ -2070,4 +2070,81 @@ mod g18_private_scalar_call_tests {
         }
     }
 
+
+    #[test]
+    fn g18_c_main_同名巢狀實參故障只能中斷真正外層函式框架() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(sum(1,2),3)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let enters = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "sum")).count();
+        assert_eq!(enters, 2);
+        let successes = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "sum")).count();
+        let failures = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: false
+            } if name == "sum")).count();
+        assert_eq!((successes, failures), (1, 1));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(3))).count(), 1);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+    }
+
+    #[test]
+    fn g18_c_main_不同名子函式先成功後故障只注入根函式綁定() {
+        let src = "fn inc(x:int)->int{\nreturn x+1\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(inc(4),2)\n}\n";
+        let outcome = checked(src).execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        let exits = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionExited { name, returned } =>
+                Some((name.as_str(), *returned)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(exits, [("inc", true), ("sum", false)]);
+        assert!(outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(5))));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_a_main_動態實參的來源框架不占用唯一使用者函式預算() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,3+4)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_c_main_巢狀實參使用唯一預算後根函式不得虛構進入() {
+        let src = "fn inc(x:int)->int{\nreturn x+1\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(inc(1),3)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["inc"]);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [1, 2, 3]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "inc")).count(), 1);
+    }
+
 }
