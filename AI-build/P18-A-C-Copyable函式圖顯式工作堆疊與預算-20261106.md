@@ -50,3 +50,14 @@
 - 新四項真 Rust 正反：main 呼叫零參數函式正常返回、main 前向零參數串接兩層真正 Return、直接零參數遞迴耗盡 CallBudget 時進出框架逐一成對無假 Return、竄改根函式不存在的參數與實參在執行前 SourceChanged。
 - 專項真 Gate 45→49 項，原 G18 P18.1／18.3／18.5 來源追溯同步；沒有公開 CLI、語法或未核准異常語意。**本批仍不是整個 V1 或 G18 正式 Passed**，一般控制流與跨所有權函式仍應推進 V1 後續矩陣。
 - 本 PR 須最新 HEAD 三項 CI completed/success、作者與主線 base／mergeable 確認後 Squash merge，合併後主線同 SHA 再驗 G17／G6／F00、G18 --audit。
+
+
+---
+
+## V1-D：合法未使用純整數宣告的真執行（2026-11-06）
+
+- 基線 main `35aed82bbb5926edcc330b93045c05a0c0aa8f75`，V1-C／PR #567 的根函式零引數執行已合併；新 main 同 SHA 回歸仍由推送 CI 核對。原純值 Call 執行器將任何已完成原 Checker 驗證、卻未被當作實參的 `var／const int = 整數常值` 宣告一律 `Unsupported`，屬舊私有切片限制，與已核准一般普通函式及局部純值宣告不一致。
+- 只刪除「每筆 main 宣告必須作為函式實參」的人工限制；`main_prefix` 每筆仍由 Parser AST、Lexer 真整數 Token、原 Checker int TypedHIR／DeclarationId 完整核對，且只接受沒有資源與額外求值效果的純整數常值。全部已驗證宣告的 `DeclarationId／i64` 仍保留於 `main_owners`，交由 `matches_source` 執行前重新驗證；不得因未使用而跳過原先語意檢查。
+- 改正過時反例：型別錯誤、實參數量不足與過多仍由原 Checker 拒絕；未被使用的合法純 int 宣告不再誤拒，真 `sum(1,2)` 返回 3。另新增兩項 Rust 正反：多個未使用／實際使用的 `var／const int` 混合，唯一真正傳入的值不遭讀錯；竄改未使用宣告的原身分或值也在建立動態框架前 `SourceChanged`。
+- 專項 Gate 49→51，原 P18.1 真來源追溯、CI 名稱與 AI-build 同步。**不放行具有副作用的任意賦值、非字面初始化或其他型別**，不擴張 P01 CLI，不把 V1 或 G18 提前標記 Passed。
+- 合併要求 PR 最新 HEAD 文件、Rust 建置、架構測試皆 completed/success，核對作者與 base／mergeable 後 Squash merge，再由新 main 同 SHA 回歸 G17／G6／F00 與 G18 `--audit`。
