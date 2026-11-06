@@ -9,6 +9,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_d_唯一_str_借用與四個_copyable_int_同框架真算術返回",
+    "g18_d_參數宣告順序為_int_str_int_int_仍以原_checker_身分真借用",
+    "g18_d_同一具名_copyable_int_重複使用不消耗_str_借用持有者",
+    "g18_c_多個_int_算術溢位須於真_str_borrowticket_歸還前中止成功返回",
+    "g18_c_混合四個_int_與_str_中途故障不得殘留任一動態參數或票據",
+    "g18_d_多個_copyable_int_後續參數被篡改不得建立任何_utf8_資源",
+    "g18_d_多參數型別錯誤與未使用具名_int_保持原_checker_拒絕",
     "g18_d_具名_const_int_與_str_借用同框架按原_checker_引用身份返回",
     "g18_d_具名_var_int_在前_var_str_在後_真獨占借用及複製求值",
     "g18_c_具名_copyable_與_str_借用並存故障仍清空參數及歸還票據",
@@ -69,7 +76,7 @@ def main() -> int:
         print("G18 函式真借用與 Copyable int 混合 Gate 未全過：" +
               run.stdout + run.stderr, file=sys.stderr)
         return 1
-    print(f"G18 真函式 str BorrowTicket／Copyable int 同框架："
+    print(f"G18 真函式 str BorrowTicket／多個 Copyable int 同框架："
           f"{len(expected)}/{len(expected)} 已真正重跑，仍非 G18 六原項 Passed。")
     return 0
 

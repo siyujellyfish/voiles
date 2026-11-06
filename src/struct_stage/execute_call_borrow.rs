@@ -1,5 +1,5 @@
 // G18／P18.1、P18.4：只接通正式私有 Checker 已通過的
-// 一個 str 真持有者，搭配可選 Copyable int 參數 -> 原 Checker 普通函式真返回。
+// 一個 str 真持有者，搭配多個 Copyable int 參數 -> 原 Checker 普通函式真返回。
 // 原 Checker 的 call_borrows_at(NodeSpan) 是唯一的借用授權權威；
 // 真 BorrowTicket 僅在執行到呼叫時簽出並在該次函式退出時歸還。
 // 不新增參數語法、方法多載、隱含 str 複製或公開執行入口。
@@ -59,6 +59,8 @@ struct PreparedPrivateCallBorrow {
     str_position: usize,
     /// 原 Checker 的第二個 Copyable int Parameter DeclarationId 與實參值。
     int_binding: Option<(DeclarationId, i64)>,
+    /// 後續所有已驗證 Copyable int 參數，依原完整函式簽章順序綁定。
+    additional_int_bindings: Vec<(DeclarationId, i64)>,
     /// 具名 Copyable 實參的原 main 局部宣告及獨立 int 值。
     int_owner: Option<(DeclarationId, i64)>,
     /// 從當次真正 int 參數槽求值的原 ScalarHIR 加／減／返回樹。
@@ -94,22 +96,24 @@ impl PreparedPrivateCallBorrow {
         if main.result_ty != "int" || !main.params.is_empty()
             || !(2..=3).contains(&main.body.statements.len())
             || callee.result_ty != "int"
-            || !(1..=2).contains(&callee.params.len())
+            || callee.params.is_empty()
             || callee.body.statements.len() != 1 {
             return Err(PrivateCallBorrowPrepareError::Unsupported(
-                "只執行已核准一個 str 借用與可選第二 Copyable int 參數",
+                "只執行原 Checker 已核准的單 str 借用與任意 Copyable int 參數",
             ));
         }
         let str_position = callee.params.iter().position(|param| param.ty == "str")
             .ok_or(PrivateCallBorrowPrepareError::Unsupported(
                 "缺少原 Parser 真 str 預設借用參數",
             ))?;
-        let int_position = callee.params.iter().position(|param| param.ty == "int");
-        if callee.params.len() == 2 && (int_position.is_none()
-            || str_position == int_position.unwrap())
-            || callee.params.len() == 1 && int_position.is_some() {
+        // 靜態來源必須恰好有一個非 Copyable str 與其餘
+        // 已核准 Copyable int。多個 str 的借用模式仍待獨立完整驗收，
+        // 不可透過本次多純值框架忽略或複製第二個持有者。
+        if callee.params.iter().filter(|param| param.ty == "str").count() != 1
+            || callee.params.iter().any(|param|
+                param.ty != "str" && param.ty != "int") {
             return Err(PrivateCallBorrowPrepareError::Unsupported(
-                "目前真混合呼叫只接通 str 與可選一個 int 完整簽章",
+                "本真借用切片要求唯一 str 借用與任意多個已核准 int 參數",
             ));
         }
         for param in &callee.params {
@@ -198,12 +202,14 @@ impl PreparedPrivateCallBorrow {
             ));
         }
         let mut int_owner = None;
-        let int_binding = if let Some(position) = int_position {
+        let mut int_bindings = Vec::<(DeclarationId, i64)>::new();
+        for (position, parameter) in callee.params.iter().enumerate() {
+            if parameter.ty != "int" { continue; }
             let arg = &call.arguments[position];
             let value = match &arg.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(raw),
-                ) if main.body.statements.len() == 2 => {
+                ) => {
                     if verified.plan.scalar_hir.expression(arg.node_span()).is_none_or(
                         |fact| fact.ty != crate::common_ir::ScalarType::Int,
                     ) || !verified.tokens.iter().any(|token|
@@ -211,12 +217,12 @@ impl PreparedPrivateCallBorrow {
                             && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
                     ) {
                         return Err(PrivateCallBorrowPrepareError::Unsupported(
-                            "混合呼叫 int 常值缺少原 Checker／Lexer 型別來源",
+                            "混合多參數 int 字面值缺少原 Checker／Lexer 型別身分",
                         ));
                     }
                     crate::syntax_shared::integer_i64(raw).map_err(|_|
                         PrivateCallBorrowPrepareError::Unsupported(
-                            "混合呼叫 int 常值超過 i64 合法範圍",
+                            "混合多參數 int 字面值超出 i64 範圍",
                         ),
                     )?
                 }
@@ -224,20 +230,20 @@ impl PreparedPrivateCallBorrow {
                     let int_statement = &main.body.statements[1];
                     let StmtKind::Declare(binding) = &int_statement.kind else {
                         return Err(PrivateCallBorrowPrepareError::Unsupported(
-                            "具名 Copyable int 實參必須由真局部宣告建立",
+                            "具名 Copyable int 實參須由真局部宣告建立",
                         ));
                     };
                     let id = DeclarationId(int_statement.start);
                     let initializer = binding.initializer.as_ref().ok_or(
                         PrivateCallBorrowPrepareError::Unsupported(
-                            "int 具名來源必須於該真聲明初始化",
+                            "混合 int 具名來源必須於真聲明初始化",
                         ),
                     )?;
                     let TermKind::Scalar(
                         crate::syntax_shared::ScalarLiteral::Integer(raw),
                     ) = &initializer.kind else {
                         return Err(PrivateCallBorrowPrepareError::Unsupported(
-                            "此子集 int 來源只能是原 Checker 已驗證常值初始化",
+                            "具名 int 來源須有原 Checker 已驗證常值初始化",
                         ));
                     };
                     if name != &binding.name || binding.name == owner.name
@@ -259,30 +265,35 @@ impl PreparedPrivateCallBorrow {
                                 && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
                         ) {
                         return Err(PrivateCallBorrowPrepareError::Unsupported(
-                            "具名 int 參數未對應原 Checker DeclarationId／Lexer／Reference HIR",
+                            "具名 int 實參未對應原 Checker DeclarationId／Reference HIR",
                         ));
                     }
                     let value = crate::syntax_shared::integer_i64(raw).map_err(|_|
                         PrivateCallBorrowPrepareError::Unsupported(
-                            "具名 int 來源初始化超過 i64",
+                            "具名 int 初始化超出 i64 範圍",
                         ),
                     )?;
+                    if int_owner.is_some_and(|old| old != (id, value)) {
+                        return Err(PrivateCallBorrowPrepareError::Unsupported(
+                            "此切片禁止忽略另一個尚未執行的具名 int 宣告",
+                        ));
+                    }
                     int_owner = Some((id, value));
                     value
                 }
                 _ => return Err(PrivateCallBorrowPrepareError::Unsupported(
-                    "混合 Copyable int 只接通獨立常值或真已初始化具名來源",
+                    "混合 Copyable int 僅接受已驗證字面或當次具名來源",
                 )),
             };
-            Some((DeclarationId(callee.params[position].declaration_start), value))
-        } else {
-            if main.body.statements.len() != 2 {
-                return Err(PrivateCallBorrowPrepareError::Unsupported(
-                    "單一 str 借用不能忽略 main 額外的未執行宣告",
-                ));
-            }
-            None
-        };
+            int_bindings.push((DeclarationId(parameter.declaration_start), value));
+        }
+        if main.body.statements.len() == 3 && int_owner.is_none() {
+            return Err(PrivateCallBorrowPrepareError::Unsupported(
+                "混合呼叫不能略過 main 已宣告而未使用的 int 持有者",
+            ));
+        }
+        let int_binding = int_bindings.first().copied();
+        let additional_int_bindings = int_bindings[usize::from(int_binding.is_some())..].to_vec();
         let StmtKind::Return(callee_return) = &callee.body.statements[0].kind else {
             return Err(PrivateCallBorrowPrepareError::Unsupported(
                 "受限被呼叫函式須直接 return 合法 int 常值",
@@ -329,7 +340,8 @@ impl PreparedPrivateCallBorrow {
         Ok(Self {
             verified, original, owner: owner_name, owner_id: identity,
             mutable, text, callee_name, callee_span, call_span, loan, returned,
-            str_position, int_binding, int_owner, mixed_return,
+            str_position, int_binding, additional_int_bindings,
+            int_owner, mixed_return,
         })
     }
 
@@ -344,6 +356,7 @@ impl PreparedPrivateCallBorrow {
             && self.loan == fresh.loan && self.returned == fresh.returned
             && self.str_position == fresh.str_position
             && self.int_binding == fresh.int_binding
+            && self.additional_int_bindings == fresh.additional_int_bindings
             && self.int_owner == fresh.int_owner
             && self.mixed_return == fresh.mixed_return
             && self.verified.plan.declarations.call_borrows
@@ -404,11 +417,12 @@ impl PreparedPrivateCallBorrow {
                 &tracker, ticket, self.owner_id, &runtime, &self.owner,
             )?);
             call_entered = true;
-            if let Some((id, value)) = self.int_binding {
+            for (index, (id, value)) in self.int_binding.into_iter()
+                .chain(self.additional_int_bindings.iter().copied()).enumerate() {
                 if frame.insert(id, value).is_some() {
                     return Err(PrivateCallBorrowRuntimeError::StateMismatch);
                 }
-                observed_integer = Some(value);
+                if index == 0 { observed_integer = Some(value); }
             }
             if fail_inside_callee {
                 return Err(PrivateCallBorrowRuntimeError::InjectedFailure);
@@ -811,6 +825,104 @@ mod g18_private_call_borrow_tests {
         );
         assert!(matches!(PreparedPrivateCallBorrow::prepare(&type_mismatch),
             Err(PrivateCallBorrowPrepareError::Check(_))));
+    }
+
+    // P18.4：同一個真非 Copyable str 借用可與完整 Copyable int
+    // 參數序列共存，不能因單參數模型而錯誤拒絕合法 Checker 來源。
+    fn many_mixed() -> &'static str {
+        "fn combine(payload:str,a:int,b:int,c:int,d:int)->int{\nreturn (a+b)+(c-d)\n}\nfn main()->int{\nconst owner:str = \"繁體🪼\"\nreturn combine(owner,7,9,5,2)\n}\n"
+    }
+    #[test]
+    fn g18_d_唯一_str_借用與四個_copyable_int_同框架真算術返回() {
+        let prepared = checked(many_mixed());
+        assert_eq!(prepared.additional_int_bindings.len(), 3);
+        assert_eq!(prepared.str_position, 0);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(19));
+        assert_eq!(out.observed_utf8_bytes, Some("繁體🪼".len()));
+        assert_eq!(out.observed_integer, Some(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert!(out.call_entered && out.call_exited);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_d_參數宣告順序為_int_str_int_int_仍以原_checker_身分真借用() {
+        let source = "fn combine(a:int,payload:str,b:int,c:int)->int{\nreturn a+b-c\n}\nfn main()->int{\nvar owner:str = \"獨占\"\nreturn combine(9,owner,2,1)\n}\n";
+        let prepared = checked(source);
+        assert_eq!(prepared.str_position, 1);
+        assert_eq!(prepared.loan.kind, BorrowKind::ExclusiveWrite);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert_eq!(out.observed_utf8_bytes, Some("獨占".len()));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_d_同一具名_copyable_int_重複使用不消耗_str_借用持有者() {
+        let source = "fn combine(payload:str,a:int,b:int,c:int)->int{\nreturn a+b+c\n}\nfn main()->int{\nconst owner:str = \"正體\"\nconst number:int = 4\nreturn combine(owner,number,number,2)\n}\n";
+        let prepared = checked(source);
+        assert_eq!(prepared.int_owner.unwrap().1, 4);
+        assert_eq!(prepared.additional_int_bindings.len(), 2);
+        for _ in 0..3 {
+            let out = prepared.execute().unwrap();
+            assert_eq!(out.result, Ok(10));
+            assert_eq!(out.observed_integer, Some(4));
+            assert_eq!(out.parameter_slots_after_exit, 0);
+            assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+        }
+    }
+
+    #[test]
+    fn g18_c_多個_int_算術溢位須於真_str_borrowticket_歸還前中止成功返回() {
+        let source = "fn combine(payload:str,a:int,b:int,c:int)->int{\nreturn a+b+c\n}\nfn main()->int{\nvar owner:str = \"獨占\"\nreturn combine(owner,9223372036854775807,1,1)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateCallBorrowRuntimeError::IntegerOverflow));
+        assert!(out.call_entered && !out.call_exited);
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_c_混合四個_int_與_str_中途故障不得殘留任一動態參數或票據() {
+        let out = checked(many_mixed()).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateCallBorrowRuntimeError::InjectedFailure));
+        assert!(out.call_entered && !out.call_exited);
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.observed_integer, Some(7));
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_d_多個_copyable_int_後續參數被篡改不得建立任何_utf8_資源() {
+        let mut p = checked(many_mixed());
+        p.additional_int_bindings[1].0 = DeclarationId(0);
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut p = checked(many_mixed());
+        p.additional_int_bindings[2].1 = 5000;
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut p = checked(many_mixed());
+        p.verified.plan.declarations.call_borrows.clear();
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_d_多參數型別錯誤與未使用具名_int_保持原_checker_拒絕() {
+        let bad = many_mixed().replace("combine(owner,7,9,5,2)",
+            "combine(owner,7,true,5,2)");
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&bad),
+            Err(PrivateCallBorrowPrepareError::Check(_))));
+        let bad = many_mixed().replace("combine(owner,7,9,5,2)",
+            "combine(owner,7,9,5)");
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&bad),
+            Err(PrivateCallBorrowPrepareError::Check(_))));
+        let unused = many_mixed().replace(
+            "return combine(owner,7,9,5,2)",
+            "const extra:int = 6\nreturn combine(owner,7,9,5,2)",
+        );
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&unused),
+            Err(PrivateCallBorrowPrepareError::Unsupported(_))));
     }
 
 }
