@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的七十九項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的八十六項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_main_普通函式返回值與常值相加由同一真動態工作堆疊完成",
+    "g18_a_main_兩個兄弟函式合成返回必照原_checker_左右順序執行",
+    "g18_a_main_多層括號包含函式複合返回保持原_parser_int_來源",
+    "g18_c_main_子函式已真返回後最外層算術溢位不得冒充成功",
+    "g18_a_main_複合返回工作計畫被竄改必在任何函式執行前拒絕",
+    "g18_a_main_複合函式返回與非法型別或未知名稱仍由原_checker_拒絕",
+    "g18_c_main_多兄弟複合返回不得假造單一根函式故障注入",
     "g18_c_main_真正被呼叫者本體巢狀超單框架預算不可虛構葉函式進入",
     "g18_c_main_同名巢狀實參故障只能中斷真正外層函式框架",
     "g18_c_main_不同名子函式先成功後故障只注入根函式綁定",
