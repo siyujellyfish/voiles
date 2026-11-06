@@ -933,4 +933,130 @@ mod g18_private_recursive_str_frames_tests {
         assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
     }
 
+    fn mixed_direct() -> &'static str {
+        "fn descend(flag:bool,payload:str,n:int)->int{\nvar local:str = \"中🪼\"\nif(flag){\nvar nested:str = \"內\"\nreturn descend(false,nested,n)\n}\nreturn n+3\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn descend(true,root,7)\n}\n"
+    }
+    fn mixed_mutual() -> &'static str {
+        "fn first(flag:bool,payload:str,n:int)->int{\nvar a:str = \"甲\"\nif(flag){\nvar nested:str = \"分支甲\"\nreturn second(false,n,nested)\n}\nreturn n+1\n}\nfn second(flag:bool,n:int,payload:str)->int{\nvar b:str = \"乙\"\nif(flag){\nvar nested:str = \"分支乙\"\nreturn first(false,nested,n)\n}\nreturn n-2\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn first(true,root,12)\n}\n"
+    }
+    #[test]
+    fn g18_c_直接遞迴_str_真票據與_copyable_int_逐框架傳遞並由_hir_算術返回() {
+        let plan = plan(mixed_direct());
+        let out = plan.execute(budget(4, 100)).unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert_eq!(out.bound_int_values, [
+            ("descend".to_owned(), 7), ("descend".to_owned(), 7),
+        ]);
+        assert_eq!(out.borrowed_lengths, ["根".len(), "內".len()]);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+        assert!(out.loans_returned);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+    }
+
+    #[test]
+    fn g18_c_互相遞迴_參數順序不同仍保留原_checker_int_與_str_借用身份() {
+        let out = plan(mixed_mutual()).execute(budget(5, 120)).unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert_eq!(out.bound_int_values, [
+            ("first".to_owned(), 12), ("second".to_owned(), 12),
+        ]);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+        assert!(out.loans_returned);
+        assert_eq!(out.borrowed_lengths, ["根".len(), "分支甲".len()]);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+    }
+
+    #[test]
+    fn g18_c_無_str_實參的_bool_int_遞迴仍真建立每框架_utf8_並返回動態參數() {
+        let text = "fn repeat(flag:bool,n:int)->int{\nvar local:str = \"層\"\nif(flag){\nvar nested:str = \"內\"\nreturn repeat(false,n)\n}\nreturn n+n\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn repeat(true,9)\n}\n";
+        let out = plan(text).execute(budget(4, 100)).unwrap();
+        assert_eq!(out.result, Ok(18));
+        assert_eq!(out.bound_int_values, [
+            ("repeat".to_owned(), 9), ("repeat".to_owned(), 9),
+        ]);
+        assert!(out.borrowed_lengths.is_empty());
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_c_子遞迴_int_常值覆寫父框架值_底層不得錯讀父參數() {
+        let text = "fn descend(flag:bool,payload:str,n:int)->int{\nvar local:str = \"中\"\nif(flag){\nvar nested:str = \"內\"\nreturn descend(false,nested,4)\n}\nreturn n+1\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn descend(true,root,100)\n}\n";
+        let out = plan(text).execute(budget(4, 100)).unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert_eq!(out.bound_int_values, [
+            ("descend".to_owned(), 100), ("descend".to_owned(), 4),
+        ]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_c_混合_int_底層算術溢位須失敗並先歸還借用票據再逐層釋放() {
+        let text = mixed_direct().replace("return n+3",
+            "return n+1").replace("descend(true,root,7)",
+            "descend(true,root,9223372036854775807)");
+        let out = plan(&text).execute(budget(4, 100)).unwrap();
+        assert_eq!(out.result, Err(PrivateRecursiveStrRunError::Scalar(
+            PrivateScalarCallRuntimeError::IntegerOverflow,
+        )));
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+        assert!(out.loans_returned);
+        assert!(out.frames.iter().all(|event| !matches!(event,
+            PrivateRecursiveFrameEvent::Exited { returned: true, .. })));
+    }
+
+    #[test]
+    fn g18_c_混合_str_int_跨框架呼叫預算耗盡仍保留實際參數值與全部清理() {
+        let out = plan(mixed_direct()).execute(budget(2, 100)).unwrap();
+        assert_eq!(out.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert_eq!(out.bound_int_values, [("descend".to_owned(), 7)]);
+        assert_eq!(out.borrowed_lengths, ["根".len()]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_c_混合遞迴第二層_int_已綁定後故障仍清理所有_utf8_與票據() {
+        let out = plan(mixed_direct())
+            .execute_with_fault(budget(4, 100), Some(4)).unwrap();
+        assert_eq!(out.result, Err(PrivateRecursiveStrRunError::InjectedFailure));
+        assert_eq!(out.bound_int_values, [
+            ("descend".to_owned(), 7), ("descend".to_owned(), 7),
+        ]);
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_c_竄改遞迴_int_實參來源或返回_hir_必須在真資源建立前拒絕() {
+        let mut p = plan(mixed_direct());
+        p.callees[0].next.int_argument =
+            Some(PrivateRecursiveIntArgument::ParentParameter(DeclarationId(0)));
+        assert!(matches!(p.execute(budget(4, 100)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+        let mut p = plan(mixed_direct());
+        p.entry.int_argument = Some(PrivateRecursiveIntArgument::Constant(99));
+        assert!(matches!(p.execute(budget(4, 100)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+        let mut p = plan(mixed_direct());
+        p.callees[0].base_return = PrivateScalarReturnExpr::Constant(111);
+        assert!(matches!(p.execute(budget(4, 100)),
+            Err(PrivateRecursiveStrPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_c_混合遞迴錯誤_int_型別及漏參數必先由原_checker_拒絕() {
+        for invalid in [
+            mixed_direct().replace("descend(false,nested,n)",
+                "descend(false,nested,true)"),
+            mixed_direct().replace("descend(true,root,7)",
+                "descend(true,root)"),
+            mixed_direct().replace("return n+3", "return payload+3"),
+        ] {
+            assert!(matches!(PreparedPrivateRecursiveStr::prepare(&invalid),
+                Err(PrivateRecursiveStrPrepareError::Check(_))), "{invalid}");
+        }
+    }
+
 }
