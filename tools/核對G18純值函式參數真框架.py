@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的五十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的五十四項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_數個未使用純值宣告與具名實參各自保留來源身分",
+    "g18_a_未使用純值宣告遭竄改仍須執行前拒絕",
     "g18_a_main_原_checker_括號常值引數真正進入雙參數框架",
     "g18_a_main_多層括號具名_copyable_來源仍維持原宣告身分",
     "g18_a_main_括號布林與未知名稱不可充當合法_int_實參",
@@ -37,7 +39,7 @@ from pathlib import Path
     "g18_c_多參數整數溢位不可回傳成功且所有動態參數清空",
     "g18_c_多參數真框架測試故障不殘留參數也不假冒_return",
     "g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕",
-    "g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕",
+    "g18_a_多參數錯誤型別引數數量拒絕且未使用純值宣告合法",
     "g18_a_前向兩層帶參數呼叫每層建立獨立框架並按返回順序退出",
     "g18_a_三層具參數函式圖真正使用前一層返回值而非來源常值",
     "g18_a_同一巢狀葉函式重複真呼叫各自返回且不共用參數槽",
