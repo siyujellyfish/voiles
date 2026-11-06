@@ -114,3 +114,21 @@
 - 原先簡單字面／具名實參的 66 項真測試、身分對照與事件保持原樣；新路徑只處理尚未接通的真動態實參。新增 `callee_parameter_ids` 源自原被呼叫函式的所有正式 Parameter DeclarationId，避免為動態實參虛構靜態值；`matches_source` 在任何執行前比對完整動態計畫、參數簽章和原全量安全計畫。
 - 新增八項 Rust 正反：`sum(1+2,7-4)`、具名 int 混合巢狀 `inc`、零參數葉函式作為引數、第二實參溢位保留第一已完成事件、步數耗盡零假進入、真參數綁定後故障逆序退出、動態 HIR 計畫遭改先拒、錯型別與未知名稱原 Checker 拒絕。專用 Gate **66→74**，G18 原 P18.1／P18.3／P18.5 動態來源追溯同步納入。
 - **此批不代表全部一般合法函式／控制流程已覆蓋**；V1/P18 原六項維持 SubsetVerified／Incomplete／BlockedByDecision、0/6 正式 Passed。只在最新 PR HEAD 文件、Rust 建置與完整架構測試全 completed/success、作者／base／mergeable 核對後 Squash merge，新 main 同 SHA 重跑 G17／G6／F00 與 G18 `--audit`。
+
+
+---
+
+## V1-K：main 動態實參中真正根函式的故障邊界（2026-11-06）
+
+- 基線 main `99bba7608abc69ba2c8f2a545c814f932b81d7f1`（V1-J／#574 的 74 項已通過三必要 CI 並 Squash merge）。在 main 的真動態實參編譯後，既有測試故障注入透過 `frames.len() == 1` 決定「根呼叫」，但 `sum(inc(4),2)` 或 `sum(sum(1,2),3)` 必須先在 main 來源作用域執行子函式；因此它會錯誤中斷第一個實參子函式，而非預期的最外層 `sum` 綁定。
+- 將既有 `PrivateScalarTask::Evaluate`／`EnterCall` 工作項保留明確 **is_root_expression** 旗標：只有整個 main Return 根節點的 `Call` 才被判定為此批原已核准的故障注入目標；其所有算術子式、巢狀引數及函式本體呼叫一律不繼承根身份。正式 Lexer／Parser／Checker、動態真執行堆疊、事件、清理與 D18-01 預算不變。
+- 新增四項真正 Rust 正反：同名 `sum(sum(1,2),3)` 在故障注入時必先完成內層，再在外層注入且逐層退出；不同名 `sum(inc(4),2)` 子函式真返回與根故障分界；僅一可用函式框架預算時合法 `sum(1+2,3+4)` 必成功（main 的來源框架不占額）；巢狀 `sum(inc(1),3)` 在同樣框架預算下只能先進入 inc，真正尚未進入的 sum 不可虛構 Entered。
+- 真 Gate 74→78 項，G18 原 P18.1／P18.3 追溯及 CI／AI-build 同步，僅為內部測試故障政策，不新增 voiles 異常／例外語意；仍不代表 V1 完全 Passed 或 G18 原六項結案。
+- 驗收：PR 最新 HEAD 文件、Rust 建置及完整架構測試 completed/success，PR 作者／base／mergeable 確認後 Squash merge，再於新 main 同 SHA 驗證原 G17／G6／F00 與 G18 `--audit`。
+
+
+### V1-K CI 修正：真正的框架額度是同時存活數，而非累計呼叫數
+
+- 首輪必要 CI 的 P04 真 Rust 測試指出原反例 `sum(inc(1),3)` 在「最多一個真函式框架」下可正常返回 5。這是正確的已核准語意：子函式 `inc` 已先退出，後續 `sum` 可重用同一執行環境額度。**不得為使錯誤測試通過而更動執行器拒絕合法來源**。
+- 修正正例為 `g18_a_main_巢狀實參先返回後可合法復用唯一框架額度`，確認兩次真 Entered／Exited 與來源值順序；另新增真正同時巢狀的負例 `outer(1+2)` 內部尚需呼叫 `leaf(x)`，同時只有一框架額度時必 `CallBudget` 且 `leaf` 零進入、`outer` 失敗退出。
+- 專用 Gate 由初版 78 **修正為 79** 項；G18 原 P18.1／P18.3 來源對照與必要 CI 名稱同步修改。此為測試契約修正，不改 D18-01 的配置預算語意、不冒充 V1／G18 正式 Passed。

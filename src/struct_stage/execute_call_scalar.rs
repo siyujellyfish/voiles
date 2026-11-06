@@ -287,11 +287,11 @@ struct PrivateScalarActiveFrame {
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
 /// 上逐項求值，呼叫時由動態框架保存真正參數值。
 enum PrivateScalarTask<'a> {
-    Evaluate(&'a PrivateScalarReturnExpr),
+    Evaluate(&'a PrivateScalarReturnExpr, bool),
     /// 每個真實參值求值完成當下才產生事件，不在 EnterCall 補記。
     RecordArgument,
     Apply(char),
-    EnterCall(&'a str, usize),
+    EnterCall(&'a str, usize, bool),
     ExitCall,
 }
 
@@ -309,7 +309,7 @@ impl PreparedPrivateScalarCall {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
         }];
-        let mut tasks = vec![PrivateScalarTask::Evaluate(expr)];
+        let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
         let mut values = Vec::<i64>::new();
         let mut steps = 0usize;
         let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
@@ -323,7 +323,7 @@ impl PreparedPrivateScalarCall {
                     steps += 1;
                 }
                 match task {
-                    PrivateScalarTask::Evaluate(term) => match term {
+                    PrivateScalarTask::Evaluate(term, is_root_expression) => match term {
                         PrivateScalarReturnExpr::Parameter(id) => {
                             let value = frames.last()
                                 .and_then(|frame| frame.values.get(id).copied())
@@ -333,24 +333,24 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
                         PrivateScalarReturnExpr::Addition(left, right) => {
                             tasks.push(PrivateScalarTask::Apply('+'));
-                            tasks.push(PrivateScalarTask::Evaluate(right));
-                            tasks.push(PrivateScalarTask::Evaluate(left));
+                            tasks.push(PrivateScalarTask::Evaluate(right, false));
+                            tasks.push(PrivateScalarTask::Evaluate(left, false));
                         }
                         PrivateScalarReturnExpr::Subtraction(left, right) => {
                             tasks.push(PrivateScalarTask::Apply('-'));
-                            tasks.push(PrivateScalarTask::Evaluate(right));
-                            tasks.push(PrivateScalarTask::Evaluate(left));
+                            tasks.push(PrivateScalarTask::Evaluate(right, false));
+                            tasks.push(PrivateScalarTask::Evaluate(left, false));
                         }
                         PrivateScalarReturnExpr::Call { name, arguments } => {
                             // 所有子呼叫實參在父框架從左到右求值；
                             // 其中任何一項錯誤時，尚未 Enter 的函式
                             // 不得產生假的進入或返回事件。
                             tasks.push(PrivateScalarTask::EnterCall(
-                                name, arguments.len(),
+                                name, arguments.len(), is_root_expression,
                             ));
                             for argument in arguments.iter().rev() {
                                 tasks.push(PrivateScalarTask::RecordArgument);
-                                tasks.push(PrivateScalarTask::Evaluate(argument));
+                                tasks.push(PrivateScalarTask::Evaluate(argument, false));
                             }
                         }
                     },
@@ -374,7 +374,7 @@ impl PreparedPrivateScalarCall {
                         }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                         values.push(value);
                     }
-                    PrivateScalarTask::EnterCall(name, argc) => {
+                    PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
                         let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
@@ -392,7 +392,6 @@ impl PreparedPrivateScalarCall {
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
-                        let first_call_in_graph = frames.len() == 1;
                         let evaluated = values.split_off(values.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
@@ -405,11 +404,13 @@ impl PreparedPrivateScalarCall {
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                         });
-                        if fail_after_root_binding && first_call_in_graph {
+                        // 只有源自 main return 最外層的真 Call 才允許
+                        // 故障注入；先求值的同名子呼叫絕不可誤作根框架。
+                        if fail_after_root_binding && is_root_call {
                             return Err(PrivateScalarCallRuntimeError::InjectedFailure);
                         }
                         tasks.push(PrivateScalarTask::ExitCall);
-                        tasks.push(PrivateScalarTask::Evaluate(result_expr));
+                        tasks.push(PrivateScalarTask::Evaluate(result_expr, false));
                     }
                     PrivateScalarTask::ExitCall => {
                         if frames.len() <= 1 {
@@ -2067,6 +2068,108 @@ mod g18_private_scalar_call_tests {
             assert!(matches!(PreparedPrivateScalarCall::prepare(src),
                 Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
         }
+    }
+
+
+    #[test]
+    fn g18_c_main_同名巢狀實參故障只能中斷真正外層函式框架() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(sum(1,2),3)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let enters = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "sum")).count();
+        assert_eq!(enters, 2);
+        let successes = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "sum")).count();
+        let failures = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: false
+            } if name == "sum")).count();
+        assert_eq!((successes, failures), (1, 1));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(3))).count(), 1);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+    }
+
+    #[test]
+    fn g18_c_main_不同名子函式先成功後故障只注入根函式綁定() {
+        let src = "fn inc(x:int)->int{\nreturn x+1\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(inc(4),2)\n}\n";
+        let outcome = checked(src).execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        let exits = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionExited { name, returned } =>
+                Some((name.as_str(), *returned)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(exits, [("inc", true), ("sum", false)]);
+        assert!(outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(5))));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_a_main_動態實參的來源框架不占用唯一使用者函式預算() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,3+4)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_巢狀實參先返回後可合法復用唯一框架額度() {
+        let src = "fn inc(x:int)->int{\nreturn x+1\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(inc(1),3)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Ok(5));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["inc", "sum"]);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [1, 2, 3]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "inc")).count(), 1);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: true
+            } if name == "sum")).count(), 1);
+    }
+
+
+    #[test]
+    fn g18_c_main_真正被呼叫者本體巢狀超單框架預算不可虛構葉函式進入() {
+        let src = "fn leaf(x:int)->int{\nreturn x+1\n}\nfn outer(x:int)->int{\nreturn leaf(x)\n}\nfn main()->int{\nreturn outer(1+2)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["outer"]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(outcome.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "outer".into(), returned: false,
+        }));
     }
 
 }
