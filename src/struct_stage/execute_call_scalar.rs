@@ -112,6 +112,32 @@ impl PrivateScalarReturnExpr {
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
+            TermKind::UnresolvedZeroArgs(name) => {
+                // A2/F02：裸 name() 在 Parser 無法先判斷是建構式或零參數函式；
+                // 只有正式 Checker 分類、完整函式宣告和 int TypedHIR
+                // 全部一致時，才可交給原顯式動態框架執行。
+                // 此純值切片若存在任一結構已於 prepare 入口拒絕，
+                // 不得藉此把 Struct() 擅自改判為普通函式。
+                let target = verified.functions.iter()
+                    .find(|fun| fun.name == *name && fun.name != "main")
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                        "零參數來源缺少原 Checker 唯一普通函式宣告",
+                    ))?;
+                if target.result_ty != "int" || !target.params.is_empty()
+                    || verified.plan.declarations.call_borrows_at(span)
+                        .is_some_and(|facts| !facts.is_empty())
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(&token.kind, TokenKind::Name(found) if found == name))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "零參數呼叫缺少原 Parser／Checker 完整簽章或詞彙來源",
+                    ));
+                }
+                Ok(Self::Call { name: name.clone(), arguments: Vec::new() })
+            }
             TermKind::BinaryInt(binary) => {
                 let left = binary.left.node_span();
                 let right = binary.right.node_span();
