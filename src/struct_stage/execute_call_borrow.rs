@@ -1532,3 +1532,352 @@ mod g18_private_owned_move_call_tests {
             .execute(PrivateMoveCallBudget::default()).unwrap().result, Ok(9));
     }
 }
+
+
+// G18／P18.4：同一原 Checker Call 內，整筆所有權移動與另一個
+// 非 Copyable str 的預設借用同時存在。兩者必須各用原來的
+// OwnedStrRuntime 及 BorrowSafety，不得讓 BorrowTicket 假冒 owner。
+#[derive(Debug)]
+enum PrivateMixedOwnershipPrepareError {
+    Check(crate::Diagnostic),
+    Unsupported(&'static str),
+    SourceChanged,
+    Cleanup(crate::owned_str_runtime::StrRuntimeError),
+    CleanupTicket(crate::borrow_safety::BorrowSafetyError),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateMixedOwnershipRunError {
+    Resource(crate::owned_str_runtime::StrRuntimeError),
+    Ticket(crate::borrow_safety::BorrowSafetyError),
+    InjectedFailure,
+    BorrowAccess(PrivateCallBorrowRuntimeError),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateMixedOwnershipSource {
+    name: String,
+    id: DeclarationId,
+    mutable: bool,
+    text: String,
+}
+
+struct PreparedPrivateMixedOwnershipCall {
+    verified: VerifiedPrivateSource,
+    original: Box<[u8]>,
+    owners: Vec<PrivateMixedOwnershipSource>,
+    moved_owner: String,
+    borrowed_owner: String,
+    loan: BorrowFact,
+    move_first: bool,
+    moved_param: String,
+    moved_param_id: DeclarationId,
+    borrowed_param_id: DeclarationId,
+    callee_name: String,
+    callee_local: Option<String>,
+    returned: i64,
+}
+
+#[derive(Debug)]
+struct PrivateMixedOwnershipOutcome {
+    result: Result<i64, PrivateMixedOwnershipRunError>,
+    events: Vec<crate::owned_str_runtime::ResourceEvent>,
+    observed_borrowed_bytes: Option<usize>,
+    ticket_returned: bool,
+    parameter_slots_after_exit: usize,
+}
+
+impl PreparedPrivateMixedOwnershipCall {
+    fn prepare(source: &str) -> Result<Self, PrivateMixedOwnershipPrepareError> {
+        use crate::common_ir::{NodeRole, VerifiedTypedMember};
+        let verified = verify_source_with_ability(
+            source, crate::ownership_policy::approved_leaf_copy_permission,
+        ).map_err(PrivateMixedOwnershipPrepareError::Check)?;
+        if !verified.structs.is_empty() || verified.functions.len() != 2 {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "此真呼叫子集限 main 與一個原 Checker 已核准的函式",
+            ));
+        }
+        let main = verified.functions.iter().find(|function| function.name == "main")
+            .ok_or(PrivateMixedOwnershipPrepareError::Unsupported("缺少真正 main"))?;
+        let callee = verified.functions.iter().find(|function| function.name != "main")
+            .ok_or(PrivateMixedOwnershipPrepareError::Unsupported("缺少真正被呼叫函式"))?;
+        if main.result_ty != "int" || !main.params.is_empty()
+            || main.body.statements.len() != 3
+            || callee.result_ty != "int" || callee.params.len() != 2 {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "本批只執行兩個 main str 所有者及被呼叫者兩個 str 參數",
+            ));
+        }
+        let mut owners = Vec::new();
+        for statement in &main.body.statements[..2] {
+            let StmtKind::Declare(owner) = &statement.kind else {
+                return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                    "main 兩個來源須為真的具名 str 初始化",
+                ));
+            };
+            let id = DeclarationId(statement.start);
+            let initializer = owner.initializer.as_ref().ok_or(
+                PrivateMixedOwnershipPrepareError::Unsupported(
+                    "str 所有者缺少真正初值",
+                ),
+            )?;
+            let text = private_str_literal(initializer, &verified.tokens)
+                .map_err(|_| PrivateMixedOwnershipPrepareError::Unsupported(
+                    "str 所有者初值缺少原 Lexer 真 UTF-8",
+                ))?;
+            if owner.ty != "str"
+                || !verified.plan.declarations.matches(id, "str", owner.mutable)
+                || owners.iter().any(|prior: &PrivateMixedOwnershipSource|
+                    prior.name == owner.name) {
+                return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                    "main str 所有者缺少原 Checker 唯一 DeclarationId",
+                ));
+            }
+            owners.push(PrivateMixedOwnershipSource {
+                name: owner.name.clone(), id, mutable: owner.mutable, text,
+            });
+        }
+        let StmtKind::Return(ret) = &main.body.statements[2].kind else {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "main 末端須是真正方法／函式返回",
+            ));
+        };
+        let TermKind::Call(call) = &ret.expression.kind else {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "混合所有權呼叫必須是真普通函式 Call AST",
+            ));
+        };
+        if call.name != callee.name || call.arguments.len() != 2
+            || verified.plan.scalar_hir.expression(ret.expression.node_span())
+                .is_none_or(|fact| fact.ty != crate::common_ir::ScalarType::Int) {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "混合呼叫名稱／型別／參數數量與原 Checker 不符",
+            ));
+        }
+        let (move_index, borrow_index) = match (
+            &call.arguments[0].kind, &call.arguments[1].kind,
+        ) {
+            (TermKind::Move(_), TermKind::Name(_)) => (0, 1),
+            (TermKind::Name(_), TermKind::Move(_)) => (1, 0),
+            _ => return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "同一 Call 必須有一筆明確整筆 move 與另一筆真正預設借用",
+            )),
+        };
+        let moved_name = PreparedPrivateMoveCall::checked_move_name(
+            &call.arguments[move_index], &verified,
+        ).map_err(|_| PrivateMixedOwnershipPrepareError::Unsupported(
+            "明確 move 實參缺少原 Parser／Lexer 具名來源",
+        ))?;
+        let TermKind::Name(borrowed_name) = &call.arguments[borrow_index].kind else {
+            unreachable!("已比對真 Call 引數形狀");
+        };
+        let moved = owners.iter().find(|owner| owner.name == moved_name)
+            .ok_or(PrivateMixedOwnershipPrepareError::Unsupported(
+                "移動來源不是 main 真正 str 唯一所有者",
+            ))?;
+        let borrowed = owners.iter().find(|owner| &owner.name == borrowed_name)
+            .ok_or(PrivateMixedOwnershipPrepareError::Unsupported(
+                "借用來源不是 main 真正 str 唯一所有者",
+            ))?;
+        if moved.id == borrowed.id
+            || !verified.tokens.iter().any(|token|
+                token.start == call.arguments[borrow_index].start
+                    && token.end == call.arguments[borrow_index].end
+                    && matches!(&token.kind,
+                        TokenKind::Name(found) if found == borrowed_name)
+            ) {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "整筆 move 與預設借用不得共用同一來源身份",
+            ));
+        }
+        let loan = BorrowFact::new(borrowed.id,
+            if borrowed.mutable { BorrowKind::ExclusiveWrite }
+            else { BorrowKind::SharedRead });
+        if verified.plan.declarations.call_borrows_at(ret.expression.node_span())
+            != Some(&[loan][..]) {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "原 Checker 的整份 call_borrows 並非唯一真正借用參數",
+            ));
+        }
+        for parameter in &callee.params {
+            let member = VerifiedTypedMember::checked_private(
+                source, NodeRole::Parameter, parameter.declaration_span,
+                &parameter.name, parameter.name_span, &parameter.ty,
+                parameter.type_span, false,
+            ).ok_or(PrivateMixedOwnershipPrepareError::Unsupported(
+                "混合參數缺少原 Parser／Lexer 型別來源",
+            ))?;
+            if parameter.ty != "str"
+                || !verified.plan.declarations.matches(
+                    DeclarationId(parameter.declaration_start), "str", false,
+                ) || verified.plan.members.get(&member.identity) != Some(&member) {
+                return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                    "混合 str 參數未獲原 Checker TypedMember／DeclarationId 授權",
+                ));
+            }
+        }
+        let moved_param = &callee.params[move_index];
+        let borrowed_param = &callee.params[borrow_index];
+        let (callee_local, last) = match callee.body.statements.as_slice() {
+            [last] => (None, last),
+            [declaration, last] => {
+                let StmtKind::Declare(local) = &declaration.kind else {
+                    return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                        "整筆移動後局部綁定須是真宣告",
+                    ));
+                };
+                let Some(initializer) = &local.initializer else {
+                    return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                        "整筆移動後局部綁定缺少初值",
+                    ));
+                };
+                let moved_from = PreparedPrivateMoveCall::checked_move_name(
+                    initializer, &verified,
+                ).map_err(|_| PrivateMixedOwnershipPrepareError::Unsupported(
+                    "函式內局部須以明確 .move() 消耗真正參數",
+                ))?;
+                if local.ty != "str" || moved_from != moved_param.name
+                    || !verified.plan.declarations.matches(
+                        DeclarationId(declaration.start), "str", local.mutable,
+                    ) {
+                    return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                        "局部移動錯用借用參數或原 Checker 宣告身份",
+                    ));
+                }
+                (Some(local.name.clone()), last)
+            }
+            _ => return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "本真呼叫切片只接通一筆局部整筆移動和單一 int return",
+            )),
+        };
+        let StmtKind::Return(ret) = &last.kind else {
+            return Err(PrivateMixedOwnershipPrepareError::Unsupported(
+                "被呼叫者須真正返回已核准的 int",
+            ));
+        };
+        let returned = PreparedPrivateMoveCall::checked_int_return(
+            &ret.expression, &verified,
+        ).map_err(|_| PrivateMixedOwnershipPrepareError::Unsupported(
+            "混合 move／borrow 函式返回缺少原 Checker int HIR",
+        ))?;
+        let moved_owner = moved.name.clone();
+        let borrowed_owner = borrowed.name.clone();
+        let moved_param_name = moved_param.name.clone();
+        let moved_param_id = DeclarationId(moved_param.declaration_start);
+        let borrowed_param_id = DeclarationId(borrowed_param.declaration_start);
+        let callee_name = callee.name.clone();
+        let original = verified.source.bytes.clone().into_boxed_slice();
+        Ok(Self {
+            verified, original, owners, moved_owner, borrowed_owner,
+            loan, move_first: move_index == 0, moved_param: moved_param_name,
+            moved_param_id, borrowed_param_id, callee_name, callee_local, returned,
+        })
+    }
+
+    fn same_source(&self, text: &str) -> bool {
+        let Ok(fresh) = Self::prepare(text) else { return false; };
+        self.original == fresh.original && self.owners == fresh.owners
+            && self.moved_owner == fresh.moved_owner
+            && self.borrowed_owner == fresh.borrowed_owner
+            && self.loan == fresh.loan
+            && self.move_first == fresh.move_first
+            && self.moved_param == fresh.moved_param
+            && self.moved_param_id == fresh.moved_param_id
+            && self.borrowed_param_id == fresh.borrowed_param_id
+            && self.callee_name == fresh.callee_name
+            && self.callee_local == fresh.callee_local
+            && self.returned == fresh.returned
+            && self.verified.plan.declarations.call_borrows
+                == fresh.verified.plan.declarations.call_borrows
+    }
+
+    fn execute(&self) -> Result<PrivateMixedOwnershipOutcome,
+        PrivateMixedOwnershipPrepareError> {
+        self.execute_with_fault(None)
+    }
+
+    /// Some(0) 建立主來源後；Some(1／2) 各實參完成；
+    /// Some(3) 被呼叫者再次整筆轉交後。這是 Rust 驗收注入點。
+    fn execute_with_fault(&self, fail_stage: Option<usize>)
+        -> Result<PrivateMixedOwnershipOutcome, PrivateMixedOwnershipPrepareError> {
+        let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
+            return Err(PrivateMixedOwnershipPrepareError::SourceChanged);
+        };
+        if self.original.as_ref() != self.verified.source.bytes.as_slice()
+            || !self.verified.plan.is_consistent(
+                &self.verified.structs, &self.verified.functions, source,
+            ) || !self.same_source(source) {
+            return Err(PrivateMixedOwnershipPrepareError::SourceChanged);
+        }
+        use crate::borrow_safety::{BorrowSafety, BorrowTicket};
+        let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
+        let mut tracker = BorrowSafety::new();
+        let mut ticket: Option<BorrowTicket> = None;
+        let mut entered_callee = false;
+        let mut observed_borrowed_bytes = None;
+        let result = (|| -> Result<i64, PrivateMixedOwnershipRunError> {
+            for owner in &self.owners {
+                resources.declare(&owner.name, owner.mutable, &owner.text)
+                    .map_err(PrivateMixedOwnershipRunError::Resource)?;
+            }
+            if fail_stage == Some(0) {
+                return Err(PrivateMixedOwnershipRunError::InjectedFailure);
+            }
+            // 依真正 Parser 實參的左右次序執行所有權轉交與借用，
+            // 不得為了測試便利自行交換可見作用順序。
+            for index in 0..2 {
+                if (index == 0) == self.move_first {
+                    resources.enter_scope();
+                    entered_callee = true;
+                    resources.move_named(&self.moved_owner, &self.moved_param)
+                        .map_err(PrivateMixedOwnershipRunError::Resource)?;
+                } else {
+                    ticket = Some(tracker.acquire(self.loan.source, self.loan.kind)
+                        .map_err(PrivateMixedOwnershipRunError::Ticket)?);
+                }
+                if fail_stage == Some(index + 1) {
+                    return Err(PrivateMixedOwnershipRunError::InjectedFailure);
+                }
+            }
+            tracker.verify_static_snapshot([self.loan])
+                .map_err(PrivateMixedOwnershipRunError::Ticket)?;
+            let actual = ticket.ok_or(PrivateMixedOwnershipRunError::Ticket(
+                crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+            ))?;
+            observed_borrowed_bytes = Some(read_checked_str_argument(
+                &tracker, actual, self.loan.source, &resources, &self.borrowed_owner,
+            ).map_err(PrivateMixedOwnershipRunError::BorrowAccess)?);
+            if let Some(local) = &self.callee_local {
+                resources.move_named(&self.moved_param, local)
+                    .map_err(PrivateMixedOwnershipRunError::Resource)?;
+                if fail_stage == Some(3) {
+                    return Err(PrivateMixedOwnershipRunError::InjectedFailure);
+                }
+            }
+            Ok(self.returned)
+        })();
+        // 已發出的借用必須在原持有者釋放前整批原子歸還。
+        if let Some(ticket) = ticket {
+            tracker.finish_scope_verified(&[ticket], &[self.loan])
+                .map_err(PrivateMixedOwnershipPrepareError::CleanupTicket)?;
+            tracker.check_direct_access(self.loan.source)
+                .map_err(PrivateMixedOwnershipPrepareError::CleanupTicket)?;
+        }
+        let ticket_returned = tracker.check_direct_access(self.loan.source).is_ok();
+        if entered_callee {
+            resources.leave_scope()
+                .map_err(PrivateMixedOwnershipPrepareError::Cleanup)?;
+        }
+        let events = resources.finish().map_err(
+            PrivateMixedOwnershipPrepareError::Cleanup,
+        )?;
+        if !crate::owned_str_runtime::event_trace_balanced(&events) {
+            return Err(PrivateMixedOwnershipPrepareError::SourceChanged);
+        }
+        Ok(PrivateMixedOwnershipOutcome {
+            result, events, observed_borrowed_bytes, ticket_returned,
+            parameter_slots_after_exit: 0,
+        })
+    }
+}
