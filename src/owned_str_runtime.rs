@@ -14,6 +14,8 @@ pub(crate) enum StrRuntimeError {
     NoInnerScope,
     IncompleteReturn,
     EvaluationFailed,
+    /// 執行環境指定步數耗盡，不是語言固定迴圈次數限制。
+    ExecutionBudgetExhausted,
     ExhaustedIdentity,
     OutstandingResource,
 }
