@@ -742,9 +742,75 @@ mod g18_private_call_borrow_tests {
             assert!(matches!(PreparedPrivateCallBorrow::prepare(src),
                 Err(PrivateCallBorrowPrepareError::Check(_))), "{src}");
         }
-        let named = "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nconst n:int = 3\nreturn measure(owner,n)\n}\n";
-        assert!(matches!(PreparedPrivateCallBorrow::prepare(named),
+        let unused = "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nconst n:int = 3\nreturn measure(owner,5)\n}\n";
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(unused),
             Err(PrivateCallBorrowPrepareError::Unsupported(_))));
+    }
+
+    // P18.4：真正 Copyable int 名稱從 main 的局部宣告讀取純值，
+    // 與同一 call_borrows 所授權的 str 唯一所有者共存。
+    fn named_mixed() -> &'static str {
+        "fn measure(payload:str,n:int)->int{\nreturn n+5\n}\nfn main()->int{\nconst owner:str = \"正體🪼\"\nconst value:int = 7\nreturn measure(owner,value)\n}\n"
+    }
+    #[test]
+    fn g18_d_具名_const_int_與_str_借用同框架按原_checker_引用身份返回() {
+        let p = checked(named_mixed());
+        assert!(p.int_owner.is_some());
+        assert_ne!(p.int_owner.unwrap().0, p.int_binding.unwrap().0);
+        assert_eq!(p.int_owner.unwrap().1, 7);
+        let out = p.execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert_eq!(out.observed_utf8_bytes, Some("正體🪼".len()));
+        assert_eq!(out.observed_integer, Some(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+    #[test]
+    fn g18_d_具名_var_int_在前_var_str_在後_真獨占借用及複製求值() {
+        let text = "fn measure(n:int,payload:str)->int{\nreturn n-4\n}\nfn main()->int{\nvar owner:str = \"唯一\"\nvar number:int = 10\nreturn measure(number,owner)\n}\n";
+        let p = checked(text);
+        assert_eq!(p.str_position, 1);
+        assert_eq!(p.loan.kind, BorrowKind::ExclusiveWrite);
+        assert!(p.int_owner.is_some());
+        for _ in 0..2 {
+            let out = p.execute().unwrap();
+            assert_eq!(out.result, Ok(6));
+            assert_eq!(out.observed_integer, Some(10));
+            assert_eq!(out.parameter_slots_after_exit, 0);
+            assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+        }
+    }
+    #[test]
+    fn g18_c_具名_copyable_與_str_借用並存故障仍清空參數及歸還票據() {
+        let out = checked(named_mixed()).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateCallBorrowRuntimeError::InjectedFailure));
+        assert!(out.call_entered && !out.call_exited);
+        assert_eq!(out.observed_integer, Some(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+    #[test]
+    fn g18_d_偽造具名_copyable_所有者_decl_id_或初始值須零資源拒絕() {
+        let mut p = checked(named_mixed());
+        p.int_owner.as_mut().unwrap().0 = DeclarationId(0);
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut p = checked(named_mixed());
+        p.int_owner.as_mut().unwrap().1 = 99;
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut p = checked(named_mixed());
+        p.int_binding.as_mut().unwrap().1 = 99;
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+    }
+    #[test]
+    fn g18_d_具名_int_未初始化或實參型別不符由原_checker_先拒絕() {
+        let uninitialized = named_mixed().replace("const value:int = 7", "var value:int");
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&uninitialized),
+            Err(PrivateCallBorrowPrepareError::Check(_))));
+        let type_mismatch = named_mixed().replace(
+            "const value:int = 7", "const value:bool = true",
+        );
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&type_mismatch),
+            Err(PrivateCallBorrowPrepareError::Check(_))));
     }
 
 }
