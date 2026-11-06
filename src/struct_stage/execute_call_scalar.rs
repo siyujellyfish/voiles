@@ -1941,4 +1941,132 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_a_main_原_checker_算術實參於真動態框架依順序求值() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,7-4)\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.main_dynamic_call.is_some());
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(6));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [3, 3]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "sum")).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_具名_copyable_算術與巢狀普通函式依真來源求值() {
+        let src = "fn inc(v:int)->int{\nreturn v+1\n}\nfn combine(a:int,b:int)->int{\nreturn a-b\n}\nfn main()->int{\nconst origin:int = 5\nreturn combine(inc(origin),inc(2+1))\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 1);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(2));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let enters = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(enters, ["inc", "inc", "combine"]);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [5, 6, 3, 4]);
+    }
+
+    #[test]
+    fn g18_a_main_零參數葉函式作為複合實參須先真返回再綁定目標() {
+        let src = "fn fixed()->int{\nreturn 4\n}\nfn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(fixed(),6)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        let entered = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["fixed", "sum"]);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [4, 6]);
+    }
+
+    #[test]
+    fn g18_c_main_第二算術實參溢位保留前一完成事件且不可進入目標() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nconst high:int = 9223372036854775807\nreturn sum(5+1,high+1)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [6]);
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(_)
+                | PrivateScalarCallEvent::Returned(_)
+                | PrivateScalarCallEvent::ParameterBound(..)
+        )));
+    }
+
+    #[test]
+    fn g18_c_main_算術實參步數預算耗盡不會補寫未完成參數事件() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,3+4)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 5, max_steps: 6 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [3]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))));
+    }
+
+    #[test]
+    fn g18_c_main_動態實參綁定後故障須先退出真根框架() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,4)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute_with_fault(true).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))).count(), 2);
+        assert_eq!(outcome.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "sum".to_owned(), returned: false,
+        }));
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(prepared.execute().unwrap().result, Ok(7));
+    }
+
+    #[test]
+    fn g18_a_main_動態算式已驗證工作計畫遭竄改必在執行前拒絕() {
+        let src = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1+2,3)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(6));
+        prepared.main_dynamic_call = Some(PrivateScalarReturnExpr::Constant(99));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_main_動態實參非法型別或未知名稱仍須由原_checker_拒絕() {
+        for src in [
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(true+2,3)\n}\n",
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(2+missing,3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
 }
