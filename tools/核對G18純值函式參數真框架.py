@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的五十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的五十八項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_main_括號返回帶參數普通函式依原_checker_真求值",
+    "g18_a_main_多層括號零參數前向函式返回不虛構參數",
+    "g18_a_main_括號返回的真內層呼叫跨度不得竄改",
+    "g18_a_main_括號返回錯型別與不存在函式由原_checker_拒絕",
     "g18_a_數個未使用純值宣告與具名實參各自保留來源身分",
     "g18_a_未使用純值宣告遭竄改仍須執行前拒絕",
     "g18_a_main_原_checker_括號常值引數真正進入雙參數框架",
