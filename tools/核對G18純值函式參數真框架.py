@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三十九項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四十三項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_零參數前向葉函式與_copyable_int_父框架真返回",
+    "g18_a_零參數函式重複呼叫不重用動態框架且保留真求值順序",
+    "g18_c_零參數自遞迴由真框架預算受控中止不虛構返回",
+    "g18_a_零參數子函式原宣告來源遭竄改必在動態執行前拒絕",
     "g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
     "g18_a_合法前向六層以上_copyable_int_函式真逐層返回",
     "g18_a_五個_copyable_int_真參數不應被內部三參數上界拒絕",
