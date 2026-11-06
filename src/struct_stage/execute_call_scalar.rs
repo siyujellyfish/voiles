@@ -246,12 +246,19 @@ impl PrivateScalarReturnExpr {
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateScalarLocalInit {
+    declaration: DeclarationId,
+    value: PrivateScalarReturnExpr,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarNestedCallee {
     name: String,
     span: crate::common_ir::NodeSpan,
     parameters: Vec<DeclarationId>,
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
+    local_inits: Vec<PrivateScalarLocalInit>,
 }
 
 struct PreparedPrivateScalarCall {
@@ -264,6 +271,7 @@ struct PreparedPrivateScalarCall {
     parameter_id: Option<DeclarationId>,
     parameter_return_span: crate::common_ir::NodeSpan,
     return_expr: PrivateScalarReturnExpr,
+    root_local_inits: Vec<PrivateScalarLocalInit>,
     owner_id: Option<DeclarationId>,
     argument: Option<i64>,
     /// 其餘參數從同一原 Checker 函式簽章依宣告順序綁定。
@@ -304,6 +312,7 @@ enum PrivateScalarTask<'a> {
     /// 每個真實參值求值完成當下才產生事件，不在 EnterCall 補記。
     RecordArgument,
     Apply(char),
+    BindLocal(DeclarationId),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
@@ -318,11 +327,19 @@ impl PreparedPrivateScalarCall {
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
         fail_after_root_binding: bool,
+        begin_with_root_locals: bool,
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
+        if begin_with_root_locals {
+            // 從 source 宣告順序的反方向推入 LIFO，真正執行為逐筆初始化。
+            for local in self.root_local_inits.iter().rev() {
+                tasks.push(PrivateScalarTask::BindLocal(local.declaration));
+                tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
+            }
+        }
         let mut values = Vec::<i64>::new();
         let mut steps = 0usize;
         let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
@@ -386,6 +403,19 @@ impl PreparedPrivateScalarCall {
                             _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
                         }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                         values.push(value);
+                    }
+                    PrivateScalarTask::BindLocal(id) => {
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        // 一筆區域宣告在單次動態框架內只可初始化一次；
+                        // 同名遮蔽仍由原 Checker 決定不同 DeclarationId。
+                        if frame.values.insert(id, value).is_some() {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                     }
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
@@ -874,6 +904,7 @@ impl PreparedPrivateScalarCall {
             && self.parameter_id == fresh.parameter_id
             && self.parameter_return_span == fresh.parameter_return_span
             && self.return_expr == fresh.return_expr
+            && self.root_local_inits == fresh.root_local_inits
             && self.owner_id == fresh.owner_id
             && self.argument == fresh.argument
             && self.additional_arguments == fresh.additional_arguments
@@ -952,7 +983,7 @@ impl PreparedPrivateScalarCall {
             };
             let result = self.evaluate_graph(
                 dynamic_call, &main_frame, &mut events,
-                adjusted_budget, fail_after_binding,
+                adjusted_budget, fail_after_binding, false,
             );
             return Ok(PrivateScalarCallOutcome {
                 result, events, parameter_slots_after_exit: 0,
@@ -979,7 +1010,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, true)
             }
         });
         if let Ok(value) = result {
