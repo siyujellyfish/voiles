@@ -345,7 +345,6 @@ impl PreparedPrivateScalarCall {
             }
         }
         let param = &callee.params[0];
-        let param_id = DeclarationId(param.declaration_start);
         let StmtKind::Return(return_param) = &callee.body.statements[0].kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "本子集要求被呼叫函式直接執行原 Checker 核准的返回式",
@@ -1059,8 +1058,7 @@ mod g18_private_scalar_call_tests {
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
         let mut prepared = checked(graph_source());
-        prepared.verified.plan.declarations.call_borrows
-            .insert(crate::common_ir::NodeSpan::new(0, 1), vec![]);
+        prepared.verified.plan.declarations.by_source.clear();
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
