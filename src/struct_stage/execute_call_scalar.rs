@@ -259,6 +259,11 @@ struct PreparedPrivateScalarCall {
     main_owners: Vec<(DeclarationId, i64)>,
     /// 同一完整來源中原 Parser／Checker 已驗證的其餘參數函式。
     nested_callees: Vec<PrivateScalarNestedCallee>,
+    /// 真 main 實參中含原 Checker int 算式／巢狀呼叫時，
+    /// 共用顯式工作堆疊執行，不能先預算出假 int 結果。
+    main_dynamic_call: Option<PrivateScalarReturnExpr>,
+    /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
+    callee_parameter_ids: Vec<DeclarationId>,
 }
 
 /// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
@@ -299,6 +304,7 @@ impl PreparedPrivateScalarCall {
         initial_frame: &BTreeMap<DeclarationId, i64>,
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
+        fail_after_root_binding: bool,
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
@@ -371,16 +377,9 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarTask::EnterCall(name, argc) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let mut root_params = Vec::new();
                         let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
                             = if name == self.callee_name {
-                                if let Some(id) = self.parameter_id {
-                                    root_params.push(id);
-                                }
-                                root_params.extend(
-                                    self.additional_arguments.iter().map(|(id, _, _)| *id),
-                                );
-                                (root_params, &self.return_expr)
+                                (self.callee_parameter_ids.clone(), &self.return_expr)
                             } else {
                                 let callee = self.nested_callees.iter()
                                     .find(|fun| fun.name == name)
@@ -393,6 +392,7 @@ impl PreparedPrivateScalarCall {
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
+                        let first_call_in_graph = frames.len() == 1;
                         let evaluated = values.split_off(values.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
@@ -405,6 +405,9 @@ impl PreparedPrivateScalarCall {
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                         });
+                        if fail_after_root_binding && first_call_in_graph {
+                            return Err(PrivateScalarCallRuntimeError::InjectedFailure);
+                        }
                         tasks.push(PrivateScalarTask::ExitCall);
                         tasks.push(PrivateScalarTask::Evaluate(result_expr));
                     }
@@ -820,6 +823,8 @@ impl PreparedPrivateScalarCall {
             && self.additional_arguments == fresh.additional_arguments
             && self.main_owners == fresh.main_owners
             && self.nested_callees == fresh.nested_callees
+            && self.main_dynamic_call == fresh.main_dynamic_call
+            && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
@@ -892,7 +897,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false)
             }
         });
         if let Ok(value) = result {
