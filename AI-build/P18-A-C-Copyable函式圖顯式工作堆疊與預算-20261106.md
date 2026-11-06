@@ -154,3 +154,14 @@
 - 將完整 `root_local_inits`／各 `PrivateScalarNestedCallee.local_inits` 納入來源防偽、函式圖的全部真呼叫邊與真動態框架。在原顯式工作堆疊加入 `BindLocal(DeclarationId)`，每次進入函式先依原宣告順序執行各初始化式，再求值 return；每框架有獨立的 `BTreeMap<DeclarationId,i64>`，不得共享其他遞迴框架的持有者、不得發出假 ParameterBound／Returned；退出或故障時逐框架清理。
 - 新增七項原 Lexer／Parser／Checker 真正 Rust 正反：多筆區域初始化與參數返回、巢狀父子函式各自局部持有者、main 動態實參呼叫有區域宣告的函式、區域算術溢位正常失敗退出、多層遞迴框架與 CallBudget、竄改已驗證局部初始化式必先 SourceChanged、非法型別或未知名稱靜態拒絕。
 - 專用 Gate **86→93**，原 G18 P18.1／P18.3／P18.5 同 SHA 真來源追溯、CI 名稱及 AI-build 同步。此子集仍不允許任意賦值、控制流程或未核准的資源操作；不修改公開 CLI、P13～P16 的安全契約，P18 原六項不提前 Passed。正式合併只依最新 PR HEAD 三必要 CI success、作者／base／mergeable；Squash merge 後新 main 同 SHA 再驗。
+
+
+---
+
+## V1-N：Copyable int 真初始化／離域事件帳簿（2026-11-06）
+
+- 基線 main `2e024299a83f480d056ba1b7a094381daacd9877`（#577 最新 HEAD 三項必要 CI success、Squash merge，且合併後 main 同 SHA 三項 CI 全 success）。V1-M 已接通真函式區域初始化，但事件中尚缺少能獨立驗證「哪個已核准 DeclarationId 真的初始化、哪個未完成、離域順序為何」的動態事實。
+- **新增純值專用事件**：`LocalInitialized(DeclarationId, i64)` 僅在原 `BindLocal` 真寫入成功後產生；`LocalScopeEnded(DeclarationId)` 在正常退出或錯誤／CallBudget 展開時，對該動態框架真正已完成初始化的局部宣告反序記錄。每個 `PrivateScalarActiveFrame` 擁有獨立 `initialized_locals`，即使相同函式被遞迴重入，也不得共享已初始化列表。
+- 這些是 **Copyable int 作用域可觀察事件，不是 ResourceId／ReleaseEvent，不得拿來充當 P18.3 str 資源釋放證據**；原 Checker DeclarationId、BorrowTicket 安全及任何公開 CLI 均不變。一般呼叫的根框架、巢狀子框架與 main 動態實參框架在正常／異常退出時都使用同一真初始化／逆序離域演算法，未成功初始化者零事件。
+- 新增三項真 Rust 正反：兩筆區域初始化 4、6 與反向離域順序；第二筆運算溢位時只回收已完成第一筆，絕不造假第二筆；直接遞迴跨三真框架，儘管靜態 DeclarationId 相同，各次的值仍為 2、3、4，預算耗盡後恰三次離域、零假返回。
+- 專項 Gate 93→96 項；G18 原 P18.1／P18.3 追溯、CI 與 AI-build 同步，P18 正式原六項仍 **0/6 Passed**。僅最新 PR HEAD 三必要 CI 全 success，核對身分／base／mergeable 後 Squash merge，再以新 main 同 SHA 驗證，不以專用事件代替正式資源模型。

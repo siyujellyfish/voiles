@@ -19,6 +19,7 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_兩筆真區域初始化與逆序離域事件保持同源宣告身分",
         "struct_stage::g18_private_scalar_call_tests::g18_a_函式參數與多個純值區域初始化依_checker_順序真返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_巢狀函式各自區域宣告不與父框架參數混用",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真動態_main_實參進入帶區域宣告函式仍唯一返回",
@@ -101,6 +102,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_第二局部初始化運算溢位只釋放已完成宣告",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_遞迴中相同靜態局部宣告每個動態框架均獨立初始化及離域",
         "struct_stage::g18_private_scalar_call_tests::g18_c_函式區域算術溢位必退出而不得虛構返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_局部整數宣告跨多個遞迴框架不得共用儲存位置",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_子函式已真返回後最外層算術溢位不得冒充成功",
