@@ -287,11 +287,11 @@ struct PrivateScalarActiveFrame {
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
 /// 上逐項求值，呼叫時由動態框架保存真正參數值。
 enum PrivateScalarTask<'a> {
-    Evaluate(&'a PrivateScalarReturnExpr),
+    Evaluate(&'a PrivateScalarReturnExpr, bool),
     /// 每個真實參值求值完成當下才產生事件，不在 EnterCall 補記。
     RecordArgument,
     Apply(char),
-    EnterCall(&'a str, usize),
+    EnterCall(&'a str, usize, bool),
     ExitCall,
 }
 
@@ -309,7 +309,7 @@ impl PreparedPrivateScalarCall {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
         }];
-        let mut tasks = vec![PrivateScalarTask::Evaluate(expr)];
+        let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
         let mut values = Vec::<i64>::new();
         let mut steps = 0usize;
         let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
@@ -323,7 +323,7 @@ impl PreparedPrivateScalarCall {
                     steps += 1;
                 }
                 match task {
-                    PrivateScalarTask::Evaluate(term) => match term {
+                    PrivateScalarTask::Evaluate(term, is_root_expression) => match term {
                         PrivateScalarReturnExpr::Parameter(id) => {
                             let value = frames.last()
                                 .and_then(|frame| frame.values.get(id).copied())
@@ -333,24 +333,24 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
                         PrivateScalarReturnExpr::Addition(left, right) => {
                             tasks.push(PrivateScalarTask::Apply('+'));
-                            tasks.push(PrivateScalarTask::Evaluate(right));
-                            tasks.push(PrivateScalarTask::Evaluate(left));
+                            tasks.push(PrivateScalarTask::Evaluate(right, false));
+                            tasks.push(PrivateScalarTask::Evaluate(left, false));
                         }
                         PrivateScalarReturnExpr::Subtraction(left, right) => {
                             tasks.push(PrivateScalarTask::Apply('-'));
-                            tasks.push(PrivateScalarTask::Evaluate(right));
-                            tasks.push(PrivateScalarTask::Evaluate(left));
+                            tasks.push(PrivateScalarTask::Evaluate(right, false));
+                            tasks.push(PrivateScalarTask::Evaluate(left, false));
                         }
                         PrivateScalarReturnExpr::Call { name, arguments } => {
                             // 所有子呼叫實參在父框架從左到右求值；
                             // 其中任何一項錯誤時，尚未 Enter 的函式
                             // 不得產生假的進入或返回事件。
                             tasks.push(PrivateScalarTask::EnterCall(
-                                name, arguments.len(),
+                                name, arguments.len(), is_root_expression,
                             ));
                             for argument in arguments.iter().rev() {
                                 tasks.push(PrivateScalarTask::RecordArgument);
-                                tasks.push(PrivateScalarTask::Evaluate(argument));
+                                tasks.push(PrivateScalarTask::Evaluate(argument, false));
                             }
                         }
                     },
@@ -374,7 +374,7 @@ impl PreparedPrivateScalarCall {
                         }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                         values.push(value);
                     }
-                    PrivateScalarTask::EnterCall(name, argc) => {
+                    PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
                         let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
@@ -392,7 +392,6 @@ impl PreparedPrivateScalarCall {
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
-                        let first_call_in_graph = frames.len() == 1;
                         let evaluated = values.split_off(values.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
@@ -405,11 +404,13 @@ impl PreparedPrivateScalarCall {
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                         });
-                        if fail_after_root_binding && first_call_in_graph {
+                        // 只有源自 main return 最外層的真 Call 才允許
+                        // 故障注入；先求值的同名子呼叫絕不可誤作根框架。
+                        if fail_after_root_binding && is_root_call {
                             return Err(PrivateScalarCallRuntimeError::InjectedFailure);
                         }
                         tasks.push(PrivateScalarTask::ExitCall);
-                        tasks.push(PrivateScalarTask::Evaluate(result_expr));
+                        tasks.push(PrivateScalarTask::Evaluate(result_expr, false));
                     }
                     PrivateScalarTask::ExitCall => {
                         if frames.len() <= 1 {
