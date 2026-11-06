@@ -25,8 +25,8 @@ from pathlib import Path
     "g18_b_具名_while_中的_early_return_僅清理實際選中本體與根資源",
     "g18_c_具名_while_動態故障真清理且不補做未到達賦值",
     "g18_b_具名_while_條件_DeclarationId_偷換必須零資源拒絕",
-    "g18_b_具名_while_沒有可證明終止時保持非公開拒絕",
-    "g18_b_具名_while_continue_不得跳過直接退出義務",
+    "g18_b_具名_while_無須靜態終止改由執行期預算安全中止",
+    "g18_b_具名_while_continue_每輪先清理真資源再回到條件受控耗盡",
     "g18_b_具名_const_bool_重賦值須在原_checker_先拒絕",
     "g18_b_半開空區間不建立任何假迭代資源",
     "g18_b_真_continue_每次先離域釋放再開始下一次",
@@ -37,7 +37,12 @@ from pathlib import Path
     "g18_c_第二次迭代真資源故障必回滾當次及外層持有者",
     "g18_b_巢狀_for_各迭代作用域獨立釋放且順序正確",
     "g18_b_非法隱含_str_複製由原_checker_在第一筆資源前拒絕",
-    "g18_b_超出私有已證明有限上界只保守拒絕不新增語言錯誤",
+    "g18_b_六十五輪合法半開_for_不再遭私有固定上界拒絕",
+    "g18_b_超過六十四輪的合法_for_依真實步數預算成功或受控耗盡",
+    "g18_b_巨大合法_i64_for_上界不應在_prepare_被拒絕或試圖全量迭代",
+    "g18_b_空步數預算必須在任一真_utf8_建立前拒絕",
+    "g18_c_巢狀_for_執行預算耗盡必清理全部已走到的迭代資源",
+    "g18_b_while_條件零迭代仍依真檢查消耗預算而非靜態略過",
     "g18_b_擅改_for_區間或_control_必須在配置任何資源前拒絕",
     "g18_b_刪除原_checker_控制轉移或改寫來源不可沿用舊執行許可",
 )
@@ -67,8 +72,20 @@ def main() -> int:
     if missing:
         print("G18 有限迴圈真來源正反缺失：" + "、".join(missing), file=sys.stderr)
         return 1
-    print(f"G18／P18.2～18.3 原 Checker 有限迴圈真資源："
-          f"{len(expected)}/{len(expected)} 測試存在，原 CI Rust 全量已真正執行。")
+    # 驗收期真跑迴圈執行器，不只是靜態測試名稱存在。
+    executed = subprocess.run(
+        [str(args.test_bin.resolve()), "--test-threads=2",
+         "struct_stage::g18_private_source_loop_tests::"],
+        text=True, encoding="utf-8", capture_output=True, check=False,
+    )
+    if executed.returncode or (
+        f"{len(expected)} passed; 0 failed;" not in executed.stdout
+    ):
+        print("G18／P18.2 迴圈資源 Gate 未完整真執行：" +
+              executed.stdout + executed.stderr, file=sys.stderr)
+        return 1
+    print(f"G18／P18.2 真 for／while 與執行預算："
+          f"{len(expected)}/{len(expected)} 項真 Rust 動態回歸全部通過。")
     print("注意：這是已核准的受限內部執行子批，不代表 P18.1～P18.6 G18 Passed。")
     return 0
 

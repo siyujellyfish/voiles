@@ -55,11 +55,32 @@ struct PrivateLoopOutcome {
     iterations: Vec<(DeclarationId, i64)>,
 }
 
+// P18.2：安全執行預算由每次 Rust 內部呼叫配置，不是 voiles
+// 文法或通用語言規格的固定半開迴圈上界。
+#[derive(Debug, Clone, Copy)]
+struct PrivateLoopExecutionBudget {
+    max_steps: usize,
+}
+impl Default for PrivateLoopExecutionBudget {
+    fn default() -> Self { Self { max_steps: 10_000 } }
+}
+struct PrivateLoopStepCounter {
+    remaining: usize,
+}
+impl PrivateLoopStepCounter {
+    fn new(budget: PrivateLoopExecutionBudget) -> Self {
+        Self { remaining: budget.max_steps }
+    }
+    fn consume(&mut self) -> Result<(), crate::owned_str_runtime::StrRuntimeError> {
+        if self.remaining == 0 {
+            return Err(crate::owned_str_runtime::StrRuntimeError::ExecutionBudgetExhausted);
+        }
+        self.remaining -= 1;
+        Ok(())
+    }
+}
+
 impl PreparedPrivateLoop {
-    /// 本 private evaluator 為避免任何尚未核准的執行耗盡政策，
-    /// 僅承接能在準備階段證明有限且很小的測試區間。這是工程
-    /// 接通子集的上界，不是 voiles 語言 for 上限。
-    const MAX_PRIVATE_ITERATIONS: i128 = 64;
 
     /// 真 Checker 對已知**恰一次** for 且本體必定 return，會
     /// 直接終止外部 CFG，後續語句的 TypedHIR 可以合法不存在。
@@ -182,11 +203,9 @@ impl PreparedPrivateLoop {
                         PrivateLoopPrepareError::Unsupported("for 右端點無合法 i64 證據"),
                     )?;
                     let count = i128::from(end).saturating_sub(i128::from(start)).max(0);
-                    if count > Self::MAX_PRIVATE_ITERATIONS {
-                        return Err(PrivateLoopPrepareError::Unsupported(
-                            "此非公開試驗切片只執行可證明的小型有限區間",
-                        ));
-                    }
+                    // 原 Checker 有權接受任何合法 i64 有限半開區間。
+                    // 真執行的安全退出交由本次呼叫可配置步數預算，
+                    // 不可在準備階段以固定 64 次拒絕合法來源。
                     // 空區間本體根本不會執行；原 Checker 可合法跳過
                     // 它的動態宣告，不能憑 AST 為未簽發的值建立 ResourceId。
                     let identity = DeclarationId(*iterator_start);
@@ -227,31 +246,10 @@ impl PreparedPrivateLoop {
                             &body.statements, verified, true,
                             bool_bindings, iterator_bindings,
                         )?;
-                        // 只接受能以來源直接證明至多一次本體後退出：
-                        // (1) 直接 break／return；
-                        // (2) 具名 var bool 的末句明確改成 false，
-                        //     下次條件會真正重讀同一 DeclarationId。
-                        // 前方不可有 continue 跳過該退出義務。
-                        if actions.iter().take(actions.len().saturating_sub(1))
-                            .any(|item| matches!(item, PrivateLoopAction::Continue)) {
-                            return Err(PrivateLoopPrepareError::Unsupported(
-                                "while 的 continue 不得繞過已證明終止出口",
-                            ));
-                        }
-                        let direct_exit = matches!(actions.last(),
-                            Some(PrivateLoopAction::Break | PrivateLoopAction::Return(_)));
-                        let falsified_guard = match (guard, actions.last()) {
-                            (PrivateBoolCondition::Bound(source),
-                                Some(PrivateLoopAction::AssignBool {
-                                    identity, value: PrivateBoolCondition::Constant(false),
-                                })) => source == *identity,
-                            _ => false,
-                        };
-                        if !direct_exit && !falsified_guard {
-                            return Err(PrivateLoopPrepareError::Unsupported(
-                                "此私有 while 須有直接 break/return 或原條件明確寫為 false",
-                            ));
-                        }
+                        // 原私有 Checker 已驗證本體的詞彙與控制安全。
+                        // 真執行已有每輪／每個動作的可配置步數預算，
+                        // 不得再要求 while 靜態證明一次內必定退出；
+                        // 反向邊與 continue 都真正重讀同一 bool 動態值。
                         actions
                     };
                     PrivateLoopAction::WhileCondition { condition: guard, body: compiled }
@@ -374,9 +372,11 @@ impl PreparedPrivateLoop {
         condition_checks: &mut Vec<bool>,
         iterator_values: &mut BTreeMap<DeclarationId, i64>,
         iterations: &mut Vec<(DeclarationId, i64)>,
+        steps: &mut PrivateLoopStepCounter,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         use crate::owned_str_runtime::StrRuntimeError;
         for operation in operations {
+            steps.consume()?;
             match operation {
                 PrivateLoopAction::DeclareStr { name, mutable, text } => {
                     resources.declare(name, *mutable, text)?;
@@ -400,6 +400,9 @@ impl PreparedPrivateLoop {
                 }
                 PrivateLoopAction::ForRange { identity, lower, upper, body } => {
                     for value in *lower..*upper {
+                        // 每輪真正迭代邊必須消耗預算，包含空本體，
+                        // 不能依賴 Rust Range 長度或一次性的 AST 解析。
+                        steps.consume()?;
                         // 真動態迭代，每輪建立獨立的 int Copyable
                         // 宣告 slot；同一 DeclarationId 不得在其生命
                         // 週期內被第二個擁有位置重複使用。
@@ -410,6 +413,7 @@ impl PreparedPrivateLoop {
                         let step = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
                             bool_values, condition_checks, iterator_values, iterations,
+                            steps,
                         );
                         // 即使 return／break／continue 或故障，必須
                         // 在本輪真字串離域清理完成後撤銷迭代器身分。
@@ -424,6 +428,7 @@ impl PreparedPrivateLoop {
                 }
                 PrivateLoopAction::WhileCondition { condition, body } => {
                     loop {
+                        steps.consume()?;
                         // 已核准 P15：每輪重新求值同一真 bool slot。
                         let selected = Self::bool_value(condition, bool_values)?;
                         condition_checks.push(selected);
@@ -433,21 +438,16 @@ impl PreparedPrivateLoop {
                         let flow = Self::run_scoped(
                             resources, body, depth + 1, injected_at, allocations,
                             bool_values, condition_checks,
-                            iterator_values, iterations,
+                            iterator_values, iterations, steps,
                         )?;
                         match flow {
                             PrivateLoopFlow::Break => break,
                             PrivateLoopFlow::Return(value) =>
                                 return Ok(PrivateLoopFlow::Return(value)),
-                            PrivateLoopFlow::Continue =>
-                                return Err(StrRuntimeError::EvaluationFailed),
-                            PrivateLoopFlow::Normal => {
-                                // 尾端 guard=false 的靜態保證，動態仍
-                                // 核對，避免無界重新進入或假回傳。
-                                if Self::bool_value(condition, bool_values)? {
-                                    return Err(StrRuntimeError::EvaluationFailed);
-                                }
-                            }
+                            // 真 continue 與正常離域都必須返回 while 條件，
+                            // 繼續時不可吞掉本輪釋放的真 ResourceId。
+                            PrivateLoopFlow::Continue | PrivateLoopFlow::Normal => {}
+
                         }
                     }
                 }
@@ -476,11 +476,12 @@ impl PreparedPrivateLoop {
         condition_checks: &mut Vec<bool>,
         iterator_values: &mut BTreeMap<DeclarationId, i64>,
         iterations: &mut Vec<(DeclarationId, i64)>,
+        steps: &mut PrivateLoopStepCounter,
     ) -> Result<PrivateLoopFlow, crate::owned_str_runtime::StrRuntimeError> {
         resources.enter_scope();
         let result = Self::run_actions(
             resources, operations, depth, injected_at, allocations,
-            bool_values, condition_checks, iterator_values, iterations,
+            bool_values, condition_checks, iterator_values, iterations, steps,
         );
         // 包含 continue／break／return／真失敗，單次迭代作用域皆
         // 先釋放唯一資源，再讓控制訊號傳往上一層。
@@ -493,12 +494,26 @@ impl PreparedPrivateLoop {
     }
 
     fn execute(&self) -> Result<PrivateLoopOutcome, PrivateLoopPrepareError> {
-        self.execute_with_fault(None)
+        self.execute_with_budget_and_fault(PrivateLoopExecutionBudget::default(), None)
+    }
+
+    /// 本次執行明確安全預算，不新增 CLI 參數與語言固定迴圈上界。
+    fn execute_with_budget(&self, budget: PrivateLoopExecutionBudget)
+        -> Result<PrivateLoopOutcome, PrivateLoopPrepareError> {
+        self.execute_with_budget_and_fault(budget, None)
     }
 
     /// 故障序號只供 Rust 真 ResourceId 清理測試，不是 voiles 例外語法。
     fn execute_with_fault(&self, injected_at: Option<usize>)
         -> Result<PrivateLoopOutcome, PrivateLoopPrepareError> {
+        self.execute_with_budget_and_fault(
+            PrivateLoopExecutionBudget::default(), injected_at,
+        )
+    }
+
+    fn execute_with_budget_and_fault(
+        &self, budget: PrivateLoopExecutionBudget, injected_at: Option<usize>,
+    ) -> Result<PrivateLoopOutcome, PrivateLoopPrepareError> {
         let Ok(text) = std::str::from_utf8(&self.verified.source.bytes) else {
             return Err(PrivateLoopPrepareError::SourceChanged);
         };
@@ -514,10 +529,11 @@ impl PreparedPrivateLoop {
         let mut condition_checks = Vec::new();
         let mut iterator_values = BTreeMap::new();
         let mut iterations = Vec::new();
+        let mut steps = PrivateLoopStepCounter::new(budget);
         let result = match Self::run_actions(
             &mut resources, &self.operations, 0, injected_at, &mut allocations,
             &mut bool_values, &mut condition_checks,
-            &mut iterator_values, &mut iterations,
+            &mut iterator_values, &mut iterations, &mut steps,
         ) {
             Ok(PrivateLoopFlow::Return(value)) => Ok(value),
             Ok(_) => Err(crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
@@ -662,12 +678,14 @@ mod g18_private_source_loop_tests {
     }
 
     #[test]
-    fn g18_b_超出私有已證明有限上界只保守拒絕不新增語言錯誤() {
+    fn g18_b_六十五輪合法半開_for_不再遭私有固定上界拒絕() {
         let source = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..65{\nvar inner:str = \"甲\"\n}\nreturn 0\n}\n";
-        assert!(matches!(
-            PreparedPrivateLoop::prepare(source),
-            Err(PrivateLoopPrepareError::Unsupported(_)),
-        ));
+        let outcome = checked(source).execute().unwrap();
+        assert_eq!(outcome.result, Ok(0));
+        assert_eq!(outcome.iterations.len(), 65);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 66);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
     }
 
     #[test]
@@ -786,18 +804,33 @@ mod g18_private_source_loop_tests {
     }
 
     #[test]
-    fn g18_b_具名_while_沒有可證明終止時保持非公開拒絕() {
+    fn g18_b_具名_while_無須靜態終止改由執行期預算安全中止() {
         let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"不能假定退出\"\n}\nreturn 0\n}\n";
-        assert!(matches!(
-            PreparedPrivateLoop::prepare(source),
-            Err(PrivateLoopPrepareError::Unsupported(_)),
-        ));
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 8 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(actual.condition_checks, [true, true, true]);
+        assert_eq!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 3);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
     }
 
     #[test]
-    fn g18_b_具名_while_continue_不得跳過直接退出義務() {
-        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\ncontinue\nflag = false\n}\nreturn 0\n}\n";
-        assert!(PreparedPrivateLoop::prepare(source).is_err());
+    fn g18_b_具名_while_continue_每輪先清理真資源再回到條件受控耗盡() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\ncontinue\n}\nreturn 0\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 11 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(actual.condition_checks.len() >= 2);
+        assert_eq!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(),
+            actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Released(_))).count());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+        assert!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count() >= 3);
     }
 
     #[test]
@@ -918,4 +951,87 @@ mod g18_private_source_loop_tests {
             plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
         ));
     }
+    // P18.2：原已核准半開 for 不再因非公開 64 次上界而拒絕；
+    // 執行環境用可配置真步數預算控制任意巨大有限區間。
+    #[test]
+    fn g18_b_超過六十四輪的合法_for_依真實步數預算成功或受控耗盡() {
+        let source = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..65{\nvar inner:str = \"甲\"\n}\nreturn 0\n}\n";
+        let prepared = checked(source);
+        let short = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 5 },
+        ).unwrap();
+        assert_eq!(short.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(short.iterations.len(), 2);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&short.events));
+        assert_eq!(short.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 2);
+        let sufficient = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 135 },
+        ).unwrap();
+        assert_eq!(sufficient.result, Ok(0));
+        assert_eq!(sufficient.iterations.len(), 65);
+        assert_eq!(sufficient.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 66);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&sufficient.events));
+    }
+
+    #[test]
+    fn g18_b_巨大合法_i64_for_上界不應在_prepare_被拒絕或試圖全量迭代() {
+        let source = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..9223372036854775807{\nvar inner:str = \"甲\"\n}\nreturn 0\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 11 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(actual.iterations.len() <= 5);
+        assert!(actual.iterations.len() >= 3);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+    }
+
+    #[test]
+    fn g18_b_空步數預算必須在任一真_utf8_建立前拒絕() {
+        let source = "fn main()->int{\nvar outer:str = \"根\"\nfor i in 0..10{\nvar inner:str = \"甲\"\n}\nreturn 1\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 0 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(actual.events.is_empty());
+        assert!(actual.iterations.is_empty());
+        assert!(actual.condition_checks.is_empty());
+    }
+
+    #[test]
+    fn g18_c_巢狀_for_執行預算耗盡必清理全部已走到的迭代資源() {
+        let source = "fn main()->int{\nvar outer:str = \"根\"\nfor i in 0..3{\nvar first:str = \"甲\"\nfor j in 0..4{\nvar second:str = \"乙\"\n}\n}\nreturn 0\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 9 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 4);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+        assert_eq!(actual.iterations.len(), 3);
+    }
+
+    #[test]
+    fn g18_b_while_條件零迭代仍依真檢查消耗預算而非靜態略過() {
+        let source = "fn main()->int{\nvar active:bool = false\nwhile(active){\nvar never:str = \"不建立\"\n}\nreturn 4\n}\n";
+        let prepared = checked(source);
+        let before = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 2 },
+        ).unwrap();
+        assert_eq!(before.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(before.condition_checks.is_empty());
+        let after = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 3 },
+        ).unwrap();
+        assert_eq!(after.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(after.condition_checks, [false]);
+        let enough = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 4 },
+        ).unwrap();
+        assert_eq!(enough.result, Ok(4));
+        assert_eq!(enough.condition_checks, [false]);
+        assert!(enough.events.is_empty());
+    }
+
 }
