@@ -177,3 +177,9 @@
 - `main_dynamic_call` 是原動態 main return 工作計畫，`main_dynamic_inits` 具有獨立來源一致性比對；使用同一 `evaluate_graph` 在最初 main int 來源框架先依序執行宣告、再返回；這個 main 來源框架不計入可配置 D18-01 使用者函式框架數。沒有新增 str 資源／借用語意，現有 P13～P16 安全界線與公開 CLI 不變。
 - 六項真 Rust 正反：main `2+3` 初始化後傳參、函式結果存入 const 再純算術 return、前向零參數函式結果與 Copyable 副本、第二初始化運算溢位且只清理已完成宣告、竄改動態初始化計畫執行前 SourceChanged、錯型別與未知名稱維持原 Checker 拒絕。專項 Gate **96→102**，G18 原 P18.1／P18.3／P18.5、CI 與 AI-build 同步。
 - 本批仍是 V1 子集，不以增加正反案例宣稱原 P18.1 正式 Passed；P18 原六項保持 0/6。依 PR 最新 HEAD 三項必要 CI completed/success、作者/base/mergeable 核對後 Squash merge，新 main 同 SHA 再驗。
+
+
+### V1-O 首輪 CI 數值預期修正
+
+- P04 Rust 測試首次執行的 1548 項已通過，惟新測試 `inc(4)` 返回 5 後 `main` 的 `return result+1`，原斷言誤寫為 7。實際正確結果 **6**；執行器與原 Checker 的已核准整數加法一致。
+- 僅將此項測試預期修正為 6，保留對 `Returned(5)`、唯一真函式執行與局部初始化的檢查。**不能為符合錯誤測試而更動計算語意**；以修訂後最新 HEAD 三必要 CI 重新驗收，未成功前不得合併。
