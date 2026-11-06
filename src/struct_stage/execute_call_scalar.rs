@@ -569,7 +569,6 @@ impl PreparedPrivateScalarCall {
                 ));
             }
         }
-        let param = callee.params.first();
         let StmtKind::Return(return_param) = &callee.body.statements[0].kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "本子集要求被呼叫函式直接執行原 Checker 核准的返回式",
@@ -712,99 +711,36 @@ impl PreparedPrivateScalarCall {
                 "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
             ));
         }
-        let mut all_arguments = Vec::new();
+        let mut main_arguments = Vec::new();
         let mut used_names = std::collections::BTreeSet::<DeclarationId>::new();
         for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
-            // 已核准的 Group 由原 Parser/TypedHIR 提供完整來源，
-            // 不額外解釋未核准的表達式或改變 Copyable 權限。
-            let mut actual = arg;
-            while let TermKind::Group(inner) = &actual.kind {
-                if verified.plan.scalar_hir.expression(actual.node_span())
-                    .is_none_or(|fact| fact.ty != ScalarType::Int)
-                    || !verified.tokens.iter().any(|token|
-                        token.start == actual.start
-                            && matches!(token.kind, TokenKind::Symbol('(')))
-                    || !verified.tokens.iter().any(|token|
-                        token.end == actual.end
-                            && matches!(token.kind, TokenKind::Symbol(')'))) {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "Group 引數缺少已核准的同源 int 型別與括號詞彙",
-                    ));
-                }
-                actual = inner;
-            }
-            let arg = actual;
-            let (value, owner_id) = match &arg.kind {
-                TermKind::Scalar(
-                    crate::syntax_shared::ScalarLiteral::Integer(raw),
-                ) => {
-                    if verified.plan.scalar_hir.expression(arg.node_span())
-                        .is_none_or(|fact| fact.ty != ScalarType::Int)
-                        || !verified.tokens.iter().any(|token|
-                            token.start == arg.start && token.end == arg.end
-                                && matches!(&token.kind,
-                                    TokenKind::Integer(found) if found == raw)
-                        ) {
-                        return Err(PrivateScalarCallPrepareError::Unsupported(
-                            "參數 int 常值缺少原 Lexer／Checker TypeHIR",
-                        ));
-                    }
-                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
-                        PrivateScalarCallPrepareError::Unsupported(
-                            "函式 int 實參超出 i64",
-                        ),
-                    )?, None)
-                }
-                TermKind::Name(name) => {
-                    let (id, value) = owners.get(name).copied().ok_or(
-                        PrivateScalarCallPrepareError::Unsupported(
-                            "具名 Copyable int 實參不是原 main 已初始化所有者",
-                        ),
-                    )?;
-                    if verified.plan.scalar_hir.reference(arg.node_span())
-                        .is_none_or(|fact|
-                            fact.resolved.declaration != id
-                            || fact.resolved.ty != ScalarType::Int)
-                        || !verified.tokens.iter().any(|token|
-                            token.start == arg.start && token.end == arg.end
-                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
-                        ) {
-                        return Err(PrivateScalarCallPrepareError::Unsupported(
-                            "多參數實參未繫結原 Checker DeclarationId／Reference HIR",
-                        ));
-                    }
-                    used_names.insert(id);
-                    (value, Some(id))
-                }
-                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "Copyable int 參數僅接通已驗證字面或具名來源",
-                )),
+            // 完全由同一份 Checker 原 HIR 投影；包含動態加減、
+            // 括號與已初始化 main 宣告，但不在 Prepare 預先計算。
+            let expression = PrivateScalarReturnExpr::from_main_checked(
+                arg, &owners, &mut used_names, &verified,
+            )?;
+            let direct_owner = match expression {
+                PrivateScalarReturnExpr::Parameter(id) => Some(id),
+                _ => None,
             };
-            all_arguments.push((
-                DeclarationId(parameter.declaration_start), value, owner_id,
-            ));
+            main_arguments.push(PrivateMainCallArgument {
+                parameter_id: DeclarationId(parameter.declaration_start),
+                expression, direct_owner,
+            });
         }
-        // 確保每筆 main 宣告在此執行切片真被作為引數取值，
-        // 不可悄悄跳過未支援的多餘有作用語句。
+        // 仍拒絕會被此私有執行切片悄悄略過的前置宣告。
         if main_owners.iter().any(|(id, _)| !used_names.contains(id)) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "main 有尚未在本真執行路徑使用的 int 宣告",
             ));
         }
-        let (parameter_id, argument, owner_id) = match all_arguments.first().copied() {
-            Some((id, value, owner)) => (Some(id), Some(value), owner),
-            None => (None, None, None),
-        };
-        let additional_arguments = all_arguments.iter().skip(1).copied().collect();
         let callee_span = NodeSpan::new(callee.start, callee.end);
         let callee_name = callee.name.clone();
-        let parameter_name = param.map(|param| param.name.clone());
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
-            parameter_name, parameter_id,
-            parameter_return_span: param_return_span, return_expr, owner_id, argument,
-            additional_arguments, main_owners, nested_callees,
+            parameter_return_span: param_return_span, return_expr,
+            main_arguments, main_owners, nested_callees,
         })
     }
 
@@ -814,13 +750,9 @@ impl PreparedPrivateScalarCall {
             && self.call_span == fresh.call_span
             && self.callee_span == fresh.callee_span
             && self.callee_name == fresh.callee_name
-            && self.parameter_name == fresh.parameter_name
-            && self.parameter_id == fresh.parameter_id
             && self.parameter_return_span == fresh.parameter_return_span
             && self.return_expr == fresh.return_expr
-            && self.owner_id == fresh.owner_id
-            && self.argument == fresh.argument
-            && self.additional_arguments == fresh.additional_arguments
+            && self.main_arguments == fresh.main_arguments
             && self.main_owners == fresh.main_owners
             && self.nested_callees == fresh.nested_callees
             && self.verified.plan.declarations.call_borrows
