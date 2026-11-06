@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三十二項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -18,6 +18,14 @@ from pathlib import Path
     "g18_c_多參數真框架測試故障不殘留參數也不假冒_return",
     "g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕",
     "g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕",
+    "g18_a_前向兩層帶參數呼叫每層建立獨立框架並按返回順序退出",
+    "g18_a_三層具參數函式圖真正使用前一層返回值而非來源常值",
+    "g18_a_同一巢狀葉函式重複真呼叫各自返回且不共用參數槽",
+    "g18_c_巢狀葉函式溢位不得虛構子層或父層成功返回",
+    "g18_c_父框架故障時不可進入尚未求值的巢狀子函式",
+    "g18_c_巢狀函式來源或參數宣告身份被篡改零動態框架拒絕",
+    "g18_c_函式圖存在原_checker_合法循環時本非遞迴切片不得偷偷執行",
+    "g18_a_巢狀呼叫錯誤型別及未知函式仍由原_checker_拒絕",
     "g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
     "g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
     "g18_a_真函式_copyable_int_參數多次引用每次都取同一實際值",
@@ -72,7 +80,7 @@ def main() -> int:
         print("G18 Copyable int 真執行 Gate 未全過：" +
               executed.stdout + executed.stderr, file=sys.stderr)
         return 1
-    print(f"G18 真 Copyable int 一至三參數動態框架：{len(required)}/{len(required)}"
+    print(f"G18 真 Copyable int 一至三參數及非循環巢狀呼叫動態框架：{len(required)}/{len(required)}"
           " 真實重跑；一般函式完整矩陣仍待 P18 正式驗收。")
     return 0
 

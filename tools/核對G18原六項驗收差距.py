@@ -20,6 +20,14 @@ from pathlib import Path
 證據 = {
     "P18.1": (
         "execution::tests::p18_多層非遞迴函式框架按實際呼叫返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_前向兩層帶參數呼叫每層建立獨立框架並按返回順序退出",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_三層具參數函式圖真正使用前一層返回值而非來源常值",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_同一巢狀葉函式重複真呼叫各自返回且不共用參數槽",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_巢狀葉函式溢位不得虛構子層或父層成功返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_父框架故障時不可進入尚未求值的巢狀子函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_巢狀函式來源或參數宣告身份被篡改零動態框架拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_函式圖存在原_checker_合法循環時本非遞迴切片不得偷偷執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_巢狀呼叫錯誤型別及未知函式仍由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_雙_copyable_int_參數依原_checker_宣告順序逐一綁定",
         "struct_stage::g18_private_scalar_call_tests::g18_a_三個_int_參數在同一真框架內逐項參與原_hir_算式",
         "struct_stage::g18_private_scalar_call_tests::g18_a_同一個_const_int_持有者作兩個實參屬_copyable_不消耗",
@@ -124,7 +132,7 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
-    "P18.1": ("SubsetVerified", "已接通無參數函式、str 預設借用與前向一至三 Copyable int 真傳參／群組加減溢位；巢狀多函式參數呼叫圖及完整正反尚缺"),
+    "P18.1": ("SubsetVerified", "已接通原 Checker 前向一至三 Copyable int 及最高三層非循環真參數呼叫圖、重複葉函式、算術與溢位逐框架退出；一般複雜呼叫圖與所有已核准模式仍缺完整正反"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "D18-01 的 AW06 無資源遞迴、原私有 Checker bool 遞迴 str 真 ResourceId 與跨框架 str 參數 BorrowTicket 逐層歸還已接通；一般參數／結構與完整矩陣仍待驗收"),
     "P18.4": ("SubsetVerified", "str 預設借用真票據、逐框架重入與一至三 Copyable int 實參按宣告身分傳遞；混合型別、self／逃逸仍缺完整正反"),
