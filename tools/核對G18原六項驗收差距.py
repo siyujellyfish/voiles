@@ -26,7 +26,7 @@ from pathlib import Path
         "struct_stage::g18_private_scalar_call_tests::g18_c_巢狀葉函式溢位不得虛構子層或父層成功返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_父框架故障時不可進入尚未求值的巢狀子函式",
         "struct_stage::g18_private_scalar_call_tests::g18_c_巢狀函式來源或參數宣告身份被篡改零動態框架拒絕",
-        "struct_stage::g18_private_scalar_call_tests::g18_c_函式圖存在原_checker_合法循環時本非遞迴切片不得偷偷執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_函式圖合法互相遞迴須受控預算耗盡並逐動態框架退出",
         "struct_stage::g18_private_scalar_call_tests::g18_a_巢狀呼叫錯誤型別及未知函式仍由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_雙_copyable_int_參數依原_checker_宣告順序逐一綁定",
         "struct_stage::g18_private_scalar_call_tests::g18_a_三個_int_參數在同一真框架內逐項參與原_hir_算式",
@@ -36,6 +36,13 @@ from pathlib import Path
         "struct_stage::g18_private_scalar_call_tests::g18_c_多參數真框架測試故障不殘留參數也不假冒_return",
         "struct_stage::g18_private_scalar_call_tests::g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_合法前向六層以上_copyable_int_函式真逐層返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_五個_copyable_int_真參數不應被內部三參數上界拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_零框架或零步數預算不得偽造任何真函式進入",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_未被選取的合法遞迴函式不得造成其他正向函式拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_有界步數的兩個巢狀兄弟呼叫僅在實際出現時建立獨立框架",
         "struct_stage::g18_private_scalar_call_tests::g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
@@ -61,6 +68,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_零框架或零步數預算不得偽造任何真函式進入",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_未被選取的合法遞迴函式不得造成其他正向函式拒絕",,
         "execution::tests::p18_無限遞迴耗盡預算安全拒絕_不爆堆疊",
         "execution::tests::p18_已核准直接遞迴_可由全域_bool_終止並逐框架返回",
         "execution::tests::p18_已核准互相遞迴_使用原函式宣告與真動態框架",
@@ -145,10 +156,10 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
-    "P18.1": ("SubsetVerified", "已接通原 Checker 前向一至三 Copyable int 及最高三層非循環真參數呼叫圖、重複葉函式、算術與溢位逐框架退出；一般複雜呼叫圖與所有已核准模式仍缺完整正反"),
+    "P18.1": ("SubsetVerified", "原 Checker Copyable int 已接通多參數及非固定層數函式圖、重複葉函式、遞迴顯式框架／可配置預算；一般控制語句與其他型別混合呼叫圖仍需完整驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
-    "P18.3": ("Incomplete", "D18-01 的 AW06 無資源遞迴、原私有 Checker bool 遞迴 str 真 ResourceId 與跨框架 str 參數 BorrowTicket 逐層歸還已接通；一般參數／結構與完整矩陣仍待驗收"),
-    "P18.4": ("SubsetVerified", "真 str BorrowTicket 與 Copyable int 字面／已初始化具名 var/const 同次函式傳參、完整 DeclarationId/TypedHIR、算術及錯誤清理已接通；一般移動、跨呼叫複合資源與 self／逃逸矩陣仍缺"),
+    "P18.3": ("Incomplete", "原私有 Checker Copyable int 合法直接／互相遞迴真顯式工作堆疊與可配置耗盡、bool 遞迴 str 真 ResourceId／跨框架 BorrowTicket 歸還已接通；混合資源及一般控制流完整矩陣仍缺"),
+    "P18.4": ("SubsetVerified", "真 str BorrowTicket 與多個 Copyable int 參數在原 Checker 宣告身分下逐獨立框架傳遞、遞迴回收已接通；一般 move、混合資源、self／逃逸矩陣仍未封閉"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
