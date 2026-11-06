@@ -620,6 +620,25 @@ impl PreparedPrivateScalarCall {
         let mut all_arguments = Vec::new();
         let mut used_names = std::collections::BTreeSet::<DeclarationId>::new();
         for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
+            // 已核准的 Group 由原 Parser/TypedHIR 提供完整來源，
+            // 不額外解釋未核准的表達式或改變 Copyable 權限。
+            let mut actual = arg;
+            while let TermKind::Group(inner) = &actual.kind {
+                if verified.plan.scalar_hir.expression(actual.node_span())
+                    .is_none_or(|fact| fact.ty != ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == actual.start
+                            && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == actual.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "Group 引數缺少已核准的同源 int 型別與括號詞彙",
+                    ));
+                }
+                actual = inner;
+            }
+            let arg = actual;
             let (value, owner_id) = match &arg.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(raw),
