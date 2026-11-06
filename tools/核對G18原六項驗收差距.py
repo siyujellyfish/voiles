@@ -71,7 +71,7 @@ from pathlib import Path
         "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
         "struct_stage::g18_private_scalar_call_tests::g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
         "struct_stage::g18_private_scalar_call_tests::g18_c_零框架或零步數預算不得偽造任何真函式進入",
-        "struct_stage::g18_private_scalar_call_tests::g18_a_未被選取的合法遞迴函式不得造成其他正向函式拒絕",,
+        "struct_stage::g18_private_scalar_call_tests::g18_a_未被選取的合法遞迴函式不得造成其他正向函式拒絕",
         "execution::tests::p18_無限遞迴耗盡預算安全拒絕_不爆堆疊",
         "execution::tests::p18_已核准直接遞迴_可由全域_bool_終止並逐框架返回",
         "execution::tests::p18_已核准互相遞迴_使用原函式宣告與真動態框架",
