@@ -572,4 +572,116 @@ mod g18_private_call_borrow_tests {
             ResourceEvent::Created(1), ResourceEvent::Released(1),
         ]);
     }
+    // G18/P18.4：同一次普通函式真有非 Copyable str 借用與 Copyable
+    // int 傳參，必須沿原 Parser 參數順序共同驗證與動態離域。
+    fn mixed_forward() -> &'static str {
+        "fn measure(payload:str, n:int)->int{\nreturn n+5\n}\nfn main()->int{\nconst owner:str = \"正體🪼\"\nreturn measure(owner,7)\n}\n"
+    }
+
+    #[test]
+    fn g18_d_混合_const_str_與_copyable_int_同框架真借用及_hir_加法返回() {
+        let prepared = checked(mixed_forward());
+        let result = prepared.execute().unwrap();
+        assert_eq!(result.result, Ok(12));
+        assert_eq!(result.observed_utf8_bytes, Some("正體🪼".len()));
+        assert_eq!(result.observed_integer, Some(7));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert!(result.call_entered && result.call_exited);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_混合_int_在前_var_str_在後_仍以真獨占票據與參數身分執行() {
+        let src = "fn measure(n:int, payload:str)->int{\nreturn n-4\n}\nfn main()->int{\nvar owner:str = \"唯一\"\nreturn measure(10, owner)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.str_position, 1);
+        assert_eq!(prepared.loan.kind, BorrowKind::ExclusiveWrite);
+        let result = prepared.execute().unwrap();
+        assert_eq!(result.result, Ok(6));
+        assert_eq!(result.observed_integer, Some(10));
+        assert_eq!(result.observed_utf8_bytes, Some("唯一".len()));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_混合函式重複呼叫不消耗_str_持有者也不重用上次_int_參數框架() {
+        let prepared = checked(mixed_forward());
+        for _ in 0..3 {
+            let result = prepared.execute().unwrap();
+            assert_eq!(result.result, Ok(12));
+            assert_eq!(result.parameter_slots_after_exit, 0);
+            assert_eq!(result.events, [
+                ResourceEvent::Created(1), ResourceEvent::Released(1),
+            ]);
+        }
+    }
+
+    #[test]
+    fn g18_c_混合借用期間_int_加法溢位須歸還票據及真_utf8_資源() {
+        let src = "fn measure(payload:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar owner:str = \"唯一\"\nreturn measure(owner,9223372036854775807)\n}\n";
+        let result = checked(src).execute().unwrap();
+        assert_eq!(result.result, Err(PrivateCallBorrowRuntimeError::IntegerOverflow));
+        assert!(result.call_entered && !result.call_exited);
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_c_混合函式真借用與_int_參數已綁定後故障仍原子歸還清理() {
+        let result = checked(mixed_forward()).execute_with_fault(true).unwrap();
+        assert_eq!(result.result, Err(PrivateCallBorrowRuntimeError::InjectedFailure));
+        assert!(result.call_entered && !result.call_exited);
+        assert_eq!(result.observed_integer, Some(7));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert_eq!(result.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_d_篡改混合函式_int_值與_DeclarationId_或_hir_返回必須配置前拒絕() {
+        let mut prepared = checked(mixed_forward());
+        prepared.int_binding.as_mut().unwrap().1 = 999;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut prepared = checked(mixed_forward());
+        prepared.int_binding.as_mut().unwrap().0 = DeclarationId(0);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut prepared = checked(mixed_forward());
+        prepared.mixed_return = Some(PrivateScalarReturnExpr::Constant(100));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateCallBorrowPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_d_混合函式刪除原_checker_真借用表不得使用舊參數票據() {
+        let mut prepared = checked(mixed_forward());
+        prepared.verified.plan.declarations.call_borrows.clear();
+        assert!(matches!(prepared.execute(),
+            Err(PrivateCallBorrowPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_d_混合呼叫錯誤型別個數與具名非授權_int_實參必保守拒絕() {
+        for src in [
+            "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nreturn measure(owner,true)\n}\n",
+            "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nreturn measure(owner)\n}\n",
+            "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nreturn measure(owner,2,3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateCallBorrow::prepare(src),
+                Err(PrivateCallBorrowPrepareError::Check(_))), "{src}");
+        }
+        let named = "fn measure(payload:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"甲\"\nconst n:int = 3\nreturn measure(owner,n)\n}\n";
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(named),
+            Err(PrivateCallBorrowPrepareError::Unsupported(_))));
+    }
+
 }
