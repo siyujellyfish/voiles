@@ -19,6 +19,8 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數呼叫真正建立空參數框架並返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數前向函式串接巢狀真返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_巢狀兄弟呼叫每個實參求值完成立即紀錄且不重複",
         "struct_stage::g18_private_scalar_call_tests::g18_a_零參數前向葉函式與_copyable_int_父框架真返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_零參數函式重複呼叫不重用動態框架且保留真求值順序",
@@ -78,6 +80,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_零參數根函式直接遞迴預算耗盡及逐框架退出",
         "struct_stage::g18_private_scalar_call_tests::g18_c_零參數自遞迴由真框架預算受控中止不虛構返回",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_d_獨占_var_str_借用與另一獨立來源整筆_move_可同次合法存在",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_c_混合借用與_move_在每個原引數及函式內故障點仍清兩資源",
@@ -179,6 +182,7 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數來源被偽造一個參數必執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_c_第一實參完成後第二實參溢位仍保留真事件而不進入父呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_a_零參數子函式原宣告來源遭竄改必在動態執行前拒絕",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_c_混合借用與_move_在每個原引數及函式內故障點仍清兩資源",
