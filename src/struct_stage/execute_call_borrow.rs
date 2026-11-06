@@ -1213,10 +1213,14 @@ impl PreparedPrivateMoveCall {
                 "整筆所有權轉交圖缺少原 Checker 對應函式",
             ));
         }
+        // 先將來源宣告所需的 Copyable 記錄脫離 verified 的 AST 借用，
+        // 才將原 Checker 完整計畫移入可重複驗證的準備結果。
+        let owner_name = owner.name.clone();
+        let owner_mutable = owner.mutable;
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            verified, original, owner_name: owner.name.clone(),
-            owner_id, owner_mutable: owner.mutable, owner_text, entry, callees,
+            verified, original, owner_name,
+            owner_id, owner_mutable, owner_text, entry, callees,
         })
     }
 
