@@ -2620,7 +2620,8 @@ mod g18_private_scalar_call_tests {
         let prepared = checked(src);
         assert_eq!(prepared.main_dynamic_inits.len(), 1);
         let out = prepared.execute().unwrap();
-        assert_eq!(out.result, Ok(7));
+        // inc(4) = 5，main 再加 1，真正結果為 6。
+        assert_eq!(out.result, Ok(6));
         assert_eq!(out.parameter_slots_after_exit, 0);
         let local = prepared.main_dynamic_inits[0].declaration;
         assert!(out.events.contains(&PrivateScalarCallEvent::LocalInitialized(local, 5)));
