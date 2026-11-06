@@ -246,31 +246,10 @@ impl PreparedPrivateLoop {
                             &body.statements, verified, true,
                             bool_bindings, iterator_bindings,
                         )?;
-                        // 只接受能以來源直接證明至多一次本體後退出：
-                        // (1) 直接 break／return；
-                        // (2) 具名 var bool 的末句明確改成 false，
-                        //     下次條件會真正重讀同一 DeclarationId。
-                        // 前方不可有 continue 跳過該退出義務。
-                        if actions.iter().take(actions.len().saturating_sub(1))
-                            .any(|item| matches!(item, PrivateLoopAction::Continue)) {
-                            return Err(PrivateLoopPrepareError::Unsupported(
-                                "while 的 continue 不得繞過已證明終止出口",
-                            ));
-                        }
-                        let direct_exit = matches!(actions.last(),
-                            Some(PrivateLoopAction::Break | PrivateLoopAction::Return(_)));
-                        let falsified_guard = match (guard, actions.last()) {
-                            (PrivateBoolCondition::Bound(source),
-                                Some(PrivateLoopAction::AssignBool {
-                                    identity, value: PrivateBoolCondition::Constant(false),
-                                })) => source == *identity,
-                            _ => false,
-                        };
-                        if !direct_exit && !falsified_guard {
-                            return Err(PrivateLoopPrepareError::Unsupported(
-                                "此私有 while 須有直接 break/return 或原條件明確寫為 false",
-                            ));
-                        }
+                        // 原私有 Checker 已驗證本體的詞彙與控制安全。
+                        // 真執行已有每輪／每個動作的可配置步數預算，
+                        // 不得再要求 while 靜態證明一次內必定退出；
+                        // 反向邊與 continue 都真正重讀同一 bool 動態值。
                         actions
                     };
                     PrivateLoopAction::WhileCondition { condition: guard, body: compiled }
@@ -465,15 +444,10 @@ impl PreparedPrivateLoop {
                             PrivateLoopFlow::Break => break,
                             PrivateLoopFlow::Return(value) =>
                                 return Ok(PrivateLoopFlow::Return(value)),
-                            PrivateLoopFlow::Continue =>
-                                return Err(StrRuntimeError::EvaluationFailed),
-                            PrivateLoopFlow::Normal => {
-                                // 尾端 guard=false 的靜態保證，動態仍
-                                // 核對，避免無界重新進入或假回傳。
-                                if Self::bool_value(condition, bool_values)? {
-                                    return Err(StrRuntimeError::EvaluationFailed);
-                                }
-                            }
+                            // 真 continue 與正常離域都必須返回 while 條件，
+                            // 繼續時不可吞掉本輪釋放的真 ResourceId。
+                            PrivateLoopFlow::Continue | PrivateLoopFlow::Normal => {}
+
                         }
                     }
                 }
@@ -830,18 +804,33 @@ mod g18_private_source_loop_tests {
     }
 
     #[test]
-    fn g18_b_具名_while_沒有可證明終止時保持非公開拒絕() {
+    fn g18_b_具名_while_無須靜態終止改由執行期預算安全中止() {
         let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"不能假定退出\"\n}\nreturn 0\n}\n";
-        assert!(matches!(
-            PreparedPrivateLoop::prepare(source),
-            Err(PrivateLoopPrepareError::Unsupported(_)),
-        ));
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 8 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(actual.condition_checks, [true, true, true]);
+        assert_eq!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 3);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
     }
 
     #[test]
-    fn g18_b_具名_while_continue_不得跳過直接退出義務() {
-        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\ncontinue\nflag = false\n}\nreturn 0\n}\n";
-        assert!(PreparedPrivateLoop::prepare(source).is_err());
+    fn g18_b_具名_while_continue_每輪先清理真資源再回到條件受控耗盡() {
+        let source = "fn main()->int{\nvar flag:bool = true\nvar outer:str = \"外\"\nwhile(flag){\nvar inner:str = \"甲\"\ncontinue\n}\nreturn 0\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 11 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(actual.condition_checks.len() >= 2);
+        assert_eq!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(),
+            actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Released(_))).count());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+        assert!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count() >= 3);
     }
 
     #[test]
