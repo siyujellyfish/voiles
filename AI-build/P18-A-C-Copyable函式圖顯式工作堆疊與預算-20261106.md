@@ -91,3 +91,14 @@
 - 僅對原 `TermKind::Group` 逐層驗證 Lexer 左右括號 UTF-8 精確跨度、已核准 Checker int TypedHIR，再取最內層原 Integer Literal 與同源 Lexer Token；沒有進行任意算術的 prepare-time 預先求值，沒有新的語法或放寬資源安全。
 - 四項真來源 Rust 正反：具名 Copyable 多層 Group 初始化後真函式返回 7、未使用 Group int 宣告不阻擋零參數函式返回 17、Group bool／未宣告名稱仍由 Checker 拒絕、Group 初始化持有者值竄改在動態框架前 SourceChanged。
 - 專項 Gate 58→62，G18 原 P18.1／P18.5 真來源、CI 與 AI-build 同步。尚非 V1/P18 完整驗收；主線最新 PR HEAD 三必要 CI success／Squash 後同 SHA 需再次驗證。
+
+
+---
+
+## V1-I：已核准 Copyable int 具名初始化串接與身分防偽（2026-11-06）
+
+- 基線 main `be979cf1d7106533d6a87061bd4aa9bd934b0f1f`，其上 V1-H／PR #572 的 Group int 初始化已於最新 HEAD 三必要 CI 成功後 Squash merge、合併後 main 三必要 CI completed/success。既有 main 前置宣告切片仍只接受原 int 字面或 Group int 字面；合法 `const origin:int = 6; var copied:int = origin` 會遭私有 Prepare 人為拒絕。
+- 本批僅允許使用**相同 main 中已先驗證且完成初始化的 Copyable int** 作為後續 `var／const int` 初始化來源；每次仍須原 Lexer 名稱 Token、Checker ScalarHIR int 表達式、Reference HIR 的唯一 DeclarationId、宣告型別與可用狀態一致。原擁有者不被 Move，也不核發 BorrowTicket；來源不得是未宣告、尚未初始化或不同型別。已驗證 Group 逐層身分核對不變。
+- 新增四項真來源 Rust 正反：三段 int 名稱拷貝再真傳參返回 7、Group name 與未使用副本不消耗來源且零虛構引數、bool／未知／未初始化靜態負例，以及竄改複製後持有者 DeclarationId／值皆 SourceChanged 零動態執行。
+- 函式真 Gate 62→66 項；G18 原 P18.1／P18.5 稽核清單、必要 CI 名稱與本 AI-build 同步，其他語言或公開執行入口未調整。**尚非 V1 完整驗收，P18 六原項仍 0/6 Passed。**
+- 只在最新 PR HEAD 三必要 CI completed/success、作者／base／mergeable 核實後 Squash merge；合併後新 main 同 SHA 再核實 G17／G6／F00 與 G18 `--audit`，不得將 `--audit` 當 `--check`。
