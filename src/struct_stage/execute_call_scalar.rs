@@ -954,4 +954,132 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
+    // P18.1／P18.3／P18.4：同一原 Checker／Parameter HIR 的真正多層具參數
+    // 普通函式圖；每個呼叫邊皆有真正的進／出事件與獨立 int slot。
+    fn graph_source() -> &'static str {
+        "fn leaf(c:int)->int{\nreturn c+1\n}\nfn middle(a:int,b:int)->int{\nreturn leaf(a+b)\n}\nfn main()->int{\nreturn middle(3,4)\n}\n"
+    }
+
+    #[test]
+    fn g18_a_前向兩層帶參數呼叫每層建立獨立框架並按返回順序退出() {
+        let prepared = checked(graph_source());
+        let result = prepared.execute().unwrap();
+        assert_eq!(result.result, Ok(8));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        assert_eq!(result.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionEntered(_))).count(), 2);
+        assert_eq!(result.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::FunctionExited { returned: true, .. })).count(), 2);
+        assert!(matches!(&result.events[0], PrivateScalarCallEvent::ArgumentEvaluated(3)));
+        assert!(matches!(&result.events[1], PrivateScalarCallEvent::ArgumentEvaluated(4)));
+        let trace = result.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(format!("+{name}")),
+            PrivateScalarCallEvent::FunctionExited { name, returned } if *returned =>
+                Some(format!("-{name}")),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(trace, ["+middle", "+leaf", "-leaf", "-middle"]);
+    }
+
+    #[test]
+    fn g18_a_三層具參數函式圖真正使用前一層返回值而非來源常值() {
+        let src = "fn last(x:int)->int{\nreturn x-2\n}\nfn next(y:int)->int{\nreturn last(y+3)\n}\nfn first(z:int)->int{\nreturn next(z+4)\n}\nfn main()->int{\nreturn first(8)\n}\n";
+        let prepared = checked(src);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(13));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let enters = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(enters, ["first", "next", "last"]);
+        let exits = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionExited { name, returned: true } =>
+                Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(exits, ["last", "next", "first"]);
+    }
+
+    #[test]
+    fn g18_a_同一巢狀葉函式重複真呼叫各自返回且不共用參數槽() {
+        let src = "fn leaf(p:int)->int{\nreturn p+1\n}\nfn twice(a:int,b:int)->int{\nreturn leaf(a)+leaf(b)\n}\nfn main()->int{\nreturn twice(2,5)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(9));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let values = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::Returned(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(values, [3, 6, 9]);
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "leaf",
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_c_巢狀葉函式溢位不得虛構子層或父層成功返回() {
+        let src = "fn leaf(p:int)->int{\nreturn p+1\n}\nfn outer(x:int)->int{\nreturn leaf(x)\n}\nfn main()->int{\nreturn outer(9223372036854775807)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        let exits = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionExited { name, returned: false } =>
+                Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(exits, ["leaf", "outer"]);
+    }
+
+    #[test]
+    fn g18_c_父框架故障時不可進入尚未求值的巢狀子函式() {
+        let failed = checked(graph_source()).execute_with_fault(true).unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(failed.parameter_slots_after_exit, 0);
+        assert!(!failed.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "leaf",
+        )));
+        assert!(!failed.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(failed.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "middle".to_owned(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_c_巢狀函式來源或參數宣告身份被篡改零動態框架拒絕() {
+        let mut prepared = checked(graph_source());
+        prepared.nested_callees[0].parameters[0] = DeclarationId(0);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(graph_source());
+        prepared.nested_callees[0].result = PrivateScalarReturnExpr::Constant(99);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(graph_source());
+        prepared.verified.plan.declarations.call_borrows
+            .insert(crate::common_ir::NodeSpan::new(0, 1), vec![]);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_c_函式圖存在原_checker_合法循環時本非遞迴切片不得偷偷執行() {
+        let src = "fn alpha(x:int)->int{\nreturn beta(x)\n}\nfn beta(y:int)->int{\nreturn alpha(y)\n}\nfn main()->int{\nreturn alpha(1)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_a_巢狀呼叫錯誤型別及未知函式仍由原_checker_拒絕() {
+        let bad_type = graph_source().replace("leaf(a+b)", "leaf(true)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&bad_type),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let unknown = graph_source().replace("leaf(a+b)", "missing(a+b)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&unknown),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
 }
