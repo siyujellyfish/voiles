@@ -200,6 +200,19 @@ impl PrivateScalarReturnExpr {
         }
     }
 
+    /// 在已驗證的原 Parser int 表達式中找出實際具名函式來源。
+    /// 僅用於選擇本私有 evaluator 的函式資料，不改動 Checker 決議。
+    fn first_source_call<'a>(term: &'a Term) -> Option<&'a str> {
+        match &term.kind {
+            TermKind::Call(call) => Some(call.name.as_str()),
+            TermKind::UnresolvedZeroArgs(name) => Some(name.as_str()),
+            TermKind::Group(inner) => Self::first_source_call(inner),
+            TermKind::BinaryInt(binary) => Self::first_source_call(&binary.left)
+                .or_else(|| Self::first_source_call(&binary.right)),
+            _ => None,
+        }
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
@@ -492,13 +505,10 @@ impl PreparedPrivateScalarCall {
         }
         // A2/F02：零參數 name() 仍以原完整函式宣告分類，
         // 非函式或結構建構式不得混入此受限純值執行器。
-        let source_name = match &return_call.kind {
-            TermKind::Call(call) => call.name.as_str(),
-            TermKind::UnresolvedZeroArgs(name) => name.as_str(),
-            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                "main return 不是原 Parser 真具名函式呼叫",
-            )),
-        };
+        let source_name = PrivateScalarReturnExpr::first_source_call(return_call)
+            .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                "main return 缺少原 Parser 真具名函式呼叫",
+            ))?;
         let callee = verified.functions.iter()
             .find(|fun| fun.name == source_name && fun.name != "main")
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
@@ -698,14 +708,20 @@ impl PreparedPrivateScalarCall {
                 "main 最後一筆必須是真普通函式呼叫 return",
             ));
         };
-        let (call_name, call_arguments): (&str, &[Term]) = match &return_call.kind {
-            TermKind::Call(call) => (call.name.as_str(), call.arguments.as_slice()),
-            TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[]),
-            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                "main 最後一筆須真正呼叫已核准的 int 函式",
-            )),
-        };
-        if call_name != callee.name || call_arguments.len() != callee.params.len() {
+        let (call_name, call_arguments, direct_call): (&str, &[Term], bool) =
+            match &return_call.kind {
+                TermKind::Call(call) =>
+                    (call.name.as_str(), call.arguments.as_slice(), true),
+                TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[], true),
+                // main 可 return 原 Checker 已核准的多函式 int 算式，
+                // 但仍不得把純算術當成已有函式動態證據。
+                TermKind::BinaryInt(_) => (source_name, &[], false),
+                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "main 最後一筆須為已核准 int 函式或函式複合返回式",
+                )),
+            };
+        if direct_call
+            && (call_name != callee.name || call_arguments.len() != callee.params.len()) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "原 Parser 呼叫名稱／參數個數與真 Checker 函式簽章不符",
             ));
@@ -722,7 +738,7 @@ impl PreparedPrivateScalarCall {
         // 已核准的 main 動態 int 表達式與巢狀具名函式呼叫不能在
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
-        let needs_dynamic = call_arguments.iter().any(|argument| {
+        let needs_dynamic = !direct_call || call_arguments.iter().any(|argument| {
             let mut inner = argument;
             while let TermKind::Group(nested) = &inner.kind {
                 inner = nested;
@@ -735,14 +751,20 @@ impl PreparedPrivateScalarCall {
             let bindings = owners.iter().map(|(name, (id, _))|
                 (name.clone(), *id)
             ).collect::<BTreeMap<_, _>>();
-            let arguments = call_arguments.iter().map(|argument|
-                PrivateScalarReturnExpr::from_checked_bindings(
-                    argument, &bindings, &verified,
-                )
-            ).collect::<Result<Vec<_>, _>>()?;
-            Some(PrivateScalarReturnExpr::Call {
-                name: callee.name.clone(), arguments,
-            })
+            if direct_call {
+                let arguments = call_arguments.iter().map(|argument|
+                    PrivateScalarReturnExpr::from_checked_bindings(
+                        argument, &bindings, &verified,
+                    )
+                ).collect::<Result<Vec<_>, _>>()?;
+                Some(PrivateScalarReturnExpr::Call {
+                    name: callee.name.clone(), arguments,
+                })
+            } else {
+                Some(PrivateScalarReturnExpr::from_checked_bindings(
+                    return_call, &bindings, &verified,
+                )?)
+            }
         } else {
             None
         };
@@ -911,6 +933,15 @@ impl PreparedPrivateScalarCall {
         // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
         let mut events = Vec::new();
         if let Some(dynamic_call) = &self.main_dynamic_call {
+            // 純 int 複合返回可能有數個兄弟 Call，沒有可供
+            //「根函式綁定後」故障注入的唯一目標；此測試介面
+            // 不得假造單一根框架或默默忽略故障要求。
+            if fail_after_binding
+                && !matches!(dynamic_call, PrivateScalarReturnExpr::Call { .. }) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "main 複合 int 返回沒有唯一故障注入根呼叫",
+                ));
+            }
             let main_frame: BTreeMap<DeclarationId, i64> =
                 self.main_owners.iter().copied().collect();
             // 這個額外的 frame 只代表執行器的 main 來源持有者；
