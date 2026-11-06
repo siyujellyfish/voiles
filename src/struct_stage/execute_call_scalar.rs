@@ -2496,4 +2496,70 @@ mod g18_private_scalar_call_tests {
         }
     }
 
+
+    #[test]
+    fn g18_a_兩筆真區域初始化與逆序離域事件保持同源宣告身分() {
+        let src = "fn calc(n:int)->int{\nconst first:int = n+1\nvar second:int = first+2\nreturn second\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let prepared = checked(src);
+        let ids = prepared.root_local_inits.iter()
+            .map(|init| init.declaration).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        let created = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalInitialized(id, value) => Some((*id, *value)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let ended = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalScopeEnded(id) => Some(*id),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(created, [(ids[0], 4), (ids[1], 6)]);
+        assert_eq!(ended, [ids[1], ids[0]]);
+        assert_eq!(out.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_c_第二局部初始化運算溢位只釋放已完成宣告() {
+        let src = "fn calc(n:int)->int{\nconst first:int = n+1\nconst second:int = n+9223372036854775807\nreturn second\n}\nfn main()->int{\nreturn calc(1)\n}\n";
+        let prepared = checked(src);
+        let first_id = prepared.root_local_inits[0].declaration;
+        let second_id = prepared.root_local_inits[1].declaration;
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalInitialized(first_id, 2)));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(first_id)));
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::LocalInitialized(id, _)
+                | PrivateScalarCallEvent::LocalScopeEnded(id) if *id == second_id
+        )));
+        assert_eq!(out.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "calc".into(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_c_遞迴中相同靜態局部宣告每個動態框架均獨立初始化及離域() {
+        let src = "fn again(n:int)->int{\nconst local:int = n+1\nreturn again(local)\n}\nfn main()->int{\nreturn again(1)\n}\n";
+        let prepared = checked(src);
+        let id = prepared.root_local_inits[0].declaration;
+        let out = prepared.execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 3, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        let values = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalInitialized(actual, value) if *actual == id => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(values, [2, 3, 4]);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalScopeEnded(actual) if *actual == id)
+        ).count(), 3);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))).count(), 0);
+    }
+
 }
