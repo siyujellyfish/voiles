@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的九十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百零二項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_main_動態整數初始化應真執行後再傳入普通函式",
+    "g18_a_main_函式結果可先存入區域再用純值算術返回",
+    "g18_a_main_前向零參數結果可作為初始化再跨局部複製",
+    "g18_c_main_動態初始化中後筆溢位不得跳過前筆真離域",
+    "g18_a_main_真動態初始化計畫被篡改必在執行前拒絕",
+    "g18_a_main_非法動態初始化型別及未宣告來源仍交由原_checker_拒絕",
     "g18_a_兩筆真區域初始化與逆序離域事件保持同源宣告身分",
     "g18_c_第二局部初始化運算溢位只釋放已完成宣告",
     "g18_c_遞迴中相同靜態局部宣告每個動態框架均獨立初始化及離域",
