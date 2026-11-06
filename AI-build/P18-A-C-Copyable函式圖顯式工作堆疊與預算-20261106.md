@@ -50,3 +50,13 @@
 - 新四項真 Rust 正反：main 呼叫零參數函式正常返回、main 前向零參數串接兩層真正 Return、直接零參數遞迴耗盡 CallBudget 時進出框架逐一成對無假 Return、竄改根函式不存在的參數與實參在執行前 SourceChanged。
 - 專項真 Gate 45→49 項，原 G18 P18.1／18.3／18.5 來源追溯同步；沒有公開 CLI、語法或未核准異常語意。**本批仍不是整個 V1 或 G18 正式 Passed**，一般控制流與跨所有權函式仍應推進 V1 後續矩陣。
 - 本 PR 須最新 HEAD 三項 CI completed/success、作者與主線 base／mergeable 確認後 Squash merge，合併後主線同 SHA 再驗 G17／G6／F00、G18 --audit。
+
+
+---
+
+## V1-D：原 Checker Group 括號 int 實參同源交接（2026-11-06）
+
+- 基線 main 35aed82bbb5926edcc330b93045c05a0c0aa8f75，前批 #567 的零參數根函式成功合併。本批針對已核准的普通函式 int 實參包含括號 Group 時，私有 Prepare 僅接受裸 Integer／Name 而 Unsupported 的真執行缺口。
+- 實際執行仍由原 Lexer／Parser／Checker／TypedHIR 核准；每層 Group 精確核對原 AST 節點 int 型別、開閉括號 token 來源，然後使用真正內層常值或 DeclarationId，不引入第二套語法分析或隱含轉型。
+- 新增三項真正反：兩個括號常值 int 參數的實際綁定與返回、多層括號包住具名 const int 仍保持唯一原宣告身分、括號 bool／不存在名稱必由原 Checker 拒絕。原 Copyable int 函式 Gate 49→52，G18 原 P18.1、18.5 來源追溯更新。
+- 本批不支援任意尚未實作的引數算術或具有其他動態效果的實參；V1 與原 P18 六項不提前 Passed。PR 需最新 HEAD 三項 CI completed/success、作者／main base／mergeable 核對後 Squash merge，再於新 main SHA 重驗。
