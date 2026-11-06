@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_c_直接遞迴兩個_copyable_int_互換父子參數槽並保護真_str_票據",
+    "g18_c_單張_str_borrowticket_和三個_int_跨遞迴位置交換實際返回",
+    "g18_c_相同_copyable_int_父實參可給兩個子參數但不可複製真_str",
+    "g18_c_五個互相呼叫函式與六層混合資源_不得被舊兩函式上限拒絕",
+    "g18_c_多函式混合資源框架預算耗盡須逆序釋放每個已配置_resourceid",
+    "g18_c_混合多個_int_底層溢位不得略過真借用歸還及_utf8_釋放",
+    "g18_c_混合遞迴第二_int_及多函式來源篡改必在建立資源前拒絕",
+    "g18_c_混合多_int_錯誤參數型別與個數須由原_checker_拒絕",
     "g18_c_直接遞迴_str_真票據與_copyable_int_逐框架傳遞並由_hir_算術返回",
     "g18_c_互相遞迴_參數順序不同仍保留原_checker_int_與_str_借用身份",
     "g18_c_無_str_實參的_bool_int_遞迴仍真建立每框架_utf8_並返回動態參數",
