@@ -2386,4 +2386,90 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
+
+    #[test]
+    fn g18_a_函式參數與多個純值區域初始化依_checker_順序真返回() {
+        let src = "fn calc(n:int)->int{\nconst one:int = 1\nvar next:int = n+one\nreturn next+2\n}\nfn main()->int{\nreturn calc(5)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.root_local_inits.len(), 2);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(8));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_巢狀函式各自區域宣告不與父框架參數混用() {
+        let src = "fn outer(n:int)->int{\nconst result:int = leaf(n+1)\nreturn result+1\n}\nfn leaf(x:int)->int{\nconst y:int = x+2\nreturn y\n}\nfn main()->int{\nreturn outer(3)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.root_local_inits.len(), 1);
+        assert_eq!(prepared.nested_callees.iter().find(|f| f.name == "leaf").unwrap().local_inits.len(), 1);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(7));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let names = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(names, ["outer", "leaf"]);
+    }
+
+    #[test]
+    fn g18_a_真動態_main_實參進入帶區域宣告函式仍唯一返回() {
+        let src = "fn calc(n:int)->int{\nconst extra:int = n+2\nreturn extra\n}\nfn main()->int{\nreturn calc(2+3)\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.main_dynamic_call.is_some());
+        assert_eq!(prepared.execute().unwrap().result, Ok(7));
+    }
+
+    #[test]
+    fn g18_c_函式區域算術溢位必退出而不得虛構返回() {
+        let src = "fn fail(n:int)->int{\nconst too_big:int = n+1\nreturn too_big\n}\nfn main()->int{\nreturn fail(9223372036854775807)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))).count(), 0);
+        assert_eq!(outcome.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "fail".into(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_c_局部整數宣告跨多個遞迴框架不得共用儲存位置() {
+        let src = "fn repeat(n:int)->int{\nconst next:int = n+1\nreturn repeat(next)\n}\nfn main()->int{\nreturn repeat(1)\n}\n";
+        let outcome = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 4, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let entered = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count();
+        let exited = outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {returned: false, ..})).count();
+        assert_eq!((entered, exited), (4, 4));
+    }
+
+    #[test]
+    fn g18_a_函式區域宣告工作計畫遭偽造必在執行前拒絕() {
+        let src = "fn calc(n:int)->int{\nconst next:int = n+1\nreturn next\n}\nfn main()->int{\nreturn calc(2)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(3));
+        prepared.root_local_inits[0].value = PrivateScalarReturnExpr::Constant(99);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_函式區域初始化錯誤型別與未知參照由原_checker_拒絕() {
+        for src in [
+            "fn calc(n:int)->int{\nconst x:int = true\nreturn n\n}\nfn main()->int{\nreturn calc(2)\n}\n",
+            "fn calc(n:int)->int{\nconst x:int = missing\nreturn x\n}\nfn main()->int{\nreturn calc(2)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
 }
