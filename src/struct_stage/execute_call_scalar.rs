@@ -473,15 +473,22 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, result_expr): (Vec<DeclarationId>, &PrivateScalarReturnExpr)
-                            = if name == self.callee_name {
-                                (self.callee_parameter_ids.clone(), &self.return_expr)
-                            } else {
-                                let callee = self.nested_callees.iter()
-                                    .find(|fun| fun.name == name)
-                                    .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                                (callee.parameters.clone(), &callee.result)
-                            };
+                        let (parameter_ids, result_expr, local_inits): (
+                            Vec<DeclarationId>,
+                            &PrivateScalarReturnExpr,
+                            &Vec<PrivateScalarLocalInit>,
+                        ) = if name == self.callee_name {
+                            (
+                                self.callee_parameter_ids.clone(),
+                                &self.return_expr,
+                                &self.root_local_inits,
+                            )
+                        } else {
+                            let callee = self.nested_callees.iter()
+                                .find(|fun| fun.name == name)
+                                .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            (callee.parameters.clone(), &callee.result, &callee.local_inits)
+                        };
                         if parameter_ids.len() != argc || values.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -507,6 +514,10 @@ impl PreparedPrivateScalarCall {
                         }
                         tasks.push(PrivateScalarTask::ExitCall);
                         tasks.push(PrivateScalarTask::Evaluate(result_expr, false));
+                        for local in local_inits.iter().rev() {
+                            tasks.push(PrivateScalarTask::BindLocal(local.declaration));
+                            tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
+                        }
                     }
                     PrivateScalarTask::ExitCall => {
                         if frames.len() <= 1 {
