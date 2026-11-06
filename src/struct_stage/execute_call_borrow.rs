@@ -827,4 +827,102 @@ mod g18_private_call_borrow_tests {
             Err(PrivateCallBorrowPrepareError::Check(_))));
     }
 
+    // P18.4：同一個真非 Copyable str 借用可與完整 Copyable int
+    // 參數序列共存，不能因單參數模型而錯誤拒絕合法 Checker 來源。
+    fn many_mixed() -> &'static str {
+        "fn combine(payload:str,a:int,b:int,c:int,d:int)->int{\nreturn (a+b)+(c-d)\n}\nfn main()->int{\nconst owner:str = \"繁體🪼\"\nreturn combine(owner,7,9,5,2)\n}\n"
+    }
+    #[test]
+    fn g18_d_唯一_str_借用與四個_copyable_int_同框架真算術返回() {
+        let prepared = checked(many_mixed());
+        assert_eq!(prepared.additional_int_bindings.len(), 3);
+        assert_eq!(prepared.str_position, 0);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(19));
+        assert_eq!(out.observed_utf8_bytes, Some("繁體🪼".len()));
+        assert_eq!(out.observed_integer, Some(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert!(out.call_entered && out.call_exited);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_d_參數宣告順序為_int_str_int_int_仍以原_checker_身分真借用() {
+        let source = "fn combine(a:int,payload:str,b:int,c:int)->int{\nreturn a+b-c\n}\nfn main()->int{\nvar owner:str = \"獨占\"\nreturn combine(9,owner,2,1)\n}\n";
+        let prepared = checked(source);
+        assert_eq!(prepared.str_position, 1);
+        assert_eq!(prepared.loan.kind, BorrowKind::ExclusiveWrite);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert_eq!(out.observed_utf8_bytes, Some("獨占".len()));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_d_同一具名_copyable_int_重複使用不消耗_str_借用持有者() {
+        let source = "fn combine(payload:str,a:int,b:int,c:int)->int{\nreturn a+b+c\n}\nfn main()->int{\nconst owner:str = \"正體\"\nconst number:int = 4\nreturn combine(owner,number,number,2)\n}\n";
+        let prepared = checked(source);
+        assert_eq!(prepared.int_owner.unwrap().1, 4);
+        assert_eq!(prepared.additional_int_bindings.len(), 2);
+        for _ in 0..3 {
+            let out = prepared.execute().unwrap();
+            assert_eq!(out.result, Ok(10));
+            assert_eq!(out.observed_integer, Some(4));
+            assert_eq!(out.parameter_slots_after_exit, 0);
+            assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+        }
+    }
+
+    #[test]
+    fn g18_c_多個_int_算術溢位須於真_str_borrowticket_歸還前中止成功返回() {
+        let source = "fn combine(payload:str,a:int,b:int,c:int)->int{\nreturn a+b+c\n}\nfn main()->int{\nvar owner:str = \"獨占\"\nreturn combine(owner,9223372036854775807,1,1)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateCallBorrowRuntimeError::IntegerOverflow));
+        assert!(out.call_entered && !out.call_exited);
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_c_混合四個_int_與_str_中途故障不得殘留任一動態參數或票據() {
+        let out = checked(many_mixed()).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateCallBorrowRuntimeError::InjectedFailure));
+        assert!(out.call_entered && !out.call_exited);
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.observed_integer, Some(7));
+        assert_eq!(out.events, [ResourceEvent::Created(1), ResourceEvent::Released(1)]);
+    }
+
+    #[test]
+    fn g18_d_多個_copyable_int_後續參數被篡改不得建立任何_utf8_資源() {
+        let mut p = checked(many_mixed());
+        p.additional_int_bindings[1].0 = DeclarationId(0);
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut p = checked(many_mixed());
+        p.additional_int_bindings[2].1 = 5000;
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+        let mut p = checked(many_mixed());
+        p.verified.plan.declarations.call_borrows.clear();
+        assert!(matches!(p.execute(), Err(PrivateCallBorrowPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_d_多參數型別錯誤與未使用具名_int_保持原_checker_拒絕() {
+        let bad = many_mixed().replace("combine(owner,7,9,5,2)",
+            "combine(owner,7,true,5,2)");
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&bad),
+            Err(PrivateCallBorrowPrepareError::Check(_))));
+        let bad = many_mixed().replace("combine(owner,7,9,5,2)",
+            "combine(owner,7,9,5)");
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&bad),
+            Err(PrivateCallBorrowPrepareError::Check(_))));
+        let unused = many_mixed().replace(
+            "return combine(owner,7,9,5,2)",
+            "const extra:int = 6\nreturn combine(owner,7,9,5,2)",
+        );
+        assert!(matches!(PreparedPrivateCallBorrow::prepare(&unused),
+            Err(PrivateCallBorrowPrepareError::Unsupported(_))));
+    }
+
 }
