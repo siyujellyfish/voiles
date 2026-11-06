@@ -19,6 +19,8 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_數個未使用純值宣告與具名實參各自保留來源身分",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_未使用純值宣告遭竄改仍須執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數呼叫真正建立空參數框架並返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數前向函式串接巢狀真返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_巢狀兄弟呼叫每個實參求值完成立即紀錄且不重複",
@@ -40,7 +42,7 @@ from pathlib import Path
         "struct_stage::g18_private_scalar_call_tests::g18_c_多參數整數溢位不可回傳成功且所有動態參數清空",
         "struct_stage::g18_private_scalar_call_tests::g18_c_多參數真框架測試故障不殘留參數也不假冒_return",
         "struct_stage::g18_private_scalar_call_tests::g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕",
-        "struct_stage::g18_private_scalar_call_tests::g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_多參數錯誤型別引數數量拒絕且未使用純值宣告合法",
         "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
         "struct_stage::g18_private_scalar_call_tests::g18_a_合法前向六層以上_copyable_int_函式真逐層返回",
         "struct_stage::g18_private_scalar_call_tests::g18_a_五個_copyable_int_真參數不應被內部三參數上界拒絕",
