@@ -167,6 +167,99 @@ impl PrivateScalarReturnExpr {
         }
     }
 
+
+    /// main 引數只使用原 Checker 已驗證的 Copyable int HIR；名稱是 main
+    /// 真持有者，不得借用 callee 的參數或以來源文字自行重新解析。
+    fn from_main_checked(
+        term: &Term,
+        owners: &BTreeMap<String, (DeclarationId, i64)>,
+        used: &mut std::collections::BTreeSet<DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
+        use crate::common_ir::ScalarType;
+        let span = term.node_span();
+        if verified.plan.scalar_hir.expression(span)
+            .is_none_or(|fact| fact.ty != ScalarType::Int) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "main 實參缺少原 Checker int TypedHIR",
+            ));
+        }
+        match &term.kind {
+            TermKind::Name(name) => {
+                let (id, _) = owners.get(name).copied().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "main int 實參不是原已初始化所有者",
+                    ),
+                )?;
+                if verified.plan.scalar_hir.reference(span)
+                    .is_none_or(|fact| fact.resolved.declaration != id
+                        || fact.resolved.ty != ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start && token.end == span.end
+                        && matches!(&token.kind, TokenKind::Name(found) if found == name)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "main 引數缺少原 Checker DeclarationId 與 Lexer",
+                    ));
+                }
+                used.insert(id);
+                Ok(Self::Parameter(id))
+            }
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start && token.end == span.end
+                    && matches!(&token.kind, TokenKind::Integer(found) if found == raw)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "main 引數常值缺少真詞彙來源",
+                    ));
+                }
+                Ok(Self::Constant(crate::syntax_shared::integer_i64(raw)
+                    .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                        "main int 實參超出 i64",
+                    ))?))
+            }
+            TermKind::Group(inner) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "main 括號實參缺少真 Lexer 邊界",
+                    ));
+                }
+                Self::from_main_checked(inner, owners, used, verified)
+            }
+            TermKind::BinaryInt(binary) => {
+                let Some(fact) = verified.plan.scalar_hir.arithmetic(span) else {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "main 引數加減缺少原 Checker Arithmetic HIR",
+                    ));
+                };
+                if fact.left != binary.left.node_span()
+                    || fact.right != binary.right.node_span()
+                    || fact.operator != binary.operator
+                    || !matches!(fact.operator, '+' | '-') {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "main 引數算術原來源、運算子或端點不一致",
+                    ));
+                }
+                let left = Box::new(Self::from_main_checked(
+                    &binary.left, owners, used, verified,
+                )?);
+                let right = Box::new(Self::from_main_checked(
+                    &binary.right, owners, used, verified,
+                )?);
+                Ok(if fact.operator == '+' {
+                    Self::Addition(left, right)
+                } else {
+                    Self::Subtraction(left, right)
+                })
+            }
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "main 引數僅執行原已核准無借用 Copyable int 純值",
+            )),
+        }
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
