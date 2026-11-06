@@ -143,3 +143,14 @@
 - 由於 `return inc(2)+inc(4)` 並無唯一「根函式」可供內部測試 `execute_with_fault(true)` 指定綁定後故障，該測試專用要求明確 Unsupported，禁止假造或默默忽略；正式正常執行、溢位和 D18-01 執行預算仍依真來源與真事件。
 - 新增七項真 Rust 正反：函式結果與常值相加；兄弟函式左至右兩次真正返回；多層 Group 複合返回；子函式成功後外層算術溢位而不假造最後 Return；竄改編譯動態樹執行前拒絕；型別錯誤／未知名稱仍由 Checker 拒絕；多兄弟複合返回無單一根故障點時不得默默跳過故障。專項 Gate 79→86，G18 原 P18.1／P18.3／P18.5 與 CI／AI-build 同步。
 - **未更動** P13～P16、Move／BorrowTicket／ResourceId、安全退出的核准語意，亦未發布 P22 CLI 或先決定 D18-02 async 細節；V1／G18 原六項仍不提前 Passed。PR 最新 HEAD 三必要 CI completed/success／作者、base、mergeable 核對後 Squash merge，合併 main 同 SHA 重跑 G17／G6／F00 與 G18 `--audit`。
+
+
+---
+
+## V1-M：普通函式已核准 Copyable int 區域初始化與逐框架清理（2026-11-06）
+
+- 基線 main `40c7fc73c4e85a5af7441bad955f25dc73e49738`；G18 函式真 Gate 已 86 項且最新 main CI success。先前私有 evaluator 只允許普通函式本體 **一筆 return**，合法 `fn calc(n:int)->int { const one:int=1; var next:int=n+one; return next+2 }` 遭人為 Unsupported，不能將其當作已核准語意不合法。
+- 新增 **PrivateScalarLocalInit**：每個普通函式前置 `var／const int` 必須是原 Parser 真 Declare，逐筆核對原 Checker `DeclarationId`、int 型別及合法初始化式。使用既有 `from_checked_bindings` 核對所有名稱 Reference HIR、BinaryInt Arithmetic HIR、Lexer 真字面／Group 來源及已核准普通函式完整簽章。每筆新的名稱只在其真正宣告之後加入該函式的編譯環境；未初始化、型別錯誤或其他語句不得跳過。
+- 將完整 `root_local_inits`／各 `PrivateScalarNestedCallee.local_inits` 納入來源防偽、函式圖的全部真呼叫邊與真動態框架。在原顯式工作堆疊加入 `BindLocal(DeclarationId)`，每次進入函式先依原宣告順序執行各初始化式，再求值 return；每框架有獨立的 `BTreeMap<DeclarationId,i64>`，不得共享其他遞迴框架的持有者、不得發出假 ParameterBound／Returned；退出或故障時逐框架清理。
+- 新增七項原 Lexer／Parser／Checker 真正 Rust 正反：多筆區域初始化與參數返回、巢狀父子函式各自局部持有者、main 動態實參呼叫有區域宣告的函式、區域算術溢位正常失敗退出、多層遞迴框架與 CallBudget、竄改已驗證局部初始化式必先 SourceChanged、非法型別或未知名稱靜態拒絕。
+- 專用 Gate **86→93**，原 G18 P18.1／P18.3／P18.5 同 SHA 真來源追溯、CI 名稱及 AI-build 同步。此子集仍不允許任意賦值、控制流程或未核准的資源操作；不修改公開 CLI、P13～P16 的安全契約，P18 原六項不提前 Passed。正式合併只依最新 PR HEAD 三必要 CI success、作者／base／mergeable；Squash merge 後新 main 同 SHA 再驗。
