@@ -340,7 +340,7 @@ impl PreparedPrivateScalarCall {
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
-            parameter_name, parameter_id: param_id,
+            parameter_name, parameter_id,
             parameter_return_span: param_return_span, return_expr, owner_id, argument,
             additional_arguments, main_owners,
         })
@@ -622,4 +622,121 @@ mod g18_private_scalar_call_tests {
         assert!(matches!(PreparedPrivateScalarCall::prepare(bad_name),
             Err(PrivateScalarCallPrepareError::Check(_))));
     }
+    // P18.1／18.4：不是新的模型，而是原單參數真正 executor 的
+    // 多 Parameter DeclarationId、TypedHIR、依序求值與退出擴充。
+    fn multiple_source() -> &'static str {
+        "fn combine(a:int,b:int)->int{\nreturn (a+b)-a\n}\nfn main()->int{\nreturn combine(7,9)\n}\n"
+    }
+
+    #[test]
+    fn g18_a_雙_copyable_int_參數依原_checker_宣告順序逐一綁定() {
+        let prepared = checked(multiple_source());
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(9));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events[0], PrivateScalarCallEvent::ArgumentEvaluated(7));
+        assert_eq!(outcome.events[1], PrivateScalarCallEvent::ArgumentEvaluated(9));
+        assert!(matches!(outcome.events[2], PrivateScalarCallEvent::FunctionEntered(_)));
+        assert_eq!(outcome.events[3], PrivateScalarCallEvent::ParameterBound(
+            prepared.parameter_id, 7,
+        ));
+        assert_eq!(outcome.events[4], PrivateScalarCallEvent::ParameterBound(
+            prepared.additional_arguments[0].0, 9,
+        ));
+        assert_ne!(prepared.parameter_id, prepared.additional_arguments[0].0);
+    }
+
+    #[test]
+    fn g18_a_三個_int_參數在同一真框架內逐項參與原_hir_算式() {
+        let text = "fn blend(a:int,b:int,c:int)->int{\nreturn (a-b)+c\n}\nfn main()->int{\nreturn blend(8,3,5)\n}\n";
+        let outcome = checked(text).execute().unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ParameterBound(..)
+        )).count(), 3);
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_a_同一個_const_int_持有者作兩個實參屬_copyable_不消耗() {
+        let text = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nconst original:int = 21\nreturn sum(original,original)\n}\n";
+        let prepared = checked(text);
+        assert_eq!(prepared.owner_id, prepared.additional_arguments[0].2);
+        for _ in 0..3 {
+            let outcome = prepared.execute().unwrap();
+            assert_eq!(outcome.result, Ok(42));
+            assert_eq!(outcome.parameter_slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_a_多個具名_var_const_int_和常值實參按照原宣告身分傳遞() {
+        let text = "fn blend(a:int,b:int,c:int)->int{\nreturn a+b+c\n}\nfn main()->int{\nconst first:int = 4\nvar second:int = 3\nreturn blend(first,1,second)\n}\n";
+        let prepared = checked(text);
+        assert_eq!(prepared.main_owners.len(), 2);
+        assert_eq!(prepared.owner_id, Some(prepared.main_owners[0].0));
+        assert_eq!(prepared.additional_arguments[1].2, Some(prepared.main_owners[1].0));
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(8));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_c_多參數整數溢位不可回傳成功且所有動態參數清空() {
+        let text = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(9223372036854775807,1)\n}\n";
+        let prepared = checked(text);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert!(!outcome.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_)
+        )));
+        assert_eq!(outcome.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "sum".to_owned(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_c_多參數真框架測試故障不殘留參數也不假冒_return() {
+        let prepared = checked(multiple_source());
+        let failed = prepared.execute_with_fault(true).unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(failed.parameter_slots_after_exit, 0);
+        assert!(!failed.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_)
+        )));
+        assert_eq!(prepared.execute().unwrap().result, Ok(9));
+    }
+
+    #[test]
+    fn g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕() {
+        let mut prepared = checked(multiple_source());
+        prepared.additional_arguments[0].1 = 100;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(multiple_source());
+        prepared.additional_arguments[0].0 = DeclarationId(0);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(multiple_source());
+        prepared.main_owners.push((DeclarationId(999), 1));
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕() {
+        for text in [
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1,true)\n}\n",
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1)\n}\n",
+            "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1,2,3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(text),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{text}");
+        }
+        let unused = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nvar extra:int = 5\nreturn sum(1,2)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(unused),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
 }
