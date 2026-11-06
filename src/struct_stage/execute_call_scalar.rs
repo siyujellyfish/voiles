@@ -601,31 +601,57 @@ impl PreparedPrivateScalarCall {
                 }
                 actual_init = inner;
             }
-            let TermKind::Scalar(
-                crate::syntax_shared::ScalarLiteral::Integer(raw),
-            ) = &actual_init.kind else {
-                return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "此子集只接通原 Checker 已核准的純 int 常值或括號常值初始化",
-                ));
-            };
             if owner.ty != "int"
                 || !verified.plan.declarations.matches(id, "int", owner.mutable)
                 || verified.plan.scalar_hir.expression(actual_init.node_span())
                     .is_none_or(|fact| fact.ty != ScalarType::Int)
-                || owners.contains_key(&owner.name)
-                || !verified.tokens.iter().any(|token|
-                    token.start == actual_init.start && token.end == actual_init.end
-                        && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
-                ) {
+                || owners.contains_key(&owner.name) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "main 具名 int 初始值缺少唯一 Checker／Lexer／TypedHIR 身分",
+                    "main 具名 int 初始值缺少唯一 Checker／TypedHIR 宣告身分",
                 ));
             }
-            let value = crate::syntax_shared::integer_i64(raw).map_err(|_|
-                PrivateScalarCallPrepareError::Unsupported(
-                    "main int 詞彙初始化值超出 i64",
-                ),
-            )?;
+            let value = match &actual_init.kind {
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                    if !verified.tokens.iter().any(|token|
+                        token.start == actual_init.start && token.end == actual_init.end
+                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "main int 字面初始化缺少原 Lexer Token",
+                        ));
+                    }
+                    crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "main int 詞彙初始化值超出 i64",
+                        ),
+                    )?
+                }
+                TermKind::Name(name) => {
+                    // 已核准 Copyable int 可由同一 main 先前已初始化持有者取值，
+                    // 不產生 Move／BorrowTicket。原 Checker Reference HIR 的
+                    // DeclarationId 和 Lexer token 都必須逐一相符。
+                    let (source_id, value) = owners.get(name).copied().ok_or(
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "main Copyable int 初始化來源不是先前已驗證的持有者",
+                        ),
+                    )?;
+                    if verified.plan.scalar_hir.reference(actual_init.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != source_id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == actual_init.start
+                                && token.end == actual_init.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == name)) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "main Copyable int 初始化來源缺少原 Checker Reference HIR",
+                        ));
+                    }
+                    value
+                }
+                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "main 此子集只接通已核准 Copyable int 字面或具名初始化",
+                )),
+            };
             owners.insert(owner.name.clone(), (id, value));
             main_owners.push((id, value));
         }
@@ -1766,6 +1792,63 @@ mod g18_private_scalar_call_tests {
         let mut prepared = checked(src);
         assert_eq!(prepared.execute().unwrap().result, Ok(9));
         prepared.main_owners[0].1 = 90;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+    #[test]
+    fn g18_a_main_已核准_copyable_int_名稱初始化串接真傳參() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst origin:int = 6\nvar copied:int = origin\nconst further:int = copied\nreturn inc(further)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 3);
+        assert_eq!(prepared.main_owners.iter().map(|(_, value)| *value).collect::<Vec<_>>(),
+            [6, 6, 6]);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(7));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(6)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_a_main_括號名稱初始化與未使用副本不消耗來源() {
+        let src = "fn fixed()->int{\nreturn 13\n}\nfn main()->int{\nconst origin:int = ((9))\nvar unused:int = ((((origin))))\nreturn fixed()\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 2);
+        assert_eq!(prepared.main_owners[0].1, 9);
+        assert_eq!(prepared.main_owners[1].1, 9);
+        let outcome = prepared.execute().unwrap();
+        assert_eq!(outcome.result, Ok(13));
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(_)
+                | PrivateScalarCallEvent::ParameterBound(..)
+        )).count(), 0);
+    }
+
+    #[test]
+    fn g18_a_main_初始化來源錯型別或未宣告及尚未初始化仍靜態拒絕() {
+        for src in [
+            "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nconst ok:bool = true\nconst copy:int = ok\nreturn id(copy)\n}\n",
+            "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nconst copy:int = missing\nreturn id(copy)\n}\n",
+            "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nvar original:int\nconst copy:int = original\nreturn id(copy)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_a_main_被複製初始化持有者來源身分竄改必先拒絕() {
+        let src = "fn id(n:int)->int{\nreturn n\n}\nfn main()->int{\nconst origin:int = 3\nconst copy:int = origin\nreturn id(copy)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(3));
+        prepared.main_owners[1].0 = DeclarationId(usize::MAX);
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let mut prepared = checked(src);
+        prepared.main_owners[1].1 = 31;
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
