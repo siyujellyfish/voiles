@@ -718,7 +718,35 @@ impl PreparedPrivateScalarCall {
                 "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
             ));
         }
+        // 已核准的 main 動態 int 表達式與巢狀具名函式呼叫不能在
+        // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
+        // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
+        let needs_dynamic = call_arguments.iter().any(|argument| {
+            let mut inner = argument;
+            while let TermKind::Group(nested) = &inner.kind {
+                inner = nested;
+            }
+            !matches!(&inner.kind,
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
+                | TermKind::Name(_))
+        });
+        let main_dynamic_call = if needs_dynamic {
+            let bindings = owners.iter().map(|(name, (id, _))|
+                (name.clone(), *id)
+            ).collect::<BTreeMap<_, _>>();
+            let arguments = call_arguments.iter().map(|argument|
+                PrivateScalarReturnExpr::from_checked_bindings(
+                    argument, &bindings, &verified,
+                )
+            ).collect::<Result<Vec<_>, _>>()?;
+            Some(PrivateScalarReturnExpr::Call {
+                name: callee.name.clone(), arguments,
+            })
+        } else {
+            None
+        };
         let mut all_arguments = Vec::new();
+        if main_dynamic_call.is_none() {
         for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
             // 已核准的 Group 由原 Parser/TypedHIR 提供完整來源，
             // 不額外解釋未核准的表達式或改變 Copyable 權限。
@@ -788,6 +816,7 @@ impl PreparedPrivateScalarCall {
                 DeclarationId(parameter.declaration_start), value, owner_id,
             ));
         }
+        }
         // 前置宣告已逐筆由原 Checker、Lexer 與 int TypedHIR 驗證為
         // 無資源的純整數常值初始化；即使未被用作實參，也不能
         // 將合法宣告誤判成「未執行語句」。其身分與值仍納入防偽。
@@ -799,12 +828,16 @@ impl PreparedPrivateScalarCall {
         let callee_span = NodeSpan::new(callee.start, callee.end);
         let callee_name = callee.name.clone();
         let parameter_name = param.map(|param| param.name.clone());
+        let callee_parameter_ids = callee.params.iter().map(|param|
+            DeclarationId(param.declaration_start)
+        ).collect();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id,
             parameter_return_span: param_return_span, return_expr, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
+            main_dynamic_call, callee_parameter_ids,
         })
     }
 
@@ -876,6 +909,23 @@ impl PreparedPrivateScalarCall {
         // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
         // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
         let mut events = Vec::new();
+        if let Some(dynamic_call) = &self.main_dynamic_call {
+            let main_frame: BTreeMap<DeclarationId, i64> =
+                self.main_owners.iter().copied().collect();
+            // 這個額外的 frame 只代表執行器的 main 來源持有者；
+            // 不是函式呼叫，不能占用 D18-01 的函式框架額度。
+            let adjusted_budget = PrivateScalarExecutionBudget {
+                max_call_frames: budget.max_call_frames.saturating_add(1),
+                max_steps: budget.max_steps,
+            };
+            let result = self.evaluate_graph(
+                dynamic_call, &main_frame, &mut events,
+                adjusted_budget, fail_after_binding,
+            );
+            return Ok(PrivateScalarCallOutcome {
+                result, events, parameter_slots_after_exit: 0,
+            });
+        }
         if let Some(argument) = self.argument {
             events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
         }
