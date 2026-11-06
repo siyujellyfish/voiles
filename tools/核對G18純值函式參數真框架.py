@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二十四項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_a_雙_copyable_int_參數依原_checker_宣告順序逐一綁定",
+    "g18_a_三個_int_參數在同一真框架內逐項參與原_hir_算式",
+    "g18_a_同一個_const_int_持有者作兩個實參屬_copyable_不消耗",
+    "g18_a_多個具名_var_const_int_和常值實參按照原宣告身分傳遞",
+    "g18_c_多參數整數溢位不可回傳成功且所有動態參數清空",
+    "g18_c_多參數真框架測試故障不殘留參數也不假冒_return",
+    "g18_a_擅改第二實參值或第二_parameter_declarationid_先驗後拒絕",
+    "g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕",
     "g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
     "g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
     "g18_a_真函式_copyable_int_參數多次引用每次都取同一實際值",
@@ -53,8 +61,19 @@ def main() -> int:
         print("G18 Copyable int 函式真來源正反缺漏：" + "、".join(missing),
               file=sys.stderr)
         return 1
-    print(f"G18 真 Copyable int 函式參數與框架：{len(required)}/{len(required)}；"
-          "Rust 全量已真正執行，G18 六原項仍非 Passed。")
+    # 不僅核對清單；多參數必須真正經原 Checker -> runtime 重跑。
+    executed = subprocess.run(
+        [str(args.test_bin.resolve()), "--test-threads=2",
+         "struct_stage::g18_private_scalar_call_tests::"],
+        capture_output=True, text=True, encoding="utf-8", check=False,
+    )
+    expected = f"{len(required)} passed; 0 failed;"
+    if executed.returncode or expected not in executed.stdout:
+        print("G18 Copyable int 真執行 Gate 未全過：" +
+              executed.stdout + executed.stderr, file=sys.stderr)
+        return 1
+    print(f"G18 真 Copyable int 一至三參數動態框架：{len(required)}/{len(required)}"
+          " 真實重跑；一般函式完整矩陣仍待 P18 正式驗收。")
     return 0
 
 
