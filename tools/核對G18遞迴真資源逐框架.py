@@ -10,6 +10,15 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_c_直接遞迴_str_真票據與_copyable_int_逐框架傳遞並由_hir_算術返回",
+    "g18_c_互相遞迴_參數順序不同仍保留原_checker_int_與_str_借用身份",
+    "g18_c_無_str_實參的_bool_int_遞迴仍真建立每框架_utf8_並返回動態參數",
+    "g18_c_子遞迴_int_常值覆寫父框架值_底層不得錯讀父參數",
+    "g18_c_混合_int_底層算術溢位須失敗並先歸還借用票據再逐層釋放",
+    "g18_c_混合_str_int_跨框架呼叫預算耗盡仍保留實際參數值與全部清理",
+    "g18_c_混合遞迴第二層_int_已綁定後故障仍清理所有_utf8_與票據",
+    "g18_c_竄改遞迴_int_實參來源或返回_hir_必須在真資源建立前拒絕",
+    "g18_c_混合遞迴錯誤_int_型別及漏參數必先由原_checker_拒絕",
     "g18_c_深層重入同一宣告來源須各有動態_borrow_tracker_且受控耗盡",
     "g18_c_跨框架相同原宣告位置的唯讀和獨占票據不能誤互斥",
     "g18_c_深層重入步數耗盡各框架票據與所有者全部逆序歸還",
@@ -59,7 +68,7 @@ def main() -> int:
         print("G18 遞迴真資源執行未全過：" + run.stdout + run.stderr,
               file=sys.stderr)
         return 1
-    print(f"G18 原 Checker bool 直接／互相遞迴真 UTF-8 ResourceId："
+    print(f"G18 原 Checker bool／str／int 混合遞迴真 UTF-8 ResourceId："
           f"{len(required)}/{len(required)} 已真正重跑；"
           "本批已接通受限跨框架 str 借用；一般遞迴與借用完整矩陣尚未正式 Passed。")
     return 0
