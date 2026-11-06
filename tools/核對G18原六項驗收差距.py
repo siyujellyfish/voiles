@@ -75,6 +75,11 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_多函式逐層_move_同一_resourceid_末端真正釋放且返回逐框架退出",
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_合法自我遞迴每層轉交唯一_utf8_受框架預算安全耗盡",
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_跨函式_move_步數預算耗盡不得假成功或雙重釋放",
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_真移動之前及連續轉交之後注入故障都由目前所有者清理一次",
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_零函式框架或零步數預算在配置真_utf8_前受控拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
         "struct_stage::g18_private_scalar_call_tests::g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
         "struct_stage::g18_private_scalar_call_tests::g18_c_零框架或零步數預算不得偽造任何真函式進入",
@@ -128,6 +133,11 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_owned_move_call_tests::g18_d_原_checker_明確_move_普通函式實參轉交同一真_utf8_不複製",
+        "struct_stage::g18_private_owned_move_call_tests::g18_d_被呼叫者真的再次_move_參數至局部唯一所有者退出才釋放一次",
+        "struct_stage::g18_private_owned_move_call_tests::g18_d_移動後原來源再次使用與漏掉明確_move_必由原_checker_拒絕",
+        "struct_stage::g18_private_owned_move_call_tests::g18_d_非法借用別名不能以_move_變成真正所有者",
+        "struct_stage::g18_private_owned_move_call_tests::g18_d_更改已核准轉交函式或字串原值必須零執行前拒絕",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_d_兩個獨立_var_str_加雙_int_跨遞迴真票據全序列及逆序清理",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_d_同函式兩個_const_str_共享借用同一來源須用兩張真票據歸還",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_d_兩個_str_與_int_不同比例順序之互相遞迴仍真借用並返回",
@@ -154,6 +164,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_跨函式_move_步數預算耗盡不得假成功或雙重釋放",
+        "struct_stage::g18_private_owned_move_call_tests::g18_c_真移動之前及連續轉交之後注入故障都由目前所有者清理一次",
+        "struct_stage::g18_private_owned_move_call_tests::g18_d_非法借用別名不能以_move_變成真正所有者",
         "execution::tests::p18_執行期錯誤保留真實函式退出且不冒稱_return_成功",
         "struct_stage::g18_private_scalar_call_tests::g18_c_真正參數框架中途故障必清空且不冒充成功返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
@@ -197,8 +210,8 @@ from pathlib import Path
 狀態 = {
     "P18.1": ("SubsetVerified", "原 Checker Copyable int 已接通多參數及非固定層數函式圖、重複葉函式、遞迴顯式框架／可配置預算；一般控制語句與其他型別混合呼叫圖仍需完整驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
-    "P18.3": ("Incomplete", "原 Checker bool／多 str／多 Copyable int 真混合遞迴已接通多函式長鏈、完整 BorrowFact 序列及每層真多票據／ResourceId／預算清理；非字面條件、move 與一般控制流仍缺"),
-    "P18.4": ("SubsetVerified", "原 Checker 多 str 借用的完整 BorrowFact 序列與多 Copyable int 已在真遞迴框架逐票據核對／原子歸還，含獨立可寫來源及共享重複來源；move、跨作用域逃逸與 self 矩陣仍缺"),
+    "P18.3": ("Incomplete", "真多資源預設借用的遞迴與多 Copyable int 已通過；另已接通原 Checker 明確 str.move 跨函式及直接遞迴、預算／故障唯一 ResourceId 真轉交；複雜條件與 move／borrow 混合控制流完整矩陣仍缺"),
+    "P18.4": ("SubsetVerified", "原 Checker 已核准多 str BorrowTicket 真借用，並接通單 str 明確 .move() 跨普通函式／遞迴框架唯一資源轉交與參數消耗；一般同次 move＋borrow、多資源轉交、逃逸及 self 完整矩陣仍缺"),
     "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
@@ -208,6 +221,7 @@ from pathlib import Path
     "struct_stage::p17_private_str_execution_tests::p18_",
     "struct_stage::g18_private_source_loop_tests::g18_",
     "struct_stage::g18_private_call_borrow_tests::g18_",
+    "struct_stage::g18_private_owned_move_call_tests::g18_",
     "struct_stage::g18_private_scalar_call_tests::g18_",
     "struct_stage::g18_private_recursive_str_frames_tests::g18_",
     "struct_stage::g18_private_method_self_tests::g18_",
