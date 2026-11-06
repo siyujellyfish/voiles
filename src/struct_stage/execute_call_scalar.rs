@@ -287,6 +287,8 @@ struct PreparedPrivateScalarCall {
     /// 真 main 實參中含原 Checker int 算式／巢狀呼叫時，
     /// 共用顯式工作堆疊執行，不能先預算出假 int 結果。
     main_dynamic_call: Option<PrivateScalarReturnExpr>,
+    /// main 已核准動態 int 初始化須在執行時逐筆求值，不預算函式結果。
+    main_dynamic_inits: Vec<PrivateScalarLocalInit>,
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
 }
@@ -385,19 +387,17 @@ impl PreparedPrivateScalarCall {
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
         fail_after_root_binding: bool,
-        begin_with_root_locals: bool,
+        initial_local_inits: &'a [PrivateScalarLocalInit],
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
             initialized_locals: Vec::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
-        if begin_with_root_locals {
-            // 從 source 宣告順序的反方向推入 LIFO，真正執行為逐筆初始化。
-            for local in self.root_local_inits.iter().rev() {
-                tasks.push(PrivateScalarTask::BindLocal(local.declaration));
-                tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
-            }
+        // 來源同源 int 初始化皆在同一動態工作堆疊依原宣告順序求值。
+        for local in initial_local_inits.iter().rev() {
+            tasks.push(PrivateScalarTask::BindLocal(local.declaration));
+            tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
         }
         let mut values = Vec::<i64>::new();
         let mut steps = 0usize;
@@ -977,7 +977,7 @@ impl PreparedPrivateScalarCall {
             parameter_return_span: param_return_span, return_expr,
             root_local_inits, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
-            main_dynamic_call, callee_parameter_ids,
+            main_dynamic_call, main_dynamic_inits, callee_parameter_ids,
         })
     }
 
@@ -998,6 +998,7 @@ impl PreparedPrivateScalarCall {
             && self.main_owners == fresh.main_owners
             && self.nested_callees == fresh.nested_callees
             && self.main_dynamic_call == fresh.main_dynamic_call
+            && self.main_dynamic_inits == fresh.main_dynamic_inits
             && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
@@ -1070,7 +1071,7 @@ impl PreparedPrivateScalarCall {
             };
             let result = self.evaluate_graph(
                 dynamic_call, &main_frame, &mut events,
-                adjusted_budget, fail_after_binding, false,
+                adjusted_budget, fail_after_binding, &self.main_dynamic_inits,
             );
             return Ok(PrivateScalarCallOutcome {
                 result, events, parameter_slots_after_exit: 0,
@@ -1097,7 +1098,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, true)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, &self.root_local_inits)
             }
         });
         if let Ok(value) = result {
