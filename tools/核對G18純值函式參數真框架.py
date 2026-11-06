@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三十九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
+    "g18_a_合法前向六層以上_copyable_int_函式真逐層返回",
+    "g18_a_五個_copyable_int_真參數不應被內部三參數上界拒絕",
+    "g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
+    "g18_c_零框架或零步數預算不得偽造任何真函式進入",
+    "g18_a_未被選取的合法遞迴函式不得造成其他正向函式拒絕",
+    "g18_c_有界步數的兩個巢狀兄弟呼叫僅在實際出現時建立獨立框架",
     "g18_a_雙_copyable_int_參數依原_checker_宣告順序逐一綁定",
     "g18_a_三個_int_參數在同一真框架內逐項參與原_hir_算式",
     "g18_a_同一個_const_int_持有者作兩個實參屬_copyable_不消耗",
@@ -24,7 +31,7 @@ from pathlib import Path
     "g18_c_巢狀葉函式溢位不得虛構子層或父層成功返回",
     "g18_c_父框架故障時不可進入尚未求值的巢狀子函式",
     "g18_c_巢狀函式來源或參數宣告身份被篡改零動態框架拒絕",
-    "g18_c_函式圖存在原_checker_合法循環時本非遞迴切片不得偷偷執行",
+    "g18_c_函式圖合法互相遞迴須受控預算耗盡並逐動態框架退出",
     "g18_a_巢狀呼叫錯誤型別及未知函式仍由原_checker_拒絕",
     "g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
     "g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
@@ -80,7 +87,7 @@ def main() -> int:
         print("G18 Copyable int 真執行 Gate 未全過：" +
               executed.stdout + executed.stderr, file=sys.stderr)
         return 1
-    print(f"G18 真 Copyable int 一至三參數及非循環巢狀呼叫動態框架：{len(required)}/{len(required)}"
+    print(f"G18 真 Copyable int 已核准一般數量 Copyable int 與遞迴真工作堆疊框架：{len(required)}/{len(required)}"
           " 真實重跑；一般函式完整矩陣仍待 P18 正式驗收。")
     return 0
 
