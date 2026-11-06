@@ -9,6 +9,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_d_具名_const_int_與_str_借用同框架按原_checker_引用身份返回",
+    "g18_d_具名_var_int_在前_var_str_在後_真獨占借用及複製求值",
+    "g18_c_具名_copyable_與_str_借用並存故障仍清空參數及歸還票據",
+    "g18_d_偽造具名_copyable_所有者_decl_id_或初始值須零資源拒絕",
+    "g18_d_具名_int_未初始化或實參型別不符由原_checker_先拒絕",
     "g18_d_混合_const_str_與_copyable_int_同框架真借用及_hir_加法返回",
     "g18_d_混合_int_在前_var_str_在後_仍以真獨占票據與參數身分執行",
     "g18_d_混合函式重複呼叫不消耗_str_持有者也不重用上次_int_參數框架",
@@ -16,7 +21,7 @@ from pathlib import Path
     "g18_c_混合函式真借用與_int_參數已綁定後故障仍原子歸還清理",
     "g18_d_篡改混合函式_int_值與_DeclarationId_或_hir_返回必須配置前拒絕",
     "g18_d_混合函式刪除原_checker_真借用表不得使用舊參數票據",
-    "g18_d_混合呼叫錯誤型別個數與具名非授權_int_實參必保守拒絕",
+    "g18_d_混合呼叫錯誤型別個數與多餘未執行宣告必保守拒絕",
     "g18_d_正式_checker_const_str_參數共享借用真票據與返回值",
     "g18_d_函式借用讀取先驗證動態票據_歸還後禁止重用",
     "g18_d_函式實參的真借用票據不能跨動態_tracker_存取",
