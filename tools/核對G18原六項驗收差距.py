@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_原_checker_算術實參於真動態框架依順序求值",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_具名_copyable_算術與巢狀普通函式依真來源求值",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_零參數葉函式作為複合實參須先真返回再綁定目標",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_已核准_copyable_int_名稱初始化串接真傳參",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號名稱初始化與未使用副本不消耗來源",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_具名_copyable_int_多層括號初始化仍真傳入函式",
@@ -90,6 +93,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_第二算術實參溢位保留前一完成事件且不可進入目標",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_算術實參步數預算耗盡不會補寫未完成參數事件",
+        "struct_stage::g18_private_scalar_call_tests::g18_c_main_動態實參綁定後故障須先退出真根框架",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_零參數根函式直接遞迴預算耗盡及逐框架退出",
         "struct_stage::g18_private_scalar_call_tests::g18_c_零參數自遞迴由真框架預算受控中止不虛構返回",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_d_獨占_var_str_借用與另一獨立來源整筆_move_可同次合法存在",
@@ -192,6 +198,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態算式已驗證工作計畫遭竄改必在執行前拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_a_main_動態實參非法型別或未知名稱仍須由原_checker_拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_初始化來源錯型別或未宣告及尚未初始化仍靜態拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_被複製初始化持有者來源身分竄改必先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_括號初始化為布林或缺失名稱仍由原_checker_拒絕",
