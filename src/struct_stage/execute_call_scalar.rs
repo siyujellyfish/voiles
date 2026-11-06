@@ -51,6 +51,18 @@ impl PrivateScalarReturnExpr {
     /// 重新猜測文法或由來源文字推論算式樹。
     fn from_checked(term: &Term, params: &[Parameter], verified: &VerifiedPrivateSource)
         -> Result<Self, PrivateScalarCallPrepareError> {
+        let bindings = params.iter().map(|param|
+            (param.name.clone(), DeclarationId(param.declaration_start))
+        ).collect::<BTreeMap<_, _>>();
+        Self::from_checked_bindings(term, &bindings, verified)
+    }
+
+    /// 共用原 Checker 的 DeclarationId 編譯函式參數及 main 既有 int 持有者。
+    fn from_checked_bindings(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
         use crate::common_ir::ScalarType;
         let span = term.node_span();
         if verified.plan.scalar_hir.expression(span)
@@ -61,12 +73,11 @@ impl PrivateScalarReturnExpr {
         }
         match &term.kind {
             TermKind::Name(name) => {
-                let param = params.iter().find(|param| &param.name == name).ok_or(
+                let id = *bindings.get(name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
-                        "返回名稱不是本次已核准函式的 Copyable int 參數",
+                        "int 名稱不是本次原 Checker 已核准的 Copyable int 來源",
                     ),
                 )?;
-                let id = DeclarationId(param.declaration_start);
                 if verified.plan.scalar_hir.reference(span)
                     .is_none_or(|fact|
                         fact.resolved.declaration != id
@@ -82,13 +93,31 @@ impl PrivateScalarReturnExpr {
                 Ok(Self::Parameter(id))
             }
             TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start && token.end == span.end
+                        && matches!(&token.kind, TokenKind::Integer(found) if found == raw)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "int 常值缺少原 Lexer 來源",
+                    ));
+                }
                 Ok(Self::Constant(crate::syntax_shared::integer_i64(raw)
                     .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
                         "返回 int 常值超出 i64 範圍",
                     ))?))
             }
-            TermKind::Group(inner) =>
-                Self::from_checked(inner, params, verified),
+            TermKind::Group(inner) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start
+                        && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "int Group 缺少原 Lexer 左右括號來源",
+                    ));
+                }
+                Self::from_checked_bindings(inner, bindings, verified)
+            },
             TermKind::Call(call) => {
                 // 由原 Parser 真函式宣告／Checker HIR 決定簽章。
                 // 不允許用字面來源重新推測或合成隱含轉型。
@@ -108,7 +137,7 @@ impl PrivateScalarReturnExpr {
                 }
                 let mut arguments = Vec::new();
                 for argument in &call.arguments {
-                    arguments.push(Self::from_checked(argument, params, verified)?);
+                    arguments.push(Self::from_checked_bindings(argument, bindings, verified)?);
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
@@ -153,8 +182,12 @@ impl PrivateScalarReturnExpr {
                         "函式內加減 HIR 端點或運算子遭偷換",
                     ));
                 }
-                let left = Box::new(Self::from_checked(&binary.left, params, verified)?);
-                let right = Box::new(Self::from_checked(&binary.right, params, verified)?);
+                let left = Box::new(Self::from_checked_bindings(
+                    &binary.left, bindings, verified,
+                )?);
+                let right = Box::new(Self::from_checked_bindings(
+                    &binary.right, bindings, verified,
+                )?);
                 Ok(if fact.operator == '+' {
                     Self::Addition(left, right)
                 } else {
