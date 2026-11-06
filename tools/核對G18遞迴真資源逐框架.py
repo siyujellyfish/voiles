@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_d_兩個獨立_var_str_加雙_int_跨遞迴真票據全序列及逆序清理",
+    "g18_d_同函式兩個_const_str_共享借用同一來源須用兩張真票據歸還",
+    "g18_d_兩個_str_與_int_不同比例順序之互相遞迴仍真借用並返回",
+    "g18_c_兩張真_str_票據存活時框架預算耗盡仍全部原子歸還",
+    "g18_c_兩張真_str_票據已簽發後動態故障不留任何資源",
+    "g18_d_兩張借用中第二張_source_或_kind_被竄改必在配置前拒絕",
+    "g18_d_同個可寫_str_來源同次傳兩個獨占參數須原_checker_拒絕",
+    "g18_d_雙_str_呼叫漏參數及錯誤型別仍由原_checker_拒絕",
     "g18_c_直接遞迴兩個_copyable_int_互換父子參數槽並保護真_str_票據",
     "g18_c_單張_str_borrowticket_和三個_int_跨遞迴位置交換實際返回",
     "g18_c_相同_copyable_int_父實參可給兩個子參數但不可複製真_str",
