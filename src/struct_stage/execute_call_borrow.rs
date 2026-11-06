@@ -1318,7 +1318,7 @@ impl PreparedPrivateMoveCall {
                             }
                         }
                         spend()?;
-                        break Ok(*value)?;
+                        break Ok(*value);
                     }
                 }
             }
