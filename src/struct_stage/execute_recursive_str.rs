@@ -50,7 +50,7 @@ struct PrivateRecursiveStrCall {
     argument: bool,
     span: crate::common_ir::NodeSpan,
     /// 只有原 Checker call_borrows 真票據才可記錄本次 str 參數借用。
-    loan: Option<(String, BorrowFact)>,
+    loans: Vec<(String, BorrowFact)>,
     int_arguments: Vec<PrivateRecursiveIntArgument>,
 }
 
@@ -93,7 +93,7 @@ struct PrivateRecursiveActiveFrame {
     /// 不得將不同重入實例的同一宣告合併到全域借用表。
     issued: crate::borrow_safety::BorrowSafety,
     /// 本框架進入時由父框架 issued 真簽發的票據；必須還給同一追蹤器。
-    ticket: Option<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
+    tickets: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
     /// 本次動態實例的 Copyable int 參數槽，不可跨重入層共用。
     ints: BTreeMap<DeclarationId, i64>,
 }
@@ -184,11 +184,11 @@ fn private_recursive_str_call(
             "遞迴呼叫 bool／int 返回缺少原 Checker TypedHIR",
         ));
     }
-    let mut loan = None;
+    let mut loans = Vec::new();
     let mut int_arguments = Vec::new();
     for (param, actual) in target.params.iter().zip(&call.arguments).skip(1) {
         match param.ty.as_str() {
-            "str" if loan.is_none() => {
+            "str" => {
                 let TermKind::Name(name) = &actual.kind else {
                     return Err(PrivateRecursiveStrPrepareError::Unsupported(
                         "非 Copyable 遞迴實參必須是真具名 str 所有者",
@@ -206,13 +206,12 @@ fn private_recursive_str_call(
                 ) || !verified.tokens.iter().any(|token|
                     token.start == actual.start && token.end == actual.end
                         && matches!(&token.kind, TokenKind::Name(found) if found == name)
-                ) || verified.plan.declarations.call_borrows_at(term.node_span())
-                    != Some(&[expected][..]) {
+                ) {
                     return Err(PrivateRecursiveStrPrepareError::Unsupported(
-                        "真 str 實參缺少原 Checker BorrowFact 或 Lexer 身分",
+                        "真 str 實參缺少原 Checker DeclarationId 或 Lexer 身分",
                     ));
                 }
-                loan = Some((name.clone(), expected));
+                loans.push((name.clone(), expected));
             }
             "int" => {
                 if verified.plan.scalar_hir.expression(actual.node_span())
@@ -277,17 +276,20 @@ fn private_recursive_str_call(
             )),
         }
     }
-    if loan.is_none() && verified.plan.declarations.call_borrows_at(term.node_span())
-        .is_some_and(|facts| !facts.is_empty()) {
+    // 原 Checker 為整個 Call 依實際 str 引數出現順序記錄
+    // 完整 BorrowFact 序列。不可只核對第一張而跳過後續來源／Kind。
+    let source_facts = verified.plan.declarations.call_borrows_at(term.node_span());
+    let expected: Vec<BorrowFact> = loans.iter().map(|(_, fact)| *fact).collect();
+    if source_facts.map_or(!expected.is_empty(), |facts| facts != expected) {
         return Err(PrivateRecursiveStrPrepareError::Unsupported(
-            "無 str 的混合遞迴不得憑空保留 BorrowFact",
+            "混合遞迴整張 Checker call_borrows 與真 str 引數序列不符",
         ));
     }
     Ok(PrivateRecursiveStrCall {
         name: call.name.clone(),
         argument: *value,
         span: term.node_span(),
-        loan, int_arguments,
+        loans, int_arguments,
     })
 }
 
@@ -341,13 +343,11 @@ impl PreparedPrivateRecursiveStr {
                 .skip(1).filter(|part| part.ty == "str").collect();
             let int_params: Vec<&Parameter> = fun.params.iter()
                 .skip(1).filter(|part| part.ty == "int").collect();
-            if str_params.len() > 1
-                || fun.params.len() != 1 + str_params.len() + int_params.len() {
+            if fun.params.len() != 1 + str_params.len() + int_params.len() {
                 return Err(PrivateRecursiveStrPrepareError::Unsupported(
-                    "本真框架只接通 bool、至多單 str 借用與多 Copyable int",
+                    "本真框架只接通 bool、多個 str 借用與多 Copyable int",
                 ));
             }
-            let str_param = str_params.first().copied();
             let param_id = DeclarationId(param.declaration_start);
             let member = VerifiedTypedMember::checked_private(
                 text, NodeRole::Parameter, param.declaration_span,
@@ -363,7 +363,7 @@ impl PreparedPrivateRecursiveStr {
                     "遞迴函式 bool 參數、返回或型別缺少原 Checker 完整證據",
                 ));
             }
-            if let Some(str_param) = str_param {
+            for str_param in &str_params {
                 let member = VerifiedTypedMember::checked_private(
                     text, NodeRole::Parameter, str_param.declaration_span,
                     &str_param.name, str_param.name_span, &str_param.ty,
@@ -475,7 +475,7 @@ impl PreparedPrivateRecursiveStr {
             .any(|call| verified.functions.iter().find(|f| f.name == call.name)
                 .is_none_or(|target|
                     target.params.iter().filter(|param| param.ty == "str").count()
-                        != usize::from(call.loan.is_some())
+                        != call.loans.len()
                     || target.params.iter().filter(|param| param.ty == "int").count()
                         != call.int_arguments.len())) {
             return Err(PrivateRecursiveStrPrepareError::Unsupported(
@@ -555,7 +555,7 @@ impl PreparedPrivateRecursiveStr {
             spend(&mut steps)?;
             resources.enter_scope();
             frames.push(PrivateRecursiveActiveFrame {
-                name: "main".to_owned(), branch_open: false, ticket: None,
+                name: "main".to_owned(), branch_open: false, tickets: Vec::new(),
                 issued: crate::borrow_safety::BorrowSafety::new(),
                 ints: BTreeMap::new(),
             });
@@ -585,22 +585,33 @@ impl PreparedPrivateRecursiveStr {
                 if next_int.len() != callee.int_parameters.len() {
                     return Err(PrivateRecursiveStrRunError::StateMismatch);
                 }
-                // Call 的借用來源、權限、詞彙持有者都已由
-                // 原 Checker call_borrows 精確授權。只有真正走到
-                // 此遞迴邊時才簽發票據，不能預先借用未選分支。
-                // 只從「實際擁有此 str 的父呼叫實例」借出票據；
-                // 不能將相同詞彙 DeclarationId 的不同遞迴框架合併。
-                let ticket = next_call.loan.as_ref().map(|(_, fact)|
-                    frames.last_mut().expect("父框架存在").issued
-                        .acquire(fact.source, fact.kind)
-                        .map(|ticket| (ticket, *fact))
-                        .map_err(PrivateRecursiveStrRunError::Ticket)
-                ).transpose()?;
-                // 此形狀的每個框架最多一個已發出的子呼叫；
-                // 所有在同一框架中的額外票據必須先經 HC14 衝突檢查。
-                frames.last().expect("父框架存在").issued.verify_static_snapshot(
-                    next_call.loan.iter().map(|(_, fact)| *fact),
-                ).map_err(PrivateRecursiveStrRunError::Ticket)?;
+                // 多個 str 實參屬同一個原 Checker Call BorrowFact，
+                // 必須於**當次父動態框架**逐張簽發，整批核對。
+                // 若簽發／快照中途失敗，先原子歸還已簽出的真票據，
+                // 不得把父框架殘餘票據留給錯誤回收路徑。
+                let parent = frames.last_mut().expect("父框架存在");
+                let mut tickets = Vec::new();
+                for (_, fact) in &next_call.loans {
+                    match parent.issued.acquire(fact.source, fact.kind) {
+                        Ok(ticket) => tickets.push((ticket, *fact)),
+                        Err(error) => {
+                            let ids: Vec<_> = tickets.iter().map(|(ticket, _)| *ticket).collect();
+                            let facts: Vec<_> = tickets.iter().map(|(_, fact)| *fact).collect();
+                            parent.issued.finish_scope_verified(&ids, &facts)
+                                .map_err(PrivateRecursiveStrRunError::Ticket)?;
+                            return Err(PrivateRecursiveStrRunError::Ticket(error));
+                        }
+                    }
+                }
+                if let Err(error) = parent.issued.verify_static_snapshot(
+                    next_call.loans.iter().map(|(_, fact)| *fact),
+                ) {
+                    let ids: Vec<_> = tickets.iter().map(|(ticket, _)| *ticket).collect();
+                    let facts: Vec<_> = tickets.iter().map(|(_, fact)| *fact).collect();
+                    parent.issued.finish_scope_verified(&ids, &facts)
+                        .map_err(PrivateRecursiveStrRunError::Ticket)?;
+                    return Err(PrivateRecursiveStrRunError::Ticket(error));
+                }
                 resources.enter_scope();
                 let mut ints = BTreeMap::new();
                 for (id, value) in callee.int_parameters.iter().zip(next_int) {
@@ -610,21 +621,20 @@ impl PreparedPrivateRecursiveStr {
                     bound_int_values.push((callee.name.clone(), value));
                 }
                 frames.push(PrivateRecursiveActiveFrame {
-                    name: callee.name.clone(), branch_open: false, ticket,
+                    name: callee.name.clone(), branch_open: false, tickets,
                     issued: crate::borrow_safety::BorrowSafety::new(), ints,
                 });
                 timeline.push(PrivateRecursiveFrameEvent::Entered(callee.name.clone()));
-                if let Some((name, fact)) = &next_call.loan {
-                    let ticket = frames.last().and_then(|frame|
-                        frame.ticket.map(|(ticket, _)| ticket)
-                    ).ok_or(PrivateRecursiveStrRunError::Ticket(
-                        crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
-                    ))?;
+                // 每個參數都先使用實際父 tracker 的 source／kind／序號
+                // 驗證後才可唯讀原 OwnedStrRuntime，絕不複製 ResourceId。
+                for ((name, fact), (ticket, issued)) in next_call.loans.iter()
+                    .zip(&frames.last().expect("子框架存在").tickets) {
+                    if fact != issued {
+                        return Err(PrivateRecursiveStrRunError::StateMismatch);
+                    }
                     let parent = &frames[frames.len() - 2];
-                    // 借用事實同時匹配父實例的追蹤器與原 Lexer str 名稱；
-                    // 不以子框架自己新造的 tracker 冒充既有借用。
                     match read_checked_str_argument(
-                        &parent.issued, ticket, fact.source, &resources, name,
+                        &parent.issued, *ticket, fact.source, &resources, name,
                     ) {
                         Ok(length) => borrowed_lengths.push(length),
                         Err(PrivateCallBorrowRuntimeError::Resource(error)) =>
@@ -633,9 +643,6 @@ impl PreparedPrivateRecursiveStr {
                             return Err(PrivateRecursiveStrRunError::Ticket(error)),
                         Err(PrivateCallBorrowRuntimeError::InjectedFailure) =>
                             return Err(PrivateRecursiveStrRunError::InjectedFailure),
-                        // 純讀取 helper 本身不會產生整數計算／槽狀態
-                        // 錯誤；若共用 enum 日後新增路徑，仍必須保守
-                        // 拒絕，不可誤報成功的 str 借用存取。
                         Err(PrivateCallBorrowRuntimeError::StateMismatch
                             | PrivateCallBorrowRuntimeError::IntegerOverflow) =>
                             return Err(PrivateRecursiveStrRunError::Ticket(
@@ -668,18 +675,22 @@ impl PreparedPrivateRecursiveStr {
             frame.issued.verify_static_snapshot(std::iter::empty::<BorrowFact>())
                 .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
             verified_frame_trackers += 1;
-            if let Some((ticket, fact)) = frame.ticket {
+            if !frame.tickets.is_empty() {
                 let parent = frames.last_mut().ok_or(
                     PrivateRecursiveStrPrepareError::CleanupTicket(
                         crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
                     ),
                 )?;
-                // 票據的 tracker_id／serial／BorrowKind 必須與原父框架一致，
-                // 否則 finish_scope_verified 在動態資源離域前保守拒絕。
-                parent.issued.finish_scope_verified(&[ticket], &[fact])
+                // 同一條呼叫邊的所有真 BorrowTicket 必須交回原父
+                // tracker，待整批票據原子歸還成功後才釋放來源。
+                let ids: Vec<_> = frame.tickets.iter().map(|(ticket, _)| *ticket).collect();
+                let facts: Vec<_> = frame.tickets.iter().map(|(_, fact)| *fact).collect();
+                parent.issued.finish_scope_verified(&ids, &facts)
                     .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
-                parent.issued.check_direct_access(fact.source)
-                    .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
+                for (_, fact) in &frame.tickets {
+                    parent.issued.check_direct_access(fact.source)
+                        .map_err(PrivateRecursiveStrPrepareError::CleanupTicket)?;
+                }
             }
             // Copyable 參數的生命期只屬這次動態呼叫實例；
             // 先清空參數，再依法釋放真 UTF-8 區域資源。
@@ -867,11 +878,11 @@ mod g18_private_recursive_str_frames_tests {
     #[test]
     fn g18_c_竄改已核准呼叫_borrowfact_來源與_kind_在配置前拒絕() {
         let mut prepared = plan(borrowed_direct());
-        prepared.entry.loan.as_mut().unwrap().1.source = DeclarationId(0);
+        prepared.entry.loans[0].1.source = DeclarationId(0);
         assert!(matches!(prepared.execute(budget(3, 80)),
             Err(PrivateRecursiveStrPrepareError::SourceChanged)));
         let mut prepared = plan(borrowed_direct());
-        prepared.callees[0].next.loan.as_mut().unwrap().1.kind = BorrowKind::SharedRead;
+        prepared.callees[0].next.loans[0].1.kind = BorrowKind::SharedRead;
         assert!(matches!(prepared.execute(budget(3, 80)),
             Err(PrivateRecursiveStrPrepareError::SourceChanged)));
     }
