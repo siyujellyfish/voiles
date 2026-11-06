@@ -618,7 +618,6 @@ impl PreparedPrivateScalarCall {
             ));
         }
         let mut all_arguments = Vec::new();
-        let mut used_names = std::collections::BTreeSet::<DeclarationId>::new();
         for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
             // 已核准的 Group 由原 Parser/TypedHIR 提供完整來源，
             // 不額外解釋未核准的表達式或改變 Copyable 權限。
@@ -678,7 +677,6 @@ impl PreparedPrivateScalarCall {
                             "多參數實參未繫結原 Checker DeclarationId／Reference HIR",
                         ));
                     }
-                    used_names.insert(id);
                     (value, Some(id))
                 }
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -689,13 +687,9 @@ impl PreparedPrivateScalarCall {
                 DeclarationId(parameter.declaration_start), value, owner_id,
             ));
         }
-        // 確保每筆 main 宣告在此執行切片真被作為引數取值，
-        // 不可悄悄跳過未支援的多餘有作用語句。
-        if main_owners.iter().any(|(id, _)| !used_names.contains(id)) {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "main 有尚未在本真執行路徑使用的 int 宣告",
-            ));
-        }
+        // 前置宣告已逐筆由原 Checker、Lexer 與 int TypedHIR 驗證為
+        // 無資源的純整數常值初始化；即使未被用作實參，也不能
+        // 將合法宣告誤判成「未執行語句」。其身分與值仍納入防偽。
         let (parameter_id, argument, owner_id) = match all_arguments.first().copied() {
             Some((id, value, owner)) => (Some(id), Some(value), owner),
             None => (None, None, None),
@@ -1119,7 +1113,7 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_a_多參數錯誤型別缺少引數與多餘未執行語句一律拒絕() {
+    fn g18_a_多參數錯誤型別引數數量拒絕且未使用純值宣告合法() {
         for text in [
             "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1,true)\n}\n",
             "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nreturn sum(1)\n}\n",
@@ -1129,8 +1123,9 @@ mod g18_private_scalar_call_tests {
                 Err(PrivateScalarCallPrepareError::Check(_))), "{text}");
         }
         let unused = "fn sum(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nvar extra:int = 5\nreturn sum(1,2)\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(unused),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        let prepared = checked(unused);
+        assert_eq!(prepared.main_owners.len(), 1);
+        assert_eq!(prepared.execute().unwrap().result, Ok(3));
     }
 
     // P18.1／P18.3／P18.4：同一原 Checker／Parameter HIR 的真正多層具參數
@@ -1604,6 +1599,37 @@ mod g18_private_scalar_call_tests {
             assert!(matches!(PreparedPrivateScalarCall::prepare(src),
                 Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
         }
+    }
+
+
+    #[test]
+    fn g18_a_數個未使用純值宣告與具名實參各自保留來源身分() {
+        let src = "fn id(value:int)->int{\nreturn value\n}\nfn main()->int{\nconst unused:int = 8\nvar input:int = 4\nvar another:int = 9\nreturn id(input)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.main_owners.len(), 3);
+        assert!(prepared.owner_id.is_some());
+        for _ in 0..2 {
+            let result = prepared.execute().unwrap();
+            assert_eq!(result.result, Ok(4));
+            assert_eq!(result.parameter_slots_after_exit, 0);
+            assert_eq!(result.events.iter().filter(|event| matches!(
+                event, PrivateScalarCallEvent::ArgumentEvaluated(_)
+            )).count(), 1);
+        }
+    }
+
+    #[test]
+    fn g18_a_未使用純值宣告遭竄改仍須執行前拒絕() {
+        let src = "fn id(value:int)->int{\nreturn value\n}\nfn main()->int{\nconst unused:int = 8\nreturn id(3)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(3));
+        prepared.main_owners[0].1 = 999;
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let changed = src.replace("unused:int = 8", "unused:int = 9");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&changed),
+            Ok(_)));
+        assert_ne!(prepared.original.as_ref(), changed.as_bytes());
     }
 
 
