@@ -962,4 +962,87 @@ mod g18_private_source_loop_tests {
             plan.execute(), Err(PrivateLoopPrepareError::SourceChanged),
         ));
     }
+    // P18.2：原已核准半開 for 不再因非公開 64 次上界而拒絕；
+    // 執行環境用可配置真步數預算控制任意巨大有限區間。
+    #[test]
+    fn g18_b_超過六十四輪的合法_for_依真實步數預算成功或受控耗盡() {
+        let source = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..65{\nvar inner:str = \"甲\"\n}\nreturn 0\n}\n";
+        let prepared = checked(source);
+        let short = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 5 },
+        ).unwrap();
+        assert_eq!(short.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(short.iterations.len(), 2);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&short.events));
+        assert_eq!(short.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 2);
+        let sufficient = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 135 },
+        ).unwrap();
+        assert_eq!(sufficient.result, Ok(0));
+        assert_eq!(sufficient.iterations.len(), 65);
+        assert_eq!(sufficient.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 66);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&sufficient.events));
+    }
+
+    #[test]
+    fn g18_b_巨大合法_i64_for_上界不應在_prepare_被拒絕或試圖全量迭代() {
+        let source = "fn main()->int{\nvar outer:str = \"外\"\nfor i in 0..9223372036854775807{\nvar inner:str = \"甲\"\n}\nreturn 0\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 11 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(actual.iterations.len() <= 5);
+        assert!(actual.iterations.len() >= 3);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+    }
+
+    #[test]
+    fn g18_b_空步數預算必須在任一真_utf8_建立前拒絕() {
+        let source = "fn main()->int{\nvar outer:str = \"根\"\nfor i in 0..10{\nvar inner:str = \"甲\"\n}\nreturn 1\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 0 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(actual.events.is_empty());
+        assert!(actual.iterations.is_empty());
+        assert!(actual.condition_checks.is_empty());
+    }
+
+    #[test]
+    fn g18_c_巢狀_for_執行預算耗盡必清理全部已走到的迭代資源() {
+        let source = "fn main()->int{\nvar outer:str = \"根\"\nfor i in 0..3{\nvar first:str = \"甲\"\nfor j in 0..4{\nvar second:str = \"乙\"\n}\n}\nreturn 0\n}\n";
+        let actual = checked(source).execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 9 },
+        ).unwrap();
+        assert_eq!(actual.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(actual.events.iter().filter(|event|
+            matches!(event, ResourceEvent::Created(_))).count(), 4);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
+        assert_eq!(actual.iterations.len(), 3);
+    }
+
+    #[test]
+    fn g18_b_while_條件零迭代仍依真檢查消耗預算而非靜態略過() {
+        let source = "fn main()->int{\nvar active:bool = false\nwhile(active){\nvar never:str = \"不建立\"\n}\nreturn 4\n}\n";
+        let prepared = checked(source);
+        let before = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 2 },
+        ).unwrap();
+        assert_eq!(before.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert!(before.condition_checks.is_empty());
+        let after = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 3 },
+        ).unwrap();
+        assert_eq!(after.result, Err(StrRuntimeError::ExecutionBudgetExhausted));
+        assert_eq!(after.condition_checks, [false]);
+        let enough = prepared.execute_with_budget(
+            PrivateLoopExecutionBudget { max_steps: 4 },
+        ).unwrap();
+        assert_eq!(enough.result, Ok(4));
+        assert_eq!(enough.condition_checks, [false]);
+        assert!(enough.events.is_empty());
+    }
+
 }
