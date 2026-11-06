@@ -318,6 +318,59 @@ enum PrivateScalarTask<'a> {
 }
 
 impl PreparedPrivateScalarCall {
+    /// P18.1：從同一原 Parser／Checker 的真宣告序列，逐筆編譯
+    /// 函式內 Copyable int 初始化；一律保留 DeclarationId，
+    /// 不以函式名稱／變數字面名稱重新解析安全身份。
+    fn prepare_function_locals(
+        function: &Function, verified: &VerifiedPrivateSource,
+    ) -> Result<(
+        Vec<PrivateScalarLocalInit>, PrivateScalarReturnExpr,
+        crate::common_ir::NodeSpan,
+    ), PrivateScalarCallPrepareError> {
+        let (last, prefix) = function.body.statements.split_last().ok_or(
+            PrivateScalarCallPrepareError::Unsupported("普通函式缺少返回"),
+        )?;
+        let StmtKind::Return(ret) = &last.kind else {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "普通函式最後一筆必須是真 Checker 核准的 return",
+            ));
+        };
+        let mut bindings = function.params.iter().map(|param|
+            (param.name.clone(), DeclarationId(param.declaration_start))
+        ).collect::<BTreeMap<_, _>>();
+        let mut local_inits = Vec::new();
+        for statement in prefix {
+            let StmtKind::Declare(owner) = &statement.kind else {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "函式前置語句只接通已核准 Copyable int 宣告",
+                ));
+            };
+            let declaration = DeclarationId(statement.start);
+            if owner.ty != "int"
+                || !verified.plan.declarations.matches(declaration, "int", owner.mutable)
+            {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "函式內 int 區域宣告缺少 Checker 唯一宣告身分",
+                ));
+            }
+            let initializer = owner.initializer.as_ref().ok_or(
+                PrivateScalarCallPrepareError::Unsupported(
+                    "函式內此子集須有真 int 初始化式",
+                ),
+            )?;
+            let value = PrivateScalarReturnExpr::from_checked_bindings(
+                initializer, &bindings, verified,
+            )?;
+            local_inits.push(PrivateScalarLocalInit { declaration, value });
+            bindings.insert(owner.name.clone(), declaration);
+        }
+        let return_span = ret.expression.node_span();
+        let result = PrivateScalarReturnExpr::from_checked_bindings(
+            &ret.expression, &bindings, verified,
+        )?;
+        Ok((local_inits, result, return_span))
+    }
+
     /// 顯式 expression 工作堆疊＋真函式框架。合法遞迴亦走同一路徑，
     /// 預算耗盡時從最內層逐一退出；禁止依賴宿主 Rust 呼叫堆疊。
     fn evaluate_graph<'a>(
@@ -547,7 +600,7 @@ impl PreparedPrivateScalarCall {
         if main.result_ty != "int" || !main.params.is_empty()
             || callee.result_ty != "int"
             || callee.params.iter().any(|param| param.ty != "int")
-            || callee.body.statements.len() != 1
+            || callee.body.statements.is_empty()
             || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "只接通已核准 Copyable int 完整簽章與單一返回式",
@@ -572,21 +625,14 @@ impl PreparedPrivateScalarCall {
             }
         }
         let param = callee.params.first();
-        let StmtKind::Return(return_param) = &callee.body.statements[0].kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "本子集要求被呼叫函式直接執行原 Checker 核准的返回式",
-            ));
-        };
-        let param_return_span = return_param.expression.node_span();
-        let return_expr = PrivateScalarReturnExpr::from_checked(
-            &return_param.expression, &callee.params, &verified,
-        )?;
+        let (root_local_inits, return_expr, param_return_span) =
+            Self::prepare_function_locals(callee, &verified)?;
         let mut nested_callees = Vec::new();
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
                 || function.params.iter().any(|param| param.ty != "int")
-                || function.body.statements.len() != 1 {
+                || function.body.statements.is_empty() {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多層函式須為已核准單 return 的純 int 完整簽章",
                 ));
@@ -609,19 +655,15 @@ impl PreparedPrivateScalarCall {
                 }
                 parameter_ids.push(id);
             }
-            let StmtKind::Return(ret) = &function.body.statements[0].kind else {
-                return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "巢狀函式本體不是原 Checker 唯一返回",
-                ));
-            };
+            let (local_inits, result, result_span) =
+                Self::prepare_function_locals(function, &verified)?;
             nested_callees.push(PrivateScalarNestedCallee {
                 name: function.name.clone(),
                 span: NodeSpan::new(function.start, function.end),
                 parameters: parameter_ids,
-                result_span: ret.expression.node_span(),
-                result: PrivateScalarReturnExpr::from_checked(
-                    &ret.expression, &function.params, &verified,
-                )?,
+                result_span,
+                result,
+                local_inits,
             });
         }
         // 每個可達或不可達的已編譯函式 Call 必須在同一份
@@ -630,11 +672,20 @@ impl PreparedPrivateScalarCall {
         let mut graph: Vec<(&str, &PrivateScalarReturnExpr)> =
             vec![(&callee.name, &return_expr)];
         graph.extend(nested_callees.iter().map(|fun| (fun.name.as_str(), &fun.result)));
-        for (_, expression) in &graph {
+        for (name, expression) in &graph {
             let mut calls = Vec::new();
             expression.collect_calls(&mut calls);
+            let locals = if *name == callee.name {
+                &root_local_inits
+            } else {
+                &nested_callees.iter().find(|fun| fun.name == *name)
+                    .expect("已收錄的巢狀真函式").local_inits
+            };
+            for local in locals {
+                local.value.collect_calls(&mut calls);
+            }
             if calls.iter().any(|called|
-                !graph.iter().any(|(name, _)| name == called)) {
+                !graph.iter().any(|(candidate, _)| candidate == called)) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀具名呼叫缺少原 Checker 真函式宣告或完整簽章",
                 ));
@@ -888,7 +939,8 @@ impl PreparedPrivateScalarCall {
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id,
-            parameter_return_span: param_return_span, return_expr, owner_id, argument,
+            parameter_return_span: param_return_span, return_expr,
+            root_local_inits, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
             main_dynamic_call, callee_parameter_ids,
         })
