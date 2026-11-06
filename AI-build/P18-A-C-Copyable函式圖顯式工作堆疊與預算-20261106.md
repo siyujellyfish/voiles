@@ -39,3 +39,14 @@
 - 新正反兩項：兩個兄弟葉函式的多層引數 2／2／3／4／5 必依真求值序列發出且不重複；第二個巢狀實參溢位時第一已完成結果 3 必保留、尚未進入的 pair 零進入事件，全部已進入框架均退出、不殘留參數。
 - 原專項真 Gate 43→45 項，G18 原 P18.1／18.5 真來源追溯同步增加。維持原 Lexer／Parser／Checker／TypedHIR、防偽和預算，無新公開語法或例外語意；本子批**不是 V1／G18 正式結案**。
 - 先在最新 PR HEAD 核對三項 CI completed/success 與 PR 身分／base／mergeable，再 Squash merge；新 main 同 SHA 重新驗證 G17／G6／F00、G18 --audit，維持原六項 0/6 Passed 直至完整 Gate。
+
+
+---
+
+## V1-C：main 真零參數普通函式根呼叫與遞迴（2026-11-06）
+
+- 基線 main 4cf068a413adc47ef39ebb3e90436503f7a94d78（#566 成功合併）。原程式的 fn main()->int 可合法 return value()，但私有 Copyable int 呼叫執行器只接受 main 的 TermKind::Call（有實參），且使用必有第一參數的欄位與 all_arguments[0]；原 Parser 對 name() 使用 A2/F02 的 TermKind::UnresolvedZeroArgs。這是已核准零參數正例被人為拒絕的 V1 遺漏。
+- 施工：在原 prepare 主函式實際 return 以 TermKind::Call／UnresolvedZeroArgs 兩種真 AST 形態抽取相同完整函式名稱與實參列，仍須原 Checker 確認唯一函式、int TypedHIR、無借用、非 struct。原「第一參數」資料改為明確 Option，不使用虛構 DeclarationId 或 i64 佔位；原有多參數路徑透過 Some 保持相同事件、來源防偽及真執行。零參數函式動態進入框架但不產生虛構 ParameterBound／ArgumentEvaluated。
+- 新四項真 Rust 正反：main 呼叫零參數函式正常返回、main 前向零參數串接兩層真正 Return、直接零參數遞迴耗盡 CallBudget 時進出框架逐一成對無假 Return、竄改根函式不存在的參數與實參在執行前 SourceChanged。
+- 專項真 Gate 45→49 項，原 G18 P18.1／18.3／18.5 來源追溯同步；沒有公開 CLI、語法或未核准異常語意。**本批仍不是整個 V1 或 G18 正式 Passed**，一般控制流與跨所有權函式仍應推進 V1 後續矩陣。
+- 本 PR 須最新 HEAD 三項 CI completed/success、作者與主線 base／mergeable 確認後 Squash merge，合併後主線同 SHA 再驗 G17／G6／F00、G18 --audit。
