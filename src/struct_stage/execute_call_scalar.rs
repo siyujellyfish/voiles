@@ -250,6 +250,8 @@ struct PrivateScalarActiveFrame {
 /// 上逐項求值，呼叫時由動態框架保存真正參數值。
 enum PrivateScalarTask<'a> {
     Evaluate(&'a PrivateScalarReturnExpr),
+    /// 每個真實參值求值完成當下才產生事件，不在 EnterCall 補記。
+    RecordArgument,
     Apply(char),
     EnterCall(&'a str, usize),
     ExitCall,
@@ -273,10 +275,14 @@ impl PreparedPrivateScalarCall {
         let mut steps = 0usize;
         let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
             while let Some(task) = tasks.pop() {
-                if steps >= budget.max_steps {
-                    return Err(PrivateScalarCallRuntimeError::StepBudget);
+                // 記錄已完成的實參不是另一個 voiles 運算步驟；
+                // 即使下一運算會耗盡預算，仍保留先前已真求值的事件。
+                if !matches!(&task, PrivateScalarTask::RecordArgument) {
+                    if steps >= budget.max_steps {
+                        return Err(PrivateScalarCallRuntimeError::StepBudget);
+                    }
+                    steps += 1;
                 }
-                steps += 1;
                 match task {
                     PrivateScalarTask::Evaluate(term) => match term {
                         PrivateScalarReturnExpr::Parameter(id) => {
@@ -304,10 +310,17 @@ impl PreparedPrivateScalarCall {
                                 name, arguments.len(),
                             ));
                             for argument in arguments.iter().rev() {
+                                tasks.push(PrivateScalarTask::RecordArgument);
                                 tasks.push(PrivateScalarTask::Evaluate(argument));
                             }
                         }
                     },
+                    PrivateScalarTask::RecordArgument => {
+                        let value = *values.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        events.push(PrivateScalarCallEvent::ArgumentEvaluated(value));
+                    }
                     PrivateScalarTask::Apply(operator) => {
                         let right = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -346,9 +359,6 @@ impl PreparedPrivateScalarCall {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
                         let evaluated = values.split_off(values.len() - argc);
-                        for value in &evaluated {
-                            events.push(PrivateScalarCallEvent::ArgumentEvaluated(*value));
-                        }
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
                         for (id, value) in parameter_ids.iter().zip(evaluated) {
@@ -1405,6 +1415,50 @@ mod g18_private_scalar_call_tests {
         zero.parameters.push(DeclarationId(usize::MAX));
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+
+    #[test]
+    fn g18_a_巢狀兄弟呼叫每個實參求值完成立即紀錄且不重複() {
+        let src = "fn leaf(x:int)->int{\nreturn x+1\n}\nfn pair(a:int,b:int)->int{\nreturn a-b\n}\nfn outer(n:int)->int{\nreturn pair(leaf(n),leaf(n+2))\n}\nfn main()->int{\nreturn outer(2)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Ok(-2));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let arguments = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        // main 的 2、leaf(2) 的 2、pair 第一實參 3、
+        // leaf(4) 的 4、pair 第二實參 5，必為原 Parser 的左至右順序。
+        assert_eq!(arguments, [2, 2, 3, 4, 5]);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "leaf")).count(), 2);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "pair")).count(), 1);
+    }
+
+    #[test]
+    fn g18_c_第一實參完成後第二實參溢位仍保留真事件而不進入父呼叫() {
+        let src = "fn first(x:int)->int{\nreturn x+1\n}\nfn bad(x:int)->int{\nreturn x+1\n}\nfn pair(a:int,b:int)->int{\nreturn a+b\n}\nfn outer(n:int)->int{\nreturn pair(first(n),bad(9223372036854775807))\n}\nfn main()->int{\nreturn outer(2)\n}\n";
+        let outcome = checked(src).execute().unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        let args = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ArgumentEvaluated(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(args, [2, 2, 3, 9223372036854775807]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(name) if name == "pair")));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 3);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited { .. })).count(), 3);
+        assert!(outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: false
+            } if name == "outer")));
     }
 
 
