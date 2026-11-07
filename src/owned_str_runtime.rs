@@ -182,6 +182,13 @@ impl OwnedStrRuntime {
             .map(|value| value.id).ok_or(StrRuntimeError::MovedSource)
     }
 
+    /// R04／R05：驗證跨函式轉借仍指向真正存活的唯一 UTF-8，
+    /// 不重新建構所有者，也不將唯讀借用冒充可寫持有權。
+    pub(crate) fn has_resource_id(&self, resource_id: u64) -> bool {
+        self.scopes.iter().flat_map(|scope| scope.names.iter()).any(|binding|
+            binding.owned.as_ref().is_some_and(|owned| owned.id == resource_id))
+    }
+
     pub(crate) fn enter_scope(&mut self) { self.scopes.push(StrFrame::default()); }
 
     /// 明確 .move()：一個緩衝區只轉交，來源仍存在但已失效。
