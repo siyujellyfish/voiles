@@ -77,6 +77,28 @@ struct PrivateCallBorrowOutcome {
     /// 多型別呼叫內的真 i64 參數槽在退出後必須為零。
     parameter_slots_after_exit: usize,
     observed_integer: Option<i64>,
+    /// 在真函式退出後由 BorrowSafety 檢查來源已可安全直接存取。
+    ticket_returned: bool,
+}
+
+impl PrivateCallBorrowOutcome {
+    /// 僅以原執行器交付的 ResourceEvent 與 BorrowSafety 結果核對。
+    /// call_entered/exited 不是 OwnedStr 的 ResourceId，不能替代真資源帳簿。
+    fn has_balanced_borrow_resource_trace(&self) -> bool {
+        let created = self.events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Created(_)
+        )).count();
+        let released = self.events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Released(_)
+        )).count();
+        crate::owned_str_runtime::event_trace_balanced(&self.events)
+            && created == 1 && released == 1
+            && self.ticket_returned
+            && self.parameter_slots_after_exit == 0
+            && (!self.call_exited || self.call_entered)
+            && self.call_exited == self.result.is_ok()
+            && (!self.call_entered || self.observed_utf8_bytes.is_some())
+    }
 }
 
 impl PreparedPrivateCallBorrow {
@@ -451,14 +473,17 @@ impl PreparedPrivateCallBorrow {
             (Ok(value), Ok(())) => tracker.check_direct_access(self.owner_id)
                 .map_err(PrivateCallBorrowRuntimeError::Ticket).map(|()| value),
         };
+        let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
         let events = runtime.finish().map_err(PrivateCallBorrowPrepareError::Cleanup)?;
-        if !crate::owned_str_runtime::event_trace_balanced(&events) {
-            return Err(PrivateCallBorrowPrepareError::SourceChanged);
-        }
-        Ok(PrivateCallBorrowOutcome {
+        let outcome = PrivateCallBorrowOutcome {
             result: execution, observed_utf8_bytes, call_entered, call_exited, events,
             parameter_slots_after_exit: frame.len(), observed_integer,
-        })
+            ticket_returned,
+        };
+        if !outcome.has_balanced_borrow_resource_trace() {
+            return Err(PrivateCallBorrowPrepareError::SourceChanged);
+        }
+        Ok(outcome)
     }
 }
 
@@ -1587,6 +1612,24 @@ struct PrivateMixedOwnershipOutcome {
     parameter_slots_after_exit: usize,
 }
 
+impl PrivateMixedOwnershipOutcome {
+    /// 同一動態呼叫中的「真整筆 Move＋BorrowTicket」兩份來源分離。
+    /// 來源數由已核准兩筆 str 宣告確定，不能靠已平衡的空事件表冒充。
+    fn has_balanced_mixed_resource_trace(&self) -> bool {
+        let created = self.events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Created(_)
+        )).count();
+        let released = self.events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Released(_)
+        )).count();
+        crate::owned_str_runtime::event_trace_balanced(&self.events)
+            && created == 2 && released == 2
+            && self.ticket_returned
+            && self.parameter_slots_after_exit == 0
+            && (self.result.is_err() || self.observed_borrowed_bytes.is_some())
+    }
+}
+
 impl PreparedPrivateMixedOwnershipCall {
     fn prepare(source: &str) -> Result<Self, PrivateMixedOwnershipPrepareError> {
         use crate::common_ir::{NodeRole, VerifiedTypedMember};
@@ -1872,13 +1915,14 @@ impl PreparedPrivateMixedOwnershipCall {
         let events = resources.finish().map_err(
             PrivateMixedOwnershipPrepareError::Cleanup,
         )?;
-        if !crate::owned_str_runtime::event_trace_balanced(&events) {
-            return Err(PrivateMixedOwnershipPrepareError::SourceChanged);
-        }
-        Ok(PrivateMixedOwnershipOutcome {
+        let outcome = PrivateMixedOwnershipOutcome {
             result, events, observed_borrowed_bytes, ticket_returned,
             parameter_slots_after_exit: 0,
-        })
+        };
+        if !outcome.has_balanced_mixed_resource_trace() {
+            return Err(PrivateMixedOwnershipPrepareError::SourceChanged);
+        }
+        Ok(outcome)
     }
 }
 
