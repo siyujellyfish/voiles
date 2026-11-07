@@ -298,3 +298,14 @@
 - 原顯式工作堆疊新增 `ExecuteBranchAction` 任務，以 LIFO 反序排入、實際原序求值；選中 Return 才截斷本函式不可達工作，其餘 Assign 必依真值更新現有 frame，再執行後段；未選中任何分支不建立任務、沒有假事件。完整葉返回的 `always_returns` 也遵循 sequence 最後真 Return，但仍要求函式語法有已核准**明確最後 return**。
 - 六項真 Rust 正反：兩次 int 更新與 false 零更新、else-if 只選一個真葉並按次序執行、同分支先 int 後 bool 更新而下一 if 重讀、先更新後提前 return 不執行不可達語句、第二更新溢位只保留首筆完成與真失敗退出、const 錯誤賦值及已編譯 action 序列遭竄改必先拒絕。函式專項 Gate **138→144**，G18 原 P18.1／18.3／18.5、必要 CI 與 AI-build 同步。
 - 這批不包含分支內新區域變數、完整巢狀分支／一般 for/while，也不完成 OwnedStr/Move/Borrow 統一 runtime；保持 R01～R07 未封閉清單與 G18 0/6 Passed。只在最新 PR HEAD 三必要 CI completed/success、作者/main base/mergeable 確認後 Squash merge，再核對新 main 同 SHA。
+
+
+---
+
+## V1-R03-05：原 Checker 已核准巢狀 if／else 真分支與多筆更新（2026-11-07）
+
+- 基線 main `546d8c468e44707a52e7461497a2acec038e66ae`（#589 R03-04 多筆 int/bool 分支更新已 PR 最新 HEAD 三必要 CI completed/success Squash merge）。原私有 `compile_early_branch` 只接通單筆 Return／Assign 或多筆純值 Sequence；但原 Parser/Checker 允許合法已核准的巢狀 `if`，目前仍在人為分支計畫中被 Unsupported。
+- 將原 Parser `StmtKind::If` 巢狀節點編譯成 `PrivateScalarBranchAction::NestedIf(Box<PrivateScalarEarlyIf>)`，只依原 `PrivateScalarBoolExpr::from_checked` 和原 Checker／Lexer／Reference HIR 驗證，不自行解釋語法或放寬型別、所有權。每筆 LIFO 真工作任務在前一筆 int/bool 更新完成後，才以**最新同框架 bool 值**執行新的 `CheckEarlyReturn`，未走分支不產生事件。
+- 內層提前 Return 仍只退出目前函式，外層父函式後續運算繼續；錯誤時先回收已真初始化的值並保留完成更新事件，不能虛構 Return 或執行被跳過兄弟分支。 `always_returns` 判定同時遞迴使用原已編譯巢狀真 If，惟函式最外層仍依原 Checker 必須有明確最後 return（不合契約 #588 已關閉、未合併）。
+- 新增六項真 Rust 正反：巢狀 if 提前返回雙重條件順序、外層先變更 bool 再由內層真重讀並更新 int、外層 false→else 的內層 false→else 唯一執行、葉返回僅退出內函式而外函式加法續行、深層多次賦值在第二次溢位受控失敗、非法 Checker 名稱與已編譯巢狀計畫被篡改前置拒絕。
+- 專項 Gate 144→150；G18 原 P18.1／18.3／18.5 真來源追溯、CI 與 AI-build 同步。此批仍未接通分支內真資源局部／一般 for/while 與全參數混合函式，R03/R06/R07 保持未正式結案，原六項 0/6 Passed。只在最新 PR HEAD 三必要 CI completed/success、作者/base/mergeable 確認後 Squash merge，新 main 同 SHA 再驗。
