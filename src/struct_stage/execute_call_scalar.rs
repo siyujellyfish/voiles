@@ -42,6 +42,9 @@ enum PrivateScalarCallEvent {
     ConditionalChecked(bool),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
     LocalScopeEnded(DeclarationId),
+    /// R05：由真正 OwnedStrRuntime 當下產生的 ResourceId 事件，
+    /// 在同一個函式進退序列中保留相對順序，不虛構新資源。
+    OwnedResource(crate::owned_str_runtime::ResourceEvent),
     Returned(i64),
     FunctionExited { name: String, returned: bool },
 }
@@ -64,17 +67,22 @@ impl PrivateScalarCallOutcome {
         struct TraceFrame {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
+            resource_ids: std::collections::HashSet<u64>,
             returned: bool,
         }
         let mut frames = vec![TraceFrame {
-            name: None, locals: Vec::new(), returned: false,
+            name: None, locals: Vec::new(),
+            resource_ids: std::collections::HashSet::new(), returned: false,
         }];
+        let mut recorded = Vec::new();
+        let mut created_ids = std::collections::HashSet::<u64>::new();
         for event in &self.events {
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
                     if frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
-                        name: Some(name.clone()), locals: Vec::new(), returned: false,
+                        name: Some(name.clone()), locals: Vec::new(),
+                        resource_ids: std::collections::HashSet::new(), returned: false,
                     });
                 }
                 PrivateScalarCallEvent::ParameterBound(..)
@@ -123,6 +131,21 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
+                PrivateScalarCallEvent::OwnedResource(resource) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    let valid = match resource {
+                        crate::owned_str_runtime::ResourceEvent::Created(id) =>
+                            !frame.returned && created_ids.insert(*id)
+                                && frame.resource_ids.insert(*id),
+                        crate::owned_str_runtime::ResourceEvent::Moved(id)
+                            | crate::owned_str_runtime::ResourceEvent::Returned(id) =>
+                            !frame.returned && frame.resource_ids.contains(id),
+                        crate::owned_str_runtime::ResourceEvent::Released(id) =>
+                            frame.resource_ids.remove(id),
+                    };
+                    if !valid { return false; }
+                    recorded.push(resource.clone());
+                }
                 PrivateScalarCallEvent::Returned(_) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.name.is_none() || frame.returned { return false; }
@@ -132,7 +155,8 @@ impl PrivateScalarCallOutcome {
                     if frames.len() <= 1 { return false; }
                     let Some(frame) = frames.pop() else { return false; };
                     if frame.name.as_deref() != Some(name.as_str())
-                        || frame.returned != *returned || !frame.locals.is_empty() {
+                        || frame.returned != *returned || !frame.locals.is_empty()
+                        || !frame.resource_ids.is_empty() {
                         return false;
                     }
                 }
@@ -142,7 +166,9 @@ impl PrivateScalarCallOutcome {
             }
         }
         frames.len() == 1 && frames[0].locals.is_empty()
+            && frames[0].resource_ids.is_empty()
             && self.parameter_slots_after_exit == 0
+            && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
     }
 }
@@ -693,6 +719,20 @@ enum PrivateScalarTask<'a> {
 }
 
 impl PreparedPrivateScalarCall {
+    /// 只抄錄已由真 OwnedStrRuntime 完成的 ResourceId 事件，
+    /// 各個動態函式退出、局部離域、故障回滾均與 Copyable 事件同序。
+    fn record_owned_resources(
+        resources: &crate::owned_str_runtime::OwnedStrRuntime,
+        cursor: &mut usize,
+        events: &mut Vec<PrivateScalarCallEvent>,
+    ) {
+        let current = resources.events();
+        for event in current.iter().skip(*cursor) {
+            events.push(PrivateScalarCallEvent::OwnedResource(event.clone()));
+        }
+        *cursor = current.len();
+    }
+
     /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
     /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
     fn checked_str_initializer(
@@ -1235,6 +1275,7 @@ impl PreparedPrivateScalarCall {
         initial_local_steps: &'a [PrivateScalarLocalStep],
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
+        let mut resource_cursor = 0usize;
         resources.enter_scope();
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
@@ -1418,6 +1459,7 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarStrInitializer::Move { source, .. } =>
                                 resources.move_named_as(source, name, mutable),
                         }.map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
@@ -1532,6 +1574,7 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.resource_scopes -= 1;
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
                         PrivateScalarBranchAction::While { condition, body } => {
@@ -1574,6 +1617,9 @@ impl PreparedPrivateScalarCall {
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
                                         )?;
+                                        Self::record_owned_resources(
+                                            &resources, &mut resource_cursor, events,
+                                        );
                                         tasks.pop();
                                     }
                                     None | Some(PrivateScalarTask::ExitCall) =>
@@ -1753,6 +1799,9 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarCallRuntimeError::Resource,
                             )?;
                         }
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
+                        );
                         events.push(PrivateScalarCallEvent::FunctionExited {
                             name: frame.name, returned: true,
                         });
@@ -1784,6 +1833,9 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarCallRuntimeError::Resource,
                     )?;
                 }
+                Self::record_owned_resources(
+                    &resources, &mut resource_cursor, events,
+                );
                 events.push(PrivateScalarCallEvent::FunctionExited {
                     name: frame.name, returned: false,
                 });
@@ -1808,9 +1860,16 @@ impl PreparedPrivateScalarCall {
                 )?;
             }
         }
+        Self::record_owned_resources(
+            &resources, &mut resource_cursor, events,
+        );
         let emitted = resources.finish().map_err(
             PrivateScalarCallRuntimeError::Resource,
         )?;
+        // finish() 可能另行釋放根 Scope 資源；必須在真正完成後記入帳。
+        for resource in emitted.iter().skip(resource_cursor) {
+            events.push(PrivateScalarCallEvent::OwnedResource(resource.clone()));
+        }
         resource_events.extend(emitted);
         result
     }
