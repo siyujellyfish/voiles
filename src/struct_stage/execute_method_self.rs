@@ -26,6 +26,8 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+    /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
+    main_local_slots_after_exit: usize,
 }
 
 impl PrivateSelfMethodOutcome {
@@ -33,6 +35,7 @@ impl PrivateSelfMethodOutcome {
     /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
     fn has_balanced_self_borrow_trace(&self) -> bool {
         self.ticket_returned
+            && self.main_local_slots_after_exit == 0
             && self.events.is_empty()
             && crate::owned_str_runtime::event_trace_balanced(&self.events)
             && (!self.method_exited || self.method_entered)
@@ -80,6 +83,11 @@ struct PreparedPrivateSelfMethod {
     /// 不把相同數值當成相同參數，每個 DeclarationId 各自綁定。
     argument_binding: Option<(DeclarationId, i64)>,
     additional_argument_bindings: Vec<(DeclarationId, i64)>,
+    /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
+    /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
+    main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
+    /// 與方法所有實參原來源順序一一對應；None 是 int 字面值。
+    argument_sources: Vec<Option<DeclarationId>>,
 }
 
 impl PreparedPrivateSelfMethod {
@@ -123,51 +131,154 @@ impl PreparedPrivateSelfMethod {
         let field_value = crate::syntax_shared::integer_i64(raw).map_err(|_|
             PrivateSelfMethodPrepareError::Unsupported("欄位 i64 常值無法安全表示"),
         )?;
-        // S20 的同名方法可以有不同完整參數簽章。這裡只接通
-        // 原 main 真正呼叫的零參數候選；絕不可因宣告在第一個
-        // 位置便執行另一個多載版本或借用錯誤的 self 權限。
+        // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
+        // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
+        // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
         let main = &verified.functions[0];
-        let (called_method, call_arguments) = match main.body.statements.get(1) {
-            Some(statement) => match &statement.kind {
-                StmtKind::Return(returned) => match &returned.expression.kind {
-                    TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice()),
-                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "本期只接通真 return 的同步方法呼叫",
-                    )),
-                },
+        let last_main_statement = main.body.statements.last().ok_or(
+            PrivateSelfMethodPrepareError::Unsupported("main 缺少真同步方法返回"),
+        )?;
+        let (called_method, call_arguments) = match &last_main_statement.kind {
+            StmtKind::Return(returned) => match &returned.expression.kind {
+                TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice()),
                 _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "本期主函式需以真方法呼叫返回",
+                    "main 最後 return 須是真同步方法呼叫",
                 )),
             },
-            None => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "主函式缺少真同步方法呼叫",
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main 最後語句須 return 真同步方法",
             )),
         };
-        // 目前僅真正求值原 Parser／Checker／Lexer 核准的 Copyable int
-        // 常值；全部實參以原來源次序綁定，不假設固定最大參數數量。
-        let mut int_arguments = Vec::<i64>::new();
-        for arg in call_arguments {
-            let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
-                &arg.kind else {
+        if main.body.statements.len() < 2 {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main 需要先建立接收者再 return 真方法",
+            ));
+        }
+        let mut main_int_locals = Vec::<(
+            String, DeclarationId, i64, Option<DeclarationId>,
+        )>::new();
+        for statement in main.body.statements.iter().skip(1)
+            .take(main.body.statements.len() - 2) {
+            let StmtKind::Declare(local) = &statement.kind else {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法實參僅接通原 Checker 的 Copyable int 常值",
+                    "此同步方法子集只接通 main 已驗證 int 局部宣告",
                 ));
             };
-            if verified.plan.scalar_hir.expression(arg.node_span())
-                .is_none_or(|fact| fact.ty != ScalarType::Int)
-                || !verified.tokens.iter().any(|token|
-                    token.start == arg.start && token.end == arg.end
-                        && matches!(&token.kind, TokenKind::Integer(actual) if actual == raw)
-                ) {
+            let id = DeclarationId(statement.start);
+            let initializer = local.initializer.as_ref().ok_or(
+                PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 局部須由原 Checker 證明已初始化",
+                ),
+            )?;
+            if local.ty != "int"
+                || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
+                || verified.plan.scalar_hir.expression(initializer.node_span())
+                    .is_none_or(|fact| fact.ty != ScalarType::Int) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 實參缺少正式 Checker HIR／原 Lexer token",
+                    "main int 局部缺少原 Checker 宣告與 TypedHIR",
                 ));
             }
-            int_arguments.push(crate::syntax_shared::integer_i64(raw).map_err(|_|
-                PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 實參常值無法安全表示",
-                )
-            )?);
+            let (value, source) = match &initializer.kind {
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                    if !verified.tokens.iter().any(|token|
+                        token.start == initializer.start && token.end == initializer.end
+                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部字面值缺少原 Lexer token",
+                        ));
+                    }
+                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部初始值超過 i64",
+                        ),
+                    )?, None)
+                }
+                TermKind::Name(name) => {
+                    let (_, source_id, value, _) = main_int_locals.iter().rev()
+                        .find(|(old, _, _, _)| old == name)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部名稱來源尚未完成合法宣告",
+                        ))?;
+                    if verified.plan.scalar_hir.reference(initializer.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != *source_id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == initializer.start && token.end == initializer.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部 Copyable 名稱缺少原 Reference HIR",
+                        ));
+                    }
+                    (*value, Some(*source_id))
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 局部只接通已驗證整數常值及已初始化 Copyable 名稱",
+                )),
+            };
+            if main_int_locals.iter().any(|(old, old_id, _, _)|
+                old == &local.name || old_id == &id) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "同作用域局部來源或 DeclarationId 不可重複",
+                ));
+            }
+            main_int_locals.push((local.name.clone(), id, value, source));
+        }
+        // 每個方法 int 實參可由已驗證的 main 局部讀取，但必須
+        // 使用原 Reference HIR 綁定的真 DeclarationId；非文字猜測。
+        let mut int_arguments = Vec::<i64>::new();
+        let mut argument_sources = Vec::<Option<DeclarationId>>::new();
+        for arg in call_arguments {
+            if verified.plan.scalar_hir.expression(arg.node_span())
+                .is_none_or(|fact| fact.ty != ScalarType::Int) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法 int 實參缺少原 Checker TypedHIR",
+                ));
+            }
+            let (value, source) = match &arg.kind {
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                    if !verified.tokens.iter().any(|token|
+                        token.start == arg.start && token.end == arg.end
+                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 字面實參缺少原 Lexer token",
+                        ));
+                    }
+                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 實參超出 i64",
+                        ),
+                    )?, None)
+                }
+                TermKind::Name(name) => {
+                    let (_, id, value, _) = main_int_locals.iter().rev()
+                        .find(|(old, _, _, _)| old == name)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 實參不是 main 已驗證的 Copyable 局部",
+                        ))?;
+                    if verified.plan.scalar_hir.reference(arg.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != *id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == arg.start && token.end == arg.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 名稱實參缺少原 Checker Reference HIR",
+                        ));
+                    }
+                    (*value, Some(*id))
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法實參只接通已核准 int 常值或具名 Copyable 局部",
+                )),
+            };
+            int_arguments.push(value);
+            argument_sources.push(source);
         }
         // 只選與原呼叫數量及已驗證 int 型別完全一致的候選。
         let mut matches = definition.methods_named(called_method)
@@ -389,7 +500,7 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         if main.name != "main" || main.result_ty != "int"
-            || !main.params.is_empty() || main.body.statements.len() != 2 {
+            || !main.params.is_empty() || main.body.statements.len() < 2 {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "主函式限先建立真正結構再直接返回方法呼叫",
             ));
@@ -419,7 +530,7 @@ impl PreparedPrivateSelfMethod {
                 "不得用隱含結構複製或未驗證的其它來源當接收者",
             ));
         }
-        let StmtKind::Return(call_return) = &main.body.statements[1].kind else {
+        let StmtKind::Return(call_return) = &last_main_statement.kind else {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "主函式必須直接 return 真方法呼叫",
             ));
@@ -467,6 +578,7 @@ impl PreparedPrivateSelfMethod {
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
+            main_int_locals, argument_sources,
         })
     }
 
@@ -484,6 +596,8 @@ impl PreparedPrivateSelfMethod {
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.argument_binding == fresh.argument_binding
             && self.additional_argument_bindings == fresh.additional_argument_bindings
+            && self.main_int_locals == fresh.main_int_locals
+            && self.argument_sources == fresh.argument_sources
             && self.verified.plan.method_safety == fresh.verified.plan.method_safety
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
@@ -503,6 +617,25 @@ impl PreparedPrivateSelfMethod {
             || !self.verified.plan.is_consistent(
                 &self.verified.structs, &self.verified.functions, text,
             ) || !self.matches_source(text) {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
+        // 在建立任何 method self BorrowTicket 之前，以 main 真宣告順序
+        // 將 Copyable int 局部求值寫入自己的執行期框架。具名複製
+        // 必須實際讀取先前槽位，不把 prepare 中的常值當成唯一動態證據。
+        let mut main_values = BTreeMap::<DeclarationId, i64>::new();
+        for (_, id, planned, source) in &self.main_int_locals {
+            let actual = if let Some(source_id) = source {
+                *main_values.get(source_id).ok_or(
+                    PrivateSelfMethodPrepareError::SourceChanged,
+                )?
+            } else { *planned };
+            if actual != *planned || main_values.insert(*id, actual).is_some() {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+        }
+        if self.argument_sources.len()
+            != usize::from(self.argument_binding.is_some())
+                + self.additional_argument_bindings.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         use crate::borrow_safety::BorrowSafety;
@@ -526,9 +659,16 @@ impl PreparedPrivateSelfMethod {
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
             // 完成原 Checker 參數的真值框架綁定；選中來源返回時
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
-            for (id, value) in self.argument_binding.into_iter()
-                .chain(self.additional_argument_bindings.iter().copied()) {
-                if parameter_frame.insert(id, value).is_some() {
+            for ((id, value), source) in self.argument_binding.into_iter()
+                .chain(self.additional_argument_bindings.iter().copied())
+                .zip(self.argument_sources.iter().copied()) {
+                let actual = match source {
+                    Some(source_id) => *main_values.get(&source_id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver,
+                    )?,
+                    None => value,
+                };
+                if actual != value || parameter_frame.insert(id, actual).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
             }
@@ -651,8 +791,16 @@ impl PreparedPrivateSelfMethod {
         };
         let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
         let events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+        // 與一般函式的 LocalScopeEnded 契約相同：在 main 返回時
+        // 刪除全部 Copyable int 局部，且不能殘留到重複執行。
+        for (_, id, _, _) in self.main_int_locals.iter().rev() {
+            if main_values.remove(id).is_none() {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+        }
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            main_local_slots_after_exit: main_values.len(),
         };
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
@@ -1299,6 +1447,120 @@ mod g18_private_method_self_tests {
     fn g18_f_偽造_other_欄位與錯誤接收者不得冒充真正_self_來源() {
         let src = mixed_self_param_source("return other.count+n", "4", false);
         assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
+    fn main_named_method_source(locals: &str, actuals: &str, body: &str) -> String {
+        format!(
+            "struct Counter{{\nvar count:int = 7\nfn calc(a:int,b:int)->int{{\n{body}\n}}\n}}\nfn main()->int{{\nconst value:Counter = Counter()\n{locals}\nreturn value.calc({actuals})\n}}\n"
+        )
+    }
+
+    #[test]
+    fn g18_r02_r04_同步方法讀取main具名_const_int_真局部框架() {
+        let src = main_named_method_source(
+            "const amount:int = 5", "amount,3", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals.len(), 1);
+        assert_eq!(plan.argument_sources[0], Some(plan.main_int_locals[0].1));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.ticket_returned && out.method_exited);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_雙具名_copyable_int_按main宣告及原方法參數次序做減法() {
+        let src = main_named_method_source(
+            "var left:int = 4\nconst right:int = 11", "right,left", "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals.len(), 2);
+        assert_eq!(plan.argument_sources,
+            [Some(plan.main_int_locals[1].1), Some(plan.main_int_locals[0].1)]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_main整數局部由前一已初始化名稱複製再傳入self方法() {
+        let src = main_named_method_source(
+            "const first:int = 12\nconst second:int = first",
+            "second,4", "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals[1].3, Some(plan.main_int_locals[0].1));
+        assert_eq!(plan.execute().unwrap().result, Ok(8));
+    }
+
+    #[test]
+    fn g18_r02_r04_同一具名_copyable_int_可作兩個方法實參不消耗來源() {
+        let src = main_named_method_source(
+            "const both:int = 6", "both,both", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.argument_sources, [Some(plan.main_int_locals[0].1); 2]);
+        for _ in 0..3 {
+            let out = plan.execute().unwrap();
+            assert_eq!(out.result, Ok(12));
+            assert_eq!(out.main_local_slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_r02_r05_具名main實參與_self_欄位加法溢位仍清除局部及真票據() {
+        let src = "struct Counter{\nvar count:int = 7\nfn calc(n:int)->int{\nreturn self.count+n\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nconst amount:int = 9223372036854775807\nreturn value.calc(amount)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(out.method_entered && !out.method_exited && out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn g18_r02_r05_同步方法具名實參故障注入仍先歸還借用後清空main局部() {
+        let src = main_named_method_source(
+            "const amount:int = 11", "amount,4", "return a+b",
+        );
+        let plan = checked(&src);
+        let out = plan.execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(out.method_entered && !out.method_exited && out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert_eq!(plan.execute().unwrap().result, Ok(15));
+    }
+
+    #[test]
+    fn g18_r02_r04_篡改具名來源局部值身分或方法實參來源皆須零執行拒絕() {
+        let src = main_named_method_source(
+            "const amount:int = 11", "amount,4", "return a+b",
+        );
+        let mut plan = checked(&src);
+        plan.main_int_locals[0].2 = 99;
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.argument_sources[0] = Some(DeclarationId(0));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.argument_binding = plan.argument_binding.map(|(id, _)| (id, 100));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r02_r04_尚未宣告或未初始化main實參不得進入同步self方法() {
+        let future = main_named_method_source(
+            "var later:int", "later,4", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&future),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let wrong_type = main_named_method_source(
+            "const amount:bool = true", "amount,4", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&wrong_type),
             Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 

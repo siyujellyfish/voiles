@@ -274,6 +274,12 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法讀取main具名_const_int_真局部框架",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_雙具名_copyable_int_按main宣告及原方法參數次序做減法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_main整數局部由前一已初始化名稱複製再傳入self方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_同一具名_copyable_int_可作兩個方法實參不消耗來源",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_具名main實參與_self_欄位加法溢位仍清除局部及真票據",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_同步方法具名實參故障注入仍先歸還借用後清空main局部",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_成功函式未真正_return_不得提前歸還其入參票據",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一來源重複兩次_move_必由_checker_阻止進入真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分",
@@ -417,6 +423,14 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法讀取main具名_const_int_真局部框架",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_雙具名_copyable_int_按main宣告及原方法參數次序做減法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_main整數局部由前一已初始化名稱複製再傳入self方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_同一具名_copyable_int_可作兩個方法實參不消耗來源",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_具名main實參與_self_欄位加法溢位仍清除局部及真票據",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_同步方法具名實參故障注入仍先歸還借用後清空main局部",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_篡改具名來源局部值身分或方法實參來源皆須零執行拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_尚未宣告或未初始化main實參不得進入同步self方法",
         "struct_stage::g18_private_method_self_tests::g18_f_已核准_int_參數與_self_欄位可真混算但非_int_實參仍拒絕",
         "struct_stage::g18_private_method_self_tests::g18_f_共享_self_欄位加參數讀取真_runtime_與宣告身分",
         "struct_stage::g18_private_method_self_tests::g18_f_共享_self_形式參數減欄位維持左減右次序",
