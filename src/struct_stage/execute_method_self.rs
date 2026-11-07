@@ -88,6 +88,9 @@ struct PreparedPrivateSelfMethod {
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
     /// 與方法所有實參原來源順序一一對應；None 是 int 字面值。
     argument_sources: Vec<Option<DeclarationId>>,
+    /// R02／R04 直接重用一般函式已核准的 int TypedHIR 編譯樹，
+    /// 不是第二套文字解析器；實參在真 main 框架內動態求值。
+    argument_plans: Vec<PrivateScalarReturnExpr>,
 }
 
 impl PreparedPrivateSelfMethod {
@@ -226,59 +229,49 @@ impl PreparedPrivateSelfMethod {
             }
             main_int_locals.push((local.name.clone(), id, value, source));
         }
-        // 每個方法 int 實參可由已驗證的 main 局部讀取，但必須
-        // 使用原 Reference HIR 綁定的真 DeclarationId；非文字猜測。
+        // 同步方法實參與普通函式共用原 Checker→TypedHIR 的
+        // Copyable int 表達式編譯；不另造方法專屬的名稱／運算子解析。
+        let main_bindings = main_int_locals.iter()
+            .map(|(name, id, _, _)| (name.clone(), *id))
+            .collect::<BTreeMap<_, _>>();
+        let main_prepared_values = main_int_locals.iter()
+            .map(|(_, id, value, _)| (*id, *value))
+            .collect::<BTreeMap<_, _>>();
         let mut int_arguments = Vec::<i64>::new();
         let mut argument_sources = Vec::<Option<DeclarationId>>::new();
+        let mut argument_plans = Vec::<PrivateScalarReturnExpr>::new();
         for arg in call_arguments {
-            if verified.plan.scalar_hir.expression(arg.node_span())
-                .is_none_or(|fact| fact.ty != ScalarType::Int) {
+            let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                arg, &main_bindings, &verified,
+            ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                "方法 int 實參缺少原 Checker TypedHIR／Reference／Arithmetic 真來源",
+            ))?;
+            // 方法子集仍只接受純值加減／括號。未接通普通函式
+            // 呼叫嵌入方法實參前，不能用原純值樹偷渡一個額外 Call。
+            let mut calls = Vec::new();
+            plan.collect_calls(&mut calls);
+            if !calls.is_empty() || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 實參缺少原 Checker TypedHIR",
+                    "方法 int 實參不支援未接通的巢狀函式呼叫",
                 ));
             }
-            let (value, source) = match &arg.kind {
-                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
-                    if !verified.tokens.iter().any(|token|
-                        token.start == arg.start && token.end == arg.end
-                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
-                    ) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "方法 int 字面實參缺少原 Lexer token",
-                        ));
-                    }
-                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
-                        PrivateSelfMethodPrepareError::Unsupported(
-                            "方法 int 實參超出 i64",
-                        ),
-                    )?, None)
-                }
-                TermKind::Name(name) => {
-                    let (_, id, value, _) = main_int_locals.iter().rev()
-                        .find(|(old, _, _, _)| old == name)
-                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                            "方法 int 實參不是 main 已驗證的 Copyable 局部",
-                        ))?;
-                    if verified.plan.scalar_hir.reference(arg.node_span())
-                        .is_none_or(|fact|
-                            fact.resolved.declaration != *id
-                                || fact.resolved.ty != ScalarType::Int)
-                        || !verified.tokens.iter().any(|token|
-                            token.start == arg.start && token.end == arg.end
-                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
-                        ) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "方法 int 名稱實參缺少原 Checker Reference HIR",
-                        ));
-                    }
-                    (*value, Some(*id))
-                }
-                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法實參只接通已核准 int 常值或具名 Copyable 局部",
+            // 保留原測試對已知常值的靜態來源快照；若動態加減
+            // 確實溢位，必須交由 execute 產生受控執行期錯誤，
+            // 不能在 prepare 靜態拒絕原 Checker 合法來源。
+            let prepared = match plan.evaluate(&main_prepared_values) {
+                Ok(value) => value,
+                Err(PrivateScalarCallRuntimeError::IntegerOverflow) => 0,
+                Err(_) => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法 int 引數未能由原 main 局部真來源安全求值",
                 )),
             };
-            int_arguments.push(value);
+            let source = match &plan {
+                PrivateScalarReturnExpr::Parameter(id) => Some(*id),
+                _ => None,
+            };
+            int_arguments.push(prepared);
             argument_sources.push(source);
+            argument_plans.push(plan);
         }
         // 只選與原呼叫數量及已驗證 int 型別完全一致的候選。
         let mut matches = definition.methods_named(called_method)
@@ -578,7 +571,7 @@ impl PreparedPrivateSelfMethod {
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
-            main_int_locals, argument_sources,
+            main_int_locals, argument_sources, argument_plans,
         })
     }
 
@@ -598,6 +591,7 @@ impl PreparedPrivateSelfMethod {
             && self.additional_argument_bindings == fresh.additional_argument_bindings
             && self.main_int_locals == fresh.main_int_locals
             && self.argument_sources == fresh.argument_sources
+            && self.argument_plans == fresh.argument_plans
             && self.verified.plan.method_safety == fresh.verified.plan.method_safety
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
@@ -635,7 +629,8 @@ impl PreparedPrivateSelfMethod {
         }
         if self.argument_sources.len()
             != usize::from(self.argument_binding.is_some())
-                + self.additional_argument_bindings.len() {
+                + self.additional_argument_bindings.len()
+            || self.argument_plans.len() != self.argument_sources.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         use crate::borrow_safety::BorrowSafety;
@@ -659,16 +654,17 @@ impl PreparedPrivateSelfMethod {
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
             // 完成原 Checker 參數的真值框架綁定；選中來源返回時
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
-            for ((id, value), source) in self.argument_binding.into_iter()
+            for ((id, prepared), expression) in self.argument_binding.into_iter()
                 .chain(self.additional_argument_bindings.iter().copied())
-                .zip(self.argument_sources.iter().copied()) {
-                let actual = match source {
-                    Some(source_id) => *main_values.get(&source_id).ok_or(
-                        PrivateSelfMethodRuntimeError::WrongReceiver,
-                    )?,
-                    None => value,
-                };
-                if actual != value || parameter_frame.insert(id, actual).is_some() {
+                .zip(&self.argument_plans) {
+                // 按原方法引數次序真正求值；尚未完成全部引數前
+                // 不會取得 self BorrowTicket 或偽造進入方法框架。
+                let actual = expression.evaluate(&main_values).map_err(|reason| match reason {
+                    PrivateScalarCallRuntimeError::IntegerOverflow =>
+                        PrivateSelfMethodRuntimeError::IntegerOverflow,
+                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                })?;
+                if actual != prepared || parameter_frame.insert(id, actual).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
             }
