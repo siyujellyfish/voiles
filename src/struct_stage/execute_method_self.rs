@@ -33,6 +33,7 @@ struct PrivateSelfMethodOutcome {
     /// 原 Checker/Parser 封存的方法真 int 局部 DeclarationId
     /// 按來源先後排列；故障執行只容許已走到的合法前綴。
     expected_method_local_ids: Vec<DeclarationId>,
+    expected_method_assignment_ids: Vec<DeclarationId>,
     /// R05：真 BorrowSafety 簽發、方法 Return／Unwind 及歸還後
     /// 逐筆記錄；不再只靠方法布林旗標冒充退出已驗證。
     checked_loan: BorrowFact,
@@ -165,6 +166,7 @@ enum PrivateSelfIntReturn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateSelfMethodLocalEvent {
     Initialized(DeclarationId, i64),
+    Assigned(DeclarationId, i64),
     ScopeEnded(DeclarationId),
 }
 
@@ -184,6 +186,8 @@ struct PreparedPrivateSelfMethod {
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
     method_int_locals: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
+    /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
+    method_int_assignments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     method: String,
     method_span: crate::common_ir::NodeSpan,
     call_span: crate::common_ir::NodeSpan,
@@ -457,43 +461,93 @@ impl PreparedPrivateSelfMethod {
             (param.name.clone(), DeclarationId(param.declaration_start))
         ).collect::<BTreeMap<_, _>>();
         let mut method_int_locals = Vec::<(DeclarationId, PrivateScalarReturnExpr)>::new();
+        let mut method_int_assignments =
+            Vec::<(DeclarationId, PrivateScalarReturnExpr)>::new();
+        let mut local_permissions =
+            BTreeMap::<String, (DeclarationId, bool)>::new();
+        let mut seen_assignment = false;
         for (index, statement) in method.body.statements.iter().enumerate()
             .take(method.body.statements.len() - 1) {
             if write_value.is_some() && index == 0 {
                 continue;
             }
-            let StmtKind::Declare(local) = &statement.kind else {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法內部只接通已核准 int 局部宣告或單一 self 欄位寫入",
-                ));
-            };
-            let id = DeclarationId(statement.start);
-            let initializer = local.initializer.as_ref().ok_or(
-                PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 局部須已由原 Checker 證明初始化",
-                ),
-            )?;
-            if local.ty != "int"
-                || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
-                || method_bindings.contains_key(&local.name) {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法局部缺少真 Checker int 宣告或重複名稱",
-                ));
+            match &statement.kind {
+                StmtKind::Declare(local) => {
+                    if seen_assignment {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法局部須先全部宣告才可在直線路徑進行更新",
+                        ));
+                    }
+                    let id = DeclarationId(statement.start);
+                    let initializer = local.initializer.as_ref().ok_or(
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 局部須已由原 Checker 證明初始化",
+                        ),
+                    )?;
+                    if local.ty != "int"
+                        || !verified.plan.declarations.matches(
+                            id, &local.ty, local.mutable,
+                        )
+                        || method_bindings.contains_key(&local.name) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法局部缺少真 Checker int 宣告或重複名稱",
+                        ));
+                    }
+                    let expr = PrivateScalarReturnExpr::from_checked_bindings(
+                        initializer, &method_bindings, &verified,
+                    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                        "方法局部初始化缺少原 Checker TypedHIR／Reference／Arithmetic",
+                    ))?;
+                    let mut calls = Vec::new();
+                    expr.collect_calls(&mut calls);
+                    if !calls.is_empty()
+                        || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 局部不支援尚未接通的普通函式或不可達來源",
+                        ));
+                    }
+                    method_int_locals.push((id, expr));
+                    method_bindings.insert(local.name.clone(), id);
+                    local_permissions.insert(local.name.clone(), (id, local.mutable));
+                }
+                StmtKind::Assign(assignment) => {
+                    seen_assignment = true;
+                    let (id, writable) = *local_permissions.get(&assignment.name)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 重賦值目標不是原 Checker 已初始化局部",
+                        ))?;
+                    if !writable
+                        || verified.plan.scalar_hir.assignment(statement.node_span())
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == statement.start
+                                && matches!(&token.kind, TokenKind::Name(found)
+                                    if found == &assignment.name)) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法局部重賦值缺少原 Checker 可寫授權／TypedHIR／Lexer",
+                        ));
+                    }
+                    let expr = PrivateScalarReturnExpr::from_checked_bindings(
+                        &assignment.expression, &method_bindings, &verified,
+                    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                        "方法 var int 更新算式沒有原 Checker TypedHIR 來源",
+                    ))?;
+                    let mut calls = Vec::new();
+                    expr.collect_calls(&mut calls);
+                    if !calls.is_empty()
+                        || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 var int 更新不能偷渡未核准的普通函式呼叫",
+                        ));
+                    }
+                    method_int_assignments.push((id, expr));
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法僅接通純 int 區域宣告、後續直線更新及返回",
+                )),
             }
-            let expr = PrivateScalarReturnExpr::from_checked_bindings(
-                initializer, &method_bindings, &verified,
-            ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                "方法局部初始化缺少原 Checker TypedHIR／Reference／Arithmetic",
-            ))?;
-            let mut calls = Vec::new();
-            expr.collect_calls(&mut calls);
-            if !calls.is_empty() || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 局部不支援尚未接通的普通函式或不可達來源",
-                ));
-            }
-            method_int_locals.push((id, expr));
-            method_bindings.insert(local.name.clone(), id);
         }
         let last = method.body.statements.last().expect("方法已證明非空");
         let StmtKind::Return(returned) = &last.kind else {
@@ -740,6 +794,7 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method_int_locals,
+            method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -757,6 +812,7 @@ impl PreparedPrivateSelfMethod {
             && self.write_value == fresh.write_value
             && self.return_calculation == fresh.return_calculation
             && self.method_int_locals == fresh.method_int_locals
+            && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.argument_binding == fresh.argument_binding
@@ -893,6 +949,27 @@ impl PreparedPrivateSelfMethod {
                     *id, calculated,
                 ));
                 exit_events.push(PrivateSharedCallExitEvent::LocalInitialized(*id));
+            }
+            // 只有原 Checker 正式核准的 var int 局部允許依序更新；
+            // 先完成 RHS 真值計算再提交目標，故障時保留舊值
+            // 直到原有 ScopeEnded 逆序清理。
+            for (id, expression) in &self.method_int_assignments {
+                if !initialized_method_locals.contains(id) {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                let value = expression.evaluate(&parameter_frame)
+                    .map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?;
+                if parameter_frame.insert(*id, value).is_none() {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                method_local_events.push(PrivateSelfMethodLocalEvent::Assigned(
+                    *id, value,
+                ));
+                exit_events.push(PrivateSharedCallExitEvent::LocalAssigned(*id));
             }
             // 寫入屬已核准之獨占 self：先驗真 BorrowTicket 身分、
             // 來源及權限，再寫真 MixedStructRuntime 的 Copyable int。
@@ -1043,6 +1120,9 @@ impl PreparedPrivateSelfMethod {
             method_local_slots_after_exit: initialized_method_locals.len(),
             method_local_events,
             expected_method_local_ids: self.method_int_locals.iter().map(
+                |(id, _)| *id,
+            ).collect(),
+            expected_method_assignment_ids: self.method_int_assignments.iter().map(
                 |(id, _)| *id,
             ).collect(),
             checked_loan: self.loan, exit_events,
