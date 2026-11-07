@@ -6,9 +6,13 @@ enum PrivateSharedCallExitEvent {
     LoanAcquired(crate::borrow_safety::BorrowTicket),
     FunctionEntered,
     /// Copyable 局部真進／離域責任共用框架驗收，不冒充 ResourceId。
+    /// 已由 Checker 宣告但尚未初始化的 var int／bool，不得冒稱
+    /// OwnedStr 資源或真純值槽；只有初次賦值後才變成已初始化。
+    LocalDeclaredEmpty(crate::ownership_ledger::DeclarationId),
     LocalInitialized(crate::ownership_ledger::DeclarationId),
     LocalAssigned(crate::ownership_ledger::DeclarationId),
     LocalScopeEnded(crate::ownership_ledger::DeclarationId),
+    LocalScopeEndedEmpty(crate::ownership_ledger::DeclarationId),
     Returned,
     UnwindStarted,
     LoanReturned(crate::borrow_safety::BorrowTicket),
@@ -30,7 +34,9 @@ fn private_shared_call_exit_balanced(
     let mut frames = Vec::<bool>::new();
     // index 0 是 main 基底詞彙作用域；每次真 FunctionEntered
     // 增加一個 frame 局部棧，離域前必須清空。
-    let mut local_scopes = vec![Vec::<crate::ownership_ledger::DeclarationId>::new()];
+    let mut local_scopes = vec![
+        Vec::<(crate::ownership_ledger::DeclarationId, bool)>::new()
+    ];
     let mut tickets = Vec::<crate::borrow_safety::BorrowTicket>::new();
     let mut unwinding = false;
     let mut entered_any = false;
@@ -53,24 +59,42 @@ fn private_shared_call_exit_balanced(
                 local_scopes.push(Vec::new());
                 entered_any = true;
             }
+            PrivateSharedCallExitEvent::LocalDeclaredEmpty(id) => {
+                if unwinding || frames.last().is_some_and(|returned| *returned) {
+                    return false;
+                }
+                let Some(locals) = local_scopes.last_mut() else { return false; };
+                if locals.iter().any(|(old, _)| old == id) { return false; }
+                locals.push((*id, false));
+            }
             PrivateSharedCallExitEvent::LocalInitialized(id) => {
                 if unwinding || frames.last().is_some_and(|returned| *returned) {
                     return false;
                 }
                 let Some(locals) = local_scopes.last_mut() else { return false; };
-                if locals.contains(id) { return false; }
-                locals.push(*id);
+                if let Some((_, initialized)) = locals.iter_mut()
+                    .find(|(old, _)| old == id) {
+                    if *initialized { return false; }
+                    *initialized = true;
+                } else {
+                    locals.push((*id, true));
+                }
             }
             PrivateSharedCallExitEvent::LocalAssigned(id) => {
                 if unwinding || frames.last().is_some_and(|returned| *returned)
                     || local_scopes.last().is_none_or(|locals|
-                        !locals.contains(id)) {
+                        !locals.iter().any(|(local, ready)|
+                            local == id && *ready)) {
                     return false;
                 }
             }
             PrivateSharedCallExitEvent::LocalScopeEnded(id) => {
                 let Some(locals) = local_scopes.last_mut() else { return false; };
-                if locals.pop() != Some(*id) { return false; }
+                if locals.pop() != Some((*id, true)) { return false; }
+            }
+            PrivateSharedCallExitEvent::LocalScopeEndedEmpty(id) => {
+                let Some(locals) = local_scopes.last_mut() else { return false; };
+                if locals.pop() != Some((*id, false)) { return false; }
             }
             PrivateSharedCallExitEvent::Returned => {
                 if unwinding { return false; }
