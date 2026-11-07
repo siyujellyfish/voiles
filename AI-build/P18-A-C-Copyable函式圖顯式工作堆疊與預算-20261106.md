@@ -206,3 +206,10 @@
 - 動態 bool+int 局部宣告統一 `PrivateScalarLocalBinding` 的實際建立順序，函式成功、溢位、故障或受控預算退出時反向記錄 BoolScopeEnded／LocalScopeEnded；這兩者都是 Copyable 純值離域，**不是 ResourceId 或 ReleaseEvent**。
 - 八項真 Rust 正反：true 早返不可達路徑、false 落至尾端 return、var bool 更新後條件真重讀、else-if 依序選擇、巢狀提前 return 僅退出該框架、所選提前 return 溢位只回收真初始化、const bool／未知／錯型別 Checker 拒絕及來源條件計畫篡改前 SourceChanged。
 - 函式專項 Gate **109→117**，G18 原 P18.1／P18.3／P18.5 追溯與 CI 同步。這只完成 R03 的真分支／提前返回子集；for／while、任意區塊作用域與 str 資源仍在 R03／R04～R07 待整合，P18 原六項仍 0/6 Passed。須最新 PR HEAD 三必要 CI completed/success、作者／base／mergeable 及新 main 同 SHA 驗證。
+
+
+### V1-R03 首輪 CI 修正：全 if 分支返回後的 Checker 不可達 HIR
+
+- 第一輪 CI Rust P04 共 1563 項成功，僅新增 else-if 回歸因尾端 `return n+4` 無 HIR 而被 `Unsupported`。原 Checker 能證明本來源 `if(first) return／else if(second) return／else return` 全部返回，所以尾端在原靜態控制流上完全不可達，不應造假必需的 TypedHIR。
+- 新增 `PrivateScalarEarlyIf::always_returns()` 只對完整已編譯真葉返回的 else／else-if 鏈證明全路徑退出；**僅當原 Checker 確實沒有該尾端 Expression HIR** 才使用不可達 Sentinel。其執行期若被意外執行，回報 `StateMismatch`，絕不假裝正常 int return；不省略任何仍可達且缺 HIR 的合法執行。
+- 已更新 Rust 原來源邊界與文件。需要在修訂後最新 PR HEAD 三項必要 CI 全 completed/success，再合併。
