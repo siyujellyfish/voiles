@@ -179,6 +179,14 @@ impl OwnedStrRuntime {
     /// 明確 .move()：一個緩衝區只轉交，來源仍存在但已失效。
     pub(crate) fn move_named(&mut self, from: &str, to: &str)
         -> Result<(), StrRuntimeError> {
+        self.move_named_as(from, to, true)
+    }
+
+    /// 真 Checker 若將 .move() 目標宣告為 const，不得由執行期
+    /// 誤提升成 var；既有明示 Move API 保持預設 var 行為。
+    pub(crate) fn move_named_as(
+        &mut self, from: &str, to: &str, mutable: bool,
+    ) -> Result<(), StrRuntimeError> {
         self.current_name_free(to)?;
         let (i,j) = self.location(from)?;
         if self.scopes[i].names[j].owned.is_none() {
@@ -189,7 +197,7 @@ impl OwnedStrRuntime {
         let value = self.scopes[i].names[j].owned.take().expect("已驗證原來源有效");
         self.events.push(ResourceEvent::Moved(value.id));
         self.scopes.last_mut().expect("根作用域存在").names.push(StrBinding {
-            name: to.to_owned(), mutable: true, initialized_at: order, owned: Some(value),
+            name: to.to_owned(), mutable, initialized_at: order, owned: Some(value),
         });
         Ok(())
     }
@@ -309,6 +317,22 @@ impl OwnedStrRuntime {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn g18_r04_const_move_來源所有權轉交後目標不可寫且_resourceid_只釋放一次() {
+        let mut resources = OwnedStrRuntime::new();
+        resources.declare("source", true, "🪼").unwrap();
+        resources.move_named_as("source", "target", false).unwrap();
+        assert_eq!(resources.read("source"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(resources.read("target"), Ok("🪼"));
+        assert_eq!(resources.assign("target", "改寫"),
+            Err(StrRuntimeError::ImmutableBinding));
+        assert_eq!(resources.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
 
     fn released(events: &[ResourceEvent]) -> Vec<u64> {
         events.iter().filter_map(|event| {
