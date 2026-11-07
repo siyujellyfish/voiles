@@ -465,6 +465,8 @@ impl PrivateScalarBoolExpr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarBranchAction {
+    /// 原 Parser 同一 if 葉分支的多筆已核准語句，保留真正執行順序。
+    Sequence(Vec<PrivateScalarBranchAction>),
     Return(PrivateScalarReturnExpr),
     AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
@@ -473,9 +475,21 @@ enum PrivateScalarBranchAction {
 impl PrivateScalarBranchAction {
     fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
+            Self::Sequence(steps) => {
+                for action in steps { action.collect_calls(calls); }
+            }
             Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
                 expr.collect_calls(calls),
             Self::AssignBool { .. } => {}
+        }
+    }
+
+    fn always_returns(&self) -> bool {
+        match self {
+            Self::Return(_) => true,
+            Self::Sequence(actions) => actions.last()
+                .is_some_and(Self::always_returns),
+            Self::AssignInt { .. } | Self::AssignBool { .. } => false,
         }
     }
 }
@@ -495,10 +509,10 @@ enum PrivateScalarEarlyElse {
 
 impl PrivateScalarEarlyIf {
     fn always_returns(&self) -> bool {
-        matches!(&self.when_true, PrivateScalarBranchAction::Return(_))
+        self.when_true.always_returns()
             && match &self.when_false {
-                Some(PrivateScalarEarlyElse::Branch(
-                    PrivateScalarBranchAction::Return(_))) => true,
+                Some(PrivateScalarEarlyElse::Branch(action)) =>
+                    action.always_returns(),
                 Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
                 _ => false,
             }
@@ -619,6 +633,7 @@ enum PrivateScalarTask<'a> {
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
+    ExecuteBranchAction(&'a PrivateScalarBranchAction),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
@@ -635,9 +650,25 @@ impl PreparedPrivateScalarCall {
         verified: &VerifiedPrivateSource,
     ) -> Result<PrivateScalarBranchAction, PrivateScalarCallPrepareError> {
         let [statement] = statements else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "if 此子集只接受單筆真 return 或原 Checker var 純值更新",
-            ));
+            if statements.is_empty() {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "if 此子集不接受缺少已核准執行證據的空分支",
+                ));
+            }
+            let mut actions = Vec::new();
+            for (index, statement) in statements.iter().enumerate() {
+                let action = Self::compile_early_branch(
+                    std::slice::from_ref(statement),
+                    int_bindings, bool_bindings, verified,
+                )?;
+                if action.always_returns() && index + 1 != statements.len() {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "if 已返回後仍有其他語句；不得造假可達效果",
+                    ));
+                }
+                actions.push(action);
+            }
+            return Ok(PrivateScalarBranchAction::Sequence(actions));
         };
         match &statement.kind {
             StmtKind::Return(ret) =>
