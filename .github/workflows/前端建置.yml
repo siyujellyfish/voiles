@@ -158,7 +158,7 @@ jobs:
       - name: G17 原始 P17.1～P17.6 同 SHA 六項真執行與安全正反正式驗收
         run: python3 tools/核對G17正式總驗收.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 V1 R01～R03 巢狀控制呼叫二百四十二項 Gate
+      - name: G18 V1 R01～R03 真UTF8與借用控制二百四十七項 Gate
         run: python3 tools/核對G18純值函式參數真框架.py --test-bin target/p02/p04_source_internal
 
       - name: G18 V1 R06 方法var int重賦值六十一項正反 Gate
