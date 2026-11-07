@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百四十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百五十項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r03_真巢狀_if_葉提前返回保留雙層條件順序",
+    "g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int",
+    "g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉",
+    "g18_r03_巢狀提前_return_只退出內函式不截斷父函式算術",
+    "g18_r03_巢狀分支第二次_int_更新溢位真框架不補寫後續結果",
+    "g18_r03_巢狀條件非法名稱與工作計畫遭竄改必先拒絕",
     "g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回",
     "g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支",
     "g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值",
