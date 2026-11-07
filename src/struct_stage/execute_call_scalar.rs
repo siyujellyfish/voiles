@@ -681,7 +681,14 @@ impl PreparedPrivateScalarCall {
                         "if 已返回後仍有其他語句；不得造假可達效果",
                     ));
                 }
+                // Checker 對 break／continue 後的不可達語句可不簽發 HIR；
+                // 這些來源不能被再編譯成假執行，也不能當作下一輪效果。
+                let stops_loop_body = matches!(
+                    action, PrivateScalarBranchAction::Break
+                        | PrivateScalarBranchAction::Continue
+                );
                 actions.push(action);
+                if stops_loop_body { break; }
             }
             return Ok(PrivateScalarBranchAction::Sequence(actions));
         };
@@ -4366,7 +4373,7 @@ mod g18_private_scalar_call_tests {
                 assert!(out.has_balanced_frame_trace());
             }
             Err(PrivateScalarCallPrepareError::Check(_)) => {}
-            Err(other) => panic!("原 Checker 接受但 while 执行器拒絕：{other:?}"),
+            Err(other) => panic!("原 Checker 接受但 while 執行器拒絕：{other:?}"),
         }
     }
 
