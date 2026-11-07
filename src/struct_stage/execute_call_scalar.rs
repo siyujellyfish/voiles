@@ -78,6 +78,17 @@ impl PrivateScalarCallOutcome {
     /// 已完成 Copyable 局部宣告之逆序離域及單次返回。
     /// 這是 int／bool 純值 trace，**不冒充 OwnedStr ResourceEvent**。
     fn has_balanced_frame_trace(&self) -> bool {
+        // 零呼叫框架／零步數預算在任何執行開始前就拒絕：
+        // 既有驗收要求完全沒有動態事件，不可虛構 UnwindStarted。
+        // 僅在無資源、無參數、零事件且為預算錯誤時承認此預檢。
+        if self.events.is_empty() {
+            return self.resource_events.is_empty()
+                && self.parameter_slots_after_exit == 0
+                && matches!(self.result, Err(
+                    PrivateScalarCallRuntimeError::CallBudget
+                    | PrivateScalarCallRuntimeError::StepBudget
+                ));
+        }
         struct TraceFrame {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
@@ -3062,6 +3073,14 @@ impl PreparedPrivateScalarCall {
             events.push(PrivateScalarCallEvent::Returned(value));
         }
 
+        // 部分純值回歸走舊的直接參數框架／故障注入分支；
+        // 其已真正進入執行，必須先補正式回滾起點，不能混同
+        // 零預算時完全沒有動態事件的預檢。
+        if result.is_err() && !events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::UnwindStarted)
+        ) {
+            events.push(PrivateScalarCallEvent::UnwindStarted);
+        }
         // 經正常 Return 或錯誤分支都要離開此呼叫的參數作用域。
         frame.clear();
         events.push(PrivateScalarCallEvent::FunctionExited {
