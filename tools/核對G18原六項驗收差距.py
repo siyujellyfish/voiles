@@ -157,6 +157,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main_if內真str局部move給第二局部仍僅釋放原resourceid一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for每輪str先move再借用不可複製同一個owner",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if先move後呼叫次實參溢位同一資源須恰好釋放一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main分支中已move來源再次借用必由原checker先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
@@ -202,6 +206,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main_if內真str局部move給第二局部仍僅釋放原resourceid一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for每輪str先move再借用不可複製同一個owner",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if先move後呼叫次實參溢位同一資源須恰好釋放一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main分支中已move來源再次借用必由原checker先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內真字串借用隨continue先還票再釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
@@ -341,6 +349,10 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main_if內真str局部move給第二局部仍僅釋放原resourceid一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for每輪str先move再借用不可複製同一個owner",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if先move後呼叫次實參溢位同一資源須恰好釋放一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main分支中已move來源再次借用必由原checker先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
@@ -468,6 +480,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main_if內真str局部move給第二局部仍僅釋放原resourceid一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for每輪str先move再借用不可複製同一個owner",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if先move後呼叫次實參溢位同一資源須恰好釋放一次",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main分支中已move來源再次借用必由原checker先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",

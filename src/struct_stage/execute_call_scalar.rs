@@ -7111,6 +7111,62 @@ mod g18_private_scalar_call_tests {
     }
 
 
+
+    #[test]
+    fn g18_r02_main_if內真str局部move給第二局部仍僅釋放原resourceid一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar source:str = \"獨占🪼\"\nvar target:str\ntarget = source.move()\nresult = inspect(target,3)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_for每輪str先move再借用不可複製同一個owner() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nfor i in 0..3{\nvar source:str = \"每輪\"\nvar target:str\ntarget = source.move()\nresult = result+inspect(target,i)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+            R::Created(2), R::Moved(2), R::Released(2),
+            R::Created(3), R::Moved(3), R::Released(3),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 3);
+    }
+
+    #[test]
+    fn g18_r03_main_if先move後呼叫次實參溢位同一資源須恰好釋放一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar source:str = \"錯誤\"\nvar target:str\ntarget = source.move()\nresult = inspect(target,1+9223372036854775807)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )));
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r02_main分支中已move來源再次借用必由原checker先拒絕() {
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar source:str = \"一次\"\nvar target:str\ntarget = source.move()\nresult = inspect(source,3)\n}\nreturn result\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+
 }
 
 
