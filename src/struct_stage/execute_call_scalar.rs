@@ -57,6 +57,12 @@ enum PrivateScalarCallEvent {
     LoanResourceLinked(crate::borrow_safety::BorrowTicket, u64),
     LoanReturned(crate::borrow_safety::BorrowTicket),
     BorrowParameterBound(DeclarationId, BorrowFact),
+    /// 被呼叫者 str 借用參數接續直接呼叫者真票據的同一資源身分。
+    BorrowParameterResourceLinked {
+        parameter: DeclarationId,
+        ticket: crate::borrow_safety::BorrowTicket,
+        resource_id: u64,
+    },
     Returned(i64),
     FunctionExited { name: String, returned: bool },
 }
@@ -88,6 +94,7 @@ impl PrivateScalarCallOutcome {
             loan_resources: Vec<(crate::borrow_safety::BorrowTicket, u64)>,
             /// 借用參數須在本次函式退出前從直接呼叫者歸還。
             imported_loans: Vec<crate::borrow_safety::BorrowTicket>,
+            borrowed_params: BTreeMap<DeclarationId, u64>,
             returned: bool,
         }
         let mut frames = vec![TraceFrame {
@@ -96,7 +103,8 @@ impl PrivateScalarCallOutcome {
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
-            imported_loans: Vec::new(), returned: false,
+            imported_loans: Vec::new(), borrowed_params: BTreeMap::new(),
+            returned: false,
         }];
         let mut recorded = Vec::new();
         let mut created_ids = std::collections::HashSet::<u64>::new();
@@ -110,7 +118,8 @@ impl PrivateScalarCallOutcome {
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
-            imported_loans: Vec::new(), returned: false,
+            imported_loans: Vec::new(), borrowed_params: BTreeMap::new(),
+            returned: false,
                     });
                 }
                 PrivateScalarCallEvent::ParameterBound(..)
@@ -134,7 +143,8 @@ impl PrivateScalarCallOutcome {
                         || parent.owner_resources.get(source) != Some(resource_id)
                         || child.resource_ids.contains(resource_id)
                         || child.pending_transfers.contains_key(resource_id)
-                        || child.owner_resources.contains_key(target) {
+                        || child.owner_resources.contains_key(target)
+                        || child.borrowed_params.contains_key(target) {
                         return false;
                     }
                     parent.owner_resources.remove(source);
@@ -157,6 +167,23 @@ impl PrivateScalarCallOutcome {
                         return false;
                     };
                     child.imported_loans.push(ticket);
+                }
+                PrivateScalarCallEvent::BorrowParameterResourceLinked {
+                    parameter, ticket, resource_id,
+                } => {
+                    if frames.len() <= 1 { return false; }
+                    let last = frames.len() - 1;
+                    let (older, newer) = frames.split_at_mut(last);
+                    let parent = &older[last - 1];
+                    let child = &mut newer[0];
+                    if child.returned || !child.imported_loans.contains(ticket)
+                        || !parent.loan_resources.iter().any(|(loan, id)|
+                            loan == ticket && id == resource_id)
+                        || child.borrowed_params.contains_key(parameter)
+                        || child.owner_resources.contains_key(parameter) {
+                        return false;
+                    }
+                    child.borrowed_params.insert(*parameter, *resource_id);
                 }
                 PrivateScalarCallEvent::LocalInitialized(id, _) => {
                     let Some(frame) = frames.last_mut() else { return false; };
@@ -207,7 +234,10 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::LoanResourceLinked(ticket, resource_id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.owner_resources.get(&ticket.fact().source) != Some(resource_id)
-                        || frame.returned || !frame.loans.contains(ticket)
+                        && frame.borrowed_params.get(&ticket.fact().source) != Some(resource_id) {
+                        return false;
+                    }
+                    if frame.returned || !frame.loans.contains(ticket)
                         || frame.loan_resources.iter().any(|(loan, _)| loan == ticket) {
                         return false;
                     }
@@ -268,6 +298,7 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::ResourceOwnerBound(declaration, resource_id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || !frame.resource_ids.contains(resource_id)
+                        || frame.borrowed_params.contains_key(declaration)
                         || frame.owner_resources.contains_key(declaration)
                         || frame.owner_resources.values().any(|held| held == resource_id) {
                         return false;
@@ -292,6 +323,7 @@ impl PrivateScalarCallOutcome {
                         || !frame.owner_resources.is_empty()
                         || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
+                        || frame.imported_loans.len() != frame.borrowed_params.len()
                         || frames.last().is_none_or(|parent|
                             frame.imported_loans.iter().any(|ticket|
                                 parent.loans.contains(ticket))) {
@@ -903,6 +935,9 @@ struct PrivateScalarActiveFrame {
     str_owner_scopes: Vec<Vec<(DeclarationId, String)>>,
     borrow_tracker: crate::borrow_safety::BorrowSafety,
     incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
+    /// 已核准借用形式參數仍引用上一層真正存活的唯一 UTF-8；
+    /// 這不是獨立 OwnedStr 持有者，僅准在既有票據有效期間再借。
+    borrowed_params: BTreeMap<DeclarationId, (u64, BorrowKind)>,
 }
 
 /// 各已完成實參維持正式型別，不以整數佔位冒充字串。
@@ -913,6 +948,7 @@ enum PrivateScalarEvaluatedArgument {
     Borrow {
         ticket: crate::borrow_safety::BorrowTicket,
         fact: BorrowFact,
+        resource_id: u64,
     },
     Move { source: DeclarationId },
 }
@@ -1581,6 +1617,7 @@ impl PreparedPrivateScalarCall {
             str_owner_scopes: vec![Vec::new()],
             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
             incoming_borrows: Vec::new(),
+            borrowed_params: BTreeMap::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
         // 原 Checker 語句順序在 LIFO 上反向推入，執行時保持
