@@ -297,7 +297,9 @@ impl PrivateScalarCallOutcome {
                     frame.returned = true;
                 }
                 PrivateScalarCallEvent::FunctionExited { name, returned } => {
-                    if frames.len() <= 1 { return false; }
+                    // 任何未返回的動態函式只能由正式失敗回滾退出；
+                    // 不能把成功的 Returned 刪掉後偽造正常無返回退出。
+                    if frames.len() <= 1 || (!*returned && !unwinding) { return false; }
                     let Some(frame) = frames.pop() else { return false; };
                     if frame.name.as_deref() != Some(name.as_str())
                         || (unwinding && *returned)
@@ -324,6 +326,8 @@ impl PrivateScalarCallOutcome {
             && frames[0].loans.is_empty()
             && frames[0].loan_resources.is_empty()
             && self.parameter_slots_after_exit == 0
+            // 即使沒有借用票據，失敗仍須留下唯一真 UnwindStarted。
+            && unwinding == self.result.is_err()
             && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
     }
@@ -7121,5 +7125,45 @@ mod g18_r06_cross_runtime_tests {
         failed.events.insert(at + 1, PrivateScalarCallEvent::UnwindStarted);
         assert!(!failed.has_balanced_frame_trace());
     }
+
+    #[test]
+    fn g18_r05_r06_無借用的失敗回滾不可遺漏_unwindstarted() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn calculate(n:int)->int{\nvar owner:str = \"真資源\"\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn calculate(1)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let count = out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::UnwindStarted)
+        ).count();
+        assert_eq!(count, 1);
+        out.events.retain(|event| !matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        ));
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_成功結果不能以未返回的函式退出事件偽造() {
+        let src = "fn calculate(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn calculate(5)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        out.events.retain(|event| !matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        ));
+        for event in &mut out.events {
+            if let PrivateScalarCallEvent::FunctionExited { returned, .. } = event {
+                *returned = false;
+            }
+        }
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
 
 }
