@@ -1323,11 +1323,17 @@ impl PreparedPrivateScalarCall {
                         "區塊 str 擁有者缺少原 Checker 唯一宣告身分",
                     ));
                 }
-                let init = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "區塊 str 擁有者須具原核准初始化式",
-                    ),
-                )?;
+                let Some(init) = owner.initializer.as_ref() else {
+                    if !owner.mutable {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "原 Checker 無初值 str 只有 var 可延遲建立持有者",
+                        ));
+                    }
+                    return Ok(PrivateScalarBranchAction::DeclareEmptyStr {
+                        declaration: id, name: owner.name.clone(),
+                        mutable: owner.mutable,
+                    });
+                };
                 let initializer = Self::checked_str_initializer(
                     init, int_bindings, verified,
                 )?;
@@ -1662,18 +1668,23 @@ impl PreparedPrivateScalarCall {
                         "函式 str 所有者缺少原 Checker 唯一身分",
                     ));
                 }
-                let initializer = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "函式 str 所有者缺少原核准初始化式",
-                    ),
-                )?;
-                let initializer = Self::checked_str_initializer(
-                    initializer, &bindings, verified,
-                )?;
-                local_steps.push(PrivateScalarLocalStep::DeclareStr {
-                    declaration, name: owner.name.clone(),
-                    mutable: owner.mutable, initializer,
-                });
+                if let Some(expr) = owner.initializer.as_ref() {
+                    let initializer = Self::checked_str_initializer(
+                        expr, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::DeclareStr {
+                        declaration, name: owner.name.clone(),
+                        mutable: owner.mutable, initializer,
+                    });
+                } else if owner.mutable {
+                    local_steps.push(PrivateScalarLocalStep::DeclareEmptyStr {
+                        declaration, name: owner.name.clone(), mutable: owner.mutable,
+                    });
+                } else {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "尚無原 Checker const str 延遲初始化權限",
+                    ));
+                }
                 bindings.insert(owner.name.clone(), declaration);
                 bool_bindings.remove(&owner.name);
                 continue;
