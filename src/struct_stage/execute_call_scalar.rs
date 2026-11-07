@@ -464,32 +464,51 @@ impl PrivateScalarBoolExpr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarBranchAction {
+    Return(PrivateScalarReturnExpr),
+    AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+    AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+}
+
+impl PrivateScalarBranchAction {
+    fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
+        match self {
+            Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
+                expr.collect_calls(calls),
+            Self::AssignBool { .. } => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarEarlyIf {
     condition: PrivateScalarBoolExpr,
-    when_true: PrivateScalarReturnExpr,
+    when_true: PrivateScalarBranchAction,
     when_false: Option<PrivateScalarEarlyElse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarEarlyElse {
-    Return(PrivateScalarReturnExpr),
+    Branch(PrivateScalarBranchAction),
     ElseIf(Box<PrivateScalarEarlyIf>),
 }
 
 impl PrivateScalarEarlyIf {
     fn always_returns(&self) -> bool {
-        match &self.when_false {
-            Some(PrivateScalarEarlyElse::Return(_)) => true,
-            Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
-            None => false,
-        }
+        matches!(&self.when_true, PrivateScalarBranchAction::Return(_))
+            && match &self.when_false {
+                Some(PrivateScalarEarlyElse::Branch(
+                    PrivateScalarBranchAction::Return(_))) => true,
+                Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
+                _ => false,
+            }
     }
 
     fn collect_calls<'a>(&'a self, out: &mut Vec<&'a str>) {
         self.when_true.collect_calls(out);
         if let Some(otherwise) = &self.when_false {
             match otherwise {
-                PrivateScalarEarlyElse::Return(value) => value.collect_calls(out),
+                PrivateScalarEarlyElse::Branch(value) => value.collect_calls(out),
                 PrivateScalarEarlyElse::ElseIf(next) => next.collect_calls(out),
             }
         }
