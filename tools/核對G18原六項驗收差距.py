@@ -155,6 +155,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式真借用票據不得早於返回或晚於離域",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式與同步self真呼叫均須通過共用框架票據進退帳",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式與同步self錯誤均須真回滾且拒絕偽造退出",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_正式回滾後不得補造新的條件計算事件",
@@ -276,6 +277,8 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_method_self_tests::g18_r05_共用帳簿拒絕同步self在真返回之前提前還票",
+        "struct_stage::g18_private_method_self_tests::g18_r05_共用帳簿拒絕同步self成功退出後才補還真票據",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步self真共享借用及成功返回逐筆由共用進退帳驗證",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步self故障須真回滾後歸還同張票據再退出",
         "struct_stage::g18_private_method_self_tests::g18_r05_方法引數尚未求值成功不得假造self借用或進入退出",
@@ -366,6 +369,7 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式真借用票據不得早於返回或晚於離域",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式與同步self真呼叫均須通過共用框架票據進退帳",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式與同步self錯誤均須真回滾且拒絕偽造退出",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_選中_if_字串覆寫原子提交_未選分支零資源事件",
@@ -445,6 +449,8 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_r05_共用帳簿拒絕同步self在真返回之前提前還票",
+        "struct_stage::g18_private_method_self_tests::g18_r05_共用帳簿拒絕同步self成功退出後才補還真票據",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步self真共享借用及成功返回逐筆由共用進退帳驗證",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步self故障須真回滾後歸還同張票據再退出",
         "struct_stage::g18_private_method_self_tests::g18_r05_方法引數尚未求值成功不得假造self借用或進入退出",

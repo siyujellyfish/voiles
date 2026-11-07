@@ -30,7 +30,12 @@ fn private_shared_call_exit_balanced(
     for event in events {
         match event {
             PrivateSharedCallExitEvent::LoanAcquired(ticket) => {
-                if unwinding || tickets.contains(ticket) { return false; }
+                // 已 Returned 的框架不能在清理期間重新借入；這不是
+                // 另一個合法的新引數求值位置。
+                if unwinding || tickets.contains(ticket)
+                    || frames.last().is_some_and(|returned| *returned) {
+                    return false;
+                }
                 tickets.push(*ticket);
             }
             PrivateSharedCallExitEvent::FunctionEntered => {
@@ -51,6 +56,12 @@ fn private_shared_call_exit_balanced(
                 unwinding = true;
             }
             PrivateSharedCallExitEvent::LoanReturned(ticket) => {
+                // 成功還票必須位於真 Returned 之後、FunctionExited
+                // 之前；故障路徑必須已正式 UnwindStarted。僅確認
+                // 票據數量平衡不能取代這條跨執行器共通因果次序。
+                if !unwinding && !frames.last().is_some_and(|returned| *returned) {
+                    return false;
+                }
                 let Some(index) = tickets.iter().position(|active| active == ticket) else {
                     return false;
                 };
