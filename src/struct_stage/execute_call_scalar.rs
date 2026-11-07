@@ -6157,19 +6157,15 @@ mod g18_r06_cross_runtime_tests {
     }
 
     #[test]
-    fn g18_r05_r06_偽造借用在來源釋放後才歸還必由同序帳簿拒絕() {
-        use crate::owned_str_runtime::ResourceEvent as R;
+    fn g18_r05_r06_重複歸還同一票據必由同序帳簿拒絕() {
         let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"來源\"\nreturn observe(source,4)\n}\n";
         let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
         assert!(out.has_balanced_frame_trace());
         let loan = out.events.iter().position(|event| matches!(
             event, PrivateScalarCallEvent::LoanReturned(_)
         )).unwrap();
-        let ev = out.events.remove(loan);
-        let last_release = out.events.iter().rposition(|event| matches!(
-            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
-        )).unwrap();
-        out.events.insert(last_release+1, ev);
+        let duplicate = out.events[loan].clone();
+        out.events.insert(loan + 1, duplicate);
         assert!(!out.has_balanced_frame_trace());
     }
 
