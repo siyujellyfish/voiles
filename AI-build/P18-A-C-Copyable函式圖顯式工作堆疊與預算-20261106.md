@@ -231,3 +231,15 @@
 - 第一輪 Rust P04 有 1570 項成功、唯一新正例 `main` 在 `switched = true` 後傳 `choose(switched,5)` 被私有 Prepare 錯誤拒絕。原 Checker 已確認合法，錯誤原因是 bool 宣告只加入條件專用 `bool_bindings`，尚未加入普通函式實參共用 `bindings`。
 - 修正真 bool 區域宣告成功後同時交付同一 `DeclarationId` 至共用來源名稱表；bool 實參仍須原 HIR bool 類型、真 Lexer Name 與宣告身份一致，不進行隱含 int 轉型。不是放寬錯誤程式或測試預期。
 - 以最新 HEAD 重跑三項必要 CI，全 success 才能合併本批。
+
+
+---
+
+## V1-R05／R06-01：真 int／bool 動態框架與離域事件強制一致性（2026-11-07）
+
+- 基線 main `ec5d16bb822e4035ae5d3974d83a7b7ae1d9a8b0`（R04 #582 以最新 HEAD 三必要 CI success 後 Squash merge）。原 Copyable 執行器雖真正生成 Entered、ParameterBound、LocalInitialized／LocalScopeEnded、Returned 與 Exited，卻尚無**同一動態事件帳簿交付前的一致性守門**。單靠 individual Rust 範例無法保證未來修改不會誤發重複 Returned、失序離域或退出錯框架。
+- 新增 `PrivateScalarCallOutcome::has_balanced_frame_trace`：動態逐事件推進框架堆疊。每個 `FunctionEntered(name)` 建立獨立生命週期，ParameterBound／BoolParameterBound 只能在活躍函式中，LocalInitialized／BoolInitialized 只能各框架真正建立一次，LocalAssigned／BoolAssigned 僅能修改該框架已建立的局部宣告；LocalScopeEnded／BoolScopeEnded 嚴格依原始實際初始化的**反向型別與 DeclarationId** 配對；Returned 恰一次且只在合法真函式，Exited 的名稱／returned flag 與本框架事實必完全一致。遞迴重入即使同一靜態 DeclarationId，也以獨立動態框架核對，禁止跨框架錯認清理。
+- `PreparedPrivateScalarCall::audit_outcome` 現在在零預算、一般返回與 main 動態分支**對外交付前**全部強制通過同一 trace guard，若不一致則 `RuntimeTraceMismatch` 而非冒充成功或忽略；不更動已核准 D18-01 的語言錯誤／預算規則。
+- 新增七項真 Rust 正反：混合 bool/int 巢狀提前返回、算術溢位失敗退出、重入同宣告身份的受控遞迴、假初始化／錯序／重複離域、偽造 Return 與 Exited 名稱或結果、跨型別離域錯序，以及沒有有效框架的假參數或 bool 更新。
+- 專項 Gate **124→131**，G18 P18.1／P18.3／P18.5 和必要 CI、AI-build 同步。**本守門只驗證 Copyable int／bool 的 Scope Event，不是 ResourceId 或真 BorrowTicket／ReleaseEvent**。R05 還須跨 `execute_recursive_str`／`execute_call_borrow`／Move／self 等執行器整合原 ResourceId 與 BorrowFact 退出責任，R06 全矩陣、R07 正式驗收仍未達標；P18 六項仍 0/6 Passed。
+- 僅最新 PR HEAD 三必要 CI completed/success、作者/base/mergeable 確認後 Squash merge，再於新 main 同 SHA 重驗。
