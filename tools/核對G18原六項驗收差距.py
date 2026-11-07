@@ -19,6 +19,7 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_混合布林整數與巢狀提前返回動態事件帳簿必平衡",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_true_函式實參與_int_返回共用真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_巢狀普通函式真_bool_參數不被誤讀成父整數槽",
@@ -118,6 +119,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_動態整數溢位與真失敗退出仍保留合法平衡事件",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_遞迴重入相同靜態宣告身分不應誤判為重複清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造未建立區域的離域與錯順序均遭事件帳簿拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_虛構函式返回和錯誤退出標記不得通過一致性稽核",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_bool_混合參數進入後故障只退出本次真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_提前返回分支溢位只退出真的已初始化作用域",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_賦值右值溢位不得補記後續賦值或假返回",
@@ -237,6 +242,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_布林與整數反向離域跨型別錯序不可冒充真清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_純值事件帳簿不得將錯誤參數綁定或布林寫入當作合法框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_bool_參數綁定靜態型別被竄改前必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_未宣告_bool_及_const_bool_重綁由_checker_靜態拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_篡改已編譯分支條件前須拒絕任何真框架",
