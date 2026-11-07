@@ -2502,6 +2502,7 @@ mod g18_private_method_self_tests {
         for event in &mut out.method_local_events {
             match event {
                 PrivateSelfMethodLocalEvent::Initialized(id, _)
+                    | PrivateSelfMethodLocalEvent::Assigned(id, _)
                     | PrivateSelfMethodLocalEvent::ScopeEnded(id) => *id = fake,
             }
         }
