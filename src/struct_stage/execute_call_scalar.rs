@@ -28,6 +28,12 @@ enum PrivateScalarCallEvent {
     LocalInitialized(DeclarationId, i64),
     /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
     LocalAssigned(DeclarationId, i64),
+    /// 原 Checker 已核准的 bool Copyable 專用局部事件（非資源事件）。
+    BoolInitialized(DeclarationId, bool),
+    BoolAssigned(DeclarationId, bool),
+    BoolScopeEnded(DeclarationId),
+    /// 只有執行時真正到達的 if 條件才可記錄求值結果。
+    ConditionalChecked(bool),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
     LocalScopeEnded(DeclarationId),
     Returned(i64),
@@ -260,16 +266,123 @@ struct PrivateScalarLocalInit {
 /// R01／R02：原 Parser 順序不可被「先宣告、後賦值」重排。
 /// 此執行計畫保留每一筆 Checker 核准的實際宣告與可寫更新。
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarBoolExpr {
+    Constant(bool),
+    Bound(DeclarationId),
+}
+
+impl PrivateScalarBoolExpr {
+    /// 只從原 Checker 的 bool HIR、同一 Lexer/Parser 真來源編譯條件。
+    fn from_checked(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
+        let span = term.node_span();
+        if verified.plan.scalar_hir.expression(span)
+            .is_none_or(|fact| fact.ty != crate::common_ir::ScalarType::Bool) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "bool 條件缺少原 Checker 已核准的 TypedHIR",
+            ));
+        }
+        match &term.kind {
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) => {
+                let text = std::str::from_utf8(&verified.source.bytes).map_err(|_|
+                    PrivateScalarCallPrepareError::SourceChanged,
+                )?;
+                let expected = if *value { "true" } else { "false" };
+                if text.get(term.start..term.end) != Some(expected)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == term.start && token.end == term.end
+                            && matches!(&token.kind, TokenKind::Keyword(_))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 常值缺少原 Lexer Token 或文字身分",
+                    ));
+                }
+                Ok(Self::Constant(*value))
+            }
+            TermKind::Name(name) => {
+                let id = *bindings.get(name).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "bool 名稱缺少先前原 Checker 宣告",
+                    ),
+                )?;
+                if verified.plan.scalar_hir.reference(span)
+                    .is_none_or(|fact|
+                        fact.resolved.declaration != id
+                            || fact.resolved.ty != crate::common_ir::ScalarType::Bool)
+                    || !verified.plan.declarations.typed_declaration(id)
+                        .is_some_and(|fact| fact.ty == "bool")
+                    || !verified.tokens.iter().any(|token|
+                        token.start == term.start && token.end == term.end
+                            && matches!(&token.kind, TokenKind::Name(found) if found == name)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 引用缺少真 Checker／Lexer DeclarationId",
+                    ));
+                }
+                Ok(Self::Bound(id))
+            }
+            TermKind::Group(inner) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == span.start
+                        && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool Group 缺少原 Lexer 左右括號",
+                    ));
+                }
+                Self::from_checked(inner, bindings, verified)
+            }
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "此子集僅執行原 Checker 已核准 bool 常值或已初始化名稱條件",
+            )),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateScalarEarlyIf {
+    condition: PrivateScalarBoolExpr,
+    when_true: PrivateScalarReturnExpr,
+    when_false: Option<PrivateScalarEarlyElse>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarEarlyElse {
+    Return(PrivateScalarReturnExpr),
+    ElseIf(Box<PrivateScalarEarlyIf>),
+}
+
+impl PrivateScalarEarlyIf {
+    fn collect_calls<'a>(&'a self, out: &mut Vec<&'a str>) {
+        self.when_true.collect_calls(out);
+        if let Some(otherwise) = &self.when_false {
+            match otherwise {
+                PrivateScalarEarlyElse::Return(value) => value.collect_calls(out),
+                PrivateScalarEarlyElse::ElseIf(next) => next.collect_calls(out),
+            }
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarLocalStep {
     Declare(PrivateScalarLocalInit),
     Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+    DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    EarlyReturn(PrivateScalarEarlyIf),
 }
 
 impl PrivateScalarLocalStep {
-    fn expression(&self) -> &PrivateScalarReturnExpr {
+    fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
-            Self::Declare(init) => &init.value,
-            Self::Assign { value, .. } => value,
+            Self::Declare(init) => init.value.collect_calls(calls),
+            Self::Assign { value, .. } => value.collect_calls(calls),
+            Self::EarlyReturn(plan) => plan.collect_calls(calls),
+            Self::DeclareBool { .. } | Self::AssignBool { .. } => {}
         }
     }
 }
@@ -332,6 +445,8 @@ struct PrivateScalarActiveFrame {
     name: String,
     values: BTreeMap<DeclarationId, i64>,
     initialized_locals: Vec<DeclarationId>,
+    bool_values: BTreeMap<DeclarationId, bool>,
+    initialized_bools: Vec<DeclarationId>,
 }
 
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
@@ -343,6 +458,9 @@ enum PrivateScalarTask<'a> {
     Apply(char),
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
+    BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
+    AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
+    CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
