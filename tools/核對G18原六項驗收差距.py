@@ -401,11 +401,11 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
-    "P18.1": ("SubsetVerified", "原 Checker Copyable int 已接通多參數及非固定層數函式圖、重複葉函式、遞迴顯式框架／可配置預算；一般控制語句與其他型別混合呼叫圖仍需完整驗收"),
+    "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、if/while/for、區塊局部、OwnedStr 常值／.move 與已核准 str BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；一般化跨函式 Move、self 與任意合法型別混合函式圖仍需完整驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
-    "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 及同一 Call 對獨立 str 來源的 move＋共享／獨占借用皆可真執行與原子清理；多個 move、逃逸及 self 完整矩陣仍缺"),
-    "P18.5": ("SubsetVerified", "已有控制、資源與故障真回歸，但尚非原全矩陣結案"),
+    "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 及同一 Call 對獨立 str 來源的 move＋借用已有真執行；另同一 int/bool 函式圖已接通雙共享／雙獨占 str、逐輪借用與真原子清理；一般化跨函式 Move、再借用及 self 完整矩陣仍缺"),
+    "P18.5": ("SubsetVerified", "已有真正同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件 Gate 及 R06 19 項交叉案例，但尚非原全矩陣結案"),
     "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
 }
 
