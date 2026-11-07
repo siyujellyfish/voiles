@@ -1416,7 +1416,7 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarStrInitializer::Literal(text) =>
                                 resources.declare(name, mutable, text),
                             PrivateScalarStrInitializer::Move { source, .. } =>
-                                resources.move_named(source, name),
+                                resources.move_named_as(source, name, mutable),
                         }.map_err(PrivateScalarCallRuntimeError::Resource)?;
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
@@ -5152,6 +5152,18 @@ mod g18_private_scalar_call_tests {
         } else { panic!("原 .move() 已核准來源工作計畫未保留"); }
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r04_原_checker_const_str_move_同函式保留目標不可寫性() {
+        let src = "fn transfer(n:int)->int{\nvar source:str = \"🪼\"\nconst target:str = source.move()\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Moved(1), E::Released(1),
+        ]);
     }
 
 }
