@@ -699,6 +699,12 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                 }
+                PrivateScalarLocalStep::DeclareBool { declaration, value } =>
+                    tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
+                PrivateScalarLocalStep::AssignBool { declaration, value } =>
+                    tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
+                PrivateScalarLocalStep::EarlyReturn(plan) =>
+                    tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
             }
         }
         let mut values = Vec::<i64>::new();
@@ -793,6 +799,82 @@ impl PreparedPrivateScalarCall {
                         *slot = value;
                         events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
                     }
+                    PrivateScalarTask::BindBool(id, expr) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let value = match expr {
+                            PrivateScalarBoolExpr::Constant(value) => *value,
+                            PrivateScalarBoolExpr::Bound(source) =>
+                                *frame.bool_values.get(source).ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?,
+                        };
+                        if frame.bool_values.insert(id, value).is_some() {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
+                        events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                    }
+                    PrivateScalarTask::AssignBool(id, expr) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let value = match expr {
+                            PrivateScalarBoolExpr::Constant(value) => *value,
+                            PrivateScalarBoolExpr::Bound(source) =>
+                                *frame.bool_values.get(source).ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?,
+                        };
+                        let slot = frame.bool_values.get_mut(&id).ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        *slot = value;
+                        events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                    }
+                    PrivateScalarTask::CheckEarlyReturn(branch) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let mut selected = None;
+                        let mut current = branch;
+                        loop {
+                            let condition = match &current.condition {
+                                PrivateScalarBoolExpr::Constant(value) => *value,
+                                PrivateScalarBoolExpr::Bound(id) =>
+                                    *frame.bool_values.get(id).ok_or(
+                                        PrivateScalarCallRuntimeError::StateMismatch,
+                                    )?,
+                            };
+                            events.push(PrivateScalarCallEvent::ConditionalChecked(condition));
+                            if condition {
+                                selected = Some(&current.when_true);
+                                break;
+                            }
+                            match current.when_false.as_ref() {
+                                Some(PrivateScalarEarlyElse::Return(value)) => {
+                                    selected = Some(value);
+                                    break;
+                                }
+                                Some(PrivateScalarEarlyElse::ElseIf(next)) => {
+                                    current = next;
+                                }
+                                None => break,
+                            }
+                        }
+                        if let Some(returned) = selected {
+                            // 取消本函式尚未真正執行的預備語句與預設
+                            // 最後 return，保留此真框架的 ExitCall。
+                            // 函式實參內另有巢狀呼叫工作項時，此處
+                            // 不會抹除所屬父函式工作項。
+                            while !tasks.is_empty()
+                                && !matches!(tasks.last(), Some(PrivateScalarTask::ExitCall)) {
+                                tasks.pop();
+                            }
+                            tasks.push(PrivateScalarTask::Evaluate(returned, false));
+                        }
+                    }
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
@@ -849,6 +931,12 @@ impl PreparedPrivateScalarCall {
                                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                                 }
+                                PrivateScalarLocalStep::DeclareBool { declaration, value } =>
+                                    tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
+                                PrivateScalarLocalStep::AssignBool { declaration, value } =>
+                                    tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
+                                PrivateScalarLocalStep::EarlyReturn(plan) =>
+                                    tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
                             }
                         }
                     }
@@ -1085,8 +1173,11 @@ impl PreparedPrivateScalarCall {
         // 非字面／名稱的合法 main int 初始化可能含算術、真函式
         // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
         let needs_main_local_runtime = main_prefix.iter().any(|statement| {
-            if matches!(&statement.kind, StmtKind::Assign(_)) {
+            if matches!(&statement.kind, StmtKind::Assign(_) | StmtKind::If { .. }) {
                 return true;
+            }
+            if let StmtKind::Declare(owner) = &statement.kind {
+                if owner.ty == "bool" { return true; }
             }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
