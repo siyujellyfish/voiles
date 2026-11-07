@@ -4720,6 +4720,108 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+    #[test]
+    fn g18_r02_分支局部_int_由真_checker_初始化並在離域前讀取() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nconst bonus:int = 4\nvalue = value+bonus\n}\nreturn value\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let locals = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalInitialized(id, _) => Some(*id), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(locals.len(), 2);
+        let ended = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalScopeEnded(id) => Some(*id), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(ended, [locals[1], locals[0]]);
+    }
+
+    #[test]
+    fn g18_r02_分支同名遮蔽只寫入區塊內宣告_外部值不變() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nvar value:int = 8\nvalue = value+1\n}\nreturn value\n}\nfn main()->int{\nreturn choose(2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        let initializers = out.events.iter().filter_map(|event| {
+            if let PrivateScalarCallEvent::LocalInitialized(id, value) = event {
+                Some((*id, *value))
+            } else { None }
+        }).collect::<Vec<_>>();
+        assert_eq!(initializers.len(), 2);
+        assert_ne!(initializers[0].0, initializers[1].0);
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalAssigned(
+            initializers[1].0, 9,
+        )));
+    }
+
+    #[test]
+    fn g18_r02_巢狀條件使用分支局部_bool_真值且離域() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nconst allowed:bool = true\nif(allowed){\nvalue = value+3\n}\n}\nreturn value\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::BoolInitialized(..)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::BoolScopeEnded(..)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r02_while_逐輪純值局部宣告配合_continue_逆序清除() {
+        let src = "fn count(n:int)->int{\nvar flag:bool = true\nwhile(flag){\nconst step:int = 2\nflag = false\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn count(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalInitialized(_, 2)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalScopeEnded(..)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r02_for_每輪局部值及_iterator_各自離域後才下一輪() {
+        let src = "fn count(n:int)->int{\nfor i in 0..3{\nconst local:int = i\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn count(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        let mut active = Vec::new();
+        for event in &out.events {
+            match event {
+                PrivateScalarCallEvent::LocalInitialized(id, _) => active.push(*id),
+                PrivateScalarCallEvent::LocalScopeEnded(id) => assert_eq!(active.pop(), Some(*id)),
+                _ => {}
+            }
+        }
+        assert!(active.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalInitialized(..)
+        )).count(), 6);
+    }
+
+    #[test]
+    fn g18_r02_已離域局部名稱禁止逃逸且作用域計畫篡改拒絕() {
+        let bad = "fn choose(n:int)->int{\nif(true){\nconst hidden:int = 5\n}\nreturn hidden\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(bad),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let src = "fn choose(n:int)->int{\nif(true){\nconst hidden:int = 5\n}\nreturn n\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(3));
+        if let PrivateScalarLocalStep::EarlyReturn(branch) = &mut plan.root_local_steps[0] {
+            if let PrivateScalarBranchAction::Scoped(actions) = &mut branch.when_true {
+                actions[0] = PrivateScalarBranchAction::DeclareInt {
+                    declaration: DeclarationId(0),
+                    value: PrivateScalarReturnExpr::Constant(5),
+                };
+            } else { panic!("原 Checker 單局部區塊未建立離域計畫"); }
+        } else { panic!("原 if 來源缺失"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
