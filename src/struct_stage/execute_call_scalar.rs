@@ -1230,6 +1230,18 @@ impl PreparedPrivateScalarCall {
                     }
                     events.push(PrivateScalarCallEvent::BoolScopeEnded(id));
                 }
+                Some(PrivateScalarLocalBinding::UninitializedInt(id)) => {
+                    if frame.values.contains_key(&id) {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(id));
+                }
+                Some(PrivateScalarLocalBinding::UninitializedBool(id)) => {
+                    if frame.bool_values.contains_key(&id) {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(id));
+                }
                 None => return Err(PrivateScalarCallRuntimeError::StateMismatch),
             }
         }
@@ -2560,6 +2572,10 @@ impl PreparedPrivateScalarCall {
                                     events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
                                 PrivateScalarLocalBinding::Bool(id) =>
                                     events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                                PrivateScalarLocalBinding::UninitializedInt(id) =>
+                                    events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
+                                PrivateScalarLocalBinding::UninitializedBool(id) =>
+                                    events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
                             }
                         }
                         frame.values.clear();
@@ -2617,6 +2633,10 @@ impl PreparedPrivateScalarCall {
                             events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
                         PrivateScalarLocalBinding::Bool(id) =>
                             events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                        PrivateScalarLocalBinding::UninitializedInt(id) =>
+                            events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
+                        PrivateScalarLocalBinding::UninitializedBool(id) =>
+                            events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
                     }
                 }
                 frame.values.clear();
@@ -2642,6 +2662,10 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
                     PrivateScalarLocalBinding::Bool(id) =>
                         events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                    PrivateScalarLocalBinding::UninitializedInt(id) =>
+                        events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
+                    PrivateScalarLocalBinding::UninitializedBool(id) =>
+                        events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
                 }
             }
             root.initialized_order.clear();
