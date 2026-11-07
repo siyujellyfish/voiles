@@ -656,6 +656,8 @@ enum PrivateScalarBranchAction {
     Return(PrivateScalarReturnExpr),
     AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    /// 原 Checker 可寫 str 的真字面值／明確整筆 .move() 覆寫。
+    AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     /// 同一已驗證函式圖的逐輪 bool 判斷；本體仍使用原 Checker 語句計畫。
     While { condition: PrivateScalarBoolExpr, body: Box<PrivateScalarBranchAction> },
     /// 只以原 Checker 驗證的半開 int 區間與迭代 DeclarationId 執行。
@@ -680,7 +682,8 @@ impl PrivateScalarBranchAction {
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
             Self::AssignBool { .. } | Self::DeclareBool { .. }
-                | Self::DeclareStr { .. } | Self::Break | Self::Continue => {}
+                | Self::DeclareStr { .. } | Self::AssignStr { .. }
+                | Self::Break | Self::Continue => {}
         }
     }
 
@@ -691,8 +694,9 @@ impl PrivateScalarBranchAction {
                 actions.last().is_some_and(Self::always_returns),
             Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. }
-                | Self::DeclareInt { .. } | Self::DeclareBool { .. }
-                | Self::DeclareStr { .. } | Self::While { .. } | Self::ForRange { .. }
+                | Self::AssignStr { .. } | Self::DeclareInt { .. }
+                | Self::DeclareBool { .. } | Self::DeclareStr { .. }
+                | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
     }
@@ -740,6 +744,7 @@ enum PrivateScalarLocalStep {
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
     Control(PrivateScalarBranchAction),
 }
@@ -752,7 +757,7 @@ impl PrivateScalarLocalStep {
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
-                | Self::DeclareStr { .. } => {}
+                | Self::DeclareStr { .. } | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -860,6 +865,7 @@ enum PrivateScalarTask<'a> {
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
+    AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
@@ -935,6 +941,33 @@ impl PreparedPrivateScalarCall {
         Ok(PrivateScalarStrInitializer::Move {
             source: source.to_owned(), declaration,
         })
+    }
+
+    /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
+    /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
+    fn checked_str_assignment(
+        name: &str, destination: DeclarationId, expression: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+        statement_start: usize,
+    ) -> Result<PrivateScalarStrInitializer, PrivateScalarCallPrepareError> {
+        if !verified.plan.declarations.typed_declaration(destination)
+            .is_some_and(|fact| fact.ty == "str" && fact.mutable)
+            || !verified.tokens.iter().any(|token|
+                token.start == statement_start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == name)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str var 覆寫缺少原 Checker 可寫宣告與 Lexer 身分",
+            ));
+        }
+        let initializer = Self::checked_str_initializer(expression, bindings, verified)?;
+        if matches!(&initializer, PrivateScalarStrInitializer::Move { declaration, .. }
+            if *declaration == destination) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str 不得從自身 .move() 覆寫",
+            ));
+        }
+        Ok(initializer)
     }
 
     /// 原 Checker 每一條詞彙區塊的單一宣告仍有獨立生命週期。
@@ -1161,6 +1194,15 @@ impl PreparedPrivateScalarCall {
                         "if 賦值缺少原 Checker 變數宣告",
                     ),
                 )?;
+                if fact.ty == "str" {
+                    let initializer = Self::checked_str_assignment(
+                        &assign.name, id, &assign.expression, int_bindings,
+                        verified, statement.start,
+                    )?;
+                    return Ok(PrivateScalarBranchAction::AssignStr {
+                        declaration: id, name: assign.name.clone(), initializer,
+                    });
+                }
                 if !fact.mutable || (fact.ty != "int" && fact.ty != "bool")
                     || verified.plan.scalar_hir.assignment(statement.node_span())
                         .is_none_or(|record|
@@ -1315,6 +1357,19 @@ impl PreparedPrivateScalarCall {
                         declaration: id, value,
                     });
                     continue;
+                }
+                if let Some(id) = bindings.get(&assign.name).copied() {
+                    if verified.plan.declarations.typed_declaration(id)
+                        .is_some_and(|fact| fact.ty == "str") {
+                        let initializer = Self::checked_str_assignment(
+                            &assign.name, id, &assign.expression, &bindings,
+                            verified, statement.start,
+                        )?;
+                        local_steps.push(PrivateScalarLocalStep::AssignStr {
+                            declaration: id, name: assign.name.clone(), initializer,
+                        });
+                        continue;
+                    }
                 }
                 let id = *bindings.get(&assign.name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
@@ -1482,6 +1537,9 @@ impl PreparedPrivateScalarCall {
                 } => tasks.push(PrivateScalarTask::DeclareStr(
                     *declaration, name, *mutable, initializer,
                 )),
+                PrivateScalarLocalStep::AssignStr {
+                    declaration, name, initializer,
+                } => tasks.push(PrivateScalarTask::AssignStr(*declaration, name, initializer)),
                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
                 PrivateScalarLocalStep::Control(action) =>
@@ -1698,6 +1756,35 @@ impl PreparedPrivateScalarCall {
                             id, resource_id,
                         ));
                     }
+                    PrivateScalarTask::AssignStr(id, name, initializer) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.str_owner_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == name) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(id)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        if let PrivateScalarStrInitializer::Move { source, declaration } = initializer {
+                            if *declaration == id || !frame.str_owner_scopes.iter().rev().flatten()
+                                .any(|(known, active)| known == declaration && active == source) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            frame.borrow_tracker.check_direct_access(*declaration)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        }
+                        match initializer {
+                            PrivateScalarStrInitializer::Literal(text) =>
+                                resources.assign(name, text),
+                            PrivateScalarStrInitializer::Move { source, .. } =>
+                                resources.replace_from(source, name),
+                        }.map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        Self::record_owned_resources(&resources, &mut resource_cursor, events);
+                        let resource_id = resources.resource_id(name)
+                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        events.push(PrivateScalarCallEvent::ResourceOwnerBound(id, resource_id));
+                    }
                     PrivateScalarTask::AssignBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -1905,6 +1992,11 @@ impl PreparedPrivateScalarCall {
                                 *declaration, name, *mutable, initializer,
                             ));
                         }
+                        PrivateScalarBranchAction::AssignStr {
+                            declaration, name, initializer,
+                        } => tasks.push(PrivateScalarTask::AssignStr(
+                            *declaration, name, initializer,
+                        )),
                         PrivateScalarBranchAction::Sequence(actions) => {
                             // 原 Parser 分支先後次序必須保持；工作堆疊
                             // LIFO 以反序放入，未選中的分支不排任何工作。
@@ -2055,6 +2147,11 @@ impl PreparedPrivateScalarCall {
                                     declaration, name, mutable, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareStr(
                                     *declaration, name, *mutable, initializer,
+                                )),
+                                PrivateScalarLocalStep::AssignStr {
+                                    declaration, name, initializer,
+                                } => tasks.push(PrivateScalarTask::AssignStr(
+                                    *declaration, name, initializer,
                                 )),
                                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
@@ -5791,6 +5888,86 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r04_真函式_str_字面值覆寫只釋放被取代資源一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"舊\"\nowner = \"新🪼\"\nreturn n\n}\nfn main()->int{\nreturn run(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceOwnerBound(_, 2)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_真函式_move_覆寫舊目標與來源重新初始化不複製() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar source:str = \"甲\"\nvar target:str = \"乙\"\ntarget = source.move()\nsource = \"重建\"\nreturn n\n}\nfn main()->int{\nreturn run(2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Released(2),
+            R::Created(3), R::Released(3), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_選中_if_字串覆寫原子提交_未選分支零資源事件() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"初始\"\nif(true){\nowner = \"選中\"\n}else{\nowner = \"不得建立\"\n}\nreturn n\n}\nfn main()->int{\nreturn run(6)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r02_普通函式_for_逐輪_str_覆寫即時釋放上一個_owner() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"原\"\nfor i in 0..3{\nowner = \"每輪\"\n}\nreturn n\n}\nfn main()->int{\nreturn run(7)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1),
+            R::Created(3), R::Released(2), R::Created(4),
+            R::Released(3), R::Released(4),
+        ]);
+    }
+
+    #[test]
+    fn g18_r03_函式提前返回先完成_str_覆寫再真離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"甲\"\nif(true){\nowner = \"乙\"\nreturn n+1\n}\nreturn 0\n}\nfn main()->int{\nreturn run(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_不可寫_str_隱含複製與已移動再次使用均由_checker_拒絕() {
+        let invalid = [
+            "fn run(n:int)->int{\nconst owner:str = \"原\"\nowner = \"新\"\nreturn n\n}\nfn main()->int{\nreturn run(1)\n}\n",
+            "fn run(n:int)->int{\nvar owner:str = \"原\"\nowner = 1\nreturn n\n}\nfn main()->int{\nreturn run(1)\n}\n",
+            "fn run(n:int)->int{\nvar source:str = \"原\"\nvar target:str = \"舊\"\ntarget = source.move()\ntarget = source.move()\nreturn n\n}\nfn main()->int{\nreturn run(1)\n}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
 }
 
 
@@ -6349,6 +6526,76 @@ mod g18_r06_cross_runtime_tests {
         assert!(!wrong.has_balanced_frame_trace());
         assert!(matches!(PreparedPrivateScalarCall::audit_outcome(wrong),
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+
+    #[test]
+    fn g18_r06_str_覆寫後再借新_resourceid_票據須對應最新擁有者() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn run(n:int)->int{\nvar owner:str = \"舊\"\nowner = \"新\"\nreturn inspect(owner,n)\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 2)
+        )).count(), 1);
+        let returned = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let release = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(2))
+        )).unwrap();
+        assert!(returned < release);
+    }
+
+    #[test]
+    fn g18_r06_真_move_覆寫後借目標仍指同一原始_resourceid() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn run(n:int)->int{\nvar source:str = \"甲\"\nvar target:str = \"乙\"\ntarget = source.move()\nreturn inspect(target,n)\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1),
+            R::Released(2), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造_str_覆寫後仍由舊資源認領必拒絕() {
+        let src = "fn run(n:int)->int{\nvar owner:str = \"原\"\nowner = \"新\"\nreturn n\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let index = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceOwnerBound(_, 2)
+        )).unwrap();
+        if let PrivateScalarCallEvent::ResourceOwnerBound(_, resource) = &mut out.events[index] {
+            *resource = 1; // 舊資源早已 Released，不能被同一 DeclarationId 復活
+        } else { panic!("缺少真擁有者轉移事件"); }
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r06_str_覆寫後整數溢位仍釋放目前唯一擁有者() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"原\"\nowner = \"新\"\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn run(1)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::Returned(_)
+        )));
     }
 
 }

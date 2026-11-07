@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百九十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百零二項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r04_真函式_str_字面值覆寫只釋放被取代資源一次",
+    "g18_r04_真函式_move_覆寫舊目標與來源重新初始化不複製",
+    "g18_r04_選中_if_字串覆寫原子提交_未選分支零資源事件",
+    "g18_r02_普通函式_for_逐輪_str_覆寫即時釋放上一個_owner",
+    "g18_r03_函式提前返回先完成_str_覆寫再真離域",
+    "g18_r04_不可寫_str_隱含複製與已移動再次使用均由_checker_拒絕",
     "g18_r04_具名_const_str_與_int_真同框架借用票據先還才釋放",
     "g18_r04_具名_var_str_獨占借用與_copyable_int_真返回",
     "g18_r04_父函式局部_ownedstr_真正借用給子函式並續算",
