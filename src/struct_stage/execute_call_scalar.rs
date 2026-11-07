@@ -7,6 +7,8 @@ enum PrivateScalarCallPrepareError {
     Check(crate::Diagnostic),
     Unsupported(&'static str),
     SourceChanged,
+    /// 真執行事件與動態框架責任不一致，保守拒絕對外暴露不可信結果。
+    RuntimeTraceMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,96 @@ struct PrivateScalarCallOutcome {
     events: Vec<PrivateScalarCallEvent>,
     /// 任何成功、失敗及重複執行都不得保留被呼叫者參數。
     parameter_slots_after_exit: usize,
+}
+
+impl PrivateScalarCallOutcome {
+    /// R05：完全由已真正發出的事件驗證每個動態框架的進／退、
+    /// 已完成 Copyable 局部宣告之逆序離域及單次返回。
+    /// 這是 int／bool 純值 trace，**不冒充 OwnedStr ResourceEvent**。
+    fn has_balanced_frame_trace(&self) -> bool {
+        struct TraceFrame {
+            name: Option<String>,
+            locals: Vec<PrivateScalarLocalBinding>,
+            returned: bool,
+        }
+        let mut frames = vec![TraceFrame {
+            name: None, locals: Vec::new(), returned: false,
+        }];
+        for event in &self.events {
+            match event {
+                PrivateScalarCallEvent::FunctionEntered(name) => {
+                    if frames.last().is_none_or(|f| f.returned) { return false; }
+                    frames.push(TraceFrame {
+                        name: Some(name.clone()), locals: Vec::new(), returned: false,
+                    });
+                }
+                PrivateScalarCallEvent::ParameterBound(..)
+                    | PrivateScalarCallEvent::BoolParameterBound(..) => {
+                    if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::LocalInitialized(id, _) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::Int(old) if old == id)
+                    ) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::Int(*id));
+                }
+                PrivateScalarCallEvent::BoolInitialized(id, _) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::Bool(old) if old == id)
+                    ) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
+                }
+                PrivateScalarCallEvent::LocalAssigned(id, _) => {
+                    if frames.last().is_none_or(|frame| frame.returned
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::Int(old) if old == id)
+                        )) { return false; }
+                }
+                PrivateScalarCallEvent::BoolAssigned(id, _) => {
+                    if frames.last().is_none_or(|frame| frame.returned
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::Bool(old) if old == id)
+                        )) { return false; }
+                }
+                PrivateScalarCallEvent::LocalScopeEnded(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::Int(previous)) if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::BoolScopeEnded(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::Bool(previous)) if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::Returned(_) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.name.is_none() || frame.returned { return false; }
+                    frame.returned = true;
+                }
+                PrivateScalarCallEvent::FunctionExited { name, returned } => {
+                    if frames.len() <= 1 { return false; }
+                    let Some(frame) = frames.pop() else { return false; };
+                    if frame.name.as_deref() != Some(name.as_str())
+                        || frame.returned != *returned || !frame.locals.is_empty() {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::ArgumentEvaluated(_)
+                    | PrivateScalarCallEvent::BoolArgumentEvaluated(_)
+                    | PrivateScalarCallEvent::ConditionalChecked(_) => {}
+            }
+        }
+        frames.len() == 1 && frames[0].locals.is_empty()
+            && self.parameter_slots_after_exit == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1633,6 +1725,16 @@ impl PreparedPrivateScalarCall {
         )
     }
 
+    fn audit_outcome(
+        outcome: PrivateScalarCallOutcome,
+    ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        if outcome.has_balanced_frame_trace() {
+            Ok(outcome)
+        } else {
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)
+        }
+    }
+
     fn execute_with_budget_and_fault(
         &self, budget: PrivateScalarExecutionBudget, fail_after_binding: bool,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
@@ -1647,7 +1749,7 @@ impl PreparedPrivateScalarCall {
         }
         // 即使原 Checker 合法遞迴，零執行預算也不得製造假的函式進入。
         if budget.max_call_frames == 0 || budget.max_steps == 0 {
-            return Ok(PrivateScalarCallOutcome {
+            return Self::audit_outcome(PrivateScalarCallOutcome {
                 result: Err(if budget.max_call_frames == 0 {
                     PrivateScalarCallRuntimeError::CallBudget
                 } else {
@@ -1681,7 +1783,7 @@ impl PreparedPrivateScalarCall {
                 dynamic_call, &main_frame, &mut events,
                 adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
             );
-            return Ok(PrivateScalarCallOutcome {
+            return Self::audit_outcome(PrivateScalarCallOutcome {
                 result, events, parameter_slots_after_exit: 0,
             });
         }
@@ -1718,7 +1820,7 @@ impl PreparedPrivateScalarCall {
         events.push(PrivateScalarCallEvent::FunctionExited {
             name: self.callee_name.clone(), returned: result.is_ok(),
         });
-        Ok(PrivateScalarCallOutcome {
+        Self::audit_outcome(PrivateScalarCallOutcome {
             result, events, parameter_slots_after_exit: frame.len(),
         })
     }
@@ -3579,6 +3681,154 @@ mod g18_private_scalar_call_tests {
         checked.callee_parameter_is_bool[0] = false;
         assert!(matches!(checked.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+    #[test]
+    fn g18_r05_混合布林整數與巢狀提前返回動態事件帳簿必平衡() {
+        let src = "fn leaf(n:int)->int{\nvar flag:bool = true\nvar x:int = n+1\nif(flag){return x}\nreturn n\n}\nfn parent(n:int,flag:bool)->int{\nvar other:int = leaf(n)\nif(flag){return other+2}\nreturn other+3\n}\nfn main()->int{\nreturn parent(3,true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|ev| matches!(
+            ev, PrivateScalarCallEvent::FunctionEntered(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|ev| matches!(
+            ev, PrivateScalarCallEvent::FunctionExited {returned: true,..}
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r05_動態整數溢位與真失敗退出仍保留合法平衡事件() {
+        let src = "fn fail(n:int)->int{\nvar x:int = n\nx = x+1\nreturn x\n}\nfn main()->int{\nreturn fail(9223372036854775807)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|ev|
+            matches!(ev, PrivateScalarCallEvent::Returned(_))));
+    }
+
+    #[test]
+    fn g18_r05_遞迴重入相同靜態宣告身分不應誤判為重複清理() {
+        let src = "fn repeat(n:int)->int{\nvar x:int = n\nx = x+1\nreturn repeat(x)\n}\nfn main()->int{\nreturn repeat(1)\n}\n";
+        let out = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 3, max_steps: 100 },
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_偽造未建立區域的離域與錯順序均遭事件帳簿拒絕() {
+        let x = DeclarationId(99);
+        let y = DeclarationId(100);
+        for events in [
+            vec![PrivateScalarCallEvent::LocalScopeEnded(x)],
+            vec![PrivateScalarCallEvent::LocalInitialized(x, 1)],
+            vec![
+                PrivateScalarCallEvent::LocalInitialized(x, 1),
+                PrivateScalarCallEvent::LocalInitialized(y, 2),
+                PrivateScalarCallEvent::LocalScopeEnded(x),
+                PrivateScalarCallEvent::LocalScopeEnded(y),
+            ],
+            vec![
+                PrivateScalarCallEvent::LocalInitialized(x, 1),
+                PrivateScalarCallEvent::LocalInitialized(x, 2),
+                PrivateScalarCallEvent::LocalScopeEnded(x),
+            ],
+            vec![PrivateScalarCallEvent::LocalAssigned(x, 5)],
+        ] {
+            let outcome = PrivateScalarCallOutcome {
+                result: Ok(1), events, parameter_slots_after_exit: 0,
+            };
+            assert!(!outcome.has_balanced_frame_trace());
+            assert!(matches!(PreparedPrivateScalarCall::audit_outcome(outcome),
+                Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+        }
+    }
+
+    #[test]
+    fn g18_r05_虛構函式返回和錯誤退出標記不得通過一致性稽核() {
+        let cases = [
+            vec![PrivateScalarCallEvent::Returned(1)],
+            vec![PrivateScalarCallEvent::FunctionExited {
+                name: "leaf".into(), returned: false,
+            }],
+            vec![
+                PrivateScalarCallEvent::FunctionEntered("leaf".into()),
+                PrivateScalarCallEvent::Returned(1),
+                PrivateScalarCallEvent::FunctionExited {
+                    name: "leaf".into(), returned: false,
+                },
+            ],
+            vec![
+                PrivateScalarCallEvent::FunctionEntered("leaf".into()),
+                PrivateScalarCallEvent::FunctionExited {
+                    name: "other".into(), returned: false,
+                },
+            ],
+            vec![
+                PrivateScalarCallEvent::FunctionEntered("leaf".into()),
+                PrivateScalarCallEvent::Returned(1),
+                PrivateScalarCallEvent::Returned(1),
+                PrivateScalarCallEvent::FunctionExited {
+                    name: "leaf".into(), returned: true,
+                },
+            ],
+        ];
+        for events in cases {
+            assert!(!PrivateScalarCallOutcome {
+                result: Ok(1), events, parameter_slots_after_exit: 0,
+            }.has_balanced_frame_trace());
+        }
+    }
+
+    #[test]
+    fn g18_r05_布林與整數反向離域跨型別錯序不可冒充真清理() {
+        let x = DeclarationId(100);
+        let b = DeclarationId(200);
+        let valid = vec![
+            PrivateScalarCallEvent::FunctionEntered("fn".into()),
+            PrivateScalarCallEvent::LocalInitialized(x, 3),
+            PrivateScalarCallEvent::BoolInitialized(b, true),
+            PrivateScalarCallEvent::Returned(3),
+            PrivateScalarCallEvent::BoolScopeEnded(b),
+            PrivateScalarCallEvent::LocalScopeEnded(x),
+            PrivateScalarCallEvent::FunctionExited {
+                name: "fn".into(), returned: true,
+            },
+        ];
+        assert!(PrivateScalarCallOutcome {
+            result: Ok(3), events: valid.clone(), parameter_slots_after_exit: 0,
+        }.has_balanced_frame_trace());
+        let mut invalid = valid.clone();
+        invalid.swap(4, 5);
+        assert!(!PrivateScalarCallOutcome {
+            result: Ok(3), events: invalid, parameter_slots_after_exit: 0,
+        }.has_balanced_frame_trace());
+        let mut missing = valid;
+        missing.remove(4);
+        assert!(!PrivateScalarCallOutcome {
+            result: Ok(3), events: missing, parameter_slots_after_exit: 0,
+        }.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_純值事件帳簿不得將錯誤參數綁定或布林寫入當作合法框架() {
+        for events in [
+            vec![PrivateScalarCallEvent::BoolParameterBound(DeclarationId(1), true)],
+            vec![PrivateScalarCallEvent::BoolAssigned(DeclarationId(1), false)],
+            vec![
+                PrivateScalarCallEvent::FunctionEntered("f".into()),
+                PrivateScalarCallEvent::BoolAssigned(DeclarationId(1), true),
+                PrivateScalarCallEvent::FunctionExited {name:"f".into(),returned:false},
+            ],
+        ] {
+            assert!(!PrivateScalarCallOutcome {
+                result: Err(PrivateScalarCallRuntimeError::StateMismatch),
+                events, parameter_slots_after_exit: 0,
+            }.has_balanced_frame_trace());
+        }
     }
 
 }
