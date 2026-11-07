@@ -22,8 +22,11 @@ enum PrivateScalarCallRuntimeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarCallEvent {
     ArgumentEvaluated(i64),
+    /// bool 實參獨立標記，不把 Copyable bool 當成 int 隱含轉型。
+    BoolArgumentEvaluated(bool),
     FunctionEntered(String),
     ParameterBound(DeclarationId, i64),
+    BoolParameterBound(DeclarationId, bool),
     /// 每筆經 Checker 核准的純值區域初始化只在真正寫入框架後記錄。
     LocalInitialized(DeclarationId, i64),
     /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
@@ -58,7 +61,7 @@ enum PrivateScalarReturnExpr {
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
     /// 原 Checker 唯一具名函式與已驗證 int 實參；真正呼叫會進入新框架。
-    Call { name: String, arguments: Vec<Self> },
+    Call { name: String, arguments: Vec<PrivateScalarCallArgument> },
 }
 
 impl PrivateScalarReturnExpr {
@@ -267,6 +270,19 @@ struct PrivateScalarLocalInit {
     value: PrivateScalarReturnExpr,
 }
 
+/// 每個實參的真型別已由 Checker 決定：bool 不是 int 可隱含轉型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarCallArgument {
+    Int(PrivateScalarReturnExpr),
+    Bool(PrivateScalarBoolExpr),
+}
+
+impl PrivateScalarCallArgument {
+    fn collect_calls<'a>(&'a self, output: &mut Vec<&'a str>) {
+        if let Self::Int(expr) = self { expr.collect_calls(output); }
+    }
+}
+
 /// R01／R02：原 Parser 順序不可被「先宣告、後賦值」重排。
 /// 此執行計畫保留每一筆 Checker 核准的實際宣告與可寫更新。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -404,6 +420,7 @@ struct PrivateScalarNestedCallee {
     name: String,
     span: crate::common_ir::NodeSpan,
     parameters: Vec<DeclarationId>,
+    parameter_is_bool: Vec<bool>,
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
     local_inits: Vec<PrivateScalarLocalInit>,
@@ -438,6 +455,7 @@ struct PreparedPrivateScalarCall {
     main_dynamic_steps: Vec<PrivateScalarLocalStep>,
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
+    callee_parameter_is_bool: Vec<bool>,
 }
 
 /// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
@@ -473,6 +491,8 @@ enum PrivateScalarTask<'a> {
     Evaluate(&'a PrivateScalarReturnExpr, bool),
     /// 每個真實參值求值完成當下才產生事件，不在 EnterCall 補記。
     RecordArgument,
+    EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
+    RecordBoolArgument,
     Apply(char),
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
