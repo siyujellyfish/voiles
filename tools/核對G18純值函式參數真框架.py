@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r04_同一函式_真_move_至局部唯一所有者只釋放一次",
+    "g18_r04_內層_if_真_move_外層持有者後不能重複清理",
+    "g18_r04_真_move_之後第二資源保持獨立且退出逆序",
+    "g18_r04_原_checker_拒絕_move_後讀取與未授權隱含複製",
+    "g18_r04_真_move_來源計畫篡改不得產生任何資源事件",
     "g18_r04_真同函式_ownedstr_明確_move_單一_resourceid_不複製",
     "g18_r04_同函式_if_內_move_外層所有者成空_內層只釋放一次",
     "g18_r04_同函式_for_逐輪真_move_每次是新_resourceid",
