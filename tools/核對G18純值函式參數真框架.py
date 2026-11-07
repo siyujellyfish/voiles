@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百三十一項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百三十六項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_main_var首次賦值的普通函式來源必真執行",
+    "g18_r01_main先返回葉函式後更新局部不得逆序求值",
+    "g18_r02_main同一var先以函式初次賦值再由函式重賦值",
+    "g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
+    "g18_r01_main賦值來源計畫遭竄改必先拒絕不得偽造執行",
     "g18_r02_真str無初值單純宣告離域零ResourceId",
     "g18_r02_真str無初值後字面賦值只建立一次並退出釋放",
     "g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源",
