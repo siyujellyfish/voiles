@@ -5244,6 +5244,116 @@ mod g18_private_scalar_call_tests {
         ]);
     }
 
+    #[test]
+    fn g18_r05_父子真_utf8_資源事件必嵌入函式進退同序序列() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(n:int)->int{\nvar inner:str = \"子\"\nreturn n+1\n}\nfn parent(n:int)->int{\nvar outer:str = \"父\"\nreturn leaf(n)\n}\nfn main()->int{\nreturn parent(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let paired = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::OwnedResource(value) => Some(value.clone()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(paired, out.resource_events);
+        let child_exit = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::FunctionExited { name, returned: true }
+                if name == "leaf"
+        )).unwrap();
+        let child_release = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(2))
+        )).unwrap();
+        assert!(child_release < child_exit);
+    }
+
+    #[test]
+    fn g18_r05_原_checker_真_move_資源編號不跨父子函式錯置() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn child(n:int)->int{\nvar child_owned:str = \"第二\"\nreturn n\n}\nfn parent(n:int)->int{\nvar source:str = \"第一\"\nconst target:str = source.move()\nreturn child(n)\n}\nfn main()->int{\nreturn parent(5)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Created(2),
+            R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r05_for_逐輪真_utf8_釋放不得延後至下一輪或函式退出() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn count(n:int)->int{\nfor i in 0..3{\nvar local:str = \"輪\"\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn count(6)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Released(1),
+            R::Created(2), R::Released(2),
+            R::Created(3), R::Released(3),
+        ]);
+        let trace = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::OwnedResource(event) => Some(event.clone()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(trace, out.resource_events);
+    }
+
+    #[test]
+    fn g18_r05_步數耗盡與真資源清理必先於失敗函式退出() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn looped(n:int)->int{\nvar persistent:str = \"持有\"\nwhile(true){\nvar local:str = \"迭代\"\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn looped(1)\n}\n";
+        let out = checked(src).execute_with_budget(PrivateScalarExecutionBudget {
+            max_call_frames: 8, max_steps: 28,
+        }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(out.has_balanced_frame_trace());
+        let exit = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::FunctionExited { name, returned: false }
+                if name == "looped"
+        )).unwrap();
+        let last_release = out.events.iter().rposition(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(_))
+        )).unwrap();
+        assert!(last_release < exit);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r05_偽造另一份平衡_resourceid_不得繞過真事件映射() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn count(n:int)->int{\nvar owned:str = \"原\"\nreturn n\n}\nfn main()->int{\nreturn count(4)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        out.resource_events.extend([R::Created(88), R::Released(88)]);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.resource_events));
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_偽造提前函式退出再釋放真_resourceid_必被拒絕() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn count(n:int)->int{\nvar owned:str = \"原\"\nreturn n\n}\nfn main()->int{\nreturn count(4)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let exit = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited { name, .. } if name == "count"
+        )).unwrap();
+        let release = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        let resource = out.events.remove(release);
+        let exit_after_removal = if release < exit { exit - 1 } else { exit };
+        out.events.insert(exit_after_removal + 1, resource);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
 }
 
 
