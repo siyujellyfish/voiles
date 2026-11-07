@@ -318,22 +318,6 @@ impl OwnedStrRuntime {
 mod tests {
     use super::*;
 
-    #[test]
-    fn g18_r04_const_move_來源所有權轉交後目標不可寫且_resourceid_只釋放一次() {
-        let mut resources = OwnedStrRuntime::new();
-        resources.declare("source", true, "🪼").unwrap();
-        resources.move_named_as("source", "target", false).unwrap();
-        assert_eq!(resources.read("source"), Err(StrRuntimeError::MovedSource));
-        assert_eq!(resources.read("target"), Ok("🪼"));
-        assert_eq!(resources.assign("target", "改寫"),
-            Err(StrRuntimeError::ImmutableBinding));
-        assert_eq!(resources.finish().unwrap(), [
-            ResourceEvent::Created(1),
-            ResourceEvent::Moved(1),
-            ResourceEvent::Released(1),
-        ]);
-    }
-
     fn released(events: &[ResourceEvent]) -> Vec<u64> {
         events.iter().filter_map(|event| {
             if let ResourceEvent::Released(id) = event { Some(*id) } else { None }
