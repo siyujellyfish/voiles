@@ -1725,6 +1725,16 @@ impl PreparedPrivateScalarCall {
         )
     }
 
+    fn audit_outcome(
+        outcome: PrivateScalarCallOutcome,
+    ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        if outcome.has_balanced_frame_trace() {
+            Ok(outcome)
+        } else {
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)
+        }
+    }
+
     fn execute_with_budget_and_fault(
         &self, budget: PrivateScalarExecutionBudget, fail_after_binding: bool,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
@@ -1739,7 +1749,7 @@ impl PreparedPrivateScalarCall {
         }
         // 即使原 Checker 合法遞迴，零執行預算也不得製造假的函式進入。
         if budget.max_call_frames == 0 || budget.max_steps == 0 {
-            return Ok(PrivateScalarCallOutcome {
+            return Self::audit_outcome(PrivateScalarCallOutcome {
                 result: Err(if budget.max_call_frames == 0 {
                     PrivateScalarCallRuntimeError::CallBudget
                 } else {
@@ -1773,7 +1783,7 @@ impl PreparedPrivateScalarCall {
                 dynamic_call, &main_frame, &mut events,
                 adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
             );
-            return Ok(PrivateScalarCallOutcome {
+            return Self::audit_outcome(PrivateScalarCallOutcome {
                 result, events, parameter_slots_after_exit: 0,
             });
         }
@@ -1810,7 +1820,7 @@ impl PreparedPrivateScalarCall {
         events.push(PrivateScalarCallEvent::FunctionExited {
             name: self.callee_name.clone(), returned: result.is_ok(),
         });
-        Ok(PrivateScalarCallOutcome {
+        Self::audit_outcome(PrivateScalarCallOutcome {
             result, events, parameter_slots_after_exit: frame.len(),
         })
     }
