@@ -1888,6 +1888,40 @@ impl PreparedPrivateScalarCall {
                         }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                         values.push(value);
                     }
+                    PrivateScalarTask::DeclareEmptyInt(id) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.values.contains_key(&id)
+                            || frame.initialized_order.iter().any(|entry| matches!(entry,
+                                PrivateScalarLocalBinding::Int(old)
+                                    | PrivateScalarLocalBinding::UninitializedInt(old)
+                                    if *old == id
+                            )) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.initialized_order.push(
+                            PrivateScalarLocalBinding::UninitializedInt(id),
+                        );
+                        events.push(PrivateScalarCallEvent::LocalDeclaredEmpty(id));
+                    }
+                    PrivateScalarTask::DeclareEmptyBool(id) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.bool_values.contains_key(&id)
+                            || frame.initialized_order.iter().any(|entry| matches!(entry,
+                                PrivateScalarLocalBinding::Bool(old)
+                                    | PrivateScalarLocalBinding::UninitializedBool(old)
+                                    if *old == id
+                            )) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.initialized_order.push(
+                            PrivateScalarLocalBinding::UninitializedBool(id),
+                        );
+                        events.push(PrivateScalarCallEvent::BoolDeclaredEmpty(id));
+                    }
                     PrivateScalarTask::BindLocal(id) => {
                         let value = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -1910,11 +1944,21 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let slot = frame.values.get_mut(&id).ok_or(
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
-                        *slot = value;
-                        events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
+                        if let Some(slot) = frame.values.get_mut(&id) {
+                            *slot = value;
+                            events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
+                        } else {
+                            let pending = frame.initialized_order.iter_mut()
+                                .find(|entry| matches!(entry,
+                                    PrivateScalarLocalBinding::UninitializedInt(old)
+                                        if *old == id
+                                )).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            *pending = PrivateScalarLocalBinding::Int(id);
+                            if frame.values.insert(id, value).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
+                        }
                     }
                     PrivateScalarTask::BindBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
@@ -2003,11 +2047,21 @@ impl PreparedPrivateScalarCall {
                                     PrivateScalarCallRuntimeError::StateMismatch,
                                 )?,
                         };
-                        let slot = frame.bool_values.get_mut(&id).ok_or(
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
-                        *slot = value;
-                        events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                        if let Some(slot) = frame.bool_values.get_mut(&id) {
+                            *slot = value;
+                            events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                        } else {
+                            let pending = frame.initialized_order.iter_mut()
+                                .find(|entry| matches!(entry,
+                                    PrivateScalarLocalBinding::UninitializedBool(old)
+                                        if *old == id
+                                )).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            *pending = PrivateScalarLocalBinding::Bool(id);
+                            if frame.bool_values.insert(id, value).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                        }
                     }
                     PrivateScalarTask::CheckEarlyReturn(branch) => {
                         let frame = frames.last().ok_or(
