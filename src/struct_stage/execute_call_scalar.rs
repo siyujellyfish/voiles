@@ -831,7 +831,7 @@ impl PreparedPrivateScalarCall {
         // 非字面／名稱的合法 main int 初始化可能含算術、真函式
         // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
         let needs_main_local_runtime = main_prefix.iter().any(|statement| {
-            if matches!(statement.kind, StmtKind::Assign(_)) {
+            if matches!(&statement.kind, StmtKind::Assign(_)) {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
@@ -2777,6 +2777,111 @@ mod g18_private_scalar_call_tests {
             assert!(matches!(PreparedPrivateScalarCall::prepare(src),
                 Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
         }
+    }
+
+
+    #[test]
+    fn g18_r01_r02_函式內多筆可寫純值賦值必依原_checker_語句次序() {
+        let source = "fn calculate(n:int)->int{\nvar current:int = n+1\ncurrent = current+2\ncurrent = current+3\nreturn current\n}\nfn main()->int{\nreturn calculate(5)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.root_local_inits.len(), 1);
+        assert_eq!(checked.root_local_steps.len(), 3);
+        let id = checked.root_local_inits[0].declaration;
+        let result = checked.execute().unwrap();
+        assert_eq!(result.result, Ok(11));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        let changes = result.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(key, value) if *key == id => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(changes, [8, 11]);
+        assert!(result.events.contains(&PrivateScalarCallEvent::LocalInitialized(id, 6)));
+        assert_eq!(result.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalScopeEnded(key) if *key == id)).count(), 1);
+    }
+
+    #[test]
+    fn g18_r01_r02_賦值右值真呼叫先完成後才寫入持有者() {
+        let source = "fn bump(n:int)->int{\nreturn n+1\n}\nfn work(n:int)->int{\nvar value:int = n\nvalue = bump(value)\nreturn value+2\n}\nfn main()->int{\nreturn work(3)\n}\n";
+        let checked = checked(source);
+        let id = checked.root_local_inits[0].declaration;
+        let result = checked.execute().unwrap();
+        assert_eq!(result.result, Ok(6));
+        let returned = result.events.iter().position(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(4))).unwrap();
+        let assigned = result.events.iter().position(|event|
+            matches!(event, PrivateScalarCallEvent::LocalAssigned(key, 4) if *key == id)).unwrap();
+        assert!(returned < assigned);
+    }
+
+    #[test]
+    fn g18_r01_r02_main_具名_copyable_int_多次更新後才進入普通函式() {
+        let source = "fn identity(n:int)->int{\nreturn n\n}\nfn main()->int{\nvar value:int = 2\nvalue = value+3\nreturn identity(value)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.main_dynamic_steps.len(), 2);
+        let id = checked.main_dynamic_inits[0].declaration;
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalAssigned(id, 5)));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(id)));
+    }
+
+    #[test]
+    fn g18_r01_r02_真巢狀函式可寫宣告不能跨動態框架共用() {
+        let source = "fn work(n:int)->int{\nvar current:int = n\ncurrent = current+1\nreturn leaf(current)\n}\nfn leaf(x:int)->int{\nvar tmp:int = x+1\ntmp = tmp+1\nreturn tmp\n}\nfn main()->int{\nreturn work(1)\n}\n";
+        let checked = checked(source);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        let writes = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(id, v) => Some((*id, *v)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(writes.len(), 2);
+        assert_ne!(writes[0].0, writes[1].0);
+        assert_eq!((writes[0].1, writes[1].1), (2, 4));
+    }
+
+    #[test]
+    fn g18_r01_r02_賦值右值溢位不得補記後續賦值或假返回() {
+        let source = "fn work(n:int)->int{\nvar current:int = n\ncurrent = current+1\ncurrent = current+9223372036854775807\nreturn current\n}\nfn main()->int{\nreturn work(3)\n}\n";
+        let checked = checked(source);
+        let id = checked.root_local_inits[0].declaration;
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalAssigned(actual, 4) if *actual == id)).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalAssigned(..))).count(), 1);
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(id)));
+    }
+
+    #[test]
+    fn g18_r01_r02_const_重賦值與錯型別必由真_checker_先拒絕() {
+        for source in [
+            "fn work(n:int)->int{\nconst current:int = n\ncurrent = current+1\nreturn current\n}\nfn main()->int{\nreturn work(3)\n}\n",
+            "fn work(n:int)->int{\nvar current:int = n\ncurrent = true\nreturn current\n}\nfn main()->int{\nreturn work(3)\n}\n",
+            "fn work(n:int)->int{\nmissing = n+1\nreturn n\n}\nfn main()->int{\nreturn work(3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(source),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{source}");
+        }
+    }
+
+    #[test]
+    fn g18_r01_r02_已編譯賦值的_checker_身分遭竄改在執行前拒絕() {
+        let source = "fn work(n:int)->int{\nvar value:int = n\nvalue = value+2\nreturn value\n}\nfn main()->int{\nreturn work(3)\n}\n";
+        let mut checked = checked(source);
+        assert_eq!(checked.execute().unwrap().result, Ok(5));
+        if let PrivateScalarLocalStep::Assign { value, .. } = &mut checked.root_local_steps[1] {
+            *value = PrivateScalarReturnExpr::Constant(99);
+        } else {
+            panic!("真 Checker 有第二筆可寫賦值");
+        }
+        assert!(matches!(checked.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 }
