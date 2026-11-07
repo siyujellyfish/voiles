@@ -60,6 +60,7 @@ impl PrivateSelfMethodOutcome {
         ).count();
         let mut local_stack = Vec::<DeclarationId>::new();
         let mut initialized_local_ids = Vec::<DeclarationId>::new();
+        let mut assigned_local_ids = Vec::<DeclarationId>::new();
         for event in &self.method_local_events {
             match event {
                 PrivateSelfMethodLocalEvent::Initialized(id, _) => {
@@ -68,6 +69,16 @@ impl PrivateSelfMethodOutcome {
                     }
                     local_stack.push(*id);
                     initialized_local_ids.push(*id);
+                }
+                PrivateSelfMethodLocalEvent::Assigned(id, _) => {
+                    // 尚未完成所有原 Checker 局部宣告之前，不可能
+                    // 合法進入後續賦值群；只能變更已真初始化的 var int。
+                    if !local_stack.contains(id)
+                        || initialized_local_ids.len()
+                            != self.expected_method_local_ids.len() {
+                        return false;
+                    }
+                    assigned_local_ids.push(*id);
                 }
                 PrivateSelfMethodLocalEvent::ScopeEnded(id) => {
                     if local_stack.pop() != Some(*id) { return false; }
@@ -84,6 +95,11 @@ impl PrivateSelfMethodOutcome {
             && self.expected_method_local_ids.starts_with(&initialized_local_ids)
             && (!self.result.is_ok()
                 || initialized_local_ids.len() == self.expected_method_local_ids.len());
+        let approved_assignments = self.expected_method_assignment_ids
+            .starts_with(&assigned_local_ids)
+            && (!self.result.is_ok()
+                || assigned_local_ids.len()
+                    == self.expected_method_assignment_ids.len());
         // 同步方法只有一個已核准的 self 框架；局部不應被
         // 記錄在真正 FunctionEntered 之前，亦不應在其
         // FunctionExited 之後以 main 的匿名基底框架補造。
@@ -94,6 +110,7 @@ impl PrivateSelfMethodOutcome {
                 PrivateSharedCallExitEvent::FunctionEntered => inside_method = true,
                 PrivateSharedCallExitEvent::FunctionExited { .. } => inside_method = false,
                 PrivateSharedCallExitEvent::LocalInitialized(_)
+                    | PrivateSharedCallExitEvent::LocalAssigned(_)
                     | PrivateSharedCallExitEvent::LocalScopeEnded(_) if !inside_method => {
                     local_events_inside_real_method = false;
                 }
@@ -103,11 +120,14 @@ impl PrivateSelfMethodOutcome {
         let local_projection = self.method_local_events.iter().map(|event| match event {
             PrivateSelfMethodLocalEvent::Initialized(id, _) =>
                 PrivateSharedCallExitEvent::LocalInitialized(*id),
+            PrivateSelfMethodLocalEvent::Assigned(id, _) =>
+                PrivateSharedCallExitEvent::LocalAssigned(*id),
             PrivateSelfMethodLocalEvent::ScopeEnded(id) =>
                 PrivateSharedCallExitEvent::LocalScopeEnded(*id),
         }).collect::<Vec<_>>();
         let exit_projection = self.exit_events.iter().filter(|event| matches!(event,
             PrivateSharedCallExitEvent::LocalInitialized(_)
+                | PrivateSharedCallExitEvent::LocalAssigned(_)
                 | PrivateSharedCallExitEvent::LocalScopeEnded(_)
         )).cloned().collect::<Vec<_>>();
         let failure_unwind_precedes_cleanup = self.result.is_ok()
@@ -121,6 +141,7 @@ impl PrivateSelfMethodOutcome {
             ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
             && approved_local_prefix
+            && approved_assignments
             && local_events_inside_real_method
             && local_projection == exit_projection
             && failure_unwind_precedes_cleanup
