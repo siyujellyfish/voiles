@@ -2822,7 +2822,12 @@ impl PreparedPrivateScalarCall {
         ).map_err(PrivateScalarCallPrepareError::Check)?;
         // 此私有切片只限制已核准的純 int／單 return 執行形狀，
         // 不再以固定函式數量或呼叫圖是否成環，拒絕合法 Checker 來源。
-        if !verified.structs.is_empty() || verified.functions.len() < 2 {
+        // R01：其他已經由原 Checker 完整核准、但未被 main 建構或
+        // 呼叫的 struct 宣告，不是本次純 int 呼叫圖的動態工作。
+        // 不能只因來源含結構定義就拒絕合法的普通函式。
+        // 結構建構、self 方法及資源欄位仍不在此 evaluator 的
+        // 工作計畫內；若真的由 main 使用，後續真 TypedHIR 會拒絕。
+        if verified.functions.len() < 2 {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "Copyable int 真執行須具備 main 及已核准的普通函式",
             ));
@@ -7419,6 +7424,72 @@ mod g18_private_scalar_call_tests {
         let wrong = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn main()->int{\nreturn ready(true)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(wrong),
             Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+
+    // R01：source 內可存在不會建構或執行的合法結構宣告。
+    // 此切片只執行原 Checker 已准的真普通函式圖。
+    #[test]
+    fn g18_r01_無關int結構宣告不應阻斷main純函式執行() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn step(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn step(8)\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.verified.structs.len(), 1);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.resource_events.is_empty());
+        assert!(out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r01_未使用結構的合法self方法不可冒充真函式進入() {
+        let src = "struct Archive{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\n}\nfn step(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nreturn step(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "get"
+        )));
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_r01_無關結構的utf8預設欄位不得於main執行時建立資源() {
+        let src = "struct Archive{\nvar title:str = \"未使用🪼\"\n}\nfn step(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn step(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_旁觀結構宣告不影響真main分支字串借用與清理() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar title:str = \"旁觀\"\n}\nfn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar owner:str = \"唯一🪼\"\nresult = inspect(owner,3)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r01_非法重複結構欄位仍由原checker拒絕() {
+        let src = "struct Archive{\nvar count:int = 1\nvar count:int = 2\n}\nfn step(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn step(2)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r01_來源已驗證的結構清單遭竄改必在執行前拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn step(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn step(4)\n}\n";
+        let mut plan = checked(src);
+        plan.verified.structs.clear();
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 
