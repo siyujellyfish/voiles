@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 八十四項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 九十三項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
@@ -10,6 +10,15 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r04_同步self方法int局部以真參數初始化後正確返回",
+    "g18_r04_同步self連續兩個int局部依原checker宣告先後傳值及逆序離域",
+    "g18_r04_方法局部Copyable同一來源多次讀取不當成Move或重借",
+    "g18_r05_方法第二int局部初始化溢位只離域已初始化第一槽",
+    "g18_r05_方法返回算式溢位先逆序清真int局部再歸還self票據",
+    "g18_r05_方法存在int局部且方法故障注入前不假造初始化",
+    "g18_r04_篡改方法int局部編譯TypedHIR樹及真宣告身分一律執行前拒絕",
+    "g18_r04_方法局部未知名稱或bool混入初始化交由原Checker拒絕",
+    "g18_r05_偽造方法局部逆序離域或重複初始化皆拒絕",
     "g18_r05_共用帳簿拒絕同步self在真返回之前提前還票",
     "g18_r05_共用帳簿拒絕同步self成功退出後才補還真票據",
     "g18_r05_同步self真共享借用及成功返回逐筆由共用進退帳驗證",
