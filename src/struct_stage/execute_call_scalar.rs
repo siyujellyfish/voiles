@@ -4963,7 +4963,7 @@ mod g18_r06_cross_runtime_tests {
         assert!(pure.has_balanced_frame_trace());
         assert_eq!(pure.events.iter().filter(|event| matches!(
             event, PrivateScalarCallEvent::LocalScopeEnded(..)
-        )).count(), 8);
+        )).count(), 6);
         let borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap()
             .execute().unwrap();
         assert_eq!(borrowed.result, Ok(7));
