@@ -5592,6 +5592,117 @@ mod g18_private_scalar_call_tests {
         assert!(!out.has_balanced_frame_trace());
     }
 
+    #[test]
+    fn g18_r04_具名_const_str_與_int_真同框架借用票據先還才釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst owner:str = \"來源🪼\"\nreturn inspect(owner,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let acquired = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).unwrap();
+        let released = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let owner_released = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        assert!(acquired < released && released < owner_released);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterBound(_, _)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_具名_var_str_獨占借用與_copyable_int_真返回() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar owner:str = \"唯一\"\nreturn inspect(owner,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterBound(_, BorrowFact {
+                kind: BorrowKind::ExclusiveWrite, ..
+            })
+        )));
+    }
+
+    #[test]
+    fn g18_r04_父函式局部_ownedstr_真正借用給子函式並續算() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn parent(n:int)->int{\nconst owner:str = \"父\"\nreturn leaf(owner,n)+2\n}\nfn main()->int{\nreturn parent(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r05_借用首實參後第二實參動態溢位須還真票據再清理_utf8() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn explode(n:int)->int{\nreturn n+9223372036854775807\n}\nfn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner,explode(1))\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let loan_returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let resource_released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        assert!(loan_returned < resource_released);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::BorrowParameterBound(_, _)
+        )));
+    }
+
+    #[test]
+    fn g18_r05_真_str_借用參數綁定後故障依原快照全數歸還() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner,3)\n}\n";
+        let out = checked(src).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r04_真_checker_借用來源篡改或隱含複製仍拒絕() {
+        let illegal = "fn inspect(item:str)->int{\nreturn 7\n}\nfn main()->int{\nconst owner:str = \"來源\"\nvar copied:str = owner\nreturn inspect(owner)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(illegal),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let src = "fn inspect(item:str)->int{\nreturn 7\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(7));
+        if let Some(PrivateScalarReturnExpr::Call { arguments, .. }) =
+            &mut prepared.main_dynamic_call {
+            if let PrivateScalarCallArgument::BorrowStr { fact, .. } = &mut arguments[0] {
+                fact.source = DeclarationId(0);
+            } else { panic!("原 BorrowFact 工作計畫未保存"); }
+        } else { panic!("main 原 Checker 真呼叫工作計畫缺失"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
