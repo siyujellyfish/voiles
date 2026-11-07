@@ -902,10 +902,10 @@ mod g18_private_method_self_tests {
     }
 
     #[test]
-    fn g18_f_未接通的雙參數來源加法仍拒絕_不假造動態值() {
+    fn g18_f_同一_int_參數左右加法仍取同一真框架值() {
         let src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\nfn get(n:int)->int{\nreturn n+n\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        let plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(6));
     }
 
     fn overloaded_int_source(reverse: bool, owner_mutable: bool) -> String {
@@ -1152,6 +1152,16 @@ mod g18_private_method_self_tests {
         let mut wrong = checked(&src);
         wrong.additional_argument_bindings[0].0 = wrong.argument_binding.unwrap().0;
         assert!(matches!(wrong.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_三個_int_方法參數按原宣告位置獨立綁定返回第三個() {
+        let src = "struct Counter{\nvar count:int = 7\nfn last(a:int,b:int,c:int)->int{\nreturn c\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.last(4,8,12)\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.argument_binding.map(|entry| entry.1), Some(4));
+        assert_eq!(plan.additional_argument_bindings.len(), 2);
+        assert_eq!(plan.additional_argument_bindings.iter().map(|entry| entry.1).collect::<Vec<_>>(), [8, 12]);
+        assert_eq!(plan.execute().unwrap().result, Ok(12));
     }
 
     #[test]
