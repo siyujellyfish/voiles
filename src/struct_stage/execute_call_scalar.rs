@@ -6880,6 +6880,77 @@ mod g18_private_scalar_call_tests {
     }
 
 
+
+    #[test]
+    fn g18_r01_main_var首次賦值的普通函式來源必真執行() {
+        let src = "fn increment(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar out:int\nout = increment(4)\nreturn out\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let declared = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_))).unwrap();
+        let entered = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "increment"
+        )).unwrap();
+        let initialized = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(_, 5))).unwrap();
+        assert!(declared < entered && entered < initialized);
+    }
+
+    #[test]
+    fn g18_r01_main先返回葉函式後更新局部不得逆序求值() {
+        let src = "fn leaf()->int{\nreturn 7\n}\nfn main()->int{\nvar value:int\nvalue = leaf()+3\nreturn value\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        let returned = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(7))).unwrap();
+        let initialized = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(_, 10))).unwrap();
+        assert!(returned < initialized);
+    }
+
+    #[test]
+    fn g18_r02_main同一var先以函式初次賦值再由函式重賦值() {
+        let src = "fn a(n:int)->int{\nreturn n+2\n}\nfn b(n:int)->int{\nreturn n+3\n}\nfn main()->int{\nvar result:int\nresult = a(1)\nresult = b(result)\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) =>
+                Some(name.as_str()), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["a", "b"]);
+    }
+
+    #[test]
+    fn g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫() {
+        let src = "fn first(n:int)->int{\nreturn n+1\n}\nfn later()->int{\nreturn 3\n}\nfn main()->int{\nvar result:int\nresult = first(9223372036854775807)\nresult = later()\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "later"
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r01_main賦值來源計畫遭竄改必先拒絕不得偽造執行() {
+        let src = "fn leaf()->int{\nreturn 2\n}\nfn main()->int{\nvar value:int\nvalue = leaf()\nreturn value\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(2));
+        if let PrivateScalarLocalStep::Assign { value, .. }
+            = &mut plan.main_dynamic_steps[1] {
+            *value = PrivateScalarReturnExpr::Constant(900);
+        } else { panic!("原 Checker 的 main 右值真呼叫必須保留"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
 }
 
 
