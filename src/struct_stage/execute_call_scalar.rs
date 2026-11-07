@@ -46,8 +46,13 @@ enum PrivateScalarCallEvent {
     /// R05：由真正 OwnedStrRuntime 當下產生的 ResourceId 事件，
     /// 在同一個函式進退序列中保留相對順序，不虛構新資源。
     OwnedResource(crate::owned_str_runtime::ResourceEvent),
+    /// 每筆真 str 宣告／移動的目前 DeclarationId 與唯一 ResourceId，
+    /// 讓借用票據不能錯綁至另一個仍存活的字串資源。
+    ResourceOwnerBound(DeclarationId, u64),
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     LoanAcquired(crate::borrow_safety::BorrowTicket),
+    /// R05：真取得票據時同步記錄其 UTF-8 資源身分，防止先釋放後歸還。
+    LoanResourceLinked(crate::borrow_safety::BorrowTicket, u64),
     LoanReturned(crate::borrow_safety::BorrowTicket),
     BorrowParameterBound(DeclarationId, BorrowFact),
     Returned(i64),
@@ -73,7 +78,10 @@ impl PrivateScalarCallOutcome {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
             resource_ids: std::collections::HashSet<u64>,
+            owner_resources: BTreeMap<DeclarationId, u64>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
+            /// 每張活躍票據與真 ResourceId 一一對應，不以名稱推算持有權。
+            loan_resources: Vec<(crate::borrow_safety::BorrowTicket, u64)>,
             /// 借用參數須在本次函式退出前從直接呼叫者歸還。
             imported_loans: Vec<crate::borrow_safety::BorrowTicket>,
             returned: bool,
@@ -81,7 +89,9 @@ impl PrivateScalarCallOutcome {
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
             resource_ids: std::collections::HashSet::new(),
-            loans: Vec::new(), imported_loans: Vec::new(), returned: false,
+            owner_resources: BTreeMap::new(),
+            loans: Vec::new(), loan_resources: Vec::new(),
+            imported_loans: Vec::new(), returned: false,
         }];
         let mut recorded = Vec::new();
         let mut created_ids = std::collections::HashSet::<u64>::new();
@@ -92,7 +102,9 @@ impl PrivateScalarCallOutcome {
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
                         resource_ids: std::collections::HashSet::new(),
-            loans: Vec::new(), imported_loans: Vec::new(), returned: false,
+            owner_resources: BTreeMap::new(),
+            loans: Vec::new(), loan_resources: Vec::new(),
+            imported_loans: Vec::new(), returned: false,
                     });
                 }
                 PrivateScalarCallEvent::ParameterBound(..)
@@ -161,27 +173,71 @@ impl PrivateScalarCallOutcome {
                     if frame.returned || duplicate { return false; }
                     frame.loans.push(*ticket);
                 }
+                PrivateScalarCallEvent::LoanResourceLinked(ticket, resource_id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.owner_resources.get(&ticket.fact().source) != Some(resource_id)
+                        || frame.returned || !frame.loans.contains(ticket)
+                        || frame.loan_resources.iter().any(|(loan, _)| loan == ticket) {
+                        return false;
+                    }
+                    frame.loan_resources.push((*ticket, *resource_id));
+                }
                 PrivateScalarCallEvent::LoanReturned(ticket) => {
                     let Some(frame) = frames.iter_mut().rev()
                         .find(|frame| frame.loans.contains(ticket)) else { return false; };
                     let index = frame.loans.iter().position(|loan| loan == ticket)
                         .expect("已確認同一真 BorrowTicket");
                     frame.loans.remove(index);
+                    let Some(link) = frame.loan_resources.iter()
+                        .position(|(loan, _)| loan == ticket) else { return false; };
+                    frame.loan_resources.remove(link);
                 }
                 PrivateScalarCallEvent::OwnedResource(resource) => {
+                    // 票據未歸還前，所指向的實際 UTF-8 資源不得被移動、
+                    // 交還或釋放；獨立平衡的資源帳簿不能取代此交叉因果。
+                    let conflicts = match resource {
+                        crate::owned_str_runtime::ResourceEvent::Moved(id)
+                        | crate::owned_str_runtime::ResourceEvent::Returned(id)
+                        | crate::owned_str_runtime::ResourceEvent::Released(id) =>
+                            frames.iter().any(|frame| frame.loan_resources.iter()
+                                .any(|(_, linked)| linked == id)),
+                        crate::owned_str_runtime::ResourceEvent::Created(_) => false,
+                    };
+                    if conflicts { return false; }
                     let Some(frame) = frames.last_mut() else { return false; };
                     let valid = match resource {
                         crate::owned_str_runtime::ResourceEvent::Created(id) =>
                             !frame.returned && created_ids.insert(*id)
                                 && frame.resource_ids.insert(*id),
                         crate::owned_str_runtime::ResourceEvent::Moved(id)
-                            | crate::owned_str_runtime::ResourceEvent::Returned(id) =>
-                            !frame.returned && frame.resource_ids.contains(id),
-                        crate::owned_str_runtime::ResourceEvent::Released(id) =>
-                            frame.resource_ids.remove(id),
+                            | crate::owned_str_runtime::ResourceEvent::Returned(id) => {
+                            // 真移動先移除舊 DeclarationId 持有者；新宣告
+                            // 必須用 ResourceOwnerBound 接續接管同一 ResourceId。
+                            let former = frame.owner_resources.iter().find_map(|(owner, held)|
+                                (held == id).then_some(*owner));
+                            !frame.returned && frame.resource_ids.contains(id)
+                                && former.is_some_and(|owner|
+                                    frame.owner_resources.remove(&owner) == Some(*id))
+                        }
+                        crate::owned_str_runtime::ResourceEvent::Released(id) => {
+                            let former = frame.owner_resources.iter().find_map(|(owner, held)|
+                                (held == id).then_some(*owner));
+                            frame.resource_ids.remove(id)
+                                && former.is_some_and(|owner|
+                                    frame.owner_resources.remove(&owner) == Some(*id))
+                        }
                     };
                     if !valid { return false; }
                     recorded.push(resource.clone());
+                }
+                PrivateScalarCallEvent::ResourceOwnerBound(declaration, resource_id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || !frame.resource_ids.contains(resource_id)
+                        || frame.owner_resources.contains_key(declaration)
+                        || frame.owner_resources.values().any(|held| held == resource_id) {
+                        return false;
+                    }
+                    frame.owner_resources.insert(*declaration, *resource_id);
                 }
                 PrivateScalarCallEvent::Returned(_) => {
                     let Some(frame) = frames.last_mut() else { return false; };
@@ -194,6 +250,8 @@ impl PrivateScalarCallOutcome {
                     if frame.name.as_deref() != Some(name.as_str())
                         || frame.returned != *returned || !frame.locals.is_empty()
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
+                        || !frame.owner_resources.is_empty()
+                        || !frame.loan_resources.is_empty()
                         || frames.last().is_none_or(|parent|
                             frame.imported_loans.iter().any(|ticket|
                                 parent.loans.contains(ticket))) {
@@ -207,7 +265,9 @@ impl PrivateScalarCallOutcome {
         }
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
+            && frames[0].owner_resources.is_empty()
             && frames[0].loans.is_empty()
+            && frames[0].loan_resources.is_empty()
             && self.parameter_slots_after_exit == 0
             && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
@@ -1534,12 +1594,17 @@ impl PreparedPrivateScalarCall {
                         // 先確認資源仍有效，再取得本次動態借用真票據。
                         resources.read(owner)
                             .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        let resource_id = resources.resource_id(owner)
+                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
                         let ticket = frame.borrow_tracker.acquire(fact.source, fact.kind)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         frame.borrow_tracker.check_ticket_access(
                             ticket, BorrowKind::SharedRead,
                         ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         events.push(PrivateScalarCallEvent::LoanAcquired(ticket));
+                        events.push(PrivateScalarCallEvent::LoanResourceLinked(
+                            ticket, resource_id,
+                        ));
                         completed_arguments.push(
                             PrivateScalarEvaluatedArgument::Borrow { ticket, fact },
                         );
@@ -1627,6 +1692,11 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?.push((id, name.to_owned()));
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
+                        let resource_id = resources.resource_id(name)
+                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        events.push(PrivateScalarCallEvent::ResourceOwnerBound(
+                            id, resource_id,
+                        ));
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
@@ -6167,6 +6237,118 @@ mod g18_r06_cross_runtime_tests {
         let duplicate = out.events[loan].clone();
         out.events.insert(loan + 1, duplicate);
         assert!(!out.has_balanced_frame_trace());
+    }
+
+
+    #[test]
+    fn g18_r05_r06_每張真借用票據必連至實際_utf8_resourceid() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst first:str = \"甲\"\nconst second:str = \"乙🪼\"\nreturn inspect(first,second,4)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let linked = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanResourceLinked(ticket, id) =>
+                Some((*ticket, *id)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(linked.len(), 2);
+        assert_ne!(linked[0].0, linked[1].0);
+        assert_eq!([linked[0].1, linked[1].1], [1, 2]);
+        for (ticket, id) in linked {
+            let acquired = out.events.iter().position(|event| matches!(event,
+                PrivateScalarCallEvent::LoanAcquired(found) if found == &ticket
+            )).unwrap();
+            let joined = out.events.iter().position(|event| matches!(event,
+                PrivateScalarCallEvent::LoanResourceLinked(found, linked)
+                    if found == &ticket && *linked == id
+            )).unwrap();
+            let returned = out.events.iter().position(|event| matches!(event,
+                PrivateScalarCallEvent::LoanReturned(found) if found == &ticket
+            )).unwrap();
+            assert!(acquired < joined && joined < returned);
+        }
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造借用未歸還便先釋放真來源資源必拒絕() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"來源\"\nreturn inspect(source,4)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        // 將唯一真正 Released 提前至票據取得後、被呼叫者進入前。
+        // ResourceEvent 序列本身仍平衡，舊稽核只看兩套獨立帳簿會漏判。
+        let release = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        let event = out.events.remove(release);
+        let linked = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).unwrap();
+        out.events.insert(linked + 1, event);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.resource_events));
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_票據資源身分偽造重複綁定或缺失均拒絕() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"來源\"\nreturn inspect(source,4)\n}\n";
+        let original = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(original.has_balanced_frame_trace());
+        let position = original.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, _)
+        )).unwrap();
+
+        let mut wrong_id = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        if let PrivateScalarCallEvent::LoanResourceLinked(_, resource) =
+            &mut wrong_id.events[position] {
+            *resource = 999;
+        } else { panic!("缺少原票據連結"); }
+        assert!(!wrong_id.has_balanced_frame_trace());
+
+        let mut duplicate = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        let duplicate_link = duplicate.events[position].clone();
+        duplicate.events.insert(position + 1, duplicate_link);
+        assert!(!duplicate.has_balanced_frame_trace());
+
+        let mut missing = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        missing.events.remove(position);
+        assert!(!missing.has_balanced_frame_trace());
+    }
+
+
+    #[test]
+    fn g18_r05_r06_同框架兩個存活_resourceid_借用不得錯綁他人() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst first:str = \"甲\"\nconst second:str = \"乙\"\nreturn inspect(first,4)\n}\n";
+        let baseline = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(baseline.result, Ok(4));
+        assert!(baseline.has_balanced_frame_trace());
+        assert_eq!(baseline.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        // 真來源是 first / ResourceId 1。假裝其連結是同樣活躍的
+        // second / ResourceId 2：僅驗證 ResourceId 存在仍會誤放行。
+        let mut wrong = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        let linked = wrong.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).unwrap();
+        if let PrivateScalarCallEvent::LoanResourceLinked(_, resource) =
+            &mut wrong.events[linked] {
+            *resource = 2;
+        } else { panic!("缺少真連結"); }
+        assert!(!wrong.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(wrong),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
 }
