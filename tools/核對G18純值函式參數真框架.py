@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百零九項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百一十七項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,14 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r03_具名_bool_true_提前_return_不可再執行未達返回路徑",
+    "g18_r03_具名_bool_false_不走提前_return_而正常執行後段",
+    "g18_r03_已核准_var_bool_更新後真_if_重讀而非使用宣告舊值",
+    "g18_r03_else_if_依真_checker_條件順序選擇唯一提前返回",
+    "g18_r03_巢狀子函式提前返回只退出該函式不跳過父框架返回",
+    "g18_r03_提前返回分支溢位只退出真的已初始化作用域",
+    "g18_r03_未宣告_bool_及_const_bool_重綁由_checker_靜態拒絕",
+    "g18_r03_篡改已編譯分支條件前須拒絕任何真框架",
     "g18_r01_r02_函式內多筆可寫純值賦值必依原_checker_語句次序",
     "g18_r01_r02_賦值右值真呼叫先完成後才寫入持有者",
     "g18_r01_r02_main_具名_copyable_int_多次更新後才進入普通函式",

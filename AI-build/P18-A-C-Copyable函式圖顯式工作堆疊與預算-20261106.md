@@ -194,3 +194,22 @@
 - 同一顯式工作堆疊 `AssignLocal(DeclarationId)` **只在 RHS 真求值完成後更新原框架已存在 slot**，寫入時產生 `LocalAssigned`；失敗不更新，也不假造新 `LocalInitialized`／新資源。所有呼叫的區域宣告／寫入保持原來源順序，各真呼叫框架具獨立 slot。原已核准的 `LocalScopeEnded` 仍僅對真正初始化的局部宣告記錄離域。
 - 新增七項原 Checker 真 Rust 正反：多筆更新順序、RHS 子函式先返回再更新、main 多次更新後傳參、兩函式各自更新、第二 RHS 溢位不寫入且真離域、const／錯型別／未知目標 Checker 拒絕、竄改已編譯賦值在執行前 SourceChanged。
 - 函式專項 Gate **102→109**；原 G18 P18.1／P18.3／P18.5 追溯、CI 與 AI-build 同步。**R01/R02 只是首批子集**：仍待控制流程、條件提前返回、所有權混合函式及完整總驗收。原 P18 六項仍 0/6 正式 Passed；最新 PR HEAD 三必要 CI completed/success、作者／base／mergeable 檢查後 Squash merge，新 main 同 SHA 重驗。
+
+
+---
+
+## V1-R03-01｜真 bool 條件、提前 Return／ElseIf 與動態退出（2026-11-07）
+
+- 基線 `main=26c85ff52b03497da181ab59b1d5ca628c4b8688`，R01／R02 首批 #580 已最新 HEAD 三必要 CI success、Squash merge。尚缺函式本體的原 Checker if 返回控制轉移：舊函式只有最終 Return，即使前置已核准 if 分支有 return 亦 Unsupported。
+- 引入 `PrivateScalarBoolExpr` 的真 bool 常值、具名與 Group 來源：原 Parser AST、原 Checker ScalarHIR bool Expression、Reference HIR 的唯一 DeclarationId、Lexical Name／Keyword／括號都必須同源。具名 bool 宣告與原 Checker 可寫 var bool 更新逐筆記入 `PrivateScalarLocalStep`。布林純值在每一個真函式框架有獨立 slot，不產生資源擁有權／BorrowTicket。
+- 原 Parser `StmtKind::If` → 已核准單筆 return 葉分支 `PrivateScalarEarlyIf`，包含 `if／else if／else` 原宣告順序；僅在執行到該條件時產生 `ConditionalChecked`，只選擇一個真分支，所選 return 以同一顯式工作堆疊求值，跳過**該函式**後續不可達工作項但保留父函式的 `ExitCall`。不接受 if 分支內其他未知語句或新增 bool 語意；不藉常值預判跳過真 Checker。
+- 動態 bool+int 局部宣告統一 `PrivateScalarLocalBinding` 的實際建立順序，函式成功、溢位、故障或受控預算退出時反向記錄 BoolScopeEnded／LocalScopeEnded；這兩者都是 Copyable 純值離域，**不是 ResourceId 或 ReleaseEvent**。
+- 八項真 Rust 正反：true 早返不可達路徑、false 落至尾端 return、var bool 更新後條件真重讀、else-if 依序選擇、巢狀提前 return 僅退出該框架、所選提前 return 溢位只回收真初始化、const bool／未知／錯型別 Checker 拒絕及來源條件計畫篡改前 SourceChanged。
+- 函式專項 Gate **109→117**，G18 原 P18.1／P18.3／P18.5 追溯與 CI 同步。這只完成 R03 的真分支／提前返回子集；for／while、任意區塊作用域與 str 資源仍在 R03／R04～R07 待整合，P18 原六項仍 0/6 Passed。須最新 PR HEAD 三必要 CI completed/success、作者／base／mergeable 及新 main 同 SHA 驗證。
+
+
+### V1-R03 首輪 CI 修正：全 if 分支返回後的 Checker 不可達 HIR
+
+- 第一輪 CI Rust P04 共 1563 項成功，僅新增 else-if 回歸因尾端 `return n+4` 無 HIR 而被 `Unsupported`。原 Checker 能證明本來源 `if(first) return／else if(second) return／else return` 全部返回，所以尾端在原靜態控制流上完全不可達，不應造假必需的 TypedHIR。
+- 新增 `PrivateScalarEarlyIf::always_returns()` 只對完整已編譯真葉返回的 else／else-if 鏈證明全路徑退出；**僅當原 Checker 確實沒有該尾端 Expression HIR** 才使用不可達 Sentinel。其執行期若被意外執行，回報 `StateMismatch`，絕不假裝正常 int return；不省略任何仍可達且缺 HIR 的合法執行。
+- 已更新 Rust 原來源邊界與文件。需要在修訂後最新 PR HEAD 三項必要 CI 全 completed/success，再合併。

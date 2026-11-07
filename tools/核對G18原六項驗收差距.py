@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_具名_bool_true_提前_return_不可再執行未達返回路徑",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_具名_bool_false_不走提前_return_而正常執行後段",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_已核准_var_bool_更新後真_if_重讀而非使用宣告舊值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_依真_checker_條件順序選擇唯一提前返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀子函式提前返回只退出該函式不跳過父框架返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_函式內多筆可寫純值賦值必依原_checker_語句次序",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_賦值右值真呼叫先完成後才寫入持有者",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_main_具名_copyable_int_多次更新後才進入普通函式",
@@ -109,6 +114,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_提前返回分支溢位只退出真的已初始化作用域",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_賦值右值溢位不得補記後續賦值或假返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_main_動態初始化中後筆溢位不得跳過前筆真離域",
         "struct_stage::g18_private_scalar_call_tests::g18_c_第二局部初始化運算溢位只釋放已完成宣告",
@@ -225,6 +231,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_未宣告_bool_及_const_bool_重綁由_checker_靜態拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_篡改已編譯分支條件前須拒絕任何真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_const_重賦值與錯型別必由真_checker_先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_r02_已編譯賦值的_checker_身分遭竄改在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_a_main_真動態初始化計畫被篡改必在執行前拒絕",
