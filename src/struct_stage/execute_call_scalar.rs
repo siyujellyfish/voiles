@@ -6274,9 +6274,10 @@ mod g18_r06_cross_runtime_tests {
 
         let mut wrong_id = PreparedPrivateScalarCall::prepare(src).unwrap()
             .execute().unwrap();
-        let PrivateScalarCallEvent::LoanResourceLinked(_, ref mut resource) =
-            wrong_id.events[position] else { panic!("缺少原票據連結"); };
-        *resource = 999;
+        if let PrivateScalarCallEvent::LoanResourceLinked(_, resource) =
+            &mut wrong_id.events[position] {
+            *resource = 999;
+        } else { panic!("缺少原票據連結"); }
         assert!(!wrong_id.has_balanced_frame_trace());
 
         let mut duplicate = PreparedPrivateScalarCall::prepare(src).unwrap()
