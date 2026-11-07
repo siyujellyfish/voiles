@@ -4007,3 +4007,136 @@ mod g18_private_scalar_call_tests {
     }
 
 }
+
+
+/// R06：跨各個原 Checker 已核准執行器的**真動態結果**整合回歸。
+/// 不假設各路徑已共享同一 runtime，亦不把 int 離域等同 OwnedStr Release。
+#[cfg(test)]
+mod g18_r06_cross_runtime_tests {
+    use super::*;
+    use crate::owned_str_runtime::{self, ResourceEvent};
+
+    fn scalar() -> &'static str {
+        "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+2\n}\nreturn value+1\n}\nfn main()->int{\nreturn choose(true,3)\n}\n"
+    }
+
+    fn borrow() -> &'static str {
+        "fn measure(item:str)->int{\nreturn 7\n}\nfn main()->int{\nconst owner:str = \"來源🪼\"\nreturn measure(owner)\n}\n"
+    }
+
+    fn move_borrow() -> &'static str {
+        "fn consume(owned:str,watch:str)->int{\nvar local:str = owned.move()\nreturn 11\n}\nfn main()->int{\nvar source:str = \"唯一🪼\"\nconst observer:str = \"借用\"\nreturn consume(source.move(),observer)\n}\n"
+    }
+
+    fn method() -> &'static str {
+        "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get()\n}\n"
+    }
+
+    fn recursive() -> &'static str {
+        "fn descend(flag:bool,payload:str)->int{\nvar local:str = \"層🪼\"\nif(flag){\nvar nested:str = \"內\"\nreturn descend(false,nested)\n}\nreturn 7\n}\nfn main()->int{\nvar root:str = \"根\"\nreturn descend(true,root)\n}\n"
+    }
+
+    #[test]
+    fn g18_r06_混合布林整數與真借用成功返回各守門須同時成立() {
+        let pure = PreparedPrivateScalarCall::prepare(scalar()).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Ok(6));
+        assert!(pure.has_balanced_frame_trace());
+        assert_eq!(pure.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::LocalAssigned(_, 5))).count(), 1);
+        let borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap().execute().unwrap();
+        assert_eq!(borrowed.result, Ok(7));
+        assert!(borrowed.has_balanced_borrow_resource_trace());
+        assert_eq!(borrowed.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+        // int/bool ScopeEvent 不會也不能憑空創造 OwnedStr 事件。
+        assert!(!pure.events.is_empty());
+    }
+
+    #[test]
+    fn g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任() {
+        let mixed = PreparedPrivateMixedOwnershipCall::prepare(move_borrow())
+            .unwrap().execute().unwrap();
+        assert_eq!(mixed.result, Ok(11));
+        assert!(mixed.has_balanced_mixed_resource_trace());
+        assert_eq!(mixed.events.iter().filter(|e|
+            matches!(e, ResourceEvent::Created(_))).count(), 2);
+        let own = PreparedPrivateSelfMethod::prepare(method())
+            .unwrap().execute().unwrap();
+        assert_eq!(own.result, Ok(7));
+        assert!(own.has_balanced_self_borrow_trace());
+        assert!(own.events.is_empty());
+        assert!(mixed.ticket_returned && own.ticket_returned);
+    }
+
+    #[test]
+    fn g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回() {
+        let plan = PreparedPrivateRecursiveStr::prepare(recursive()).unwrap();
+        let exhausted = plan.execute(PrivateRecursiveStrBudget {
+            max_call_frames: 2, max_steps: 80,
+        }).unwrap();
+        assert_eq!(exhausted.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert!(exhausted.has_balanced_resource_frame_trace());
+        assert!(exhausted.loans_returned);
+        assert!(owned_str_runtime::event_trace_balanced(&exhausted.events));
+        assert!(exhausted.frames.iter().all(|event| !matches!(
+            event, PrivateRecursiveFrameEvent::Exited { returned: true, .. }
+        )));
+        let borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap()
+            .execute_with_fault(true).unwrap();
+        assert_eq!(borrowed.result, Err(PrivateCallBorrowRuntimeError::InjectedFailure));
+        assert!(borrowed.has_balanced_borrow_resource_trace());
+        assert!(!borrowed.call_exited);
+    }
+
+    #[test]
+    fn g18_r06_不同執行器的正常失敗不得丟失已建資源或複製假返回() {
+        let pure = PreparedPrivateScalarCall::prepare(
+            "fn inc(n:int)->int{\nvar x:int = n\nx = x+1\nreturn x\n}\nfn main()->int{\nreturn inc(9223372036854775807)\n}\n"
+        ).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(pure.has_balanced_frame_trace());
+        assert!(!pure.events.iter().any(|ev| matches!(
+            ev, PrivateScalarCallEvent::Returned(_)
+        )));
+        let method = PreparedPrivateSelfMethod::prepare(method()).unwrap()
+            .execute_with_fault(true).unwrap();
+        assert_eq!(method.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert!(!method.method_exited);
+        let mixed = PreparedPrivateMixedOwnershipCall::prepare(move_borrow()).unwrap()
+            .execute_with_fault(Some(3)).unwrap();
+        assert_eq!(mixed.result, Err(PrivateMixedOwnershipRunError::InjectedFailure));
+        assert!(mixed.has_balanced_mixed_resource_trace());
+        assert!(mixed.ticket_returned);
+    }
+
+    #[test]
+    fn g18_r06_跨模型偽造離域資源票據任一項必在交付稽核失敗() {
+        let mut pure = PreparedPrivateScalarCall::prepare(scalar()).unwrap()
+            .execute().unwrap();
+        pure.events.push(PrivateScalarCallEvent::LocalScopeEnded(DeclarationId(0)));
+        assert!(!pure.has_balanced_frame_trace());
+        let mut borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap()
+            .execute().unwrap();
+        borrowed.ticket_returned = false;
+        assert!(!borrowed.has_balanced_borrow_resource_trace());
+        let mut mixed = PreparedPrivateMixedOwnershipCall::prepare(move_borrow())
+            .unwrap().execute().unwrap();
+        mixed.events.clear();
+        assert!(!mixed.has_balanced_mixed_resource_trace());
+        let mut self_method = PreparedPrivateSelfMethod::prepare(method()).unwrap()
+            .execute().unwrap();
+        self_method.events.extend([
+            ResourceEvent::Created(77), ResourceEvent::Released(77),
+        ]);
+        assert!(!self_method.has_balanced_self_borrow_trace());
+        let mut nested = PreparedPrivateRecursiveStr::prepare(recursive()).unwrap()
+            .execute(PrivateRecursiveStrBudget {
+                max_call_frames: 4, max_steps: 100,
+            }).unwrap();
+        assert!(nested.has_balanced_resource_frame_trace());
+        nested.loans_returned = false;
+        assert!(!nested.has_balanced_resource_frame_trace());
+    }
+}
