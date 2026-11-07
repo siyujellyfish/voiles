@@ -1,5 +1,7 @@
 # AI-build｜voiles 現行權威文件索引
 
+> **G18 V1 R05 真 ResourceId 與函式進退聯合時序候選（2026-11-07）**：參見 [R01～R07 收口矩陣第十二節](G18-V1-R01-R07-驗收收口矩陣-20261107.md#12-2026-11-07-r05-同一動態框架-ownedstr-真事件時序帳簿候選尚待-ci)。#598 已合併；R05 六項新的事件順序及偽造帳簿驗證仍待最新 HEAD 必要 CI。P18 原六項仍 0／6 Passed。
+
  
 > **2026-11-07 G18／V1 R 真工程主線最新基線：** [R01～R07 驗收收口矩陣](G18-V1-R01-R07-驗收收口矩陣-20261107.md)；#592～#597 六批已 Squash merge 至 main `23cb914dcdd495b060bce3dc0d6218515406da55`，每批最新 PR HEAD 與新 main 三必要 CI 皆 completed/success。已接通函式 `if／while／for`、int/bool 區塊宣告與遮蔽，及同一函式堆疊真 OwnedStr 常值局部／明確 .move()；函式專項 Gate **182**，R06 跨既有模型 Gate **13**。這不等於完整 str 參數／BorrowTicket／self 合流，R04/R05/R06 仍有重要缺口、R07 尚未驗收。原 P18 六項依然 **0／6 Passed**，`--audit` 不取代正式 `--check`。
 
