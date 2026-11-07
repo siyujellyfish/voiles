@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_真完整_if_else_葉返回不需補造最後_return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_無人工尾端_return_的完整_else_if_照原_checker_條件順序返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_完整分支葉返回僅退出目前函式不截斷父框架算術",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_混合布林整數與真借用成功返回各守門須同時成立",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_false_未選中分支不得寫入而仍由原值返回",
@@ -124,6 +127,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_完整分支葉返回僅退出目前函式不截斷父框架算術",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_不同執行器的正常失敗不得丟失已建資源或複製假返回",
         "struct_stage::g18_private_call_borrow_tests::g18_r05_真借用結果偽造已退出未歸票據或遺失資源一律拒絕",
@@ -262,6 +266,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_真完整_if_else_葉返回不需補造最後_return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_無人工尾端_return_的完整_else_if_照原_checker_條件順序返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_完整分支葉返回僅退出目前函式不截斷父框架算術",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_不完整尾端分支與篡改已核准全返回計畫皆保守拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_混合布林整數與真借用成功返回各守門須同時成立",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
