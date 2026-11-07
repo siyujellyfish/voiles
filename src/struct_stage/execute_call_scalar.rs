@@ -6739,6 +6739,139 @@ mod g18_private_scalar_call_tests {
     }
 
 
+
+    #[test]
+    fn g18_r02_真str無初值單純宣告離域零ResourceId() {
+        let src = "fn calc(n:int)->int{\nvar spare:str\nreturn n+1\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::ResourceOwnerBound(..)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_真str無初值後字面賦值只建立一次並退出釋放() {
+        let src = "fn calc(n:int)->int{\nvar pending:str\npending = \"海月\"\nreturn n+1\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源() {
+        let src = "fn calc(n:int)->int{\nvar pending:str\npending = \"先\"\npending = \"後\"\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Created(2), E::Released(1), E::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r02_無初值str以已核准move首次接收原ResourceId() {
+        let src = "fn calc(n:int)->int{\nvar source:str = \"唯一\"\nvar pending:str\npending = source.move()\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Moved(1), E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r03_未選分支的str空宣告與賦值不建立UTF8資源() {
+        let src = "fn calc(n:int)->int{\nif(false){\nvar pending:str\npending = \"不可達\"\n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理() {
+        let src = "fn calc(n:int)->int{\nfor i in 0..3{\nvar pending:str\npending = \"每輪\"\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Released(1),
+            E::Created(2), E::Released(2),
+            E::Created(3), E::Released(3),
+        ]);
+    }
+
+    #[test]
+    fn g18_r03_空str與真str共框架溢位僅清理確實建立的資源() {
+        let src = "fn calc(n:int)->int{\nvar spare:str\nvar owned:str = \"已建\"\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_非法未初始化str讀取借用必由原Checker提前拒絕() {
+        let invalid = [
+            "fn receive(s:str,n:int)->int{return n}\nfn calc(n:int)->int{\nvar spare:str\nreturn receive(spare,n)\n}\nfn main()->int{return calc(3)}\n",
+            "fn calc(n:int)->int{\nvar first:str\nvar other:str = first\nreturn n\n}\nfn main()->int{return calc(3)}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_r02_延遲str來源編譯身分篡改必在動態執行前拒絕() {
+        let src = "fn calc(n:int)->int{\nvar pending:str\npending = \"唯一\"\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(3));
+        plan.root_local_steps[0] = PrivateScalarLocalStep::DeclareEmptyStr {
+            declaration: DeclarationId(0), name: "pending".to_string(), mutable: true,
+        };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源() {
+        let src = "fn receive(s:str,n:int)->int{\nreturn n+1\n}\nfn calc(n:int)->int{\nvar pending:str\npending = \"借用\"\nreturn receive(pending,n)\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        let repaid = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let released = out.events.iter().rposition(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(
+                crate::owned_str_runtime::ResourceEvent::Released(_)
+            )
+        )).unwrap();
+        assert!(repaid < released);
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+    }
+
+
 }
 
 
