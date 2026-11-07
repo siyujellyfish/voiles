@@ -1561,4 +1561,92 @@ mod g18_private_method_self_tests {
     }
 
 
+    #[test]
+    fn g18_r02_r04_同步方法實參共用原_typedhir_具名加法括號與返回() {
+        let src = main_named_method_source(
+            "const amount:int = 5", "(amount+3),4", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.argument_binding.map(|(_, value)| value), Some(8));
+        assert_eq!(plan.argument_sources[0], None);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert!(out.ticket_returned && out.method_exited);
+    }
+
+    #[test]
+    fn g18_r02_r04_巢狀括號與左右加減依原_checker_樹求值() {
+        let src = main_named_method_source(
+            "const amount:int = 11", "((amount-(7-3))),((2+4))",
+            "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.execute().unwrap().result, Ok(1));
+    }
+
+    #[test]
+    fn g18_r02_r04_已核准複合整數實參與_self_欄位回傳使用同一真框架() {
+        let src = "struct Counter{\nvar count:int = 7\nfn calc(n:int)->int{\nreturn self.count+n\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nconst amount:int = 3\nreturn value.calc(amount+4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(14));
+        assert!(out.ticket_returned && out.events.is_empty());
+    }
+
+    #[test]
+    fn g18_r02_r05_第二個整數複合實參溢位不可提前取得_self_借用或進入方法() {
+        let src = main_named_method_source(
+            "const amount:int = 1",
+            "3,(amount+9223372036854775807)",
+            "return a+b",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_entered && !out.method_exited);
+        assert!(out.ticket_returned && out.events.is_empty());
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r05_第一個複合實參溢位不得執行後續方法本體() {
+        let src = main_named_method_source(
+            "const amount:int = 1",
+            "(amount+9223372036854775807),4",
+            "return a+b",
+        );
+        let out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_entered && !out.method_exited && out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_偽造已編譯方法實參算術樹或來源位置於執行前拒絕() {
+        let src = main_named_method_source(
+            "const amount:int = 5", "(amount+3),4", "return a+b",
+        );
+        let mut plan = checked(&src);
+        plan.argument_plans[0] = PrivateScalarReturnExpr::Constant(8);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.argument_sources[0] = Some(plan.main_int_locals[0].1);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r02_r04_非法布林混用與未宣告名稱在方法複合引數前先被_checker_拒絕() {
+        let wrong_type = main_named_method_source(
+            "const amount:int = 5", "(amount+true),4", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&wrong_type),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let unknown = main_named_method_source(
+            "const amount:int = 5", "(missing+3),4", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&unknown),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
 }
