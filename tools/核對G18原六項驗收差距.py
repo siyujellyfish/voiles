@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_原_checker_str_move_真跨函式_唯一_utf8_交接",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_父函式局部_整筆_move_交給子函式同一資源",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_三層真函式同一_resourceid_連續跨框架_move_僅一次清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_真函式_str_字面值覆寫只釋放被取代資源一次",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_真函式_move_覆寫舊目標與來源重新初始化不複製",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_選中_if_字串覆寫原子提交_未選分支零資源事件",
@@ -129,6 +132,7 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_函式_for_每輪新_str_跨函式_move_返回後即時釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_普通函式_for_逐輪_str_覆寫即時釋放上一個_owner",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_普通函式_while_逐輪重讀_bool_並僅更新到達的_int",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_普通函式_for_continue_每輪清除同一宣告身份",
@@ -150,6 +154,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_跨框架_move_已完成綁定後故障由子框架釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_第二實參溢位時_move_仍由原呼叫者唯一釋放",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_移動實參已準備但_callbudget_耗盡不得假轉交",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_真跨函式移動事件篡改來源或資源編號均拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_str_覆寫後整數溢位仍釋放目前唯一擁有者",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_偽造_str_覆寫後仍由舊資源認領必拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_真借用已取得但子呼叫框架預算耗盡仍全數原子歸還",
@@ -256,6 +264,13 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同次呼叫先借再_move_不同真來源_各有正確出口",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_跨函式_move_真來源被_cherker_禁止重複及隱含複製",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_偽造跨框架_move_目標宣告身分須拒絕",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_原_checker_VB14_借用別名缺乏重借證明不得進真子呼叫",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_原_checker_准許真持有者_move_給子函式不受_VB14_錯誤擴張",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_存活借用票據期間偽造同源跨框架_move_仍須拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_每張真借用票據必連至實際_utf8_resourceid",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_同框架兩個存活_resourceid_借用不得錯綁他人",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_偽造借用未歸還便先釋放真來源資源必拒絕",
