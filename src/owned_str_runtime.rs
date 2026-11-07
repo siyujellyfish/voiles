@@ -174,6 +174,14 @@ impl OwnedStrRuntime {
             .map(|v| v.text.as_str()).ok_or(StrRuntimeError::MovedSource)
     }
 
+    /// R05：只觀測已存在的唯一 UTF-8 資源身分，供真 BorrowTicket
+    /// 與 ResourceId 同序驗收；不複製持有者、不產生新資源事件。
+    pub(crate) fn resource_id(&self, name: &str) -> Result<u64, StrRuntimeError> {
+        let (i, j) = self.location(name)?;
+        self.scopes[i].names[j].owned.as_ref()
+            .map(|value| value.id).ok_or(StrRuntimeError::MovedSource)
+    }
+
     pub(crate) fn enter_scope(&mut self) { self.scopes.push(StrFrame::default()); }
 
     /// 明確 .move()：一個緩衝區只轉交，來源仍存在但已失效。
