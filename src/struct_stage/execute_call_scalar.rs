@@ -467,6 +467,8 @@ impl PrivateScalarBoolExpr {
 enum PrivateScalarBranchAction {
     /// 原 Parser 同一 if 葉分支的多筆已核准語句，保留真正執行順序。
     Sequence(Vec<PrivateScalarBranchAction>),
+    /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
+    NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
     AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
@@ -478,6 +480,7 @@ impl PrivateScalarBranchAction {
             Self::Sequence(steps) => {
                 for action in steps { action.collect_calls(calls); }
             }
+            Self::NestedIf(plan) => plan.collect_calls(calls),
             Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
                 expr.collect_calls(calls),
             Self::AssignBool { .. } => {}
@@ -489,6 +492,7 @@ impl PrivateScalarBranchAction {
             Self::Return(_) => true,
             Self::Sequence(actions) => actions.last()
                 .is_some_and(Self::always_returns),
+            Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. } => false,
         }
     }
@@ -671,6 +675,12 @@ impl PreparedPrivateScalarCall {
             return Ok(PrivateScalarBranchAction::Sequence(actions));
         };
         match &statement.kind {
+            StmtKind::If { .. } =>
+                Ok(PrivateScalarBranchAction::NestedIf(Box::new(
+                    Self::compile_early_if(
+                        statement, int_bindings, bool_bindings, verified,
+                    )?,
+                ))),
             StmtKind::Return(ret) =>
                 Ok(PrivateScalarBranchAction::Return(
                     PrivateScalarReturnExpr::from_checked_bindings(
@@ -1162,6 +1172,11 @@ impl PreparedPrivateScalarCall {
                         }
                     }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
+                        PrivateScalarBranchAction::NestedIf(plan) => {
+                            // 只執行已選真分支中的內層 if；
+                            // bool 條件在前面更新完的真動態框架重新讀取。
+                            tasks.push(PrivateScalarTask::CheckEarlyReturn(plan));
+                        }
                         PrivateScalarBranchAction::Sequence(actions) => {
                             // 原 Parser 分支先後次序必須保持；工作堆疊
                             // LIFO 以反序放入，未選中的分支不排任何工作。
