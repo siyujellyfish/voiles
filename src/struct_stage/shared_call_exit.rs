@@ -7,6 +7,7 @@ enum PrivateSharedCallExitEvent {
     FunctionEntered,
     /// Copyable 局部真進／離域責任共用框架驗收，不冒充 ResourceId。
     LocalInitialized(crate::ownership_ledger::DeclarationId),
+    LocalAssigned(crate::ownership_ledger::DeclarationId),
     LocalScopeEnded(crate::ownership_ledger::DeclarationId),
     Returned,
     UnwindStarted,
@@ -59,6 +60,13 @@ fn private_shared_call_exit_balanced(
                 let Some(locals) = local_scopes.last_mut() else { return false; };
                 if locals.contains(id) { return false; }
                 locals.push(*id);
+            }
+            PrivateSharedCallExitEvent::LocalAssigned(id) => {
+                if unwinding || frames.last().is_some_and(|returned| *returned)
+                    || local_scopes.last().is_none_or(|locals|
+                        !locals.contains(id)) {
+                    return false;
+                }
             }
             PrivateSharedCallExitEvent::LocalScopeEnded(id) => {
                 let Some(locals) = local_scopes.last_mut() else { return false; };
