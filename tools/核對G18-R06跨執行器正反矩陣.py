@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／R06：核對五十七項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
+"""G18／R06：核對五十九項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
+    "g18_r05_r06_普通函式bool局部亦納入共用真退出帳的局部來源責任",
     "g18_r06_普通函式與同步self方法int局部均沿用原_checker_真正求值且離域",
     "g18_r06_普通函式與同步self局部溢位均保留真失敗回滾與乾淨離域",
     "g18_r05_r06_普通函式真借用票據不得早於返回或晚於離域",
