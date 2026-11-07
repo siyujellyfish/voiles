@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百二十一項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百三十一項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,16 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r02_真str無初值單純宣告離域零ResourceId",
+    "g18_r02_真str無初值後字面賦值只建立一次並退出釋放",
+    "g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源",
+    "g18_r02_無初值str以已核准move首次接收原ResourceId",
+    "g18_r03_未選分支的str空宣告與賦值不建立UTF8資源",
+    "g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
+    "g18_r03_空str與真str共框架溢位僅清理確實建立的資源",
+    "g18_r02_非法未初始化str讀取借用必由原Checker提前拒絕",
+    "g18_r02_延遲str來源編譯身分篡改必在動態執行前拒絕",
+    "g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源",
     "g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽",
     "g18_r02_宣告未初始化int離域不虛構初始化值或回收資源",
     "g18_r02_函式var_bool無初值先合法賦值後用於提前return",

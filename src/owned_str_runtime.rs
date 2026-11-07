@@ -168,6 +168,21 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
+    /// R02：合法 var str 可先建立詞彙持有者、後續才初始化。
+    /// 這裡不配置任何 UTF-8 緩衝區，也不產生 Created 或
+    /// Released；只有首次已驗證 assign／replace_from 才真正
+    /// 建立／接收 ResourceId，避免把未初始化視為可讀資源。
+    pub(crate) fn declare_empty(
+        &mut self, name: &str, mutable: bool,
+    ) -> Result<(), StrRuntimeError> {
+        self.current_name_free(name)?;
+        let order = self.next_order()?;
+        self.scopes.last_mut().expect("根作用域存在").names.push(StrBinding {
+            name: name.to_owned(), mutable, initialized_at: order, owned: None,
+        });
+        Ok(())
+    }
+
     pub(crate) fn read(&self, name: &str) -> Result<&str, StrRuntimeError> {
         let (i,j) = self.location(name)?;
         self.scopes[i].names[j].owned.as_ref()

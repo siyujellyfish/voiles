@@ -863,6 +863,8 @@ enum PrivateScalarBranchAction {
         declaration: DeclarationId, name: String, mutable: bool,
         initializer: PrivateScalarStrInitializer,
     },
+    /// str 詞彙持有者存在，但尚無 ResourceId／UTF-8 緩衝區。
+    DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -895,7 +897,8 @@ impl PrivateScalarBranchAction {
                 body.collect_calls(calls),
             Self::AssignBool { .. } | Self::DeclareBool { .. }
                 | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
-                | Self::DeclareStr { .. } | Self::AssignStr { .. }
+                | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
+                | Self::AssignStr { .. }
                 | Self::Break | Self::Continue => {}
         }
     }
@@ -909,7 +912,7 @@ impl PrivateScalarBranchAction {
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
-                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
+                | Self::DeclareEmptyStr { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -959,6 +962,7 @@ enum PrivateScalarLocalStep {
     Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
+    DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
@@ -974,7 +978,8 @@ impl PrivateScalarLocalStep {
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
                 | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
-                | Self::DeclareStr { .. } | Self::AssignStr { .. } => {}
+                | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
+                | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -1088,6 +1093,7 @@ enum PrivateScalarTask<'a> {
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
+    DeclareEmptyStr(DeclarationId, &'a str, bool),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
@@ -1201,7 +1207,8 @@ impl PreparedPrivateScalarCall {
                 | PrivateScalarBranchAction::DeclareBool { .. }
                 | PrivateScalarBranchAction::DeclareEmptyInt { .. }
                 | PrivateScalarBranchAction::DeclareEmptyBool { .. }
-                | PrivateScalarBranchAction::DeclareStr { .. } =>
+                | PrivateScalarBranchAction::DeclareStr { .. }
+                | PrivateScalarBranchAction::DeclareEmptyStr { .. } =>
                     PrivateScalarBranchAction::Scoped(vec![action]),
             other => other,
         }
@@ -1316,11 +1323,17 @@ impl PreparedPrivateScalarCall {
                         "區塊 str 擁有者缺少原 Checker 唯一宣告身分",
                     ));
                 }
-                let init = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "區塊 str 擁有者須具原核准初始化式",
-                    ),
-                )?;
+                let Some(init) = owner.initializer.as_ref() else {
+                    if !owner.mutable {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "原 Checker 無初值 str 只有 var 可延遲建立持有者",
+                        ));
+                    }
+                    return Ok(PrivateScalarBranchAction::DeclareEmptyStr {
+                        declaration: id, name: owner.name.clone(),
+                        mutable: owner.mutable,
+                    });
+                };
                 let initializer = Self::checked_str_initializer(
                     init, int_bindings, verified,
                 )?;
@@ -1655,18 +1668,23 @@ impl PreparedPrivateScalarCall {
                         "函式 str 所有者缺少原 Checker 唯一身分",
                     ));
                 }
-                let initializer = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "函式 str 所有者缺少原核准初始化式",
-                    ),
-                )?;
-                let initializer = Self::checked_str_initializer(
-                    initializer, &bindings, verified,
-                )?;
-                local_steps.push(PrivateScalarLocalStep::DeclareStr {
-                    declaration, name: owner.name.clone(),
-                    mutable: owner.mutable, initializer,
-                });
+                if let Some(expr) = owner.initializer.as_ref() {
+                    let initializer = Self::checked_str_initializer(
+                        expr, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::DeclareStr {
+                        declaration, name: owner.name.clone(),
+                        mutable: owner.mutable, initializer,
+                    });
+                } else if owner.mutable {
+                    local_steps.push(PrivateScalarLocalStep::DeclareEmptyStr {
+                        declaration, name: owner.name.clone(), mutable: owner.mutable,
+                    });
+                } else {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "尚無原 Checker const str 延遲初始化權限",
+                    ));
+                }
                 bindings.insert(owner.name.clone(), declaration);
                 bool_bindings.remove(&owner.name);
                 continue;
@@ -1790,6 +1808,11 @@ impl PreparedPrivateScalarCall {
                     declaration, name, mutable, initializer,
                 } => tasks.push(PrivateScalarTask::DeclareStr(
                     *declaration, name, *mutable, initializer,
+                )),
+                PrivateScalarLocalStep::DeclareEmptyStr {
+                    declaration, name, mutable,
+                } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
+                    *declaration, name, *mutable,
                 )),
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
@@ -2044,6 +2067,19 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                    }
+                    PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        // 詞彙持有者可先存在，但沒有 UTF-8 資源。
+                        // 真值只會在後續原 Checker 授權的 assign 建立。
+                        resources.declare_empty(name, mutable).map_err(
+                            PrivateScalarCallRuntimeError::Resource,
+                        )?;
+                        frame.str_owner_scopes.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((id, name.to_owned()));
                     }
                     PrivateScalarTask::DeclareStr(id, name, mutable, initializer) => {
                         let frame = frames.last_mut().ok_or(
@@ -2325,6 +2361,11 @@ impl PreparedPrivateScalarCall {
                                 *declaration, name, *mutable, initializer,
                             ));
                         }
+                        PrivateScalarBranchAction::DeclareEmptyStr {
+                            declaration, name, mutable,
+                        } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
+                            *declaration, name, *mutable,
+                        )),
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::AssignStr(
@@ -2538,6 +2579,11 @@ impl PreparedPrivateScalarCall {
                                     declaration, name, mutable, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareStr(
                                     *declaration, name, *mutable, initializer,
+                                )),
+                                PrivateScalarLocalStep::DeclareEmptyStr {
+                                    declaration, name, mutable,
+                                } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
+                                    *declaration, name, *mutable,
                                 )),
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
@@ -6690,6 +6736,139 @@ mod g18_private_scalar_call_tests {
         };
         altered.events.insert(at+1, PrivateScalarCallEvent::LocalInitialized(id, 99));
         assert!(!altered.has_balanced_frame_trace());
+    }
+
+
+
+    #[test]
+    fn g18_r02_真str無初值單純宣告離域零ResourceId() {
+        let src = "fn calc(n:int)->int{\nvar spare:str\nreturn n+1\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::ResourceOwnerBound(..)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_真str無初值後字面賦值只建立一次並退出釋放() {
+        let src = "fn calc(n:int)->int{\nvar pending:str\npending = \"海月\"\nreturn n+1\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源() {
+        let src = "fn calc(n:int)->int{\nvar pending:str\npending = \"先\"\npending = \"後\"\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Created(2), E::Released(1), E::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r02_無初值str以已核准move首次接收原ResourceId() {
+        let src = "fn calc(n:int)->int{\nvar source:str = \"唯一\"\nvar pending:str\npending = source.move()\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Moved(1), E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r03_未選分支的str空宣告與賦值不建立UTF8資源() {
+        let src = "fn calc(n:int)->int{\nif(false){\nvar pending:str\npending = \"不可達\"\n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理() {
+        let src = "fn calc(n:int)->int{\nfor i in 0..3{\nvar pending:str\npending = \"每輪\"\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Released(1),
+            E::Created(2), E::Released(2),
+            E::Created(3), E::Released(3),
+        ]);
+    }
+
+    #[test]
+    fn g18_r03_空str與真str共框架溢位僅清理確實建立的資源() {
+        let src = "fn calc(n:int)->int{\nvar spare:str\nvar owned:str = \"已建\"\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_非法未初始化str讀取借用必由原Checker提前拒絕() {
+        let invalid = [
+            "fn receive(s:str,n:int)->int{return n}\nfn calc(n:int)->int{\nvar spare:str\nreturn receive(spare,n)\n}\nfn main()->int{return calc(3)}\n",
+            "fn calc(n:int)->int{\nvar first:str\nvar other:str = first\nreturn n\n}\nfn main()->int{return calc(3)}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_r02_延遲str來源編譯身分篡改必在動態執行前拒絕() {
+        let src = "fn calc(n:int)->int{\nvar pending:str\npending = \"唯一\"\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(3));
+        plan.root_local_steps[0] = PrivateScalarLocalStep::DeclareEmptyStr {
+            declaration: DeclarationId(0), name: "pending".to_string(), mutable: true,
+        };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源() {
+        let src = "fn receive(s:str,n:int)->int{\nreturn n+1\n}\nfn calc(n:int)->int{\nvar pending:str\npending = \"借用\"\nreturn receive(pending,n)\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        let repaid = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let released = out.events.iter().rposition(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(
+                crate::owned_str_runtime::ResourceEvent::Released(_)
+            )
+        )).unwrap();
+        assert!(repaid < released);
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
     }
 
 
