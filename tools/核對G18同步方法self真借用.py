@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 三十八項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 四十項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_同步共享與獨占_self_正常及故障均歸還真票據且零假資源",
+    "g18_r05_同步_self_偽造未歸票據或無來源資源事件必被守門拒絕",
     "g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",
     "g18_f_方法真參數返回使用所選_DeclarationId_的框架值",
     "g18_f_方法參數真加法在框架內求值不誤讀_self_欄位",
