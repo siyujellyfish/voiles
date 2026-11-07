@@ -472,6 +472,10 @@ enum PrivateScalarBranchAction {
     Return(PrivateScalarReturnExpr),
     AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    /// 同一已驗證函式圖的逐輪 bool 判斷；本體仍使用原 Checker 語句計畫。
+    While { condition: PrivateScalarBoolExpr, body: Box<PrivateScalarBranchAction> },
+    Break,
+    Continue,
 }
 
 impl PrivateScalarBranchAction {
@@ -483,7 +487,8 @@ impl PrivateScalarBranchAction {
             Self::NestedIf(plan) => plan.collect_calls(calls),
             Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
                 expr.collect_calls(calls),
-            Self::AssignBool { .. } => {}
+            Self::While { body, .. } => body.collect_calls(calls),
+            Self::AssignBool { .. } | Self::Break | Self::Continue => {}
         }
     }
 
@@ -493,7 +498,8 @@ impl PrivateScalarBranchAction {
             Self::Sequence(actions) => actions.last()
                 .is_some_and(Self::always_returns),
             Self::NestedIf(plan) => plan.always_returns(),
-            Self::AssignInt { .. } | Self::AssignBool { .. } => false,
+            Self::AssignInt { .. } | Self::AssignBool { .. }
+                | Self::While { .. } | Self::Break | Self::Continue => false,
         }
     }
 }
@@ -540,6 +546,7 @@ enum PrivateScalarLocalStep {
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     EarlyReturn(PrivateScalarEarlyIf),
+    Control(PrivateScalarBranchAction),
 }
 
 impl PrivateScalarLocalStep {
@@ -548,6 +555,7 @@ impl PrivateScalarLocalStep {
             Self::Declare(init) => init.value.collect_calls(calls),
             Self::Assign { value, .. } => value.collect_calls(calls),
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
+            Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. } => {}
         }
     }
@@ -637,6 +645,8 @@ enum PrivateScalarTask<'a> {
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
+    /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
+    CheckWhile(&'a PrivateScalarBoolExpr, &'a PrivateScalarBranchAction),
     ExecuteBranchAction(&'a PrivateScalarBranchAction),
     EnterCall(&'a str, usize, bool),
     ExitCall,
@@ -652,6 +662,7 @@ impl PreparedPrivateScalarCall {
         int_bindings: &BTreeMap<String, DeclarationId>,
         bool_bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
+        inside_loop: bool,
     ) -> Result<PrivateScalarBranchAction, PrivateScalarCallPrepareError> {
         let [statement] = statements else {
             if statements.is_empty() {
@@ -663,14 +674,21 @@ impl PreparedPrivateScalarCall {
             for (index, statement) in statements.iter().enumerate() {
                 let action = Self::compile_early_branch(
                     std::slice::from_ref(statement),
-                    int_bindings, bool_bindings, verified,
+                    int_bindings, bool_bindings, verified, inside_loop,
                 )?;
                 if action.always_returns() && index + 1 != statements.len() {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
                         "if 已返回後仍有其他語句；不得造假可達效果",
                     ));
                 }
+                // Checker 對 break／continue 後的不可達語句可不簽發 HIR；
+                // 這些來源不能被再編譯成假執行，也不能當作下一輪效果。
+                let stops_loop_body = matches!(
+                    action, PrivateScalarBranchAction::Break
+                        | PrivateScalarBranchAction::Continue
+                );
                 actions.push(action);
+                if stops_loop_body { break; }
             }
             return Ok(PrivateScalarBranchAction::Sequence(actions));
         };
@@ -678,9 +696,27 @@ impl PreparedPrivateScalarCall {
             StmtKind::If { .. } =>
                 Ok(PrivateScalarBranchAction::NestedIf(Box::new(
                     Self::compile_early_if(
-                        statement, int_bindings, bool_bindings, verified,
+                        statement, int_bindings, bool_bindings, verified, inside_loop,
                     )?,
                 ))),
+            StmtKind::While { condition, body } => {
+                let guard = PrivateScalarBoolExpr::from_checked(
+                    condition, bool_bindings, verified,
+                )?;
+                let steps = if matches!(guard, PrivateScalarBoolExpr::Constant(false))
+                    || body.statements.is_empty() {
+                    PrivateScalarBranchAction::Sequence(Vec::new())
+                } else {
+                    Self::compile_early_branch(
+                        &body.statements, int_bindings, bool_bindings, verified, true,
+                    )?
+                };
+                Ok(PrivateScalarBranchAction::While {
+                    condition: guard, body: Box::new(steps),
+                })
+            }
+            StmtKind::Break if inside_loop => Ok(PrivateScalarBranchAction::Break),
+            StmtKind::Continue if inside_loop => Ok(PrivateScalarBranchAction::Continue),
             StmtKind::Return(ret) =>
                 Ok(PrivateScalarBranchAction::Return(
                     PrivateScalarReturnExpr::from_checked_bindings(
@@ -748,6 +784,7 @@ impl PreparedPrivateScalarCall {
         int_bindings: &BTreeMap<String, DeclarationId>,
         bool_bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
+        inside_loop: bool,
     ) -> Result<PrivateScalarEarlyIf, PrivateScalarCallPrepareError> {
         let StmtKind::If { branch, no } = &stmt.kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -758,20 +795,20 @@ impl PreparedPrivateScalarCall {
             &branch.branch.condition, bool_bindings, verified,
         )?;
         let when_true = Self::compile_early_branch(
-            &branch.body.statements, int_bindings, bool_bindings, verified,
+            &branch.body.statements, int_bindings, bool_bindings, verified, inside_loop,
         )?;
         let when_false = match no.as_ref() {
             None => None,
             Some(crate::syntax_shared::ParsedElse::Block(block)) =>
                 Some(PrivateScalarEarlyElse::Branch(
                     Self::compile_early_branch(
-                        &block.statements, int_bindings, bool_bindings, verified,
+                        &block.statements, int_bindings, bool_bindings, verified, inside_loop,
                     )?,
                 )),
             Some(crate::syntax_shared::ParsedElse::ElseIf(next)) =>
                 Some(PrivateScalarEarlyElse::ElseIf(Box::new(
                     Self::compile_early_if(
-                        next, int_bindings, bool_bindings, verified,
+                        next, int_bindings, bool_bindings, verified, inside_loop,
                     )?,
                 ))),
             #[cfg(test)]
@@ -812,9 +849,17 @@ impl PreparedPrivateScalarCall {
         for statement in prefix {
             if matches!(&statement.kind, StmtKind::If { .. }) {
                 let branch = Self::compile_early_if(
-                    statement, &bindings, &bool_bindings, verified,
+                    statement, &bindings, &bool_bindings, verified, false,
                 )?;
                 local_steps.push(PrivateScalarLocalStep::EarlyReturn(branch));
+                continue;
+            }
+            if matches!(&statement.kind, StmtKind::While { .. }) {
+                let action = Self::compile_early_branch(
+                    std::slice::from_ref(statement), &bindings, &bool_bindings,
+                    verified, false,
+                )?;
+                local_steps.push(PrivateScalarLocalStep::Control(action));
                 continue;
             }
             if let StmtKind::Assign(assign) = &statement.kind {
@@ -974,6 +1019,8 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
+                PrivateScalarLocalStep::Control(action) =>
+                    tasks.push(PrivateScalarTask::ExecuteBranchAction(action)),
             }
         }
         let mut values = Vec::<i64>::new();
@@ -1171,7 +1218,40 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::ExecuteBranchAction(selected));
                         }
                     }
+                    PrivateScalarTask::CheckWhile(condition, body) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let value = match condition {
+                            PrivateScalarBoolExpr::Constant(value) => *value,
+                            PrivateScalarBoolExpr::Bound(id) =>
+                                *frame.bool_values.get(id).ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?,
+                        };
+                        events.push(PrivateScalarCallEvent::ConditionalChecked(value));
+                        if value {
+                            // 本輪真動作在反向邊之前，逐輪重新讀取框架 bool 值。
+                            tasks.push(PrivateScalarTask::CheckWhile(condition, body));
+                            tasks.push(PrivateScalarTask::ExecuteBranchAction(body));
+                        }
+                    }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
+                        PrivateScalarBranchAction::While { condition, body } => {
+                            tasks.push(PrivateScalarTask::CheckWhile(condition, body));
+                        }
+                        PrivateScalarBranchAction::Break | PrivateScalarBranchAction::Continue => {
+                            // 僅捨棄本次迭代尚未到達的工作，不裁掉父函式。
+                            // 最近的 CheckWhile 是動態最內層循環，外層可繼續。
+                            let is_break = matches!(action, PrivateScalarBranchAction::Break);
+                            while !matches!(tasks.last(), Some(PrivateScalarTask::CheckWhile(..))) {
+                                if matches!(tasks.last(), None | Some(PrivateScalarTask::ExitCall)) {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                tasks.pop();
+                            }
+                            if is_break { tasks.pop(); }
+                        }
                         PrivateScalarBranchAction::NestedIf(plan) => {
                             // 只執行已選真分支中的內層 if；
                             // bool 條件在前面更新完的真動態框架重新讀取。
@@ -1282,6 +1362,8 @@ impl PreparedPrivateScalarCall {
                                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
                                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
+                                PrivateScalarLocalStep::Control(action) =>
+                                    tasks.push(PrivateScalarTask::ExecuteBranchAction(action)),
                             }
                         }
                     }
@@ -4252,6 +4334,72 @@ mod g18_private_scalar_call_tests {
                 );
             } else { panic!("真巢狀 If 原來源丟失"); }
         } else { panic!("原 If 工作計畫丟失"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r01_普通函式_while_false_零迭代仍真正檢查且返回() {
+        let src = "fn count(n:int)->int{\nvar value:int = n\nwhile(false){\nvalue = value+1\n}\nreturn value\n}\nfn main()->int{\nreturn count(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::ConditionalChecked(false))).count(), 1);
+        assert!(!out.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::LocalAssigned(..))));
+    }
+
+    #[test]
+    fn g18_r03_普通函式_while_逐輪重讀_bool_並僅更新到達的_int() {
+        let src = "fn count(n:int)->int{\nvar value:int = n\nvar flag:bool = true\nwhile(flag){\nvalue = value+2\nflag = false\n}\nreturn value\n}\nfn main()->int{\nreturn count(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::ConditionalChecked(true))).count(), 1);
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::ConditionalChecked(false))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_普通函式_while_內_break_不執行後續寫入() {
+        let src = "fn count(n:int)->int{\nvar value:int = n\nwhile(true){\nvalue = value+1\nbreak\nvalue = value+20\n}\nreturn value\n}\nfn main()->int{\nreturn count(1)\n}\n";
+        // 只接受原 Checker 核准的可達性，不自行放寬 break 後語句。
+        match PreparedPrivateScalarCall::prepare(src) {
+            Ok(plan) => {
+                let out = plan.execute().unwrap();
+                assert_eq!(out.result, Ok(2));
+                assert!(out.has_balanced_frame_trace());
+            }
+            Err(PrivateScalarCallPrepareError::Check(_)) => {}
+            Err(other) => panic!("原 Checker 接受但 while 執行器拒絕：{other:?}"),
+        }
+    }
+
+    #[test]
+    fn g18_r03_普通函式_while_步數預算耗盡不產生假返回() {
+        let src = "fn count(n:int)->int{\nwhile(true){\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn count(1)\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute_with_budget(PrivateScalarExecutionBudget {
+            max_call_frames: 8, max_steps: 30,
+        }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::Returned(..))));
+    }
+
+    #[test]
+    fn g18_r03_普通函式_while_真控制計畫篡改須執行前拒絕() {
+        let src = "fn count(n:int)->int{\nvar flag:bool = true\nwhile(flag){\nflag = false\n}\nreturn n\n}\nfn main()->int{\nreturn count(1)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(1));
+        if let PrivateScalarLocalStep::Control(PrivateScalarBranchAction::While {
+            condition, ..
+        }) = &mut prepared.root_local_steps[1] {
+            *condition = PrivateScalarBoolExpr::Constant(false);
+        } else { panic!("原 while 來源控制計畫未保留"); }
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
