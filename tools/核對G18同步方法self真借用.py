@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 七十項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 七十七項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r02_r04_main整數複合初始化使用同一_typedhir_再傳同步方法",
+    "g18_r02_r04_巢狀main局部初始化依原整數減法左右次序傳入方法",
+    "g18_r02_r04_已計算main局部可再被Copyable名稱引用並與_self_欄位混算",
+    "g18_r02_r05_main局部動態加法溢位在方法借用前受控失敗",
+    "g18_r02_r05_中途初始化溢位不可清理未進入的後續局部也不能假造返回",
+    "g18_r02_r04_篡改已編譯main整數初始化工作樹必在真執行前拒絕",
+    "g18_r02_r04_main複合初始化未知或錯型別來源由原_checker_先拒絕",
     "g18_r02_r04_同步方法實參共用原_typedhir_具名加法括號與返回",
     "g18_r02_r04_巢狀括號與左右加減依原_checker_樹求值",
     "g18_r02_r04_已核准複合整數實參與_self_欄位回傳使用同一真框架",
