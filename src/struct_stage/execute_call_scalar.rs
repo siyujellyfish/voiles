@@ -49,6 +49,8 @@ enum PrivateScalarCallEvent {
     /// 每筆真 str 宣告／移動的目前 DeclarationId 與唯一 ResourceId，
     /// 讓借用票據不能錯綁至另一個仍存活的字串資源。
     ResourceOwnerBound(DeclarationId, u64),
+    /// R05：父函式唯一所有權整筆交接給子函式指定 str 參數。
+    ResourceTransferred { source: DeclarationId, target: DeclarationId, resource_id: u64 },
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     LoanAcquired(crate::borrow_safety::BorrowTicket),
     /// R05：真取得票據時同步記錄其 UTF-8 資源身分，防止先釋放後歸還。
@@ -79,6 +81,8 @@ impl PrivateScalarCallOutcome {
             locals: Vec<PrivateScalarLocalBinding>,
             resource_ids: std::collections::HashSet<u64>,
             owner_resources: BTreeMap<DeclarationId, u64>,
+            /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
+            pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
             /// 每張活躍票據與真 ResourceId 一一對應，不以名稱推算持有權。
             loan_resources: Vec<(crate::borrow_safety::BorrowTicket, u64)>,
@@ -90,6 +94,7 @@ impl PrivateScalarCallOutcome {
             name: None, locals: Vec::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
+            pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
         }];
@@ -103,6 +108,7 @@ impl PrivateScalarCallOutcome {
                         name: Some(name.clone()), locals: Vec::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
+            pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
                     });
@@ -112,6 +118,31 @@ impl PrivateScalarCallOutcome {
                     if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
                         return false;
                     }
+                }
+                PrivateScalarCallEvent::ResourceTransferred {
+                    source, target, resource_id,
+                } => {
+                    if frames.len() <= 1 || frames.iter().any(|frame|
+                        frame.loan_resources.iter().any(|(_, id)| id == resource_id)) {
+                        return false;
+                    }
+                    let last = frames.len() - 1;
+                    let (parents, child) = frames.split_at_mut(last);
+                    let parent = &mut parents[last - 1];
+                    let child = &mut child[0];
+                    if parent.returned || child.returned
+                        || parent.owner_resources.get(source) != Some(resource_id)
+                        || child.resource_ids.contains(resource_id)
+                        || child.pending_transfers.contains_key(resource_id)
+                        || child.owner_resources.contains_key(target) {
+                        return false;
+                    }
+                    parent.owner_resources.remove(source);
+                    if !parent.resource_ids.remove(resource_id)
+                        || !child.resource_ids.insert(*resource_id)
+                        || child.pending_transfers.insert(
+                            *resource_id, (*target, false),
+                        ).is_some() { return false; }
                 }
                 PrivateScalarCallEvent::BorrowParameterBound(_, fact) => {
                     if frames.len() <= 1 { return false; }
@@ -211,13 +242,17 @@ impl PrivateScalarCallOutcome {
                                 && frame.resource_ids.insert(*id),
                         crate::owned_str_runtime::ResourceEvent::Moved(id)
                             | crate::owned_str_runtime::ResourceEvent::Returned(id) => {
-                            // 真移動先移除舊 DeclarationId 持有者；新宣告
-                            // 必須用 ResourceOwnerBound 接續接管同一 ResourceId。
-                            let former = frame.owner_resources.iter().find_map(|(owner, held)|
-                                (held == id).then_some(*owner));
-                            !frame.returned && frame.resource_ids.contains(id)
-                                && former.is_some_and(|owner|
-                                    frame.owner_resources.remove(&owner) == Some(*id))
+                            if !frame.returned && frame.resource_ids.contains(id) {
+                                if let Some((_, observed)) = frame.pending_transfers.get_mut(id) {
+                                    if *observed { false } else { *observed = true; true }
+                                } else {
+                                    // 同框架所有權移動：撤銷原 DeclarationId。
+                                    let former = frame.owner_resources.iter().find_map(|(owner, held)|
+                                        (held == id).then_some(*owner));
+                                    former.is_some_and(|owner|
+                                        frame.owner_resources.remove(&owner) == Some(*id))
+                                }
+                            } else { false }
                         }
                         crate::owned_str_runtime::ResourceEvent::Released(id) => {
                             let former = frame.owner_resources.iter().find_map(|(owner, held)|
@@ -237,6 +272,10 @@ impl PrivateScalarCallOutcome {
                         || frame.owner_resources.values().any(|held| held == resource_id) {
                         return false;
                     }
+                    if let Some((target, moved)) = frame.pending_transfers.get(resource_id) {
+                        if target != declaration || !moved { return false; }
+                        frame.pending_transfers.remove(resource_id);
+                    }
                     frame.owner_resources.insert(*declaration, *resource_id);
                 }
                 PrivateScalarCallEvent::Returned(_) => {
@@ -251,6 +290,7 @@ impl PrivateScalarCallOutcome {
                         || frame.returned != *returned || !frame.locals.is_empty()
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
                         || !frame.owner_resources.is_empty()
+                        || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
                         || frames.last().is_none_or(|parent|
                             frame.imported_loans.iter().any(|ticket|
@@ -266,6 +306,7 @@ impl PrivateScalarCallOutcome {
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
+            && frames[0].pending_transfers.is_empty()
             && frames[0].loans.is_empty()
             && frames[0].loan_resources.is_empty()
             && self.parameter_slots_after_exit == 0
