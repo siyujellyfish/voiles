@@ -156,6 +156,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_正式回滾後不得補造新的條件計算事件",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_正式回滾後即使局部事件平衡也不能重新初始化",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_未進入子框架的借用失敗不能先於回滾起點還票",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_已成功歸還的前序借用不受後續溢位回滾誤封鎖",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_無借用的失敗回滾不可遺漏_unwindstarted",
