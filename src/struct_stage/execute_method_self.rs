@@ -68,7 +68,30 @@ impl PrivateSelfMethodOutcome {
                 }
             }
         }
+        // 兩份結果視圖必須投影到完全相同的實際局部事件，
+        // 不能只靠各自末端都平衡而放行跨 Returned/Unwind 的錯序。
+        let local_projection = self.method_local_events.iter().map(|event| match event {
+            PrivateSelfMethodLocalEvent::Initialized(id, _) =>
+                PrivateSharedCallExitEvent::LocalInitialized(*id),
+            PrivateSelfMethodLocalEvent::ScopeEnded(id) =>
+                PrivateSharedCallExitEvent::LocalScopeEnded(*id),
+        }).collect::<Vec<_>>();
+        let exit_projection = self.exit_events.iter().filter(|event| matches!(event,
+            PrivateSharedCallExitEvent::LocalInitialized(_)
+                | PrivateSharedCallExitEvent::LocalScopeEnded(_)
+        )).cloned().collect::<Vec<_>>();
+        let failure_unwind_precedes_cleanup = self.result.is_ok()
+            || !self.exit_events.iter().any(|event| matches!(event,
+                PrivateSharedCallExitEvent::LocalScopeEnded(_)
+            ))
+            || self.exit_events.iter().position(|event| matches!(event,
+                PrivateSharedCallExitEvent::UnwindStarted
+            )).zip(self.exit_events.iter().position(|event| matches!(event,
+                PrivateSharedCallExitEvent::LocalScopeEnded(_)
+            ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
+            && local_projection == exit_projection
+            && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
             && self.method_local_slots_after_exit == 0
             && self.main_local_slots_after_exit == 0
@@ -838,6 +861,7 @@ impl PreparedPrivateSelfMethod {
                 method_local_events.push(PrivateSelfMethodLocalEvent::Initialized(
                     *id, calculated,
                 ));
+                exit_events.push(PrivateSharedCallExitEvent::LocalInitialized(*id));
             }
             // 寫入屬已核准之獨占 self：先驗真 BorrowTicket 身分、
             // 來源及權限，再寫真 MixedStructRuntime 的 Copyable int。
@@ -946,6 +970,7 @@ impl PreparedPrivateSelfMethod {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
             method_local_events.push(PrivateSelfMethodLocalEvent::ScopeEnded(*id));
+            exit_events.push(PrivateSharedCallExitEvent::LocalScopeEnded(*id));
         }
         initialized_method_locals.clear();
         // 不論成功或錯誤，實際參數框架不可洩漏至後續呼叫。
