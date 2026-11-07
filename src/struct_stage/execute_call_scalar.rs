@@ -4043,6 +4043,104 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回() {
+        for (flag, expected, updates) in [("true", 9, vec![5, 8]), ("false", 4, vec![])] {
+            let src = format!(
+                "fn choose(flag:bool,n:int)->int{{\nvar value:int = n\nif(flag){{\nvalue = value+2\nvalue = value+3\n}}\nreturn value+1\n}}\nfn main()->int{{\nreturn choose({},3)\n}}\n",
+                flag,
+            );
+            let out = checked(&src).execute().unwrap();
+            assert_eq!(out.result, Ok(expected));
+            assert!(out.has_balanced_frame_trace());
+            let values = out.events.iter().filter_map(|event| match event {
+                PrivateScalarCallEvent::LocalAssigned(_, value) => Some(*value),
+                _ => None,
+            }).collect::<Vec<_>>();
+            assert_eq!(values, updates);
+        }
+    }
+
+    #[test]
+    fn g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+100\n}else if(true){\nvalue = value+1\nvalue = value+2\n}else{\nvalue = value+50\n}\nreturn value\n}\nfn main()->int{\nreturn choose(false,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let values = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(_, value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(values, [4, 6]);
+        let checks = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ConditionalChecked(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [false, true]);
+    }
+
+    #[test]
+    fn g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nvar flag:bool = false\nif(true){\nvalue = value+2\nflag = true\n}\nif(flag){\nreturn value+1\n}\nreturn value+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::BoolAssigned(_, true)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 5)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_分支內先變更再提前_return_不得執行不可達尾端() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+1\nreturn value+2\n}\nreturn value+10\n}\nfn main()->int{\nreturn choose(true,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(7)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(15)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_同分支第二更新溢位只保存第一個真更新並失敗退出() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nvalue = value+1\nvalue = value+9223372036854775807\n}\nreturn value\n}\nfn main()->int{\nreturn choose(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 2)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_分支內常值錯誤賦值與真工作計畫竄改均須零額外執行() {
+        let invalid = "fn choose(n:int)->int{\nconst x:int = n\nif(true){\nx = x+1\nx = x+2\n}\nreturn x\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let source = "fn choose(n:int)->int{\nvar x:int = n\nif(true){\nx = x+1\nx = x+2\n}\nreturn x\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let mut plan = checked(source);
+        assert_eq!(plan.execute().unwrap().result, Ok(6));
+        if let PrivateScalarLocalStep::EarlyReturn(conditional) = &mut plan.root_local_steps[1] {
+            if let PrivateScalarBranchAction::Sequence(actions) = &mut conditional.when_true {
+                actions[1] = PrivateScalarBranchAction::Return(
+                    PrivateScalarReturnExpr::Constant(999),
+                );
+            } else { panic!("原 Parser 多筆分支序列未收錄"); }
+        } else { panic!("原 Parser if 節點未收錄"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
