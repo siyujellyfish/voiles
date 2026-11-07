@@ -74,12 +74,14 @@ impl PrivateScalarCallOutcome {
             locals: Vec<PrivateScalarLocalBinding>,
             resource_ids: std::collections::HashSet<u64>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
+            /// 借用參數須在本次函式退出前從直接呼叫者歸還。
+            imported_loans: Vec<crate::borrow_safety::BorrowTicket>,
             returned: bool,
         }
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
             resource_ids: std::collections::HashSet::new(),
-            loans: Vec::new(), returned: false,
+            loans: Vec::new(), imported_loans: Vec::new(), returned: false,
         }];
         let mut recorded = Vec::new();
         let mut created_ids = std::collections::HashSet::<u64>::new();
@@ -90,15 +92,28 @@ impl PrivateScalarCallOutcome {
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
                         resource_ids: std::collections::HashSet::new(),
-            loans: Vec::new(), returned: false,
+            loans: Vec::new(), imported_loans: Vec::new(), returned: false,
                     });
                 }
                 PrivateScalarCallEvent::ParameterBound(..)
-                    | PrivateScalarCallEvent::BoolParameterBound(..)
-                    | PrivateScalarCallEvent::BorrowParameterBound(..) => {
+                    | PrivateScalarCallEvent::BoolParameterBound(..) => {
                     if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
                         return false;
                     }
+                }
+                PrivateScalarCallEvent::BorrowParameterBound(_, fact) => {
+                    if frames.len() <= 1 { return false; }
+                    let last = frames.len() - 1;
+                    let (older, current) = frames.split_at_mut(last);
+                    let parent = &older[last - 1];
+                    let child = &mut current[0];
+                    if child.name.is_none() || child.returned { return false; }
+                    let Some(ticket) = parent.loans.iter().copied()
+                        .find(|loan| loan.fact() == *fact
+                            && !child.imported_loans.contains(loan)) else {
+                        return false;
+                    };
+                    child.imported_loans.push(ticket);
                 }
                 PrivateScalarCallEvent::LocalInitialized(id, _) => {
                     let Some(frame) = frames.last_mut() else { return false; };
@@ -178,7 +193,10 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.pop() else { return false; };
                     if frame.name.as_deref() != Some(name.as_str())
                         || frame.returned != *returned || !frame.locals.is_empty()
-                        || !frame.resource_ids.is_empty() || !frame.loans.is_empty() {
+                        || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
+                        || frames.last().is_none_or(|parent|
+                            frame.imported_loans.iter().any(|ticket|
+                                parent.loans.contains(ticket))) {
                         return false;
                     }
                 }
