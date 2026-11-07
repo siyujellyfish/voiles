@@ -770,7 +770,8 @@ impl PreparedPrivateScalarCall {
             while let Some(task) = tasks.pop() {
                 // 記錄已完成的實參不是另一個 voiles 運算步驟；
                 // 即使下一運算會耗盡預算，仍保留先前已真求值的事件。
-                if !matches!(&task, PrivateScalarTask::RecordArgument) {
+                if !matches!(&task, PrivateScalarTask::RecordArgument
+                    | PrivateScalarTask::RecordBoolArgument) {
                     if steps >= budget.max_steps {
                         return Err(PrivateScalarCallRuntimeError::StepBudget);
                     }
@@ -805,8 +806,16 @@ impl PreparedPrivateScalarCall {
                                 name, arguments.len(), is_root_expression,
                             ));
                             for argument in arguments.iter().rev() {
-                                tasks.push(PrivateScalarTask::RecordArgument);
-                                tasks.push(PrivateScalarTask::Evaluate(argument, false));
+                                match argument {
+                                    PrivateScalarCallArgument::Int(expr) => {
+                                        tasks.push(PrivateScalarTask::RecordArgument);
+                                        tasks.push(PrivateScalarTask::Evaluate(expr, false));
+                                    }
+                                    PrivateScalarCallArgument::Bool(expr) => {
+                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                                    }
+                                }
                             }
                         }
                     },
@@ -815,6 +824,30 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         events.push(PrivateScalarCallEvent::ArgumentEvaluated(value));
+                    }
+                    PrivateScalarTask::EvaluateBoolArgument(expr) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let value = match expr {
+                            PrivateScalarBoolExpr::Constant(value) => *value,
+                            PrivateScalarBoolExpr::Bound(id) =>
+                                *frame.bool_values.get(id).ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?,
+                        };
+                        // 0/1 僅為同一顯式工作堆疊中的暫態 bool 編碼；
+                        // 正式型別來自原 Checker 參數簽章，不能轉成 int slot。
+                        values.push(i64::from(value));
+                    }
+                    PrivateScalarTask::RecordBoolArgument => {
+                        let encoded = *values.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !matches!(encoded, 0 | 1) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        events.push(PrivateScalarCallEvent::BoolArgumentEvaluated(encoded == 1));
                     }
                     PrivateScalarTask::Apply(operator) => {
                         let right = values.pop().ok_or(
@@ -937,13 +970,15 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, result_expr, local_steps): (
+                        let (parameter_ids, parameter_is_bool, result_expr, local_steps): (
                             Vec<DeclarationId>,
+                            Vec<bool>,
                             &PrivateScalarReturnExpr,
                             &Vec<PrivateScalarLocalStep>,
                         ) = if name == self.callee_name {
                             (
                                 self.callee_parameter_ids.clone(),
+                                self.callee_parameter_is_bool.clone(),
                                 &self.return_expr,
                                 &self.root_local_steps,
                             )
@@ -951,9 +986,13 @@ impl PreparedPrivateScalarCall {
                             let callee = self.nested_callees.iter()
                                 .find(|fun| fun.name == name)
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                            (callee.parameters.clone(), &callee.result, &callee.local_steps)
+                            (
+                                callee.parameters.clone(), callee.parameter_is_bool.clone(),
+                                &callee.result, &callee.local_steps,
+                            )
                         };
-                        if parameter_ids.len() != argc || values.len() < argc {
+                        if parameter_ids.len() != argc || parameter_is_bool.len() != argc
+                            || values.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if frames.len() >= budget.max_call_frames {
@@ -962,15 +1001,27 @@ impl PreparedPrivateScalarCall {
                         let evaluated = values.split_off(values.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
-                        for (id, value) in parameter_ids.iter().zip(evaluated) {
-                            if locals.insert(*id, value).is_some() {
-                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        let mut bool_locals = BTreeMap::new();
+                        for ((id, is_bool), value) in parameter_ids.iter()
+                            .zip(parameter_is_bool).zip(evaluated) {
+                            if is_bool {
+                                if !matches!(value, 0 | 1)
+                                    || bool_locals.insert(*id, value == 1).is_some() {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                events.push(PrivateScalarCallEvent::BoolParameterBound(
+                                    *id, value == 1,
+                                ));
+                            } else {
+                                if locals.insert(*id, value).is_some() {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
                             }
-                            events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
                         }
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
-                            bool_values: BTreeMap::new(),
+                            bool_values: bool_locals,
                             initialized_order: Vec::new(),
                         });
                         // 只有源自 main return 最外層的真 Call 才允許
