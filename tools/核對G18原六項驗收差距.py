@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_真巢狀_if_葉提前返回保留雙層條件順序",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀提前_return_只退出內函式不截斷父函式算術",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值",
@@ -128,6 +132,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀分支第二次_int_更新溢位真框架不補寫後續結果",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_同分支第二更新溢位只保存第一個真更新並失敗退出",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_不同執行器的正常失敗不得丟失已建資源或複製假返回",
@@ -267,6 +272,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_真巢狀_if_葉提前返回保留雙層條件順序",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀提前_return_只退出內函式不截斷父函式算術",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀分支第二次_int_更新溢位真框架不補寫後續結果",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀條件非法名稱與工作計畫遭竄改必先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值",
