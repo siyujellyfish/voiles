@@ -28,6 +28,18 @@ struct PrivateSelfMethodOutcome {
     ticket_returned: bool,
 }
 
+impl PrivateSelfMethodOutcome {
+    /// 只涵蓋目前 Checker 核准的 int 欄位同步 self 方法。
+    /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
+    fn has_balanced_self_borrow_trace(&self) -> bool {
+        self.ticket_returned
+            && self.events.is_empty()
+            && crate::owned_str_runtime::event_trace_balanced(&self.events)
+            && (!self.method_exited || self.method_entered)
+            && self.method_exited == self.result.is_ok()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateSelfIntReturn {
     Field,
@@ -550,12 +562,13 @@ impl PreparedPrivateSelfMethod {
         };
         let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
         let events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
-        if !crate::owned_str_runtime::event_trace_balanced(&events) {
+        let outcome = PrivateSelfMethodOutcome {
+            result, events, method_entered, method_exited, ticket_returned,
+        };
+        if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        Ok(PrivateSelfMethodOutcome {
-            result, events, method_entered, method_exited, ticket_returned,
-        })
+        Ok(outcome)
     }
 }
 
