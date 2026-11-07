@@ -937,7 +937,7 @@ struct PrivateScalarActiveFrame {
     incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
     /// 已核准借用形式參數仍引用上一層真正存活的唯一 UTF-8；
     /// 這不是獨立 OwnedStr 持有者，僅准在既有票據有效期間再借。
-    borrowed_params: BTreeMap<DeclarationId, (u64, BorrowKind)>,
+    borrowed_params: BTreeMap<DeclarationId, (String, u64, BorrowKind)>,
 }
 
 /// 各已完成實參維持正式型別，不以整數佔位冒充字串。
@@ -1753,14 +1753,29 @@ impl PreparedPrivateScalarCall {
                         let active = frame.str_owner_scopes.iter().rev()
                             .flat_map(|scope| scope.iter()).any(|(id, name)|
                                 *id == fact.source && name == owner);
-                        if !active {
-                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
-                        }
-                        // 先確認資源仍有效，再取得本次動態借用真票據。
-                        resources.read(owner)
-                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
-                        let resource_id = resources.resource_id(owner)
-                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        // 直接借用真 OwnedStr，或沿用已入框架且仍有效的
+                        // str 借用參數票據再次借出；後者不新建 OwnedUtf8。
+                        let resource_id = if active {
+                            resources.read(owner)
+                                .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                            resources.resource_id(owner)
+                                .map_err(PrivateScalarCallRuntimeError::Resource)?
+                        } else {
+                            let (known_name, id, authority) = frame.borrowed_params
+                                .get(&fact.source).ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?;
+                            if known_name != owner || !resources.has_resource_id(*id) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            if fact.kind == BorrowKind::ExclusiveWrite
+                                && *authority != BorrowKind::ExclusiveWrite {
+                                return Err(PrivateScalarCallRuntimeError::Borrow(
+                                    crate::borrow_safety::BorrowSafetyError::BorrowConflict,
+                                ));
+                            }
+                            *id
+                        };
                         let ticket = frame.borrow_tracker.acquire(fact.source, fact.kind)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         frame.borrow_tracker.check_ticket_access(
@@ -1771,7 +1786,9 @@ impl PreparedPrivateScalarCall {
                             ticket, resource_id,
                         ));
                         completed_arguments.push(
-                            PrivateScalarEvaluatedArgument::Borrow { ticket, fact },
+                            PrivateScalarEvaluatedArgument::Borrow {
+                                ticket, fact, resource_id,
+                            },
                         );
                     }
                     PrivateScalarTask::MoveArgument(owner, source) => {
@@ -2186,6 +2203,7 @@ impl PreparedPrivateScalarCall {
                         let mut locals = BTreeMap::new();
                         let mut bool_locals = BTreeMap::new();
                         let mut incoming_borrows = Vec::new();
+                        let mut borrowed_params = BTreeMap::new();
                         let mut pending_moves = Vec::new();
                         let mut bound_events = Vec::new();
                         for (index, (plan, actual)) in argument_plans.iter()
@@ -2196,11 +2214,27 @@ impl PreparedPrivateScalarCall {
                                 (true, false,
                                     PrivateScalarCallArgument::BorrowStr { fact, .. },
                                     PrivateScalarEvaluatedArgument::Borrow {
-                                        ticket, fact: observed,
+                                        ticket, fact: observed, resource_id,
                                     }) if *fact == observed && ticket.fact() == *fact => {
+                                    let parameter = self.verified.functions.iter()
+                                        .find(|fun| fun.name == name)
+                                        .and_then(|fun| fun.params.get(index))
+                                        .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                    if DeclarationId(parameter.declaration_start) != id
+                                        || parameter.ty != "str"
+                                        || borrowed_params.insert(id, (
+                                            parameter.name.clone(), resource_id, fact.kind,
+                                        )).is_some() {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
                                     incoming_borrows.push((ticket, *fact));
                                     bound_events.push(
                                         PrivateScalarCallEvent::BorrowParameterBound(id, *fact),
+                                    );
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::BorrowParameterResourceLinked {
+                                            parameter: id, ticket, resource_id,
+                                        },
                                     );
                                 }
                                 (true, false,
@@ -2280,6 +2314,7 @@ impl PreparedPrivateScalarCall {
                             str_owner_scopes: vec![Vec::new()],
                             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
                             incoming_borrows,
+                            borrowed_params,
                         });
                         // 僅以真 OwnedStrRuntime 的同一 ID 移動，不重新配置
                         // 字串；在新框架中以原 Checker 正式參數 ID 接管。
@@ -2347,6 +2382,9 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         let mut frame = frames.pop().expect("真子框架仍存在");
+                        frame.borrow_tracker.verify_static_snapshot(
+                            std::iter::empty::<BorrowFact>(),
+                        ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         events.push(PrivateScalarCallEvent::Returned(value));
                         let parent = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
