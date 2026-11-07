@@ -162,3 +162,5 @@
 > **G18／R04／R05 #609 合併、#610 VB14 既有安全證明阻塞（2026-11-07）**：[V1 R01～R07 收口矩陣第 22 節](G18-V1-R01-R07-驗收收口矩陣-20261107.md)：真跨函式 str Move 已合併且新 main 同 SHA 三必要 CI success；形式借用參數再借用之未核准別名鏈被 VB14 原 Checker 正確拒絕，#610 不合併。新增三項 R06 真拒絕正反 Gate 36→39，將十五條真 Move／VB14 證據追溯 R07；原 P18 六項仍 0/6 Passed。
 
 > **G18／R04／R06 雙 ResourceId 跨函式 Move 驗收（2026-11-07；CI 候選）**：[V1 R01～R07 收口矩陣第 23 節](G18-V1-R01-R07-驗收收口矩陣-20261107.md)：#611 已在最新 PR HEAD 與新 main 三必要 CI success 合併；本批增加雙 Move 真順序、跨多層單一持有、動態溢位原子回滾與重複 Move 靜態拒絕，R06 Gate 39→43，同時補原 P18 追溯，不提前 Passed。
+
+> **G18／R05 真 BorrowTicket 歸還時序守門（2026-11-07；CI 候選）**：[V1 R01～R07 收口矩陣第 24 節](G18-V1-R01-R07-驗收收口矩陣-20261107.md)：#612 雙 ResourceId Move 已於新 main 同 SHA 三必要 CI success；本批修正子函式真 Returned 前不可提前還票，故障需真 UnwindStarted 才逐框架清理，R06 43→46，原 P18 六項仍未正式 Passed。
