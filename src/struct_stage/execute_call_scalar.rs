@@ -20,6 +20,7 @@ enum PrivateScalarCallRuntimeError {
     CallBudget,
     StepBudget,
     Resource(crate::owned_str_runtime::StrRuntimeError),
+    Borrow(crate::borrow_safety::BorrowSafetyError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,10 @@ enum PrivateScalarCallEvent {
     /// R05：由真正 OwnedStrRuntime 當下產生的 ResourceId 事件，
     /// 在同一個函式進退序列中保留相對順序，不虛構新資源。
     OwnedResource(crate::owned_str_runtime::ResourceEvent),
+    /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
+    LoanAcquired(crate::borrow_safety::BorrowTicket),
+    LoanReturned(crate::borrow_safety::BorrowTicket),
+    BorrowParameterBound(DeclarationId, BorrowFact),
     Returned(i64),
     FunctionExited { name: String, returned: bool },
 }
@@ -68,11 +73,13 @@ impl PrivateScalarCallOutcome {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
             resource_ids: std::collections::HashSet<u64>,
+            loans: Vec<crate::borrow_safety::BorrowTicket>,
             returned: bool,
         }
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
-            resource_ids: std::collections::HashSet::new(), returned: false,
+            resource_ids: std::collections::HashSet::new(),
+            loans: Vec::new(), returned: false,
         }];
         let mut recorded = Vec::new();
         let mut created_ids = std::collections::HashSet::<u64>::new();
@@ -82,11 +89,13 @@ impl PrivateScalarCallOutcome {
                     if frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
-                        resource_ids: std::collections::HashSet::new(), returned: false,
+                        resource_ids: std::collections::HashSet::new(),
+            loans: Vec::new(), returned: false,
                     });
                 }
                 PrivateScalarCallEvent::ParameterBound(..)
-                    | PrivateScalarCallEvent::BoolParameterBound(..) => {
+                    | PrivateScalarCallEvent::BoolParameterBound(..)
+                    | PrivateScalarCallEvent::BorrowParameterBound(..) => {
                     if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
                         return false;
                     }
@@ -131,6 +140,19 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
+                PrivateScalarCallEvent::LoanAcquired(ticket) => {
+                    let duplicate = frames.iter().any(|frame| frame.loans.contains(ticket));
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || duplicate { return false; }
+                    frame.loans.push(*ticket);
+                }
+                PrivateScalarCallEvent::LoanReturned(ticket) => {
+                    let Some(frame) = frames.iter_mut().rev()
+                        .find(|frame| frame.loans.contains(ticket)) else { return false; };
+                    let index = frame.loans.iter().position(|loan| loan == ticket)
+                        .expect("已確認同一真 BorrowTicket");
+                    frame.loans.remove(index);
+                }
                 PrivateScalarCallEvent::OwnedResource(resource) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     let valid = match resource {
@@ -156,7 +178,7 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.pop() else { return false; };
                     if frame.name.as_deref() != Some(name.as_str())
                         || frame.returned != *returned || !frame.locals.is_empty()
-                        || !frame.resource_ids.is_empty() {
+                        || !frame.resource_ids.is_empty() || !frame.loans.is_empty() {
                         return false;
                     }
                 }
@@ -167,6 +189,7 @@ impl PrivateScalarCallOutcome {
         }
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
+            && frames[0].loans.is_empty()
             && self.parameter_slots_after_exit == 0
             && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
@@ -269,16 +292,45 @@ impl PrivateScalarReturnExpr {
                 if target.name == "main" || target.result_ty != "int"
                     || target.params.len() != call.arguments.len()
                     || target.params.iter().any(|param|
-                        !matches!(param.ty.as_str(), "int" | "bool"))
-                    || verified.plan.declarations.call_borrows_at(span)
-                        .is_some_and(|facts| !facts.is_empty()) {
+                        !matches!(param.ty.as_str(), "int" | "bool" | "str")) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
                         "巢狀呼叫只接通原 Checker Copyable int／bool 完整簽章",
                     ));
                 }
                 let mut arguments = Vec::new();
+                let mut checked_borrows = Vec::new();
                 for (argument, parameter) in call.arguments.iter().zip(&target.params) {
-                    arguments.push(if parameter.ty == "bool" {
+                    arguments.push(if parameter.ty == "str" {
+                        let TermKind::Name(owner) = &argument.kind else {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 預設借用實參只能是原 Parser 具名來源",
+                            ));
+                        };
+                        let id = *bindings.get(owner).ok_or(
+                            PrivateScalarCallPrepareError::Unsupported(
+                                "str 實參缺少當前原 Checker DeclarationId",
+                            ),
+                        )?;
+                        let declaration = verified.plan.declarations.typed_declaration(id)
+                            .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                                "str 實參缺少原 Checker 宣告事實",
+                            ))?;
+                        if declaration.ty != "str" || !verified.tokens.iter().any(|token|
+                            token.start == argument.start && token.end == argument.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == owner)
+                        ) {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 實參缺少來源型別或原 Lexer 名稱",
+                            ));
+                        }
+                        let fact = BorrowFact::new(id, if declaration.mutable {
+                            BorrowKind::ExclusiveWrite
+                        } else { BorrowKind::SharedRead });
+                        checked_borrows.push(fact);
+                        PrivateScalarCallArgument::BorrowStr {
+                            owner: owner.clone(), fact,
+                        }
+                    } else if parameter.ty == "bool" {
                         PrivateScalarCallArgument::Bool(
                             PrivateScalarBoolExpr::from_checked(argument, bindings, verified)?,
                         )
@@ -287,6 +339,12 @@ impl PrivateScalarReturnExpr {
                             Self::from_checked_bindings(argument, bindings, verified)?,
                         )
                     });
+                }
+                if verified.plan.declarations.call_borrows_at(span).unwrap_or(&[])
+                    != checked_borrows.as_slice() {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "str 借用 DeclarationId、權限或數量不符 Checker call_borrows",
+                    ));
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
@@ -406,6 +464,8 @@ struct PrivateScalarLocalInit {
 enum PrivateScalarCallArgument {
     Int(PrivateScalarReturnExpr),
     Bool(PrivateScalarBoolExpr),
+    /// 唯有正式 Checker call_borrows 與原 Lexer 具名 str 才能進入票據流程。
+    BorrowStr { owner: String, fact: BorrowFact },
 }
 
 impl PrivateScalarCallArgument {
@@ -625,6 +685,7 @@ struct PrivateScalarNestedCallee {
     span: crate::common_ir::NodeSpan,
     parameters: Vec<DeclarationId>,
     parameter_is_bool: Vec<bool>,
+    parameter_is_str: Vec<bool>,
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
     local_inits: Vec<PrivateScalarLocalInit>,
@@ -660,6 +721,7 @@ struct PreparedPrivateScalarCall {
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
     callee_parameter_is_bool: Vec<bool>,
+    callee_parameter_is_str: Vec<bool>,
 }
 
 /// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
@@ -689,6 +751,21 @@ struct PrivateScalarActiveFrame {
     initialized_order: Vec<PrivateScalarLocalBinding>,
     /// 同一 OwnedStrRuntime 已進入的本函式資源詞彙作用域數。
     resource_scopes: usize,
+    /// 每一詞彙層原 Checker 的真 str 宣告身分。
+    str_owner_scopes: Vec<Vec<(DeclarationId, String)>>,
+    borrow_tracker: crate::borrow_safety::BorrowSafety,
+    incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
+}
+
+/// 各已完成實參維持正式型別，不以整數佔位冒充字串。
+#[derive(Clone, Copy)]
+enum PrivateScalarEvaluatedArgument {
+    Int(i64),
+    Bool(bool),
+    Borrow {
+        ticket: crate::borrow_safety::BorrowTicket,
+        fact: BorrowFact,
+    },
 }
 
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
@@ -699,11 +776,12 @@ enum PrivateScalarTask<'a> {
     RecordArgument,
     EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
     RecordBoolArgument,
+    BorrowArgument(&'a str, BorrowFact),
     Apply(char),
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
-    DeclareStr(&'a str, bool, &'a PrivateScalarStrInitializer),
+    DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
@@ -714,13 +792,31 @@ enum PrivateScalarTask<'a> {
     UnbindIterator(DeclarationId),
     EndScope(usize),
     ExecuteBranchAction(&'a PrivateScalarBranchAction),
-    EnterCall(&'a str, usize, bool),
+    EnterCall(&'a str, &'a [PrivateScalarCallArgument], bool),
     ExitCall,
 }
 
 impl PreparedPrivateScalarCall {
     /// 只抄錄已由真 OwnedStrRuntime 完成的 ResourceId 事件，
     /// 各個動態函式退出、局部離域、故障回滾均與 Copyable 事件同序。
+    /// 呼叫期間的 BorrowTicket 屬直接呼叫者 tracker；真正被呼叫端離域時
+    /// 先核對完整 Checker 借用快照並原子歸還，才可釋放任何 str 所有者。
+    fn return_incoming_borrows(
+        parent: &mut PrivateScalarActiveFrame,
+        incoming: &[(crate::borrow_safety::BorrowTicket, BorrowFact)],
+        events: &mut Vec<PrivateScalarCallEvent>,
+    ) -> Result<(), PrivateScalarCallRuntimeError> {
+        if incoming.is_empty() { return Ok(()); }
+        let tickets = incoming.iter().map(|(ticket, _)| *ticket).collect::<Vec<_>>();
+        let facts = incoming.iter().map(|(_, fact)| *fact).collect::<Vec<_>>();
+        parent.borrow_tracker.finish_scope_verified(&tickets, &facts)
+            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+        for ticket in tickets.into_iter().rev() {
+            events.push(PrivateScalarCallEvent::LoanReturned(ticket));
+        }
+        Ok(())
+    }
+
     fn record_owned_resources(
         resources: &crate::owned_str_runtime::OwnedStrRuntime,
         cursor: &mut usize,
@@ -1282,6 +1378,9 @@ impl PreparedPrivateScalarCall {
             bool_values: BTreeMap::new(),
             initialized_order: Vec::new(),
             resource_scopes: 1,
+            str_owner_scopes: vec![Vec::new()],
+            borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
+            incoming_borrows: Vec::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
         // 原 Checker 語句順序在 LIFO 上反向推入，執行時保持
@@ -1300,8 +1399,11 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
-                PrivateScalarLocalStep::DeclareStr { name, mutable, initializer, .. } =>
-                    tasks.push(PrivateScalarTask::DeclareStr(name, *mutable, initializer)),
+                PrivateScalarLocalStep::DeclareStr {
+                    declaration, name, mutable, initializer,
+                } => tasks.push(PrivateScalarTask::DeclareStr(
+                    *declaration, name, *mutable, initializer,
+                )),
                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
                 PrivateScalarLocalStep::Control(action) =>
@@ -1309,6 +1411,7 @@ impl PreparedPrivateScalarCall {
             }
         }
         let mut values = Vec::<i64>::new();
+        let mut completed_arguments = Vec::<PrivateScalarEvaluatedArgument>::new();
         let mut steps = 0usize;
         let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
             while let Some(task) = tasks.pop() {
@@ -1347,7 +1450,7 @@ impl PreparedPrivateScalarCall {
                             // 其中任何一項錯誤時，尚未 Enter 的函式
                             // 不得產生假的進入或返回事件。
                             tasks.push(PrivateScalarTask::EnterCall(
-                                name, arguments.len(), is_root_expression,
+                                name, arguments, is_root_expression,
                             ));
                             for argument in arguments.iter().rev() {
                                 match argument {
@@ -1359,15 +1462,19 @@ impl PreparedPrivateScalarCall {
                                         tasks.push(PrivateScalarTask::RecordBoolArgument);
                                         tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
                                     }
+                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
+                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
+                                    }
                                 }
                             }
                         }
                     },
                     PrivateScalarTask::RecordArgument => {
-                        let value = *values.last().ok_or(
+                        let value = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         events.push(PrivateScalarCallEvent::ArgumentEvaluated(value));
+                        completed_arguments.push(PrivateScalarEvaluatedArgument::Int(value));
                     }
                     PrivateScalarTask::EvaluateBoolArgument(expr) => {
                         let frame = frames.last().ok_or(
@@ -1385,13 +1492,39 @@ impl PreparedPrivateScalarCall {
                         values.push(i64::from(value));
                     }
                     PrivateScalarTask::RecordBoolArgument => {
-                        let encoded = *values.last().ok_or(
+                        let encoded = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         if !matches!(encoded, 0 | 1) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         events.push(PrivateScalarCallEvent::BoolArgumentEvaluated(encoded == 1));
+                        completed_arguments.push(
+                            PrivateScalarEvaluatedArgument::Bool(encoded == 1),
+                        );
+                    }
+                    PrivateScalarTask::BorrowArgument(owner, fact) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let active = frame.str_owner_scopes.iter().rev()
+                            .flat_map(|scope| scope.iter()).any(|(id, name)|
+                                *id == fact.source && name == owner);
+                        if !active {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        // 先確認資源仍有效，再取得本次動態借用真票據。
+                        resources.read(owner)
+                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        let ticket = frame.borrow_tracker.acquire(fact.source, fact.kind)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        frame.borrow_tracker.check_ticket_access(
+                            ticket, BorrowKind::SharedRead,
+                        ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        events.push(PrivateScalarCallEvent::LoanAcquired(ticket));
+                        completed_arguments.push(
+                            PrivateScalarEvaluatedArgument::Borrow { ticket, fact },
+                        );
                     }
                     PrivateScalarTask::Apply(operator) => {
                         let right = values.pop().ok_or(
@@ -1452,13 +1585,29 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
                     }
-                    PrivateScalarTask::DeclareStr(name, mutable, initializer) => {
+                    PrivateScalarTask::DeclareStr(id, name, mutable, initializer) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if let PrivateScalarStrInitializer::Move {
+                            source, declaration,
+                        } = initializer {
+                            if !frame.str_owner_scopes.iter().rev().flatten()
+                                .any(|(known, active)| known == declaration && active == source) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            frame.borrow_tracker.check_direct_access(*declaration)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        }
                         match initializer {
                             PrivateScalarStrInitializer::Literal(text) =>
                                 resources.declare(name, mutable, text),
                             PrivateScalarStrInitializer::Move { source, .. } =>
                                 resources.move_named_as(source, name, mutable),
                         }.map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        frame.str_owner_scopes.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((id, name.to_owned()));
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
@@ -1573,6 +1722,10 @@ impl PreparedPrivateScalarCall {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         frame.resource_scopes -= 1;
+                        if frame.str_owner_scopes.len() <= 1 {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.str_owner_scopes.pop();
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
@@ -1614,6 +1767,10 @@ impl PreparedPrivateScalarCall {
                                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                                         }
                                         frame.resource_scopes -= 1;
+                                        if frame.str_owner_scopes.len() <= 1 {
+                                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                        }
+                                        frame.str_owner_scopes.pop();
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
                                         )?;
@@ -1639,6 +1796,7 @@ impl PreparedPrivateScalarCall {
                             )?;
                             let baseline = frame.initialized_order.len();
                             frame.resource_scopes += 1;
+                            frame.str_owner_scopes.push(Vec::new());
                             resources.enter_scope();
                             tasks.push(PrivateScalarTask::EndScope(baseline));
                             for action in actions.iter().rev() {
@@ -1653,10 +1811,10 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::BindBool(*declaration, value));
                         }
                         PrivateScalarBranchAction::DeclareStr {
-                            name, mutable, initializer, ..
+                            declaration, name, mutable, initializer,
                         } => {
                             tasks.push(PrivateScalarTask::DeclareStr(
-                                name, *mutable, initializer,
+                                *declaration, name, *mutable, initializer,
                             ));
                         }
                         PrivateScalarBranchAction::Sequence(actions) => {
@@ -1684,20 +1842,18 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
                         }
                     },
-                    PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
-                        // 遞迴可呼叫最初被 main 選中的函式；
-                        // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, parameter_is_bool, result_expr, local_steps): (
-                            Vec<DeclarationId>,
-                            Vec<bool>,
-                            &PrivateScalarReturnExpr,
-                            &Vec<PrivateScalarLocalStep>,
+                    PrivateScalarTask::EnterCall(name, argument_plans, is_root_call) => {
+                        // 只有原 Checker 完整簽章能決定實參正式型別與借用位置。
+                        let (parameter_ids, parameter_is_bool, parameter_is_str,
+                            result_expr, local_steps): (
+                            Vec<DeclarationId>, Vec<bool>, Vec<bool>,
+                            &PrivateScalarReturnExpr, &Vec<PrivateScalarLocalStep>,
                         ) = if name == self.callee_name {
                             (
                                 self.callee_parameter_ids.clone(),
                                 self.callee_parameter_is_bool.clone(),
-                                &self.return_expr,
-                                &self.root_local_steps,
+                                self.callee_parameter_is_str.clone(),
+                                &self.return_expr, &self.root_local_steps,
                             )
                         } else {
                             let callee = self.nested_callees.iter()
@@ -1705,43 +1861,86 @@ impl PreparedPrivateScalarCall {
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
                             (
                                 callee.parameters.clone(), callee.parameter_is_bool.clone(),
+                                callee.parameter_is_str.clone(),
                                 &callee.result, &callee.local_steps,
                             )
                         };
-                        if parameter_ids.len() != argc || parameter_is_bool.len() != argc
-                            || values.len() < argc {
+                        let argc = argument_plans.len();
+                        if parameter_ids.len() != argc
+                            || parameter_is_bool.len() != argc
+                            || parameter_is_str.len() != argc
+                            || completed_arguments.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
-                        let evaluated = values.split_off(values.len() - argc);
-                        events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
+                        let evaluated = completed_arguments[
+                            completed_arguments.len() - argc..
+                        ].to_vec();
                         let mut locals = BTreeMap::new();
                         let mut bool_locals = BTreeMap::new();
-                        for ((id, is_bool), value) in parameter_ids.iter()
-                            .zip(parameter_is_bool).zip(evaluated) {
-                            if is_bool {
-                                if !matches!(value, 0 | 1)
-                                    || bool_locals.insert(*id, value == 1).is_some() {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        let mut incoming_borrows = Vec::new();
+                        let mut bound_events = Vec::new();
+                        for (index, (plan, actual)) in argument_plans.iter()
+                            .zip(evaluated).enumerate() {
+                            let id = parameter_ids[index];
+                            match (parameter_is_str[index], parameter_is_bool[index],
+                                plan, actual) {
+                                (true, false,
+                                    PrivateScalarCallArgument::BorrowStr { fact, .. },
+                                    PrivateScalarEvaluatedArgument::Borrow {
+                                        ticket, fact: observed,
+                                    }) if *fact == observed && ticket.fact() == *fact => {
+                                    incoming_borrows.push((ticket, *fact));
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::BorrowParameterBound(id, *fact),
+                                    );
                                 }
-                                events.push(PrivateScalarCallEvent::BoolParameterBound(
-                                    *id, value == 1,
-                                ));
-                            } else {
-                                if locals.insert(*id, value).is_some() {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                (false, true, PrivateScalarCallArgument::Bool(_),
+                                    PrivateScalarEvaluatedArgument::Bool(value)) => {
+                                    if bool_locals.insert(id, value).is_some() {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::BoolParameterBound(id, value),
+                                    );
                                 }
-                                events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
+                                (false, false, PrivateScalarCallArgument::Int(_),
+                                    PrivateScalarEvaluatedArgument::Int(value)) => {
+                                    if locals.insert(id, value).is_some() {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::ParameterBound(id, value),
+                                    );
+                                }
+                                _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
                             }
                         }
+                        // 被呼叫者不擁有來源；真票據仍留在直接呼叫者 tracker。
+                        for (ticket, fact) in &incoming_borrows {
+                            let parent = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if parent.borrow_tracker.check_ticket_access(
+                                *ticket, BorrowKind::SharedRead,
+                            ).map_err(PrivateScalarCallRuntimeError::Borrow)? != fact.source {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                        }
+                        completed_arguments.truncate(completed_arguments.len() - argc);
+                        events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
+                        events.extend(bound_events);
                         resources.enter_scope();
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                             bool_values: bool_locals,
                             initialized_order: Vec::new(),
                             resource_scopes: 1,
+                            str_owner_scopes: vec![Vec::new()],
+                            borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
+                            incoming_borrows,
                         });
                         // 只有源自 main return 最外層的真 Call 才允許
                         // 故障注入；先求值的同名子呼叫絕不可誤作根框架。
@@ -1765,9 +1964,9 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
                                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
                                 PrivateScalarLocalStep::DeclareStr {
-                                    name, mutable, initializer, ..
+                                    declaration, name, mutable, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareStr(
-                                    name, *mutable, initializer,
+                                    *declaration, name, *mutable, initializer,
                                 )),
                                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
@@ -1785,6 +1984,12 @@ impl PreparedPrivateScalarCall {
                         )?;
                         let mut frame = frames.pop().expect("真子框架仍存在");
                         events.push(PrivateScalarCallEvent::Returned(value));
+                        let parent = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        Self::return_incoming_borrows(
+                            parent, &frame.incoming_borrows, events,
+                        )?;
                         for entry in frame.initialized_order.iter().rev() {
                             match entry {
                                 PrivateScalarLocalBinding::Int(id) =>
@@ -1809,16 +2014,38 @@ impl PreparedPrivateScalarCall {
                     }
                 }
             }
-            if frames.len() != 1 || values.len() != 1 {
+            if frames.len() != 1 || values.len() != 1
+                || !completed_arguments.is_empty() {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
             }
             Ok(values[0])
         })();
         if result.is_err() {
+            // 任何實參已取得票據而父 Call 尚未真正進入時，失敗路徑
+            // 必先從簽發者 tracker 歸還，不能只在函式退出清除參數。
+            for pending in completed_arguments.iter().rev() {
+                if let PrivateScalarEvaluatedArgument::Borrow { ticket, .. } = pending {
+                    let owner = frames.iter_mut().rev().find(|frame|
+                        frame.borrow_tracker.check_ticket_access(
+                            *ticket, BorrowKind::SharedRead,
+                        ).is_ok()
+                    ).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                    owner.borrow_tracker.release(*ticket)
+                        .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                    events.push(PrivateScalarCallEvent::LoanReturned(*ticket));
+                }
+            }
+            completed_arguments.clear();
             // 執行期預算／溢位／狀態錯誤皆不得偽裝成 return。
             // 逐層清除已真正進入的參數框架，不退出未曾進入的函式。
             while frames.len() > 1 {
                 let mut frame = frames.pop().expect("已進入的子框架");
+                let parent = frames.last_mut().ok_or(
+                    PrivateScalarCallRuntimeError::StateMismatch,
+                )?;
+                Self::return_incoming_borrows(
+                    parent, &frame.incoming_borrows, events,
+                )?;
                 for entry in frame.initialized_order.iter().rev() {
                     match entry {
                         PrivateScalarLocalBinding::Int(id) =>
@@ -1854,6 +2081,9 @@ impl PreparedPrivateScalarCall {
             }
             root.initialized_order.clear();
             root.values.clear();
+            root.borrow_tracker.verify_static_snapshot(
+                std::iter::empty::<BorrowFact>(),
+            ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
             for _ in 0..root.resource_scopes {
                 resources.leave_scope().map_err(
                     PrivateScalarCallRuntimeError::Resource,
@@ -1939,7 +2169,7 @@ impl PreparedPrivateScalarCall {
         if main.result_ty != "int" || !main.params.is_empty()
             || callee.result_ty != "int"
             || callee.params.iter().any(|param|
-                !matches!(param.ty.as_str(), "int" | "bool"))
+                !matches!(param.ty.as_str(), "int" | "bool" | "str"))
             || callee.body.statements.is_empty()
             || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1972,7 +2202,7 @@ impl PreparedPrivateScalarCall {
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
                 || function.params.iter().any(|param|
-                    !matches!(param.ty.as_str(), "int" | "bool"))
+                    !matches!(param.ty.as_str(), "int" | "bool" | "str"))
                 || function.body.statements.is_empty() {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多層函式須為已核准單 return 的純 int 完整簽章",
@@ -1980,6 +2210,7 @@ impl PreparedPrivateScalarCall {
             }
             let mut parameter_ids = Vec::new();
             let mut parameter_is_bool = Vec::new();
+            let mut parameter_is_str = Vec::new();
             for param in &function.params {
                 let id = DeclarationId(param.declaration_start);
                 let member = crate::common_ir::VerifiedTypedMember::checked_private(
@@ -1997,6 +2228,7 @@ impl PreparedPrivateScalarCall {
                 }
                 parameter_ids.push(id);
                 parameter_is_bool.push(param.ty == "bool");
+                parameter_is_str.push(param.ty == "str");
             }
             let (local_inits, local_steps, result, result_span) =
                 Self::prepare_function_locals(function, &verified)?;
@@ -2004,7 +2236,7 @@ impl PreparedPrivateScalarCall {
                 name: function.name.clone(),
                 span: NodeSpan::new(function.start, function.end),
                 parameters: parameter_ids,
-                parameter_is_bool,
+                parameter_is_bool, parameter_is_str,
                 result_span,
                 result,
                 local_inits,
@@ -2050,7 +2282,7 @@ impl PreparedPrivateScalarCall {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
-                if owner.ty == "bool" { return true; }
+                if owner.ty != "int" { return true; }
             }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
@@ -2179,8 +2411,9 @@ impl PreparedPrivateScalarCall {
         let call_span = return_call.node_span();
         if verified.plan.scalar_hir.expression(call_span)
             .is_none_or(|fact| fact.ty != ScalarType::Int)
-            || verified.plan.declarations.call_borrows_at(call_span)
-                .is_some_and(|facts| !facts.is_empty()) {
+            || (!callee.params.iter().any(|param| param.ty == "str")
+                && verified.plan.declarations.call_borrows_at(call_span)
+                    .is_some_and(|facts| !facts.is_empty())) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
             ));
@@ -2189,7 +2422,8 @@ impl PreparedPrivateScalarCall {
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
         let needs_dynamic = needs_main_local_runtime || !direct_call
-            || callee.params.iter().any(|param| param.ty == "bool")
+            || callee.params.iter().any(|param|
+                matches!(param.ty.as_str(), "bool" | "str"))
             || call_arguments.iter().any(|argument| {
             let mut inner = argument;
             while let TermKind::Group(nested) = &inner.kind {
@@ -2328,6 +2562,8 @@ impl PreparedPrivateScalarCall {
         ).collect();
         let callee_parameter_is_bool = callee.params.iter()
             .map(|param| param.ty == "bool").collect();
+        let callee_parameter_is_str = callee.params.iter()
+            .map(|param| param.ty == "str").collect();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
@@ -2337,6 +2573,7 @@ impl PreparedPrivateScalarCall {
             additional_arguments, main_owners, nested_callees,
             main_dynamic_call, main_dynamic_inits, main_dynamic_steps,
             callee_parameter_ids, callee_parameter_is_bool,
+            callee_parameter_is_str,
         })
     }
 
@@ -2362,6 +2599,7 @@ impl PreparedPrivateScalarCall {
             && self.main_dynamic_steps == fresh.main_dynamic_steps
             && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.callee_parameter_is_bool == fresh.callee_parameter_is_bool
+            && self.callee_parameter_is_str == fresh.callee_parameter_is_str
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
@@ -5352,6 +5590,117 @@ mod g18_private_scalar_call_tests {
         let exit_after_removal = if release < exit { exit - 1 } else { exit };
         out.events.insert(exit_after_removal + 1, resource);
         assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r04_具名_const_str_與_int_真同框架借用票據先還才釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst owner:str = \"來源🪼\"\nreturn inspect(owner,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let acquired = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).unwrap();
+        let released = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let owner_released = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        assert!(acquired < released && released < owner_released);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterBound(_, _)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_具名_var_str_獨占借用與_copyable_int_真返回() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar owner:str = \"唯一\"\nreturn inspect(owner,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterBound(_, BorrowFact {
+                kind: BorrowKind::ExclusiveWrite, ..
+            })
+        )));
+    }
+
+    #[test]
+    fn g18_r04_父函式局部_ownedstr_真正借用給子函式並續算() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn parent(n:int)->int{\nconst owner:str = \"父\"\nreturn leaf(owner,n)+2\n}\nfn main()->int{\nreturn parent(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r05_借用首實參後第二實參動態溢位須還真票據再清理_utf8() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn explode(n:int)->int{\nreturn n+9223372036854775807\n}\nfn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner,explode(1))\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let loan_returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let resource_released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        assert!(loan_returned < resource_released);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::BorrowParameterBound(_, _)
+        )));
+    }
+
+    #[test]
+    fn g18_r05_真_str_借用參數綁定後故障依原快照全數歸還() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner,3)\n}\n";
+        let out = checked(src).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r04_真_checker_借用來源篡改或隱含複製仍拒絕() {
+        let illegal = "fn inspect(item:str)->int{\nreturn 7\n}\nfn main()->int{\nconst owner:str = \"來源\"\nvar copied:str = owner\nreturn inspect(owner)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(illegal),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let src = "fn inspect(item:str)->int{\nreturn 7\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(7));
+        if let Some(PrivateScalarReturnExpr::Call { arguments, .. }) =
+            &mut prepared.main_dynamic_call {
+            if let PrivateScalarCallArgument::BorrowStr { fact, .. } = &mut arguments[0] {
+                fact.source = DeclarationId(0);
+            } else { panic!("原 BorrowFact 工作計畫未保存"); }
+        } else { panic!("main 原 Checker 真呼叫工作計畫缺失"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 }
