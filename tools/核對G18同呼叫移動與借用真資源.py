@@ -8,6 +8,8 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_同次真_move_與_borrow_兩資源及票據共同平衡",
+    "g18_r05_混合所有權偽造資源數量或借用未歸不能通過聯合稽核",
     "g18_d_同一真函式先_move_後共享借用_兩資源身分分離且各釋放一次",
     "g18_d_同一真函式先_shared_borrow_後_move_不交換原_parser_求值次序",
     "g18_d_獨占_var_str_借用與另一獨立來源整筆_move_可同次合法存在",
