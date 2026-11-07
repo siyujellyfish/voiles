@@ -7,6 +7,8 @@ enum PrivateScalarCallPrepareError {
     Check(crate::Diagnostic),
     Unsupported(&'static str),
     SourceChanged,
+    /// 真執行事件與動態框架責任不一致，保守拒絕對外暴露不可信結果。
+    RuntimeTraceMismatch,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,96 @@ struct PrivateScalarCallOutcome {
     events: Vec<PrivateScalarCallEvent>,
     /// 任何成功、失敗及重複執行都不得保留被呼叫者參數。
     parameter_slots_after_exit: usize,
+}
+
+impl PrivateScalarCallOutcome {
+    /// R05：完全由已真正發出的事件驗證每個動態框架的進／退、
+    /// 已完成 Copyable 局部宣告之逆序離域及單次返回。
+    /// 這是 int／bool 純值 trace，**不冒充 OwnedStr ResourceEvent**。
+    fn has_balanced_frame_trace(&self) -> bool {
+        struct TraceFrame {
+            name: Option<String>,
+            locals: Vec<PrivateScalarLocalBinding>,
+            returned: bool,
+        }
+        let mut frames = vec![TraceFrame {
+            name: None, locals: Vec::new(), returned: false,
+        }];
+        for event in &self.events {
+            match event {
+                PrivateScalarCallEvent::FunctionEntered(name) => {
+                    if frames.last().is_none_or(|f| f.returned) { return false; }
+                    frames.push(TraceFrame {
+                        name: Some(name.clone()), locals: Vec::new(), returned: false,
+                    });
+                }
+                PrivateScalarCallEvent::ParameterBound(..)
+                    | PrivateScalarCallEvent::BoolParameterBound(..) => {
+                    if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::LocalInitialized(id, _) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::Int(old) if old == id)
+                    ) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::Int(*id));
+                }
+                PrivateScalarCallEvent::BoolInitialized(id, _) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::Bool(old) if old == id)
+                    ) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
+                }
+                PrivateScalarCallEvent::LocalAssigned(id, _) => {
+                    if frames.last().is_none_or(|frame| frame.returned
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::Int(old) if old == id)
+                        )) { return false; }
+                }
+                PrivateScalarCallEvent::BoolAssigned(id, _) => {
+                    if frames.last().is_none_or(|frame| frame.returned
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::Bool(old) if old == id)
+                        )) { return false; }
+                }
+                PrivateScalarCallEvent::LocalScopeEnded(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::Int(previous)) if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::BoolScopeEnded(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::Bool(previous)) if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::Returned(_) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.name.is_none() || frame.returned { return false; }
+                    frame.returned = true;
+                }
+                PrivateScalarCallEvent::FunctionExited { name, returned } => {
+                    if frames.len() <= 1 { return false; }
+                    let Some(frame) = frames.pop() else { return false; };
+                    if frame.name.as_deref() != Some(name.as_str())
+                        || frame.returned != *returned || !frame.locals.is_empty() {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::ArgumentEvaluated(_)
+                    | PrivateScalarCallEvent::BoolArgumentEvaluated(_)
+                    | PrivateScalarCallEvent::ConditionalChecked(_) => {}
+            }
+        }
+        frames.len() == 1 && frames[0].locals.is_empty()
+            && self.parameter_slots_after_exit == 0
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
