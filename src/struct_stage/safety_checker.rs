@@ -866,45 +866,83 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 ));
             self.record_declaration(id, "int", false);
         }
+        let mut after_assignment = false;
         for statement in method.body.iter().take(method.body.len() - 1) {
-            let StmtKind::Declare(local) = &statement.kind else {
-                return Err(Diagnostic {
+            match &statement.kind {
+                StmtKind::Declare(local) => {
+                    // 這一批只接通「宣告群→重賦值群→return」的
+                    // 直線來源順序，避免用整段重排偷改執行期語意。
+                    if after_assignment || local.ty != "int" || local.name == "self"
+                        || vars[0].contains_key(&local.name) {
+                        return Err(Diagnostic {
+                            kind: DiagnosticKind::Static,
+                            message: "方法 int 局部只接受先宣告後賦值的唯一 Copyable 來源".into(),
+                            span: Some(self.source.span(statement.start, statement.end)),
+                        });
+                    }
+                    let init = local.initializer.as_ref().ok_or(Diagnostic {
+                        kind: DiagnosticKind::Static,
+                        message: "方法 int 局部必須有已核准的初始化來源".into(),
+                        span: Some(self.source.span(statement.start, statement.end)),
+                    })?;
+                    if !pure_int(init) {
+                        return Err(self.error(
+                            "方法 int 局部不得含未驗證的 Borrow／Move／函式呼叫／self 欄位",
+                            init,
+                        ));
+                    }
+                    let (ty, ready) = self.evaluate(init, &mut vars)?;
+                    if ty != "int" || !ready {
+                        return Err(self.error(
+                            "方法 int 局部的初始化未完成原 Checker int 安全驗證",
+                            init,
+                        ));
+                    }
+                    let id = DeclarationId(statement.start);
+                    Rc::make_mut(&mut vars[0]).insert(local.name.clone(),
+                        Binding::new(id, "int".to_string(), local.mutable,
+                            ValueSlot::initialized(CopyPermission::Allowed), None, None));
+                    self.record_declaration(id, "int", local.mutable);
+                }
+                StmtKind::Assign(assignment) => {
+                    after_assignment = true;
+                    let target = Self::lookup(&vars, &assignment.name).ok_or(
+                        self.error("方法賦值目標不存在", &assignment.expression),
+                    )?;
+                    // 參數的 var 權限永遠是 false；const／借用別名也
+                    // 不因這條純值局部執行器而取得可寫權。
+                    if !target.mutable || target.ty != "int"
+                        || target.loan.is_some()
+                        || target.value.state() != ValueState::Initialized
+                        || !pure_int(&assignment.expression) {
+                        return Err(self.error(
+                            "方法局部賦值僅接受已初始化的 var int 與純整數算式",
+                            &assignment.expression,
+                        ));
+                    }
+                    let id = target.declaration_start;
+                    let (actual, ready) = self.evaluate(&assignment.expression, &mut vars)?;
+                    if actual != "int" || !ready {
+                        return Err(self.error(
+                            "方法 var int 重賦值缺少原 Checker 型別及初始化證明",
+                            &assignment.expression,
+                        ));
+                    }
+                    self.recorded_scalar_hir.borrow_mut().record_assignment(
+                        crate::common_ir::TypedUse::new(
+                            statement.node_span(),
+                            crate::common_ir::ResolvedUse::new(
+                                id, crate::common_ir::ScalarType::Int,
+                            ),
+                        ),
+                    );
+                }
+                _ => return Err(Diagnostic {
                     kind: DiagnosticKind::Static,
-                    message: "方法 int 局部子集不能混入未驗證的控制流程或欄位寫入".into(),
+                    message: "方法純 int 子集仍拒絕未驗證控制流程或欄位移動".into(),
                     span: Some(self.source.span(statement.start, statement.end)),
-                });
-            };
-            if local.ty != "int" || local.name == "self"
-                || vars[0].contains_key(&local.name) {
-                return Err(Diagnostic {
-                    kind: DiagnosticKind::Static,
-                    message: "方法局部只接受來源唯一且已初始化的 Copyable int".into(),
-                    span: Some(self.source.span(statement.start, statement.end)),
-                });
+                }),
             }
-            let init = local.initializer.as_ref().ok_or(Diagnostic {
-                kind: DiagnosticKind::Static,
-                message: "方法 int 局部必須有已核准的初始化來源".into(),
-                span: Some(self.source.span(statement.start, statement.end)),
-            })?;
-            if !pure_int(init) {
-                return Err(self.error(
-                    "方法 int 局部不得含未驗證的 Borrow／Move／函式呼叫／self 欄位",
-                    init,
-                ));
-            }
-            let (ty, ready) = self.evaluate(init, &mut vars)?;
-            if ty != "int" || !ready {
-                return Err(self.error(
-                    "方法 int 局部的初始化未完成原 Checker int 安全驗證",
-                    init,
-                ));
-            }
-            let id = DeclarationId(statement.start);
-            Rc::make_mut(&mut vars[0]).insert(local.name.clone(),
-                Binding::new(id, "int".to_string(), local.mutable,
-                    ValueSlot::initialized(CopyPermission::Allowed), None, None));
-            self.record_declaration(id, "int", local.mutable);
         }
         if !pure_int(&returned.expression) {
             return Err(self.error(
