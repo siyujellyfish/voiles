@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_宣告未初始化int離域不虛構初始化值或回收資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var_int無初值賦值後真傳入普通函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值int_bool未合法賦值即讀由原checker拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一真_call_雙_resourceid_整筆_move_依原參數順序交付逆序釋放",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_雙_resourceid_跨三層函式_每層重新綁定但零複製零洩漏",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_原_checker_str_move_真跨函式_唯一_utf8_交接",
@@ -133,6 +137,13 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_bool無初值先合法賦值後用於提前return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_同作用域未初始化與已初始化局部按宣告逆序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_分支var_int尚未初始化後更新不污染外層遮蔽",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪var_int先保留空槽再第一次賦值與continue",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_while_continue_未初始化bool與int只執行選中路徑",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_初始化右值溢位時空局部只離域不造假值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_未初始化來源計畫篡改類型執行前零事件拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_函式_for_每輪新_str_跨函式_move_返回後即時釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_普通函式_for_逐輪_str_覆寫即時釋放上一個_owner",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_普通函式_while_逐輪重讀_bool_並僅更新到達的_int",
@@ -155,6 +166,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_初始化右值溢位時空局部只離域不造假值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造未初始化局部冒充已初始化或刪除真離域須拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法均以真var_int更新通過共用離域帳",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同源int普通函式與方法局部只有方法真checker前綴可交付",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
@@ -402,6 +415,18 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_宣告未初始化int離域不虛構初始化值或回收資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_bool無初值先合法賦值後用於提前return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_同作用域未初始化與已初始化局部按宣告逆序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_分支var_int尚未初始化後更新不污染外層遮蔽",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪var_int先保留空槽再第一次賦值與continue",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_while_continue_未初始化bool與int只執行選中路徑",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_初始化右值溢位時空局部只離域不造假值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var_int無初值賦值後真傳入普通函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值int_bool未合法賦值即讀由原checker拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_未初始化來源計畫篡改類型執行前零事件拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造未初始化局部冒充已初始化或刪除真離域須拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法均以真var_int更新通過共用離域帳",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同源int普通函式與方法局部只有方法真checker前綴可交付",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
