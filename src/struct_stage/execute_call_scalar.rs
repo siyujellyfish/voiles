@@ -117,7 +117,7 @@ impl PrivateScalarCallOutcome {
         // 僅實際成功 Returned 的子框架，才可以在正式回滾之前
         // 歸還其直接呼叫者的票據；尚未入框架的失敗實參須先回滾。
         let mut returned_imported_loans =
-            std::collections::HashSet::<crate::borrow_safety::BorrowTicket>::new();
+            Vec::<crate::borrow_safety::BorrowTicket>::new();
         for event in &self.events {
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
@@ -235,12 +235,10 @@ impl PrivateScalarCallOutcome {
                     // 已成功 Returned 的子函式才可正常還票；若實參
                     // 尚未能進入子框架便失敗，必須先 UnwindStarted。
                     // 不能靠當前棧頂沒有 imported_loans 就繞過此限制。
-                    if !unwinding && !returned_imported_loans.remove(ticket) {
+                    if !unwinding && !returned_imported_loans.contains(ticket) {
                         return false;
                     }
-                    if unwinding {
-                        returned_imported_loans.remove(ticket);
-                    }
+                    returned_imported_loans.retain(|loan| loan != ticket);
                     let Some(frame) = frames.iter_mut().rev()
                         .find(|frame| frame.loans.contains(ticket)) else { return false; };
                     let index = frame.loans.iter().position(|loan| loan == ticket)
