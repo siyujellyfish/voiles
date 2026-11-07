@@ -1170,6 +1170,7 @@ impl PreparedPrivateScalarCall {
                 ));
             }
             let mut parameter_ids = Vec::new();
+            let mut parameter_is_bool = Vec::new();
             for param in &function.params {
                 let id = DeclarationId(param.declaration_start);
                 let member = crate::common_ir::VerifiedTypedMember::checked_private(
@@ -1186,6 +1187,7 @@ impl PreparedPrivateScalarCall {
                     ));
                 }
                 parameter_ids.push(id);
+                parameter_is_bool.push(param.ty == "bool");
             }
             let (local_inits, local_steps, result, result_span) =
                 Self::prepare_function_locals(function, &verified)?;
@@ -1193,6 +1195,7 @@ impl PreparedPrivateScalarCall {
                 name: function.name.clone(),
                 span: NodeSpan::new(function.start, function.end),
                 parameters: parameter_ids,
+                parameter_is_bool,
                 result_span,
                 result,
                 local_inits,
@@ -1377,6 +1380,7 @@ impl PreparedPrivateScalarCall {
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
         let needs_dynamic = needs_main_local_runtime || !direct_call
+            || callee.params.iter().any(|param| param.ty == "bool")
             || call_arguments.iter().any(|argument| {
             let mut inner = argument;
             while let TermKind::Group(nested) = &inner.kind {
@@ -1399,11 +1403,23 @@ impl PreparedPrivateScalarCall {
                 (name.clone(), *id)
             ).collect::<BTreeMap<_, _>>();
             if direct_call {
-                let arguments = call_arguments.iter().map(|argument|
-                    PrivateScalarReturnExpr::from_checked_bindings(
-                        argument, &bindings, &verified,
-                    )
-                ).collect::<Result<Vec<_>, _>>()?;
+                let arguments = call_arguments.iter().zip(&callee.params).map(
+                    |(argument, parameter)| {
+                        if parameter.ty == "bool" {
+                            Ok(PrivateScalarCallArgument::Bool(
+                                PrivateScalarBoolExpr::from_checked(
+                                    argument, &bindings, &verified,
+                                )?,
+                            ))
+                        } else {
+                            Ok(PrivateScalarCallArgument::Int(
+                                PrivateScalarReturnExpr::from_checked_bindings(
+                                    argument, &bindings, &verified,
+                                )?,
+                            ))
+                        }
+                    }
+                ).collect::<Result<Vec<_>, PrivateScalarCallPrepareError>>()?;
                 Some(PrivateScalarReturnExpr::Call {
                     name: callee.name.clone(), arguments,
                 })
@@ -1501,6 +1517,8 @@ impl PreparedPrivateScalarCall {
         let callee_parameter_ids = callee.params.iter().map(|param|
             DeclarationId(param.declaration_start)
         ).collect();
+        let callee_parameter_is_bool = callee.params.iter()
+            .map(|param| param.ty == "bool").collect();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
@@ -1509,7 +1527,7 @@ impl PreparedPrivateScalarCall {
             root_local_inits, root_local_steps, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
             main_dynamic_call, main_dynamic_inits, main_dynamic_steps,
-            callee_parameter_ids,
+            callee_parameter_ids, callee_parameter_is_bool,
         })
     }
 
@@ -1534,6 +1552,7 @@ impl PreparedPrivateScalarCall {
             && self.main_dynamic_inits == fresh.main_dynamic_inits
             && self.main_dynamic_steps == fresh.main_dynamic_steps
             && self.callee_parameter_ids == fresh.callee_parameter_ids
+            && self.callee_parameter_is_bool == fresh.callee_parameter_is_bool
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
