@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／R06：核對十三項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
+"""G18／R06：核對十九項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r06_同一函式圖兩張_const_str_共享票據來源相同但序號不同",
+    "g18_r06_兩個獨立_var_str_同一次真呼叫各有獨占票據",
+    "g18_r06_同一真函式堆疊先_move_後借另一_source_資源不混淆",
+    "g18_r06_for_重複同一外層_str_真借用逐輪歸還",
+    "g18_r06_未選中的_if_真借用不簽發任何動態票據",
+    "g18_r05_r06_偽造借用函式已退出後才歸還票據必拒絕",
     "g18_r06_真_while_for_局部_算術與_str_借用雙執行器結果皆須平衡",
     "g18_r06_巢狀同名遮蔽與同步_self_不同資源帳簿均有真退出",
     "g18_r06_迴圈_break_先釋放局部與遞迴資源耗盡各守真出口",
