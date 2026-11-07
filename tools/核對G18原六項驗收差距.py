@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值單純宣告離域零ResourceId",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值後字面賦值只建立一次並退出釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_宣告未初始化int離域不虛構初始化值或回收資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var_int無初值賦值後真傳入普通函式",
@@ -137,6 +141,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_未選分支的str空宣告與賦值不建立UTF8資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_空str與真str共框架溢位僅清理確實建立的資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_bool無初值先合法賦值後用於提前return",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_同作用域未初始化與已初始化局部按宣告逆序離域",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_分支var_int尚未初始化後更新不污染外層遮蔽",
@@ -166,6 +173,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_空str與真str共框架溢位僅清理確實建立的資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_初始化右值溢位時空局部只離域不造假值",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造未初始化局部冒充已初始化或刪除真離域須拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法均以真var_int更新通過共用離域帳",
@@ -296,6 +307,9 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_非法未初始化str讀取借用必由原Checker提前拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法var_int_局部可按原checker賦值後真返回",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法連續兩次_var_int_更新沿用最新動態值",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法第二個var局部可讀取第一個已更新值",
@@ -415,6 +429,16 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值單純宣告離域零ResourceId",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值後字面賦值只建立一次並退出釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_未選分支的str空宣告與賦值不建立UTF8資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_空str與真str共框架溢位僅清理確實建立的資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_非法未初始化str讀取借用必由原Checker提前拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_延遲str來源編譯身分篡改必在動態執行前拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_宣告未初始化int離域不虛構初始化值或回收資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_函式var_bool無初值先合法賦值後用於提前return",
