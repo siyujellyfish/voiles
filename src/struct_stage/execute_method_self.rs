@@ -656,6 +656,7 @@ impl PreparedPrivateSelfMethod {
         let mut method_entered = false;
         let mut method_exited = false;
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
+        let main_locals_complete = main_initialization_error.is_none();
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
             // main 複合 int 初始化在任何方法 BorrowTicket 簽發前
             // 就可能受控溢位，尚未進入的方法不能留下假進／退出。
@@ -802,7 +803,9 @@ impl PreparedPrivateSelfMethod {
         for (_, id, _, _) in self.main_int_locals.iter().rev() {
             // 若前一個初始化溢位，後面的宣告尚未真正走到，
             // 不能假造其作用域或要求釋放從未配置的純值槽。
-            main_values.remove(id);
+            if main_values.remove(id).is_none() && main_locals_complete {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
         }
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
