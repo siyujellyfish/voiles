@@ -22,8 +22,11 @@ enum PrivateScalarCallRuntimeError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarCallEvent {
     ArgumentEvaluated(i64),
+    /// bool 實參獨立標記，不把 Copyable bool 當成 int 隱含轉型。
+    BoolArgumentEvaluated(bool),
     FunctionEntered(String),
     ParameterBound(DeclarationId, i64),
+    BoolParameterBound(DeclarationId, bool),
     /// 每筆經 Checker 核准的純值區域初始化只在真正寫入框架後記錄。
     LocalInitialized(DeclarationId, i64),
     /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
@@ -58,7 +61,7 @@ enum PrivateScalarReturnExpr {
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
     /// 原 Checker 唯一具名函式與已驗證 int 實參；真正呼叫會進入新框架。
-    Call { name: String, arguments: Vec<Self> },
+    Call { name: String, arguments: Vec<PrivateScalarCallArgument> },
 }
 
 impl PrivateScalarReturnExpr {
@@ -143,16 +146,25 @@ impl PrivateScalarReturnExpr {
                     ))?;
                 if target.name == "main" || target.result_ty != "int"
                     || target.params.len() != call.arguments.len()
-                    || target.params.iter().any(|param| param.ty != "int")
+                    || target.params.iter().any(|param|
+                        !matches!(param.ty.as_str(), "int" | "bool"))
                     || verified.plan.declarations.call_borrows_at(span)
                         .is_some_and(|facts| !facts.is_empty()) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "巢狀呼叫必須使用已核准純 Copyable int 的完整參數簽章",
+                        "巢狀呼叫只接通原 Checker Copyable int／bool 完整簽章",
                     ));
                 }
                 let mut arguments = Vec::new();
-                for argument in &call.arguments {
-                    arguments.push(Self::from_checked_bindings(argument, bindings, verified)?);
+                for (argument, parameter) in call.arguments.iter().zip(&target.params) {
+                    arguments.push(if parameter.ty == "bool" {
+                        PrivateScalarCallArgument::Bool(
+                            PrivateScalarBoolExpr::from_checked(argument, bindings, verified)?,
+                        )
+                    } else {
+                        PrivateScalarCallArgument::Int(
+                            Self::from_checked_bindings(argument, bindings, verified)?,
+                        )
+                    });
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
@@ -265,6 +277,19 @@ impl PrivateScalarReturnExpr {
 struct PrivateScalarLocalInit {
     declaration: DeclarationId,
     value: PrivateScalarReturnExpr,
+}
+
+/// 每個實參的真型別已由 Checker 決定：bool 不是 int 可隱含轉型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarCallArgument {
+    Int(PrivateScalarReturnExpr),
+    Bool(PrivateScalarBoolExpr),
+}
+
+impl PrivateScalarCallArgument {
+    fn collect_calls<'a>(&'a self, output: &mut Vec<&'a str>) {
+        if let Self::Int(expr) = self { expr.collect_calls(output); }
+    }
 }
 
 /// R01／R02：原 Parser 順序不可被「先宣告、後賦值」重排。
@@ -404,6 +429,7 @@ struct PrivateScalarNestedCallee {
     name: String,
     span: crate::common_ir::NodeSpan,
     parameters: Vec<DeclarationId>,
+    parameter_is_bool: Vec<bool>,
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
     local_inits: Vec<PrivateScalarLocalInit>,
@@ -438,6 +464,7 @@ struct PreparedPrivateScalarCall {
     main_dynamic_steps: Vec<PrivateScalarLocalStep>,
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
+    callee_parameter_is_bool: Vec<bool>,
 }
 
 /// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
@@ -473,6 +500,8 @@ enum PrivateScalarTask<'a> {
     Evaluate(&'a PrivateScalarReturnExpr, bool),
     /// 每個真實參值求值完成當下才產生事件，不在 EnterCall 補記。
     RecordArgument,
+    EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
+    RecordBoolArgument,
     Apply(char),
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
@@ -568,7 +597,10 @@ impl PreparedPrivateScalarCall {
         ).collect::<BTreeMap<_, _>>();
         let mut local_inits = Vec::new();
         let mut local_steps = Vec::new();
-        let mut bool_bindings = BTreeMap::<String, DeclarationId>::new();
+        let mut bool_bindings = function.params.iter()
+            .filter(|param| param.ty == "bool")
+            .map(|param| (param.name.clone(), DeclarationId(param.declaration_start)))
+            .collect::<BTreeMap<_, _>>();
         for statement in prefix {
             if matches!(&statement.kind, StmtKind::If { .. }) {
                 let branch = Self::compile_early_if(
@@ -653,6 +685,10 @@ impl PreparedPrivateScalarCall {
                     declaration, value,
                 });
                 bool_bindings.insert(owner.name.clone(), declaration);
+                // 共用原 Checker DeclarationId 名稱表同時供正式函式
+                // bool 實參使用；型別仍由 Reference HIR 唯一核對，
+                // 不會將 bool 當成 int 或重新解析來源。
+                bindings.insert(owner.name.clone(), declaration);
                 continue;
             }
             if owner.ty != "int"
@@ -738,7 +774,8 @@ impl PreparedPrivateScalarCall {
             while let Some(task) = tasks.pop() {
                 // 記錄已完成的實參不是另一個 voiles 運算步驟；
                 // 即使下一運算會耗盡預算，仍保留先前已真求值的事件。
-                if !matches!(&task, PrivateScalarTask::RecordArgument) {
+                if !matches!(&task, PrivateScalarTask::RecordArgument
+                    | PrivateScalarTask::RecordBoolArgument) {
                     if steps >= budget.max_steps {
                         return Err(PrivateScalarCallRuntimeError::StepBudget);
                     }
@@ -773,8 +810,16 @@ impl PreparedPrivateScalarCall {
                                 name, arguments.len(), is_root_expression,
                             ));
                             for argument in arguments.iter().rev() {
-                                tasks.push(PrivateScalarTask::RecordArgument);
-                                tasks.push(PrivateScalarTask::Evaluate(argument, false));
+                                match argument {
+                                    PrivateScalarCallArgument::Int(expr) => {
+                                        tasks.push(PrivateScalarTask::RecordArgument);
+                                        tasks.push(PrivateScalarTask::Evaluate(expr, false));
+                                    }
+                                    PrivateScalarCallArgument::Bool(expr) => {
+                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                                    }
+                                }
                             }
                         }
                     },
@@ -783,6 +828,30 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         events.push(PrivateScalarCallEvent::ArgumentEvaluated(value));
+                    }
+                    PrivateScalarTask::EvaluateBoolArgument(expr) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let value = match expr {
+                            PrivateScalarBoolExpr::Constant(value) => *value,
+                            PrivateScalarBoolExpr::Bound(id) =>
+                                *frame.bool_values.get(id).ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?,
+                        };
+                        // 0/1 僅為同一顯式工作堆疊中的暫態 bool 編碼；
+                        // 正式型別來自原 Checker 參數簽章，不能轉成 int slot。
+                        values.push(i64::from(value));
+                    }
+                    PrivateScalarTask::RecordBoolArgument => {
+                        let encoded = *values.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !matches!(encoded, 0 | 1) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        events.push(PrivateScalarCallEvent::BoolArgumentEvaluated(encoded == 1));
                     }
                     PrivateScalarTask::Apply(operator) => {
                         let right = values.pop().ok_or(
@@ -905,13 +974,15 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, result_expr, local_steps): (
+                        let (parameter_ids, parameter_is_bool, result_expr, local_steps): (
                             Vec<DeclarationId>,
+                            Vec<bool>,
                             &PrivateScalarReturnExpr,
                             &Vec<PrivateScalarLocalStep>,
                         ) = if name == self.callee_name {
                             (
                                 self.callee_parameter_ids.clone(),
+                                self.callee_parameter_is_bool.clone(),
                                 &self.return_expr,
                                 &self.root_local_steps,
                             )
@@ -919,9 +990,13 @@ impl PreparedPrivateScalarCall {
                             let callee = self.nested_callees.iter()
                                 .find(|fun| fun.name == name)
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                            (callee.parameters.clone(), &callee.result, &callee.local_steps)
+                            (
+                                callee.parameters.clone(), callee.parameter_is_bool.clone(),
+                                &callee.result, &callee.local_steps,
+                            )
                         };
-                        if parameter_ids.len() != argc || values.len() < argc {
+                        if parameter_ids.len() != argc || parameter_is_bool.len() != argc
+                            || values.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if frames.len() >= budget.max_call_frames {
@@ -930,15 +1005,27 @@ impl PreparedPrivateScalarCall {
                         let evaluated = values.split_off(values.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         let mut locals = BTreeMap::new();
-                        for (id, value) in parameter_ids.iter().zip(evaluated) {
-                            if locals.insert(*id, value).is_some() {
-                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        let mut bool_locals = BTreeMap::new();
+                        for ((id, is_bool), value) in parameter_ids.iter()
+                            .zip(parameter_is_bool).zip(evaluated) {
+                            if is_bool {
+                                if !matches!(value, 0 | 1)
+                                    || bool_locals.insert(*id, value == 1).is_some() {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                events.push(PrivateScalarCallEvent::BoolParameterBound(
+                                    *id, value == 1,
+                                ));
+                            } else {
+                                if locals.insert(*id, value).is_some() {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
                             }
-                            events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
                         }
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
-                            bool_values: BTreeMap::new(),
+                            bool_values: bool_locals,
                             initialized_order: Vec::new(),
                         });
                         // 只有源自 main return 最外層的真 Call 才允許
@@ -1097,7 +1184,8 @@ impl PreparedPrivateScalarCall {
             ))?;
         if main.result_ty != "int" || !main.params.is_empty()
             || callee.result_ty != "int"
-            || callee.params.iter().any(|param| param.ty != "int")
+            || callee.params.iter().any(|param|
+                !matches!(param.ty.as_str(), "int" | "bool"))
             || callee.body.statements.is_empty()
             || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1115,7 +1203,7 @@ impl PreparedPrivateScalarCall {
             ).ok_or(PrivateScalarCallPrepareError::Unsupported(
                 "多參數缺少原 Parser／Lexer 的名稱與 int 型別身分",
             ))?;
-            if !verified.plan.declarations.matches(id, "int", false)
+            if !verified.plan.declarations.matches(id, &param.ty, false)
                 || verified.plan.members.get(&member.identity) != Some(&member) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多參數缺少原 Checker const int 宣告及 P16 型別來源事實",
@@ -1129,13 +1217,15 @@ impl PreparedPrivateScalarCall {
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
-                || function.params.iter().any(|param| param.ty != "int")
+                || function.params.iter().any(|param|
+                    !matches!(param.ty.as_str(), "int" | "bool"))
                 || function.body.statements.is_empty() {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多層函式須為已核准單 return 的純 int 完整簽章",
                 ));
             }
             let mut parameter_ids = Vec::new();
+            let mut parameter_is_bool = Vec::new();
             for param in &function.params {
                 let id = DeclarationId(param.declaration_start);
                 let member = crate::common_ir::VerifiedTypedMember::checked_private(
@@ -1145,13 +1235,14 @@ impl PreparedPrivateScalarCall {
                 ).ok_or(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀函式參數缺少原 Parser/Lexer 型別身分",
                 ))?;
-                if !verified.plan.declarations.matches(id, "int", false)
+                if !verified.plan.declarations.matches(id, &param.ty, false)
                     || verified.plan.members.get(&member.identity) != Some(&member) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
                         "巢狀函式參數缺少原 Checker DeclarationId／P16 TypedMember",
                     ));
                 }
                 parameter_ids.push(id);
+                parameter_is_bool.push(param.ty == "bool");
             }
             let (local_inits, local_steps, result, result_span) =
                 Self::prepare_function_locals(function, &verified)?;
@@ -1159,6 +1250,7 @@ impl PreparedPrivateScalarCall {
                 name: function.name.clone(),
                 span: NodeSpan::new(function.start, function.end),
                 parameters: parameter_ids,
+                parameter_is_bool,
                 result_span,
                 result,
                 local_inits,
@@ -1343,6 +1435,7 @@ impl PreparedPrivateScalarCall {
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
         let needs_dynamic = needs_main_local_runtime || !direct_call
+            || callee.params.iter().any(|param| param.ty == "bool")
             || call_arguments.iter().any(|argument| {
             let mut inner = argument;
             while let TermKind::Group(nested) = &inner.kind {
@@ -1365,11 +1458,23 @@ impl PreparedPrivateScalarCall {
                 (name.clone(), *id)
             ).collect::<BTreeMap<_, _>>();
             if direct_call {
-                let arguments = call_arguments.iter().map(|argument|
-                    PrivateScalarReturnExpr::from_checked_bindings(
-                        argument, &bindings, &verified,
-                    )
-                ).collect::<Result<Vec<_>, _>>()?;
+                let arguments = call_arguments.iter().zip(&callee.params).map(
+                    |(argument, parameter)| {
+                        if parameter.ty == "bool" {
+                            Ok(PrivateScalarCallArgument::Bool(
+                                PrivateScalarBoolExpr::from_checked(
+                                    argument, &bindings, &verified,
+                                )?,
+                            ))
+                        } else {
+                            Ok(PrivateScalarCallArgument::Int(
+                                PrivateScalarReturnExpr::from_checked_bindings(
+                                    argument, &bindings, &verified,
+                                )?,
+                            ))
+                        }
+                    }
+                ).collect::<Result<Vec<_>, PrivateScalarCallPrepareError>>()?;
                 Some(PrivateScalarReturnExpr::Call {
                     name: callee.name.clone(), arguments,
                 })
@@ -1467,6 +1572,8 @@ impl PreparedPrivateScalarCall {
         let callee_parameter_ids = callee.params.iter().map(|param|
             DeclarationId(param.declaration_start)
         ).collect();
+        let callee_parameter_is_bool = callee.params.iter()
+            .map(|param| param.ty == "bool").collect();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
@@ -1475,7 +1582,7 @@ impl PreparedPrivateScalarCall {
             root_local_inits, root_local_steps, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
             main_dynamic_call, main_dynamic_inits, main_dynamic_steps,
-            callee_parameter_ids,
+            callee_parameter_ids, callee_parameter_is_bool,
         })
     }
 
@@ -1500,6 +1607,7 @@ impl PreparedPrivateScalarCall {
             && self.main_dynamic_inits == fresh.main_dynamic_inits
             && self.main_dynamic_steps == fresh.main_dynamic_steps
             && self.callee_parameter_ids == fresh.callee_parameter_ids
+            && self.callee_parameter_is_bool == fresh.callee_parameter_is_bool
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
@@ -3365,6 +3473,111 @@ mod g18_private_scalar_call_tests {
             panic!("原 Checker 提供合法 if Return 計畫");
         }
         assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+    #[test]
+    fn g18_r04_已核准_bool_true_函式實參與_int_返回共用真框架() {
+        let source = "fn choose(flag:bool)->int{\nif(flag){return 4}\nreturn 7\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.callee_parameter_is_bool, [true]);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolArgumentEvaluated(true))).count(), 1);
+        assert!(out.events.contains(&PrivateScalarCallEvent::BoolParameterBound(
+            checked.callee_parameter_ids[0], true,
+        )));
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))));
+    }
+
+    #[test]
+    fn g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n-1\n}\nfn main()->int{\nreturn choose(false,8)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.callee_parameter_is_bool, [true, false]);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        let order = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::BoolArgumentEvaluated(false) => Some("bool"),
+            PrivateScalarCallEvent::ArgumentEvaluated(8) => Some("int"),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(order, ["bool", "int"]);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolParameterBound(..))).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_巢狀普通函式真_bool_參數不被誤讀成父整數槽() {
+        let source = "fn inner(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n-1\n}\nfn outer(flag:bool,n:int)->int{\nreturn inner(flag,n+2)\n}\nfn main()->int{\nreturn outer(true,4)\n}\n";
+        let plan = checked(source);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolParameterBound(_,true))).count(), 2);
+        let entered = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["outer", "inner"]);
+    }
+
+    #[test]
+    fn g18_r04_main_變動具名_bool_正值先更新再真正當實參() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+3}\nreturn n+4\n}\nfn main()->int{\nvar switched:bool = false\nswitched = true\nreturn choose(switched,5)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.main_dynamic_steps.len(), 2);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::BoolAssigned(_,true))));
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolArgumentEvaluated(true))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_bool_混合參數進入後故障只退出本次真框架() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n+2\n}\nfn main()->int{\nreturn choose(true,5)\n}\n";
+        let checked = checked(source);
+        let out = checked.execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolParameterBound(_,true))).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(_,5))).count(), 1);
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(out.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "choose".into(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_r04_bool_參數不是_int_隱含轉型_原_checker_型別優先拒絕() {
+        for source in [
+            "fn choose(flag:bool,n:int)->int{\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(1,2)\n}\n",
+            "fn choose(flag:bool,n:int)->int{\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(true,false)\n}\n",
+            "fn choose(flag:bool,n:int)->int{\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(true)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(source),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{source}");
+        }
+    }
+
+    #[test]
+    fn g18_r04_bool_參數綁定靜態型別被竄改前必拒絕() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n+2\n}\nfn main()->int{\nreturn choose(true,5)\n}\n";
+        let mut checked = checked(source);
+        assert_eq!(checked.execute().unwrap().result, Ok(6));
+        checked.callee_parameter_is_bool[0] = false;
+        assert!(matches!(checked.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
