@@ -119,7 +119,6 @@ from pathlib import Path
         "struct_stage::g18_private_scalar_call_tests::g18_c_有界步數的兩個巢狀兄弟呼叫僅在實際出現時建立獨立框架",
         "struct_stage::g18_private_scalar_call_tests::g18_a_前向函式真_copyable_int_參數直接返回並保留動態事件順序",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
-        "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_copyable_int_參數參與加法且回傳動態值",
         "struct_stage::g18_private_scalar_call_tests::g18_a_真函式_群組與左右結合加減_依原_checker_來源_hir_計算",
         "struct_stage::g18_private_scalar_call_tests::g18_a_具名_const_int_實參以原_checker_引用身分綁定函式參數",
         "execution::tests::p18_同一已驗證函式可重複呼叫且每次只執行實際路徑",
@@ -410,7 +409,6 @@ from pathlib import Path
         "execution::tests::p18_執行期錯誤保留真實函式退出且不冒稱_return_成功",
         "struct_stage::g18_private_scalar_call_tests::g18_c_真正參數框架中途故障必清空且不冒充成功返回",
         "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
-        "struct_stage::g18_private_scalar_call_tests::g18_c_函式參數真加法溢位不能假造_return_且確實離域",
         "execution::tests::p18_巢狀真函式的進出順序與返回值一致",
         "struct_stage::g18_private_source_loop_tests::g18_b_巢狀_for_各迭代作用域獨立釋放且順序正確",
         "struct_stage::g18_private_source_loop_tests::g18_b_擅改_for_區間或_control_必須在配置任何資源前拒絕",
@@ -467,12 +465,12 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
-    "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、if/while/for、區塊局部、OwnedStr 常值／.move 與已核准 str BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；一般化跨函式 Move、self 與任意合法型別混合函式圖仍需完整驗收"),
+    "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、if/while/for、區塊局部、OwnedStr 常值／覆寫、str.move 跨函式雙 ResourceId 及 BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；self／借用別名安全證明與任意合法型別混合函式圖仍需完整驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
-    "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 及同一 Call 對獨立 str 來源的 move＋借用已有真執行；另同一 int/bool 函式圖已接通雙共享／雙獨占 str、逐輪借用與真原子清理；一般化跨函式 Move、再借用及 self 完整矩陣仍缺"),
-    "P18.5": ("SubsetVerified", "已有真正同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件 Gate 及 R06 19 項交叉案例，但尚非原全矩陣結案"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據與靜態唯一零參數及單 int 常值實參多載、真參數直接返回與加減已可執行；多參數／複雜算式及 async 調度取消細則、正向執行仍待裁決及驗收"),
+    "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG，借用別名再借用仍缺 VB14 安全證明與完整退出矩陣"),
+    "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
+    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據、靜態唯一多載、零／單／多 int 常值參數、self 欄位與參數加減及溢位歸還已真執行；任意複合型別方法與一般函式 CFG 尚需整合，async 調度、喚醒、取消與錯誤傳遞可觀察細節及真正非同步正例仍未完成"),
 }
 
 真執行群組 = (
@@ -515,6 +513,17 @@ def main() -> int:
     if set(證據) != {f"P18.{i}" for i in range(1, 7)} or set(狀態) != set(證據):
         print("G18 原六項追溯數量／身分不完整", file=sys.stderr)
         return 1
+    # 原六項每個來源名稱代表一個不同的真測試。跨原項重複映射
+    # 合法，但**同一原項內**重複登錄不能冒充更多正反覆蓋。
+    for item, cases in 證據.items():
+        if not cases:
+            print(f"G18 {item} 沒有任何真來源證據", file=sys.stderr)
+            return 1
+        if len(cases) != len(set(cases)):
+            duplicate = sorted({case for case in cases if cases.count(case) > 1})
+            print(f"G18 {item} 存在重複驗收來源：" + "、".join(duplicate),
+                  file=sys.stderr)
+            return 1
     required = {case for group in 證據.values() for case in group}
     missing = sorted(required - available)
     if missing:
