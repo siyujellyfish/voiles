@@ -85,6 +85,53 @@ struct PrivateRecursiveStrOutcome {
     bound_int_values: Vec<(String, i64)>,
 }
 
+impl PrivateRecursiveStrOutcome {
+    /// R05：真 OwnedStr ResourceId、BorrowSafety 清空事實與
+    /// 動態遞迴框架的進退順序在交付 Outcome 前必須共同成立。
+    /// 不能用 Copyable 的 ScopeEnded 或測試預期的靜態清理模擬替代。
+    fn has_balanced_resource_frame_trace(&self) -> bool {
+        if !self.loans_returned
+            || !crate::owned_str_runtime::event_trace_balanced(&self.events) {
+            return false;
+        }
+        let mut stack = Vec::<&str>::new();
+        let success = self.result.is_ok();
+        for event in &self.frames {
+            match event {
+                PrivateRecursiveFrameEvent::Entered(name) => {
+                    if stack.is_empty() && name != "main" { return false; }
+                    if name == "main" && !stack.is_empty() { return false; }
+                    stack.push(name.as_str());
+                }
+                PrivateRecursiveFrameEvent::Exited { name, returned } => {
+                    if stack.pop() != Some(name.as_str()) || *returned != success {
+                        return false;
+                    }
+                }
+            }
+        }
+        // D18-01 零預算：main 未進入，零資源、零票據且受控錯誤。
+        if self.frames.is_empty() {
+            return self.events.is_empty() && self.result.is_err()
+                && self.borrowed_lengths.is_empty()
+                && self.bound_int_values.is_empty();
+        }
+        stack.is_empty()
+            && matches!(self.frames.first(), Some(PrivateRecursiveFrameEvent::Entered(name)) if name == "main")
+    }
+
+    fn audit_before_return(self)
+        -> Result<Self, PrivateRecursiveStrPrepareError> {
+        if self.has_balanced_resource_frame_trace() {
+            Ok(self)
+        } else {
+            Err(PrivateRecursiveStrPrepareError::CleanupTicket(
+                crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+            ))
+        }
+    }
+}
+
 
 struct PrivateRecursiveActiveFrame {
     name: String,
@@ -722,10 +769,10 @@ impl PreparedPrivateRecursiveStr {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateRecursiveStrPrepareError::SourceChanged);
         }
-        Ok(PrivateRecursiveStrOutcome {
+        PrivateRecursiveStrOutcome {
             result, events, frames: timeline, loans_returned,
             borrowed_lengths, bound_int_values,
-        })
+        }.audit_before_return()
     }
 }
 
@@ -1308,6 +1355,91 @@ mod g18_private_recursive_str_frames_tests {
             assert!(matches!(PreparedPrivateRecursiveStr::prepare(&invalid),
                 Err(PrivateRecursiveStrPrepareError::Check(_))), "{invalid}");
         }
+    }
+
+
+    #[test]
+    fn g18_r05_真直接遞迴_utf8_借用與返回框架交付前全數一致() {
+        let out = plan(direct()).execute(budget(3, 50)).unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_resource_frame_trace());
+        assert!(out.loans_returned);
+        assert_eq!(releases(&out.events), [4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_r05_真互相遞迴多_resourceid_跨四框架逆序退出必一致() {
+        let out = plan(mutual()).execute(budget(4, 100)).unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_resource_frame_trace());
+        assert_eq!(releases(&out.events), [6, 5, 4, 3, 2, 1]);
+    }
+
+    #[test]
+    fn g18_r05_真資源遞迴預算耗盡與局部建立故障均須完整退出() {
+        for out in [
+            plan(direct()).execute(budget(2, 50)).unwrap(),
+            plan(direct()).execute_with_fault(budget(4, 80), Some(4)).unwrap(),
+        ] {
+            assert!(out.result.is_err());
+            assert!(out.has_balanced_resource_frame_trace());
+            assert!(!out.frames.iter().any(|event|
+                matches!(event, PrivateRecursiveFrameEvent::Exited { returned: true, .. })));
+        }
+    }
+
+    #[test]
+    fn g18_r05_真零預算尚未進入主框架不允許假資源事件() {
+        let out = plan(direct()).execute(budget(0, 50)).unwrap();
+        assert!(out.result.is_err());
+        assert!(out.events.is_empty());
+        assert!(out.frames.is_empty());
+        assert!(out.has_balanced_resource_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_動態資源返回後偽造退出名字與成功標記必拒絕() {
+        let mut out = plan(direct()).execute(budget(3, 50)).unwrap();
+        assert!(out.has_balanced_resource_frame_trace());
+        if let PrivateRecursiveFrameEvent::Exited { name, .. } =
+            out.frames.last_mut().expect("main 真退出") {
+            *name = "偽造".to_owned();
+        }
+        assert!(!out.has_balanced_resource_frame_trace());
+        assert!(matches!(out.audit_before_return(),
+            Err(PrivateRecursiveStrPrepareError::CleanupTicket(_))));
+        let mut out = plan(direct()).execute(budget(3, 50)).unwrap();
+        if let PrivateRecursiveFrameEvent::Exited { returned, .. } =
+            out.frames.last_mut().expect("main 真退出") {
+            *returned = false;
+        }
+        assert!(!out.has_balanced_resource_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_真資源釋放或票據空集合遭竄改必拒絕交付() {
+        let mut out = plan(direct()).execute(budget(3, 50)).unwrap();
+        out.loans_returned = false;
+        assert!(!out.has_balanced_resource_frame_trace());
+        assert!(matches!(out.audit_before_return(),
+            Err(PrivateRecursiveStrPrepareError::CleanupTicket(_))));
+        let mut out = plan(direct()).execute(budget(3, 50)).unwrap();
+        out.events.retain(|event| !matches!(event,
+            ResourceEvent::Released(4)));
+        assert!(!out.has_balanced_resource_frame_trace());
+        assert!(matches!(out.audit_before_return(),
+            Err(PrivateRecursiveStrPrepareError::CleanupTicket(_))));
+    }
+
+    #[test]
+    fn g18_r05_動態框架重複進入與漏退出不得因資源表平衡而放行() {
+        let mut out = plan(direct()).execute(budget(3, 50)).unwrap();
+        out.frames.push(PrivateRecursiveFrameEvent::Entered("虛構".into()));
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.events));
+        assert!(!out.has_balanced_resource_frame_trace());
+        let mut out = plan(direct()).execute(budget(3, 50)).unwrap();
+        out.frames.insert(1, PrivateRecursiveFrameEvent::Entered("main".into()));
+        assert!(!out.has_balanced_resource_frame_trace());
     }
 
 }

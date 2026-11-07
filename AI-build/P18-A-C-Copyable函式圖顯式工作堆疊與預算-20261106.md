@@ -243,3 +243,13 @@
 - 新增七項真 Rust 正反：混合 bool/int 巢狀提前返回、算術溢位失敗退出、重入同宣告身份的受控遞迴、假初始化／錯序／重複離域、偽造 Return 與 Exited 名稱或結果、跨型別離域錯序，以及沒有有效框架的假參數或 bool 更新。
 - 專項 Gate **124→131**，G18 P18.1／P18.3／P18.5 和必要 CI、AI-build 同步。**本守門只驗證 Copyable int／bool 的 Scope Event，不是 ResourceId 或真 BorrowTicket／ReleaseEvent**。R05 還須跨 `execute_recursive_str`／`execute_call_borrow`／Move／self 等執行器整合原 ResourceId 與 BorrowFact 退出責任，R06 全矩陣、R07 正式驗收仍未達標；P18 六項仍 0/6 Passed。
 - 僅最新 PR HEAD 三必要 CI completed/success、作者/base/mergeable 確認後 Squash merge，再於新 main 同 SHA 重驗。
+
+
+---
+
+## V1-R05-02：已核准真遞迴 str、BorrowTicket 與資源離域聯合守門（2026-11-07）
+
+- 基線 main `5576c3547ef0f720d564eeb17e39f4d4b557824a`（#583 Copyable 真框架一致性 Gate 131 項已以 PR 最新 HEAD 及 main 同 SHA 三必要 CI success Squash merge）。既有 `execute_recursive_str.rs` 已於真 Rust 中建立原 Lexer／Checker str 局部和原 BorrowFact 已核准的動態 BorrowTicket，正常或故障均會以 OwnedStrRuntime 產生真 `Created／Released` 與獨立 tracker 空快照。尚缺與 R05 純值框架同樣的**所有返回結果交付前**完整動態框架棧稽核，單靠 ResourceId 正確並不能證明未假造 main/子框架退出順序。
+- 本批新增 `PrivateRecursiveStrOutcome::has_balanced_resource_frame_trace`，同時要求：原真 `OwnedStrRuntime::event_trace_balanced`（ResourceId 每份唯一 Created 與恰一次 Released）、實際 tracker 的 `loans_returned` 空集合及數量核對已通過、原動態 `PrivateRecursiveFrameEvent` 的 main 首次進入、各框架 LIFO 名稱配對與 `returned == result.is_ok()` 一致；零預算真未進入狀況必零資源／零借用／零虛構框架，只有受控錯誤。任何錯誤 `audit_before_return` 保守回報真 `CleanupTicket(SnapshotMismatch)`，不將不可信 Outcome 交給使用者。
+- 新增七項真 Rust 正反：直接與互相遞迴正常、框架預算耗盡及第 N 次 OwnedUtf8 故障、零預算未建立任何實例、竄改退出函式名稱／returned flag、造假未歸還票據或刪除真 ReleaseEvent、同真 ResourceId 表正確但偽造多重 main／漏退出。由原 `execute_recursive_str` 的原 Checker 真來源執行，不採用模擬資源當 Passed 證據。
+- P18.3／P18.5 原六項追溯、原遞迴資源專用 Gate **43→50** 及 CI/AI-build 同步。此批完成 R05 的**遞迴資源子集聯合退出守門**，仍非把 Copyable 與 OwnedStr/Move/self 方法完全收束為一個通用 runtime；不自行擴張語言資源規則、異常或 async。R05/R06/R07 仍有交叉矩陣及共用動態執行模型缺口，G18 原六項維持 0/6 Passed；最新 PR HEAD 三項必要 CI success 才 Squash merge，合併 main 同 SHA 重驗。
