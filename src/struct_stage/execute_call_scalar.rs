@@ -5154,6 +5154,63 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+    #[test]
+    fn g18_r04_同一函式_真_move_至局部唯一所有者只釋放一次() {
+        use crate::owned_str_runtime::ResourceEvent as E;
+        let src = "fn transfer(n:int)->int{\nvar source:str = \"唯一🪼\"\nvar moved:str = source.move()\nreturn n+1\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [E::Created(1), E::Moved(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_內層_if_真_move_外層持有者後不能重複清理() {
+        use crate::owned_str_runtime::ResourceEvent as E;
+        let src = "fn transfer(n:int)->int{\nvar source:str = \"唯一\"\nif(true){\nvar moved:str = source.move()\n}\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [E::Created(1), E::Moved(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_真_move_之後第二資源保持獨立且退出逆序() {
+        use crate::owned_str_runtime::ResourceEvent as E;
+        let src = "fn transfer(n:int)->int{\nvar first:str = \"第一\"\nvar moved:str = first.move()\nvar second:str = \"第二\"\nreturn n\n}\nfn main()->int{\nreturn transfer(9)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Moved(1), E::Created(2), E::Released(2), E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_原_checker_拒絕_move_後讀取與未授權隱含複製() {
+        let moved_use = "fn transfer(n:int)->int{\nvar source:str = \"初值\"\nvar moved:str = source.move()\nvar invalid:str = source.move()\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(moved_use),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let copied = "fn transfer(n:int)->int{\nvar source:str = \"初值\"\nvar copied:str = source\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(copied),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r04_真_move_來源計畫篡改不得產生任何資源事件() {
+        let src = "fn transfer(n:int)->int{\nvar source:str = \"唯一\"\nvar moved:str = source.move()\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(3));
+        if let PrivateScalarLocalStep::DeclareStr { initializer, .. } =
+            &mut plan.root_local_steps[1] {
+            *initializer = PrivateScalarStrInitializer::Move {
+                source: "wrong".into(), declaration: DeclarationId(0),
+            };
+        } else { panic!("原 Checker str move 計畫未保留"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
