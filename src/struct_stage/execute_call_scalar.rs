@@ -442,17 +442,26 @@ impl PreparedPrivateScalarCall {
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
         fail_after_root_binding: bool,
-        initial_local_inits: &'a [PrivateScalarLocalInit],
+        initial_local_steps: &'a [PrivateScalarLocalStep],
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
             initialized_locals: Vec::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
-        // 來源同源 int 初始化皆在同一動態工作堆疊依原宣告順序求值。
-        for local in initial_local_inits.iter().rev() {
-            tasks.push(PrivateScalarTask::BindLocal(local.declaration));
-            tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
+        // 原 Checker 語句順序在 LIFO 上反向推入，執行時保持
+        // 宣告、賦值與返回的真實相對次序，不提前求值後續 RHS。
+        for step in initial_local_steps.iter().rev() {
+            match step {
+                PrivateScalarLocalStep::Declare(init) => {
+                    tasks.push(PrivateScalarTask::BindLocal(init.declaration));
+                    tasks.push(PrivateScalarTask::Evaluate(&init.value, false));
+                }
+                PrivateScalarLocalStep::Assign { declaration, value } => {
+                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                }
+            }
         }
         let mut values = Vec::<i64>::new();
         let mut steps = 0usize;
@@ -533,24 +542,37 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_locals.push(id);
                         events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
                     }
+                    PrivateScalarTask::AssignLocal(id) => {
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let slot = frame.values.get_mut(&id).ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        *slot = value;
+                        events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
+                    }
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, result_expr, local_inits): (
+                        let (parameter_ids, result_expr, local_steps): (
                             Vec<DeclarationId>,
                             &PrivateScalarReturnExpr,
-                            &Vec<PrivateScalarLocalInit>,
+                            &Vec<PrivateScalarLocalStep>,
                         ) = if name == self.callee_name {
                             (
                                 self.callee_parameter_ids.clone(),
                                 &self.return_expr,
-                                &self.root_local_inits,
+                                &self.root_local_steps,
                             )
                         } else {
                             let callee = self.nested_callees.iter()
                                 .find(|fun| fun.name == name)
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                            (callee.parameters.clone(), &callee.result, &callee.local_inits)
+                            (callee.parameters.clone(), &callee.result, &callee.local_steps)
                         };
                         if parameter_ids.len() != argc || values.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
@@ -578,9 +600,17 @@ impl PreparedPrivateScalarCall {
                         }
                         tasks.push(PrivateScalarTask::ExitCall);
                         tasks.push(PrivateScalarTask::Evaluate(result_expr, false));
-                        for local in local_inits.iter().rev() {
-                            tasks.push(PrivateScalarTask::BindLocal(local.declaration));
-                            tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
+                        for step in local_steps.iter().rev() {
+                            match step {
+                                PrivateScalarLocalStep::Declare(init) => {
+                                    tasks.push(PrivateScalarTask::BindLocal(init.declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(&init.value, false));
+                                }
+                                PrivateScalarLocalStep::Assign { declaration, value } => {
+                                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                }
+                            }
                         }
                     }
                     PrivateScalarTask::ExitCall => {
