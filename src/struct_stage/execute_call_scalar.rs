@@ -50,6 +50,9 @@ struct PrivateScalarCallOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarReturnExpr {
+    /// 原 Checker 已證明所有前置 if 分支均真正 Return 的後方
+    /// 不可達 expression。只有遭執行到才回報狀態錯誤，絕不造假 int。
+    Unreachable,
     Parameter(DeclarationId),
     Constant(i64),
     Addition(Box<Self>, Box<Self>),
@@ -237,7 +240,8 @@ impl PrivateScalarReturnExpr {
             Self::Subtraction(left, right) => left.evaluate(frame)?
                 .checked_sub(right.evaluate(frame)?)
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
-            Self::Call { .. } => Err(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::Call { .. } | Self::Unreachable =>
+                Err(PrivateScalarCallRuntimeError::StateMismatch),
         }
     }
 
@@ -251,7 +255,7 @@ impl PrivateScalarReturnExpr {
                 left.collect_calls(calls);
                 right.collect_calls(calls);
             }
-            Self::Parameter(_) | Self::Constant(_) => {}
+            Self::Parameter(_) | Self::Constant(_) | Self::Unreachable => {}
         }
     }
 }
@@ -356,6 +360,14 @@ enum PrivateScalarEarlyElse {
 }
 
 impl PrivateScalarEarlyIf {
+    fn always_returns(&self) -> bool {
+        match &self.when_false {
+            Some(PrivateScalarEarlyElse::Return(_)) => true,
+            Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
+            None => false,
+        }
+    }
+
     fn collect_calls<'a>(&'a self, out: &mut Vec<&'a str>) {
         self.when_true.collect_calls(out);
         if let Some(otherwise) = &self.when_false {
@@ -664,9 +676,22 @@ impl PreparedPrivateScalarCall {
             bindings.insert(owner.name.clone(), declaration);
         }
         let return_span = ret.expression.node_span();
-        let result = PrivateScalarReturnExpr::from_checked_bindings(
-            &ret.expression, &bindings, verified,
-        )?;
+        // 原 Checker 在所有 if／else-if／else 葉分支皆 Return 時，
+        // 合法不為後續不可達的原始 Return 建立 Expression HIR。
+        // 僅這個可由已驗證完整分支證明的情況，保留不可達標記，
+        // 若執行器錯誤落入該路徑，必須受控 StateMismatch。
+        let every_branch_returns = matches!(
+            local_steps.last(),
+            Some(PrivateScalarLocalStep::EarlyReturn(plan)) if plan.always_returns()
+        );
+        let result = if every_branch_returns
+            && verified.plan.scalar_hir.expression(return_span).is_none() {
+            PrivateScalarReturnExpr::Unreachable
+        } else {
+            PrivateScalarReturnExpr::from_checked_bindings(
+                &ret.expression, &bindings, verified,
+            )?
+        };
         Ok((local_inits, local_steps, result, return_span))
     }
 
@@ -728,6 +753,8 @@ impl PreparedPrivateScalarCall {
                             values.push(value);
                         }
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
+                        PrivateScalarReturnExpr::Unreachable =>
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch),
                         PrivateScalarReturnExpr::Addition(left, right) => {
                             tasks.push(PrivateScalarTask::Apply('+'));
                             tasks.push(PrivateScalarTask::Evaluate(right, false));
