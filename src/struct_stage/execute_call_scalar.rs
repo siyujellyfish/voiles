@@ -7344,6 +7344,84 @@ mod g18_private_scalar_call_tests {
     }
 
 
+    // R01：其他合法宣告不是 main 所需的動態工作，不能強制把
+    // 它的返回型別誤當 int 編譯；實際可達的所有層仍完整核對。
+    #[test]
+    fn g18_r01_未使用的合法bool輔助函式不得阻斷真int主呼叫() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn forward(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn forward(6)\n}\n";
+        let plan = checked(src);
+        assert!(plan.nested_callees.is_empty());
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "ready"
+        )));
+    }
+
+    #[test]
+    fn g18_r01_主函式到二層真葉函式仍收錄且跳過不相干bool宣告() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn leaf(n:int)->int{\nreturn n+1\n}\nfn relay(n:int)->int{\nreturn leaf(n)+2\n}\nfn main()->int{\nreturn relay(5)\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.nested_callees.iter().map(|f| f.name.as_str())
+            .collect::<Vec<_>>(), ["leaf"]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["relay", "leaf"]);
+    }
+
+    #[test]
+    fn g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn inner(n:int)->int{\nreturn n+2\n}\nfn outer(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn outer(inner(3))\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.nested_callees.iter().map(|f| f.name.as_str())
+            .collect::<Vec<_>>(), ["inner"]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["inner", "outer"]);
+    }
+
+    #[test]
+    fn g18_r01_主函式兄弟分支只執行選中函式而收錄兩者並略過無關bool() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn left(n:int)->int{\nreturn n+1\n}\nfn right(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nresult = left(10)\n}else{\nresult = right(3)\n}\nreturn result\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.nested_callees.iter().map(|f| f.name.as_str())
+            .collect::<Vec<_>>(), ["right"]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name)
+                if name == "left" || name == "ready"
+        )));
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "right"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r01_可達圖身分遭竄改及bool誤用int回傳都須拒絕() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn leaf(n:int)->int{\nreturn n+1\n}\nfn relay(n:int)->int{\nreturn leaf(n)\n}\nfn main()->int{\nreturn relay(5)\n}\n";
+        let mut plan = checked(src);
+        plan.nested_callees.clear();
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let wrong = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn main()->int{\nreturn ready(true)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(wrong),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+
 }
 
 
