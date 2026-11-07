@@ -656,6 +656,8 @@ enum PrivateScalarBranchAction {
     Return(PrivateScalarReturnExpr),
     AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    /// 原 Checker 可寫 str 的真字面值／明確整筆 .move() 覆寫。
+    AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     /// 同一已驗證函式圖的逐輪 bool 判斷；本體仍使用原 Checker 語句計畫。
     While { condition: PrivateScalarBoolExpr, body: Box<PrivateScalarBranchAction> },
     /// 只以原 Checker 驗證的半開 int 區間與迭代 DeclarationId 執行。
@@ -680,7 +682,8 @@ impl PrivateScalarBranchAction {
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
             Self::AssignBool { .. } | Self::DeclareBool { .. }
-                | Self::DeclareStr { .. } | Self::Break | Self::Continue => {}
+                | Self::DeclareStr { .. } | Self::AssignStr { .. }
+                | Self::Break | Self::Continue => {}
         }
     }
 
@@ -691,8 +694,9 @@ impl PrivateScalarBranchAction {
                 actions.last().is_some_and(Self::always_returns),
             Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. }
-                | Self::DeclareInt { .. } | Self::DeclareBool { .. }
-                | Self::DeclareStr { .. } | Self::While { .. } | Self::ForRange { .. }
+                | Self::AssignStr { .. } | Self::DeclareInt { .. }
+                | Self::DeclareBool { .. } | Self::DeclareStr { .. }
+                | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
     }
@@ -740,6 +744,7 @@ enum PrivateScalarLocalStep {
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
     Control(PrivateScalarBranchAction),
 }
@@ -752,7 +757,7 @@ impl PrivateScalarLocalStep {
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
-                | Self::DeclareStr { .. } => {}
+                | Self::DeclareStr { .. } | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -860,6 +865,7 @@ enum PrivateScalarTask<'a> {
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
+    AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
@@ -935,6 +941,33 @@ impl PreparedPrivateScalarCall {
         Ok(PrivateScalarStrInitializer::Move {
             source: source.to_owned(), declaration,
         })
+    }
+
+    /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
+    /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
+    fn checked_str_assignment(
+        name: &str, destination: DeclarationId, expression: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+        statement_start: usize,
+    ) -> Result<PrivateScalarStrInitializer, PrivateScalarCallPrepareError> {
+        if !verified.plan.declarations.typed_declaration(destination)
+            .is_some_and(|fact| fact.ty == "str" && fact.mutable)
+            || !verified.tokens.iter().any(|token|
+                token.start == statement_start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == name)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str var 覆寫缺少原 Checker 可寫宣告與 Lexer 身分",
+            ));
+        }
+        let initializer = Self::checked_str_initializer(expression, bindings, verified)?;
+        if matches!(&initializer, PrivateScalarStrInitializer::Move { declaration, .. }
+            if *declaration == destination) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str 不得從自身 .move() 覆寫",
+            ));
+        }
+        Ok(initializer)
     }
 
     /// 原 Checker 每一條詞彙區塊的單一宣告仍有獨立生命週期。
@@ -1161,6 +1194,15 @@ impl PreparedPrivateScalarCall {
                         "if 賦值缺少原 Checker 變數宣告",
                     ),
                 )?;
+                if fact.ty == "str" {
+                    let initializer = Self::checked_str_assignment(
+                        &assign.name, id, &assign.expression, int_bindings,
+                        verified, statement.start,
+                    )?;
+                    return Ok(PrivateScalarBranchAction::AssignStr {
+                        declaration: id, name: assign.name.clone(), initializer,
+                    });
+                }
                 if !fact.mutable || (fact.ty != "int" && fact.ty != "bool")
                     || verified.plan.scalar_hir.assignment(statement.node_span())
                         .is_none_or(|record|
@@ -1315,6 +1357,19 @@ impl PreparedPrivateScalarCall {
                         declaration: id, value,
                     });
                     continue;
+                }
+                if let Some(id) = bindings.get(&assign.name).copied() {
+                    if verified.plan.declarations.typed_declaration(id)
+                        .is_some_and(|fact| fact.ty == "str") {
+                        let initializer = Self::checked_str_assignment(
+                            &assign.name, id, &assign.expression, &bindings,
+                            verified, statement.start,
+                        )?;
+                        local_steps.push(PrivateScalarLocalStep::AssignStr {
+                            declaration: id, name: assign.name.clone(), initializer,
+                        });
+                        continue;
+                    }
                 }
                 let id = *bindings.get(&assign.name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
@@ -1482,6 +1537,9 @@ impl PreparedPrivateScalarCall {
                 } => tasks.push(PrivateScalarTask::DeclareStr(
                     *declaration, name, *mutable, initializer,
                 )),
+                PrivateScalarLocalStep::AssignStr {
+                    declaration, name, initializer,
+                } => tasks.push(PrivateScalarTask::AssignStr(*declaration, name, initializer)),
                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
                 PrivateScalarLocalStep::Control(action) =>
@@ -1698,6 +1756,35 @@ impl PreparedPrivateScalarCall {
                             id, resource_id,
                         ));
                     }
+                    PrivateScalarTask::AssignStr(id, name, initializer) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.str_owner_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == name) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(id)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        if let PrivateScalarStrInitializer::Move { source, declaration } = initializer {
+                            if *declaration == id || !frame.str_owner_scopes.iter().rev().flatten()
+                                .any(|(known, active)| known == declaration && active == source) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            frame.borrow_tracker.check_direct_access(*declaration)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        }
+                        match initializer {
+                            PrivateScalarStrInitializer::Literal(text) =>
+                                resources.assign(name, text),
+                            PrivateScalarStrInitializer::Move { source, .. } =>
+                                resources.replace_from(source, name),
+                        }.map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        Self::record_owned_resources(&resources, &mut resource_cursor, events);
+                        let resource_id = resources.resource_id(name)
+                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        events.push(PrivateScalarCallEvent::ResourceOwnerBound(id, resource_id));
+                    }
                     PrivateScalarTask::AssignBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -1905,6 +1992,11 @@ impl PreparedPrivateScalarCall {
                                 *declaration, name, *mutable, initializer,
                             ));
                         }
+                        PrivateScalarBranchAction::AssignStr {
+                            declaration, name, initializer,
+                        } => tasks.push(PrivateScalarTask::AssignStr(
+                            *declaration, name, initializer,
+                        )),
                         PrivateScalarBranchAction::Sequence(actions) => {
                             // 原 Parser 分支先後次序必須保持；工作堆疊
                             // LIFO 以反序放入，未選中的分支不排任何工作。
@@ -2055,6 +2147,11 @@ impl PreparedPrivateScalarCall {
                                     declaration, name, mutable, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareStr(
                                     *declaration, name, *mutable, initializer,
+                                )),
+                                PrivateScalarLocalStep::AssignStr {
+                                    declaration, name, initializer,
+                                } => tasks.push(PrivateScalarTask::AssignStr(
+                                    *declaration, name, initializer,
                                 )),
                                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
