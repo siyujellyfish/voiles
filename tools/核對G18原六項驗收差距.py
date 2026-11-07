@@ -19,6 +19,7 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一_while_重借外層_const_str_逐次歸還才進下一輪",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式_while_false_零迭代仍真正檢查且返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式_for_迭代器真值逐輪參與累加",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_分支同名遮蔽只寫入區塊內宣告_外部值不變",
@@ -143,6 +144,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_真借用已取得但子呼叫框架預算耗盡仍全數原子歸還",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_借用後第二_int_實參溢位_真票據歸還先於_resourceid_釋放",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_重複歸還同一票據必由同序帳簿拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_父子函式同時擁有真_utf8_返回後依堆疊逆序釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_步數耗盡與真資源清理必先於失敗函式退出",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_借用首實參後第二實參動態溢位須還真票據再清理_utf8",
