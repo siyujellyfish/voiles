@@ -4938,6 +4938,98 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+    #[test]
+    fn g18_r04_同一函式框架真_ownedstr_局部與_copyable_int_返回() {
+        let src = "fn inc(n:int)->int{\nvar owned:str = \"內🪼\"\nreturn n+1\n}\nfn main()->int{\nreturn inc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_真_if_區塊_utf8_只在選中分支建立且退域釋放() {
+        let src = "fn inc(n:int)->int{\nvar result:int = n\nif(true){\nvar owned:str = \"分支\"\nresult = result+2\n}\nif(false){\nvar never:str = \"不執行\"\n}\nreturn result\n}\nfn main()->int{\nreturn inc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_真_for_每輪_utf8_各有唯一_resourceid_並先釋放() {
+        let src = "fn inc(n:int)->int{\nfor i in 0..3{\nvar owned:str = \"迭代🪼\"\n}\nreturn n\n}\nfn main()->int{\nreturn inc(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Released(1),
+            E::Created(2), E::Released(2),
+            E::Created(3), E::Released(3),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_真_while_continue_離域_utf8_不重用舊資源() {
+        let src = "fn inc(n:int)->int{\nvar flag:bool = true\nwhile(flag){\nvar owned:str = \"本輪\"\nflag = false\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn inc(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [E::Created(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_父子函式同時擁有真_utf8_返回後依堆疊逆序釋放() {
+        let src = "fn child(n:int)->int{\nvar child_owner:str = \"子\"\nreturn n+1\n}\nfn parent(n:int)->int{\nvar parent_owner:str = \"父\"\nreturn child(n)\n}\nfn main()->int{\nreturn parent(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Created(2),
+            E::Released(2), E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_函式迴圈資源在步數預算耗盡仍全數真釋放() {
+        let src = "fn inc(n:int)->int{\nwhile(true){\nvar owned:str = \"反覆\"\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn inc(4)\n}\n";
+        let out = checked(src).execute_with_budget(PrivateScalarExecutionBudget {
+            max_call_frames: 6, max_steps: 30,
+        }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.resource_events.is_empty());
+        assert!(crate::owned_str_runtime::event_trace_balanced(
+            &out.resource_events,
+        ));
+        assert!(!out.events.iter().any(|ev|
+            matches!(ev, PrivateScalarCallEvent::Returned(..))));
+    }
+
+    #[test]
+    fn g18_r04_真_ownedstr_帳簿偽造及未核准隱含複製皆先拒絕() {
+        let src = "fn inc(n:int)->int{\nvar owned:str = \"原文\"\nreturn n\n}\nfn main()->int{\nreturn inc(3)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        out.resource_events.pop();
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+        let invalid = "fn inc(n:int)->int{\nvar a:str = \"原文\"\nvar b:str = a\nreturn n\n}\nfn main()->int{\nreturn inc(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
 }
 
 
