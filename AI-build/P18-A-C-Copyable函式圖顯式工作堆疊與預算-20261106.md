@@ -264,3 +264,15 @@
 - 執行真選中 `Return` 才刪除本函式不可達後續工作項；選中 `AssignInt／AssignBool` 則依現有顯式工作堆疊先真求值 RHS、更新當前 frame slot、產生 LocalAssigned／BoolAssigned，**原程式後續語句必繼續執行**；未選中的分支沒有任何變更、返回或虛構事件。所有必需真位元資料仍由原 Checker 裁決。
 - 補七項原來源 Rust 正反：true 分支更新後返回、false 分支完全不執行 RHS、else-if 原順序選擇唯一更新再呼叫、bool 更新後下一個 if 真重讀、分支內巢狀函式溢位不補寫或假返回、const／錯型別由原 Checker 拒絕、已編譯分支 RHS 被竄改先 SourceChanged。
 - 專項 Gate **131→138**，G18 原 P18.1／P18.3／P18.5 追溯、CI／AI-build 同步。此批降低 V1 R01/R03 真控制流缺口，但尚不表示完整 for／while、局部區塊資源與 R01～R07 已結案。G18 六原項維持 0/6 Passed，必須最新 PR HEAD 三必要 CI completed/success、作者/base/mergeable 後 Squash merge，新 main 同 SHA 再驗。
+
+
+---
+
+## V1-R05-03：跨普通 str 借用／Move＋Borrow／同步 self 動態結果聯合守門（2026-11-07）
+
+- 基線 `096de88f07b7d9fedd63010587cf2f7384c60efc`，#585 已以最新 PR HEAD 三必要 CI success Squash merge。繼 R05-01 Copyable 框架和 R05-02 真遞迴 str 來源／資源聯合守門，其他獨立執行器僅核對 OwnedStr `event_trace_balanced`，缺少「票據已歸還、合法進入／退出、真所有者資源數量」交叉驗證。
+- 在既有 `execute_call_borrow.rs` 對原 Checker 已核准的共享／獨占普通函式 str 借用，新增 `PrivateCallBorrowOutcome::has_balanced_borrow_resource_trace`：完整 ResourceId 對稱，確實一份 Created/Released，BorrowSafety 原票據結束後可直接存取來源，真參數框架 0，函式 entered/exited 與真結果一致。不新增動態借用權限或改動錯誤語意。
+- 同一原 Checker Call 的 `str.move`＋另一獨立來源 str BorrowTicket，新增 `PrivateMixedOwnershipOutcome::has_balanced_mixed_resource_trace`：真兩個獨立 OwnedStr 身分各一次 Created/Released、BorrowTicket 必先歸還、正常成功有真讀取觀測，避免「空事件表也平衡」冒充合法來源。
+- 同步方法 `execute_method_self.rs` 原 Checker 已核准的 int 欄位共享／獨占 self 借用，新增 `PrivateSelfMethodOutcome::has_balanced_self_borrow_trace`：真票據必歸還，無 OwnedStr 時任何假 ResourceEvent 均拒絕，方法 entered/exited 必依實際結果；上述三守門全部在真正 Outcome 對外交付前執行，不因測試後才核對而放行無效事件。
+- 新增六項原執行器真來源 Rust 正反：普通共享／獨占 str 成功與注入故障、假歸還／假進入／丟 ReleaseEvent、Move＋Borrow 真兩資源、偽造空表／未歸票據／未實讀、同步共享／獨占 self 成功與失敗、假借用歸還或憑空添加 Created+Released。G18 原 P18.3／18.4／18.5／18.6 稽核與三組專用 Gate 32→34、8→10、38→40，同步更新 CI。
+- 這是各自既有原 Checker／BorrowFact 真執行器的退出結果合約收緊，**仍非單一通用 OwnedStr＋Copyable＋方法＋異步 interpreter**；多擁有者跨不同函式／迴圈與完整 V1 R06/R07 正反交叉尚未封閉，G18 原六項保留 0/6 Passed。只在 PR 最新 HEAD 三必要 CI completed/success、身分／base／mergeable 全核對後 Squash merge，新 main 同 SHA 再驗。
