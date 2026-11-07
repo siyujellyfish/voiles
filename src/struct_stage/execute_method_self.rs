@@ -1017,4 +1017,37 @@ mod g18_private_method_self_tests {
             Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
+
+    #[test]
+    fn g18_r05_同步共享與獨占_self_正常及故障均歸還真票據且零假資源() {
+        for source in [
+            normal(),
+            "struct Counter{\nvar count:int = 1\nfn set()->int{\nself.count = 9\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n",
+        ] {
+            let plan = checked(source);
+            for fail in [false, true] {
+                let out = plan.execute_with_fault(fail).unwrap();
+                assert!(out.has_balanced_self_borrow_trace());
+                assert!(out.ticket_returned);
+                assert_eq!(out.method_exited, !fail);
+                assert!(out.events.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn g18_r05_同步_self_偽造未歸票據或無來源資源事件必被守門拒絕() {
+        let plan = checked(normal());
+        let mut out = plan.execute().unwrap();
+        out.ticket_returned = false;
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = plan.execute().unwrap();
+        out.method_entered = false;
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = plan.execute().unwrap();
+        out.events.push(crate::owned_str_runtime::ResourceEvent::Created(1));
+        out.events.push(crate::owned_str_runtime::ResourceEvent::Released(1));
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
 }
