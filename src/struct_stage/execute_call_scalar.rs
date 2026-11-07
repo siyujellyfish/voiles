@@ -474,6 +474,11 @@ enum PrivateScalarBranchAction {
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     /// 同一已驗證函式圖的逐輪 bool 判斷；本體仍使用原 Checker 語句計畫。
     While { condition: PrivateScalarBoolExpr, body: Box<PrivateScalarBranchAction> },
+    /// 只以原 Checker 驗證的半開 int 區間與迭代 DeclarationId 執行。
+    ForRange {
+        iterator: DeclarationId, lower: i64, upper: i64,
+        body: Box<PrivateScalarBranchAction>,
+    },
     Break,
     Continue,
 }
@@ -487,7 +492,8 @@ impl PrivateScalarBranchAction {
             Self::NestedIf(plan) => plan.collect_calls(calls),
             Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
                 expr.collect_calls(calls),
-            Self::While { body, .. } => body.collect_calls(calls),
+            Self::While { body, .. } | Self::ForRange { body, .. } =>
+                body.collect_calls(calls),
             Self::AssignBool { .. } | Self::Break | Self::Continue => {}
         }
     }
@@ -499,7 +505,8 @@ impl PrivateScalarBranchAction {
                 .is_some_and(Self::always_returns),
             Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. }
-                | Self::While { .. } | Self::Break | Self::Continue => false,
+                | Self::While { .. } | Self::ForRange { .. }
+                | Self::Break | Self::Continue => false,
         }
     }
 }
@@ -647,6 +654,10 @@ enum PrivateScalarTask<'a> {
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
     CheckWhile(&'a PrivateScalarBoolExpr, &'a PrivateScalarBranchAction),
+    /// 本輪迭代器僅在所屬來源區塊有效，離域後可用同一 ID 進下一輪。
+    CheckFor(&'a PrivateScalarBranchAction, DeclarationId, i64, i64),
+    EndFor(&'a PrivateScalarBranchAction, DeclarationId, i64, i64),
+    UnbindIterator(DeclarationId),
     ExecuteBranchAction(&'a PrivateScalarBranchAction),
     EnterCall(&'a str, usize, bool),
     ExitCall,
@@ -713,6 +724,38 @@ impl PreparedPrivateScalarCall {
                 };
                 Ok(PrivateScalarBranchAction::While {
                     condition: guard, body: Box::new(steps),
+                })
+            }
+            StmtKind::ForRange { iterator, iterator_start, lower, upper, body } => {
+                let identity = DeclarationId(*iterator_start);
+                if !verified.plan.declarations.matches(identity, "int", false) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "for 迭代器缺少原 Checker const int 宣告身份",
+                    ));
+                }
+                let start = crate::syntax_shared::integer_i64(lower).map_err(|_|
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "for 半開左端點缺少合法 i64 來源",
+                    ),
+                )?;
+                let end = crate::syntax_shared::integer_i64(upper).map_err(|_|
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "for 半開右端點缺少合法 i64 來源",
+                    ),
+                )?;
+                // 空區間原 Checker 不必替不可達本體簽發 HIR。
+                let compiled = if start >= end || body.statements.is_empty() {
+                    PrivateScalarBranchAction::Sequence(Vec::new())
+                } else {
+                    let mut scoped = int_bindings.clone();
+                    scoped.insert(iterator.clone(), identity);
+                    Self::compile_early_branch(
+                        &body.statements, &scoped, bool_bindings, verified, true,
+                    )?
+                };
+                Ok(PrivateScalarBranchAction::ForRange {
+                    iterator: identity, lower: start, upper: end,
+                    body: Box::new(compiled),
                 })
             }
             StmtKind::Break if inside_loop => Ok(PrivateScalarBranchAction::Break),
@@ -854,7 +897,8 @@ impl PreparedPrivateScalarCall {
                 local_steps.push(PrivateScalarLocalStep::EarlyReturn(branch));
                 continue;
             }
-            if matches!(&statement.kind, StmtKind::While { .. }) {
+            if matches!(&statement.kind,
+                StmtKind::While { .. } | StmtKind::ForRange { .. }) {
                 let action = Self::compile_early_branch(
                     std::slice::from_ref(statement), &bindings, &bool_bindings,
                     verified, false,
@@ -1236,21 +1280,73 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::ExecuteBranchAction(body));
                         }
                     }
+                    PrivateScalarTask::CheckFor(body, id, next, upper) => {
+                        if next < upper {
+                            let frame = frames.last_mut().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if frame.values.insert(id, next).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            frame.initialized_order.push(PrivateScalarLocalBinding::Int(id));
+                            events.push(PrivateScalarCallEvent::LocalInitialized(id, next));
+                            let after = next.checked_add(1).ok_or(
+                                PrivateScalarCallRuntimeError::IntegerOverflow,
+                            )?;
+                            tasks.push(PrivateScalarTask::EndFor(body, id, after, upper));
+                            tasks.push(PrivateScalarTask::ExecuteBranchAction(body));
+                        }
+                    }
+                    PrivateScalarTask::EndFor(body, id, next, upper) => {
+                        // 先撤銷當輪的唯一定義，再開始下一輪，避免同一 ID 重複綁定。
+                        tasks.push(PrivateScalarTask::CheckFor(body, id, next, upper));
+                        tasks.push(PrivateScalarTask::UnbindIterator(id));
+                    }
+                    PrivateScalarTask::UnbindIterator(id) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.values.remove(&id).is_none()
+                            || !matches!(frame.initialized_order.pop(),
+                                Some(PrivateScalarLocalBinding::Int(found)) if found == id)
+                        {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        events.push(PrivateScalarCallEvent::LocalScopeEnded(id));
+                    }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
                         PrivateScalarBranchAction::While { condition, body } => {
                             tasks.push(PrivateScalarTask::CheckWhile(condition, body));
                         }
+                        PrivateScalarBranchAction::ForRange { iterator, lower, upper, body } => {
+                            tasks.push(PrivateScalarTask::CheckFor(
+                                body, *iterator, *lower, *upper,
+                            ));
+                        }
                         PrivateScalarBranchAction::Break | PrivateScalarBranchAction::Continue => {
                             // 僅捨棄本次迭代尚未到達的工作，不裁掉父函式。
-                            // 最近的 CheckWhile 是動態最內層循環，外層可繼續。
+                            // 最近的 CheckWhile／EndFor 是動態最內層循環，
+                            // break 只退出該層，continue 仍必須完成當輪離域。
                             let is_break = matches!(action, PrivateScalarBranchAction::Break);
-                            while !matches!(tasks.last(), Some(PrivateScalarTask::CheckWhile(..))) {
-                                if matches!(tasks.last(), None | Some(PrivateScalarTask::ExitCall)) {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            loop {
+                                match tasks.last() {
+                                    Some(PrivateScalarTask::CheckWhile(..)) => {
+                                        if is_break { tasks.pop(); }
+                                        break;
+                                    }
+                                    Some(PrivateScalarTask::EndFor(_, id, _, _)) => {
+                                        let id = *id;
+                                        if is_break {
+                                            tasks.pop();
+                                            tasks.push(PrivateScalarTask::UnbindIterator(id));
+                                        }
+                                        break;
+                                    }
+                                    None | Some(PrivateScalarTask::ExitCall) =>
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                    _ => { tasks.pop(); }
                                 }
-                                tasks.pop();
                             }
-                            if is_break { tasks.pop(); }
                         }
                         PrivateScalarBranchAction::NestedIf(plan) => {
                             // 只執行已選真分支中的內層 if；
@@ -4400,6 +4496,96 @@ mod g18_private_scalar_call_tests {
         }) = &mut prepared.root_local_steps[1] {
             *condition = PrivateScalarBoolExpr::Constant(false);
         } else { panic!("原 while 來源控制計畫未保留"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r01_普通函式_for_迭代器真值逐輪參與累加() {
+        let src = "fn sum(n:int)->int{\nvar value:int = n\nfor i in 2..5{\nvalue = value+i\n}\nreturn value\n}\nfn main()->int{\nreturn sum(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::LocalInitialized(_, v) if (2..5).contains(v) =>
+                Some(*v), _ => None,
+        }).collect::<Vec<_>>(), [3, 2, 3, 4]);
+    }
+
+    #[test]
+    fn g18_r01_普通函式_for_空半開區間不虛構本體或迭代器() {
+        let src = "fn sum(n:int)->int{\nvar value:int = n\nfor i in 2..2{\nvalue = value+50\n}\nreturn value\n}\nfn main()->int{\nreturn sum(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::LocalAssigned(..))));
+    }
+
+    #[test]
+    fn g18_r03_普通函式_for_break_只結束最近一輪並先離域() {
+        let src = "fn sum(n:int)->int{\nvar value:int = n\nfor i in 3..9{\nvalue = value+i\nbreak\nvalue = value+100\n}\nreturn value\n}\nfn main()->int{\nreturn sum(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::LocalScopeEnded(_))).count(), 2);
+    }
+
+    #[test]
+    fn g18_r03_普通函式_for_continue_每輪清除同一宣告身份() {
+        let src = "fn sum(n:int)->int{\nfor i in 0..3{\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn sum(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::LocalInitialized(..))).count(), 3);
+        assert_eq!(out.events.iter().filter(|e|
+            matches!(e, PrivateScalarCallEvent::LocalScopeEnded(..))).count(), 3);
+    }
+
+    #[test]
+    fn g18_r02_普通函式_巢狀_for_同名迭代器用不同宣告身份() {
+        let src = "fn sum(n:int)->int{\nvar value:int = n\nfor i in 1..2{\nfor i in 8..9{\nvalue = value+i\n}\n}\nreturn value\n}\nfn main()->int{\nreturn sum(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        // 外層 var value 的初值恰好也是 1；只按語意事件順序
+        // 排除首個本地宣告，再核對兩個真正 for 迭代的來源身份。
+        let locals = out.events.iter().filter_map(|event| {
+            if let PrivateScalarCallEvent::LocalInitialized(id, value) = event {
+                Some((*id, *value))
+            } else { None }
+        }).collect::<Vec<_>>();
+        assert_eq!(locals.len(), 3);
+        let iter = &locals[1..];
+        assert_eq!(iter.len(), 2);
+        assert_ne!(iter[0].0, iter[1].0);
+        assert_eq!([iter[0].1, iter[1].1], [1, 8]);
+    }
+
+    #[test]
+    fn g18_r03_普通函式_巨大合法_for_受真步數預算控制() {
+        let src = "fn sum(n:int)->int{\nfor i in 0..9223372036854775807{\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn sum(4)\n}\n";
+        let out = checked(src).execute_with_budget(PrivateScalarExecutionBudget {
+            max_call_frames: 8, max_steps: 32,
+        }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(..))));
+    }
+
+    #[test]
+    fn g18_r03_普通函式_for_迭代身份計畫偽造必先拒絕() {
+        let src = "fn sum(n:int)->int{\nfor i in 2..4{\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn sum(4)\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(4));
+        if let PrivateScalarLocalStep::Control(PrivateScalarBranchAction::ForRange {
+            iterator, ..
+        }) = &mut prepared.root_local_steps[0] {
+            *iterator = DeclarationId(0);
+        } else { panic!("原 for 迭代身份工作計畫未保留"); }
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
