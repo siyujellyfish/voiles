@@ -6100,4 +6100,77 @@ mod g18_r06_cross_runtime_tests {
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
+    #[test]
+    fn g18_r06_同一_while_重借外層_const_str_逐次歸還才進下一輪() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn observe(item:str,n:int)->int{\nreturn n+1\n}\nfn run(n:int)->int{\nconst source:str = \"重借🪼\"\nvar value:int = n\nvar active:bool = true\nwhile(active){\nvalue = observe(source,value)\nactive = false\n}\nreturn observe(source,value)\n}\nfn main()->int{\nreturn run(2)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let acquired = out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count();
+        let returned = out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count();
+        assert_eq!((acquired, returned), (2, 2));
+    }
+
+    #[test]
+    fn g18_r06_真借用已取得但子呼叫框架預算耗盡仍全數原子歸還() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn observe(item:str,n:int)->int{\nreturn n+1\n}\nfn run(n:int)->int{\nconst source:str = \"呼叫預算\"\nreturn observe(source,n)\n}\nfn main()->int{\nreturn run(2)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute_with_budget(
+            PrivateScalarExecutionBudget {max_call_frames: 1, max_steps: 100}
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(out.has_balanced_frame_trace());
+        let acq = out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count();
+        let ret = out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count();
+        assert_eq!(acq, ret);
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r06_借用後第二_int_實參溢位_真票據歸還先於_resourceid_釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn run(n:int)->int{\nconst source:str = \"溢位\"\nreturn observe(source,n+9223372036854775807)\n}\nfn main()->int{\nreturn run(1)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let loan = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        assert!(loan < released);
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造借用在來源釋放後才歸還必由同序帳簿拒絕() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"來源\"\nreturn observe(source,4)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let loan = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let ev = out.events.remove(loan);
+        let last_release = out.events.iter().rposition(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        out.events.insert(last_release+1, ev);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
 }
