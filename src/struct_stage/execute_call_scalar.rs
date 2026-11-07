@@ -269,16 +269,45 @@ impl PrivateScalarReturnExpr {
                 if target.name == "main" || target.result_ty != "int"
                     || target.params.len() != call.arguments.len()
                     || target.params.iter().any(|param|
-                        !matches!(param.ty.as_str(), "int" | "bool"))
-                    || verified.plan.declarations.call_borrows_at(span)
-                        .is_some_and(|facts| !facts.is_empty()) {
+                        !matches!(param.ty.as_str(), "int" | "bool" | "str")) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
                         "巢狀呼叫只接通原 Checker Copyable int／bool 完整簽章",
                     ));
                 }
                 let mut arguments = Vec::new();
+                let mut checked_borrows = Vec::new();
                 for (argument, parameter) in call.arguments.iter().zip(&target.params) {
-                    arguments.push(if parameter.ty == "bool" {
+                    arguments.push(if parameter.ty == "str" {
+                        let TermKind::Name(owner) = &argument.kind else {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 預設借用實參只能是原 Parser 具名來源",
+                            ));
+                        };
+                        let id = *bindings.get(owner).ok_or(
+                            PrivateScalarCallPrepareError::Unsupported(
+                                "str 實參缺少當前原 Checker DeclarationId",
+                            ),
+                        )?;
+                        let declaration = verified.plan.declarations.typed_declaration(id)
+                            .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                                "str 實參缺少原 Checker 宣告事實",
+                            ))?;
+                        if declaration.ty != "str" || !verified.tokens.iter().any(|token|
+                            token.start == argument.start && token.end == argument.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == owner)
+                        ) {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 實參缺少來源型別或原 Lexer 名稱",
+                            ));
+                        }
+                        let fact = BorrowFact::new(id, if declaration.mutable {
+                            BorrowKind::ExclusiveWrite
+                        } else { BorrowKind::SharedRead });
+                        checked_borrows.push(fact);
+                        PrivateScalarCallArgument::BorrowStr {
+                            owner: owner.clone(), fact,
+                        }
+                    } else if parameter.ty == "bool" {
                         PrivateScalarCallArgument::Bool(
                             PrivateScalarBoolExpr::from_checked(argument, bindings, verified)?,
                         )
@@ -287,6 +316,12 @@ impl PrivateScalarReturnExpr {
                             Self::from_checked_bindings(argument, bindings, verified)?,
                         )
                     });
+                }
+                if verified.plan.declarations.call_borrows_at(span).unwrap_or(&[])
+                    != checked_borrows.as_slice() {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "str 借用 DeclarationId、權限或數量不符 Checker call_borrows",
+                    ));
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
@@ -406,6 +441,8 @@ struct PrivateScalarLocalInit {
 enum PrivateScalarCallArgument {
     Int(PrivateScalarReturnExpr),
     Bool(PrivateScalarBoolExpr),
+    /// 唯有正式 Checker call_borrows 與原 Lexer 具名 str 才能進入票據流程。
+    BorrowStr { owner: String, fact: BorrowFact },
 }
 
 impl PrivateScalarCallArgument {
@@ -625,6 +662,7 @@ struct PrivateScalarNestedCallee {
     span: crate::common_ir::NodeSpan,
     parameters: Vec<DeclarationId>,
     parameter_is_bool: Vec<bool>,
+    parameter_is_str: Vec<bool>,
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
     local_inits: Vec<PrivateScalarLocalInit>,
@@ -660,6 +698,7 @@ struct PreparedPrivateScalarCall {
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
     callee_parameter_is_bool: Vec<bool>,
+    callee_parameter_is_str: Vec<bool>,
 }
 
 /// G18／D18-01：每次呼叫的執行環境配置，不是 voiles 的語言上限。
@@ -1939,7 +1978,7 @@ impl PreparedPrivateScalarCall {
         if main.result_ty != "int" || !main.params.is_empty()
             || callee.result_ty != "int"
             || callee.params.iter().any(|param|
-                !matches!(param.ty.as_str(), "int" | "bool"))
+                !matches!(param.ty.as_str(), "int" | "bool" | "str"))
             || callee.body.statements.is_empty()
             || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1972,7 +2011,7 @@ impl PreparedPrivateScalarCall {
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
                 || function.params.iter().any(|param|
-                    !matches!(param.ty.as_str(), "int" | "bool"))
+                    !matches!(param.ty.as_str(), "int" | "bool" | "str"))
                 || function.body.statements.is_empty() {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多層函式須為已核准單 return 的純 int 完整簽章",
@@ -1980,6 +2019,7 @@ impl PreparedPrivateScalarCall {
             }
             let mut parameter_ids = Vec::new();
             let mut parameter_is_bool = Vec::new();
+            let mut parameter_is_str = Vec::new();
             for param in &function.params {
                 let id = DeclarationId(param.declaration_start);
                 let member = crate::common_ir::VerifiedTypedMember::checked_private(
@@ -1997,6 +2037,7 @@ impl PreparedPrivateScalarCall {
                 }
                 parameter_ids.push(id);
                 parameter_is_bool.push(param.ty == "bool");
+                parameter_is_str.push(param.ty == "str");
             }
             let (local_inits, local_steps, result, result_span) =
                 Self::prepare_function_locals(function, &verified)?;
@@ -2004,7 +2045,7 @@ impl PreparedPrivateScalarCall {
                 name: function.name.clone(),
                 span: NodeSpan::new(function.start, function.end),
                 parameters: parameter_ids,
-                parameter_is_bool,
+                parameter_is_bool, parameter_is_str,
                 result_span,
                 result,
                 local_inits,
@@ -2050,7 +2091,7 @@ impl PreparedPrivateScalarCall {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
-                if owner.ty == "bool" { return true; }
+                if owner.ty != "int" { return true; }
             }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
@@ -2179,8 +2220,9 @@ impl PreparedPrivateScalarCall {
         let call_span = return_call.node_span();
         if verified.plan.scalar_hir.expression(call_span)
             .is_none_or(|fact| fact.ty != ScalarType::Int)
-            || verified.plan.declarations.call_borrows_at(call_span)
-                .is_some_and(|facts| !facts.is_empty()) {
+            || (!callee.params.iter().any(|param| param.ty == "str")
+                && verified.plan.declarations.call_borrows_at(call_span)
+                    .is_some_and(|facts| !facts.is_empty())) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
             ));
@@ -2189,7 +2231,8 @@ impl PreparedPrivateScalarCall {
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
         let needs_dynamic = needs_main_local_runtime || !direct_call
-            || callee.params.iter().any(|param| param.ty == "bool")
+            || callee.params.iter().any(|param|
+                matches!(param.ty.as_str(), "bool" | "str"))
             || call_arguments.iter().any(|argument| {
             let mut inner = argument;
             while let TermKind::Group(nested) = &inner.kind {
