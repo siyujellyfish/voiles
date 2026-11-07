@@ -158,10 +158,10 @@ jobs:
       - name: G17 原始 P17.1～P17.6 同 SHA 六項真執行與安全正反正式驗收
         run: python3 tools/核對G17正式總驗收.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.1／18.3／18.4 Copyable int/bool 真巢狀 if 與事件一致性一百五十項 Gate
+      - name: G18 P18.1／18.3／18.4 真函式／OwnedStr／BorrowTicket 一百九十六項 Gate
         run: python3 tools/核對G18純值函式參數真框架.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 V1 R06 跨普通函式／Move／Borrow／self／遞迴真退出矩陣五項正反 Gate
+      - name: G18 V1 R06 同堆疊借用／Move／控制流及跨執行器十九項正反 Gate
         run: python3 tools/核對G18-R06跨執行器正反矩陣.py --test-bin target/p02/p04_source_internal
       - name: G18 P18.3 已核准 AW06 真遞迴與可配置耗盡七項正反 Gate
         run: python3 tools/核對G18遞迴真框架與耗盡.py --test-bin target/p02/p04_source_internal
@@ -183,3 +183,5 @@ jobs:
 
       - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
         run: python3 tools/核對G18原六項驗收差距.py --test-bin target/p02/p04_source_internal --audit
+      - name: G18 V1 R07 原六項正式 --check 結果／阻塞狀態一致性 Gate
+        run: python3 tools/核對G18-R07正式狀態一致性.py --test-bin target/p02/p04_source_internal
