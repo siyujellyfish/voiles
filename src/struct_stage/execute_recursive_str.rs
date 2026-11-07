@@ -85,6 +85,53 @@ struct PrivateRecursiveStrOutcome {
     bound_int_values: Vec<(String, i64)>,
 }
 
+impl PrivateRecursiveStrOutcome {
+    /// R05：真 OwnedStr ResourceId、BorrowSafety 清空事實與
+    /// 動態遞迴框架的進退順序在交付 Outcome 前必須共同成立。
+    /// 不能用 Copyable 的 ScopeEnded 或測試預期的靜態清理模擬替代。
+    fn has_balanced_resource_frame_trace(&self) -> bool {
+        if !self.loans_returned
+            || !crate::owned_str_runtime::event_trace_balanced(&self.events) {
+            return false;
+        }
+        let mut stack = Vec::<&str>::new();
+        let success = self.result.is_ok();
+        for event in &self.frames {
+            match event {
+                PrivateRecursiveFrameEvent::Entered(name) => {
+                    if stack.is_empty() && name != "main" { return false; }
+                    if name == "main" && !stack.is_empty() { return false; }
+                    stack.push(name.as_str());
+                }
+                PrivateRecursiveFrameEvent::Exited { name, returned } => {
+                    if stack.pop() != Some(name.as_str()) || *returned != success {
+                        return false;
+                    }
+                }
+            }
+        }
+        // D18-01 零預算：main 未進入，零資源、零票據且受控錯誤。
+        if self.frames.is_empty() {
+            return self.events.is_empty() && self.result.is_err()
+                && self.borrowed_lengths.is_empty()
+                && self.bound_int_values.is_empty();
+        }
+        stack.is_empty()
+            && matches!(self.frames.first(), Some(PrivateRecursiveFrameEvent::Entered(name)) if name == "main")
+    }
+
+    fn audit_before_return(self)
+        -> Result<Self, PrivateRecursiveStrPrepareError> {
+        if self.has_balanced_resource_frame_trace() {
+            Ok(self)
+        } else {
+            Err(PrivateRecursiveStrPrepareError::CleanupTicket(
+                crate::borrow_safety::BorrowSafetyError::SnapshotMismatch,
+            ))
+        }
+    }
+}
+
 
 struct PrivateRecursiveActiveFrame {
     name: String,
@@ -722,10 +769,10 @@ impl PreparedPrivateRecursiveStr {
         if !crate::owned_str_runtime::event_trace_balanced(&events) {
             return Err(PrivateRecursiveStrPrepareError::SourceChanged);
         }
-        Ok(PrivateRecursiveStrOutcome {
+        PrivateRecursiveStrOutcome {
             result, events, frames: timeline, loans_returned,
             borrowed_lengths, bound_int_values,
-        })
+        }.audit_before_return()
     }
 }
 
