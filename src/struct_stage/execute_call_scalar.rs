@@ -727,6 +727,61 @@ impl PrivateScalarReturnExpr {
         })
     }
 
+    /// R01：由原 Parser AST 收集全部可能的具名函式呼叫，包含
+    /// 多層實參及巢狀條件分支。此處只建立來源目錄，
+    /// 不選擇動態分支、不創建框架、不執行任何表達式。
+    fn collect_source_calls_in_term<'a>(term: &'a Term, names: &mut Vec<&'a str>) {
+        match &term.kind {
+            TermKind::Call(call) => {
+                names.push(call.name.as_str());
+                for argument in &call.arguments {
+                    Self::collect_source_calls_in_term(argument, names);
+                }
+            }
+            TermKind::UnresolvedZeroArgs(name) => names.push(name.as_str()),
+            TermKind::Group(inner) => Self::collect_source_calls_in_term(inner, names),
+            TermKind::BinaryInt(binary) => {
+                Self::collect_source_calls_in_term(&binary.left, names);
+                Self::collect_source_calls_in_term(&binary.right, names);
+            }
+            // 未經本 evaluator 接通的型別／語法仍須於正式編譯時保守拒絕；
+            // 不從來源名稱字面自行推出可執行的其他語意。
+            _ => {}
+        }
+    }
+
+    fn collect_source_calls_in_statements<'a>(
+        statements: &'a [Stmt], names: &mut Vec<&'a str>,
+    ) {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Declare(owner) => {
+                    if let Some(initializer) = owner.initializer.as_ref() {
+                        Self::collect_source_calls_in_term(initializer, names);
+                    }
+                }
+                StmtKind::Assign(assignment) =>
+                    Self::collect_source_calls_in_term(&assignment.expression, names),
+                StmtKind::Return(ret) =>
+                    Self::collect_source_calls_in_term(&ret.expression, names),
+                StmtKind::If { branch, no } => {
+                    Self::collect_source_calls_in_term(&branch.branch.condition, names);
+                    Self::collect_source_calls_in_statements(&branch.body, names);
+                    if let Some(other) = no.as_ref() {
+                        Self::collect_source_calls_in_statements(other, names);
+                    }
+                }
+                StmtKind::While { condition, body } => {
+                    Self::collect_source_calls_in_term(condition, names);
+                    Self::collect_source_calls_in_statements(&body.statements, names);
+                }
+                StmtKind::ForRange { body, .. } =>
+                    Self::collect_source_calls_in_statements(&body.statements, names),
+                _ => {}
+            }
+        }
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
@@ -2850,9 +2905,39 @@ impl PreparedPrivateScalarCall {
         let param = callee.params.first();
         let (root_local_inits, root_local_steps, return_expr, param_return_span) =
             Self::prepare_function_locals(callee, &verified)?;
+        // R01：先以原 AST 列出 main 可能到達的呼叫，再遞迴走訪
+        // 每個已宣告的函式本體。未在呼叫閉包內的合法輔助函式
+        // 不應被錯誤當成必須支援的動態執行目標；可達但
+        // 非 int／未證明的函式仍由下方正式型別／圖核對拒絕。
+        let mut reachable = std::collections::BTreeSet::<String>::new();
+        let mut pending = Vec::<String>::new();
+        let mut main_names = Vec::new();
+        PrivateScalarReturnExpr::collect_source_calls_in_statements(
+            &main.body.statements, &mut main_names,
+        );
+        for name in main_names {
+            if reachable.insert(name.to_owned()) {
+                pending.push(name.to_owned());
+            }
+        }
+        while let Some(name) = pending.pop() {
+            if let Some(function) = verified.functions.iter()
+                .find(|fun| fun.name == name) {
+                let mut nested_names = Vec::new();
+                PrivateScalarReturnExpr::collect_source_calls_in_statements(
+                    &function.body.statements, &mut nested_names,
+                );
+                for nested in nested_names {
+                    if reachable.insert(nested.to_owned()) {
+                        pending.push(nested.to_owned());
+                    }
+                }
+            }
+        }
         let mut nested_callees = Vec::new();
         for function in verified.functions.iter()
-            .filter(|fun| fun.name != "main" && fun.name != callee.name) {
+            .filter(|fun| fun.name != "main" && fun.name != callee.name
+                && reachable.contains(&fun.name)) {
             if function.result_ty != "int"
                 || function.params.iter().any(|param|
                     !matches!(param.ty.as_str(), "int" | "bool" | "str"))
@@ -7256,6 +7341,84 @@ mod g18_private_scalar_call_tests {
         )).count(), 1);
         assert_eq!(out.events.iter().filter(|e| matches!(
             e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+
+    // R01：其他合法宣告不是 main 所需的動態工作，不能強制把
+    // 它的返回型別誤當 int 編譯；實際可達的所有層仍完整核對。
+    #[test]
+    fn g18_r01_未使用的合法bool輔助函式不得阻斷真int主呼叫() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn forward(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn forward(6)\n}\n";
+        let plan = checked(src);
+        assert!(plan.nested_callees.is_empty());
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "ready"
+        )));
+    }
+
+    #[test]
+    fn g18_r01_主函式到二層真葉函式仍收錄且跳過不相干bool宣告() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn leaf(n:int)->int{\nreturn n+1\n}\nfn relay(n:int)->int{\nreturn leaf(n)+2\n}\nfn main()->int{\nreturn relay(5)\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.nested_callees.iter().map(|f| f.name.as_str())
+            .collect::<Vec<_>>(), ["leaf"]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["relay", "leaf"]);
+    }
+
+    #[test]
+    fn g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn inner(n:int)->int{\nreturn n+2\n}\nfn outer(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn outer(inner(3))\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.nested_callees.iter().map(|f| f.name.as_str())
+            .collect::<Vec<_>>(), ["inner"]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["inner", "outer"]);
+    }
+
+    #[test]
+    fn g18_r01_主函式兄弟分支只執行選中函式而收錄兩者並略過無關bool() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn left(n:int)->int{\nreturn n+1\n}\nfn right(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nresult = left(10)\n}else{\nresult = right(3)\n}\nreturn result\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.nested_callees.iter().map(|f| f.name.as_str())
+            .collect::<Vec<_>>(), ["right"]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name)
+                if name == "left" || name == "ready"
+        )));
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "right"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r01_可達圖身分遭竄改及bool誤用int回傳都須拒絕() {
+        let src = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn leaf(n:int)->int{\nreturn n+1\n}\nfn relay(n:int)->int{\nreturn leaf(n)\n}\nfn main()->int{\nreturn relay(5)\n}\n";
+        let mut plan = checked(src);
+        plan.nested_callees.clear();
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+        let wrong = "fn ready(flag:bool)->bool{\nreturn flag\n}\nfn main()->int{\nreturn ready(true)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(wrong),
+            Err(PrivateScalarCallPrepareError::Check(_))));
     }
 
 

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百五十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百六十一項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_未使用的合法bool輔助函式不得阻斷真int主呼叫",
+    "g18_r01_主函式到二層真葉函式仍收錄且跳過不相干bool宣告",
+    "g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",
+    "g18_r01_主函式兄弟分支只執行選中函式而收錄兩者並略過無關bool",
+    "g18_r01_可達圖身分遭竄改及bool誤用int回傳都須拒絕",
     "g18_r03_main_while_break前真move借用只建立清理首輪資源",
     "g18_r03_main_for_continue每輪真move與借用先還票再走回邊",
     "g18_r03_main_if提前return真move借用且跳過後續資源",
