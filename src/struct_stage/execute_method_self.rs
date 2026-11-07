@@ -1878,4 +1878,34 @@ mod g18_private_method_self_tests {
     }
 
 
+    #[test]
+    fn g18_r05_共用帳簿拒絕同步self在真返回之前提前還票() {
+        let mut out = checked(normal()).execute().unwrap();
+        assert!(out.has_balanced_self_borrow_trace());
+        let at = out.exit_events.iter().position(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanReturned(_)
+        )).unwrap();
+        let forged = out.exit_events.remove(at);
+        let returned = out.exit_events.iter().position(|event| matches!(
+            event, PrivateSharedCallExitEvent::Returned
+        )).unwrap();
+        out.exit_events.insert(returned, forged);
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_共用帳簿拒絕同步self成功退出後才補還真票據() {
+        let mut out = checked(normal()).execute().unwrap();
+        assert!(out.has_balanced_self_borrow_trace());
+        let at = out.exit_events.iter().position(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanReturned(_)
+        )).unwrap();
+        let forged = out.exit_events.remove(at);
+        out.exit_events.push(forged);
+        assert!(!out.has_balanced_self_borrow_trace());
+        let failed = checked(normal()).execute_with_fault(true).unwrap();
+        assert!(failed.has_balanced_self_borrow_trace());
+    }
+
+
 }
