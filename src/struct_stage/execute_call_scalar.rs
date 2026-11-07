@@ -6207,4 +6207,88 @@ mod g18_r06_cross_runtime_tests {
         assert!(!out.has_balanced_frame_trace());
     }
 
+
+    #[test]
+    fn g18_r05_r06_每張真借用票據必連至實際_utf8_resourceid() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst first:str = \"甲\"\nconst second:str = \"乙🪼\"\nreturn inspect(first,second,4)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let linked = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanResourceLinked(ticket, id) =>
+                Some((*ticket, *id)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(linked.len(), 2);
+        assert_ne!(linked[0].0, linked[1].0);
+        assert_eq!([linked[0].1, linked[1].1], [1, 2]);
+        for (ticket, id) in linked {
+            let acquired = out.events.iter().position(|event| matches!(event,
+                PrivateScalarCallEvent::LoanAcquired(found) if found == &ticket
+            )).unwrap();
+            let joined = out.events.iter().position(|event| matches!(event,
+                PrivateScalarCallEvent::LoanResourceLinked(found, linked)
+                    if found == &ticket && *linked == id
+            )).unwrap();
+            let returned = out.events.iter().position(|event| matches!(event,
+                PrivateScalarCallEvent::LoanReturned(found) if found == &ticket
+            )).unwrap();
+            assert!(acquired < joined && joined < returned);
+        }
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造借用未歸還便先釋放真來源資源必拒絕() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"來源\"\nreturn inspect(source,4)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        // 將唯一真正 Released 提前至票據取得後、被呼叫者進入前。
+        // ResourceEvent 序列本身仍平衡，舊稽核只看兩套獨立帳簿會漏判。
+        let release = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        let event = out.events.remove(release);
+        let linked = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).unwrap();
+        out.events.insert(linked + 1, event);
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.resource_events));
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_票據資源身分偽造重複綁定或缺失均拒絕() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"來源\"\nreturn inspect(source,4)\n}\n";
+        let original = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(original.has_balanced_frame_trace());
+        let position = original.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, _)
+        )).unwrap();
+
+        let mut wrong_id = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        let PrivateScalarCallEvent::LoanResourceLinked(_, ref mut resource) =
+            wrong_id.events[position] else { panic!("缺少原票據連結"); };
+        *resource = 999;
+        assert!(!wrong_id.has_balanced_frame_trace());
+
+        let mut duplicate = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        let duplicate_link = duplicate.events[position].clone();
+        duplicate.events.insert(position + 1, duplicate_link);
+        assert!(!duplicate.has_balanced_frame_trace());
+
+        let mut missing = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        missing.events.remove(position);
+        assert!(!missing.has_balanced_frame_trace());
+    }
+
 }
