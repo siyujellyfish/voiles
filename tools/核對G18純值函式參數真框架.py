@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百一十七項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百二十四項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r04_已核准_bool_true_函式實參與_int_返回共用真框架",
+    "g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
+    "g18_r04_巢狀普通函式真_bool_參數不被誤讀成父整數槽",
+    "g18_r04_main_變動具名_bool_正值先更新再真正當實參",
+    "g18_r04_bool_混合參數進入後故障只退出本次真框架",
+    "g18_r04_bool_參數不是_int_隱含轉型_原_checker_型別優先拒絕",
+    "g18_r04_bool_參數綁定靜態型別被竄改前必拒絕",
     "g18_r03_具名_bool_true_提前_return_不可再執行未達返回路徑",
     "g18_r03_具名_bool_false_不走提前_return_而正常執行後段",
     "g18_r03_已核准_var_bool_更新後真_if_重讀而非使用宣告舊值",
