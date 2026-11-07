@@ -922,6 +922,28 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(())
     }
 
+    /// G4 原有唯一寫入權威：所有方法簽章與來源安全證據
+    /// 都必須由此一處完成 VerifiedMethodSafety 的衝突比對。
+    /// R04 純 int 局部不可另開一份可寫來源。
+    fn record_checked_method_safety(
+        &self, method: &Function, mode: BorrowKind,
+        checked_returns: BTreeSet<crate::common_ir::NodeSpan>,
+    ) {
+        let fact = VerifiedMethodSafety {
+            span: crate::common_ir::NodeSpan::new(method.start, method.end),
+            self_borrow: mode, checked_returns,
+        };
+        let mut evidence = self.recorded_method_safety.borrow_mut();
+        if let Some(previous) = evidence.get(&method.start) {
+            if previous != &fact {
+                self.recorded_method_safety_conflicts.borrow_mut()
+                    .insert(method.start);
+            }
+        } else {
+            evidence.insert(method.start, fact);
+        }
+    }
+
     fn check_method(&self, owner: &str, method: &Function)
         -> Result<BorrowKind, Diagnostic> {
         for parameter in &method.params {
@@ -952,23 +974,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             matches!(&stmt.kind, StmtKind::Declare(_))) {
             self.method_checked_int_locals(method, return_value)?;
             let mut checked_returns = BTreeSet::new();
-            checked_returns.insert(method.body.last().expect(
+            let last_span = method.body.last().expect(
                 "已驗證方法最後有真 return",
-            ).node_span());
-            let fact = VerifiedMethodSafety {
-                span: crate::common_ir::NodeSpan::new(method.start, method.end),
-                self_borrow: BorrowKind::SharedRead,
-                checked_returns,
-            };
-            let mut evidence = self.recorded_method_safety.borrow_mut();
-            if let Some(previous) = evidence.get(&method.start) {
-                if previous != &fact {
-                    self.recorded_method_safety_conflicts.borrow_mut()
-                        .insert(method.start);
-                }
-            } else {
-                evidence.insert(method.start, fact);
-            }
+            ).node_span();
+            checked_returns.insert(last_span);
+            self.record_checked_method_safety(
+                method, BorrowKind::SharedRead, checked_returns,
+            );
             return Ok(BorrowKind::SharedRead);
         }
         let mut checked_returns = BTreeSet::new();
@@ -982,19 +994,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
         checked_returns.insert(method.body.last()
             .expect("已驗證方法最後必有 return").node_span());
-        let fact = VerifiedMethodSafety {
-            span: crate::common_ir::NodeSpan::new(method.start, method.end),
-            self_borrow: mode, checked_returns,
-        };
-        let mut evidence = self.recorded_method_safety.borrow_mut();
-        if let Some(previous) = evidence.get(&method.start) {
-            if previous != &fact {
-                self.recorded_method_safety_conflicts.borrow_mut()
-                    .insert(method.start);
-            }
-        } else {
-            evidence.insert(method.start, fact);
-        }
+        self.record_checked_method_safety(method, mode, checked_returns);
         Ok(mode)
     }
 
