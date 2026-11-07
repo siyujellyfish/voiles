@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var首次賦值的普通函式來源必真執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main先返回葉函式後更新局部不得逆序求值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main同一var先以函式初次賦值再由函式重賦值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main賦值來源計畫遭竄改必先拒絕不得偽造執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值單純宣告離域零ResourceId",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值後字面賦值只建立一次並退出釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源",
@@ -141,6 +146,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main同一var先以函式初次賦值再由函式重賦值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_未選分支的str空宣告與賦值不建立UTF8資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_空str與真str共框架溢位僅清理確實建立的資源",
@@ -173,6 +180,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_空str與真str共框架溢位僅清理確實建立的資源",
@@ -429,6 +437,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var首次賦值的普通函式來源必真執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main先返回葉函式後更新局部不得逆序求值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main同一var先以函式初次賦值再由函式重賦值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main賦值來源計畫遭竄改必先拒絕不得偽造執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值單純宣告離域零ResourceId",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_真str無初值後字面賦值只建立一次並退出釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_延遲str兩次賦值第二次原子替換釋放舊資源",
