@@ -7129,4 +7129,68 @@ mod g18_r06_cross_runtime_tests {
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
+
+    #[test]
+    fn g18_r06_借用形式參數同次雙共享轉借同一_utf8_且全數歸還() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn forward(item:str,n:int)->int{\nreturn inspect(item,item,n)\n}\nfn main()->int{\nconst owner:str = \"共用\"\nreturn forward(owner,3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_r06_借用參數轉借與獨立_local_move_在同次子呼叫各有真身分() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(observed:str,moved:str,n:int)->int{\nreturn n\n}\nfn forward(item:str,n:int)->int{\nvar owned:str = \"新資源\"\nreturn inspect(item,owned.move(),n)\n}\nfn main()->int{\nconst source:str = \"外\"\nreturn forward(source,4)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(2),
+            R::Released(2), R::Released(1),
+        ]);
+        let borrowed = out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).count();
+        assert_eq!(borrowed, 2);
+    }
+
+    #[test]
+    fn g18_r06_for_借用形式參數逐輪轉借_每次必全數解鎖() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn forward(item:str,n:int)->int{\nvar result:int = n\nfor i in 0..2{\nresult = leaf(item,result)\n}\nreturn result\n}\nfn main()->int{\nconst source:str = \"原\"\nreturn forward(source,1)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造轉借中間票據資源連結不允許父層替子層認領() {
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn forward(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nconst owner:str = \"真\"\nreturn forward(owner,2)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let index = out.events.iter().rposition(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, _)
+        )).unwrap();
+        out.events.remove(index);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
 }
