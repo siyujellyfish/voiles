@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／R06：核對三十一項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
+"""G18／R06：核對三十六項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r06_三層真函式同一_resourceid_連續跨框架_move_僅一次清理",
+    "g18_r06_函式_for_每輪新_str_跨函式_move_返回後即時釋放",
+    "g18_r06_同次呼叫先借再_move_不同真來源_各有正確出口",
+    "g18_r06_移動實參已準備但_callbudget_耗盡不得假轉交",
+    "g18_r05_r06_偽造跨框架_move_目標宣告身分須拒絕",
     "g18_r06_str_覆寫後再借新_resourceid_票據須對應最新擁有者",
     "g18_r06_真_move_覆寫後借目標仍指同一原始_resourceid",
     "g18_r05_r06_偽造_str_覆寫後仍由舊資源認領必拒絕",
