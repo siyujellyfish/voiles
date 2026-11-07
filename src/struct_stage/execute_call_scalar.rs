@@ -353,6 +353,26 @@ impl PrivateScalarCallOutcome {
                     | PrivateScalarCallEvent::ConditionalChecked(_) => {}
             }
         }
+        // R05 共用守門：普通函式保留原 ResourceId／局部／所有權
+        // 全細帳，再將**同一真事件序列**投影至與同步 self 共享的
+        // 進退、唯一回滾及真 BorrowTicket 單次歸還責任表。
+        let shared_exit_events = self.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) =>
+                Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
+            PrivateScalarCallEvent::FunctionEntered(_) =>
+                Some(PrivateSharedCallExitEvent::FunctionEntered),
+            PrivateScalarCallEvent::Returned(_) =>
+                Some(PrivateSharedCallExitEvent::Returned),
+            PrivateScalarCallEvent::UnwindStarted =>
+                Some(PrivateSharedCallExitEvent::UnwindStarted),
+            PrivateScalarCallEvent::LoanReturned(ticket) =>
+                Some(PrivateSharedCallExitEvent::LoanReturned(*ticket)),
+            PrivateScalarCallEvent::FunctionExited { returned, .. } =>
+                Some(PrivateSharedCallExitEvent::FunctionExited {
+                    returned: *returned,
+                }),
+            _ => None,
+        }).collect::<Vec<_>>();
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
@@ -362,6 +382,9 @@ impl PrivateScalarCallOutcome {
             && self.parameter_slots_after_exit == 0
             // 即使沒有借用票據，失敗仍須留下唯一真 UnwindStarted。
             && unwinding == self.result.is_err()
+            && private_shared_call_exit_balanced(
+                &shared_exit_events, self.result.is_ok(),
+            )
             && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
     }
@@ -7280,6 +7303,49 @@ mod g18_r06_cross_runtime_tests {
         assert!(!out.has_balanced_frame_trace());
         assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+
+    #[test]
+    fn g18_r05_r06_普通函式與同步self真呼叫均須通過共用框架票據進退帳() {
+        let scalar_src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"真正借用\"\nreturn observe(source,4)\n}\n";
+        let scalar = PreparedPrivateScalarCall::prepare(scalar_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(scalar.result, Ok(4));
+        assert!(scalar.has_balanced_frame_trace());
+        let self_src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let method = PreparedPrivateSelfMethod::prepare(self_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(method.result, Ok(7));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert!(method.exit_events.iter().any(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanAcquired(_)
+        )));
+        assert!(method.exit_events.iter().any(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanReturned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r05_r06_普通函式與同步self錯誤均須真回滾且拒絕偽造退出() {
+        let scalar_src = "fn fail(n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn fail(1)\n}\n";
+        let mut scalar = PreparedPrivateScalarCall::prepare(scalar_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(scalar.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(scalar.has_balanced_frame_trace());
+        scalar.events.retain(|event| !matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        ));
+        assert!(!scalar.has_balanced_frame_trace());
+        let self_src = "struct Counter{\nvar count:int = 7\nfn get()->int{\nreturn self.count\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.get()\n}\n";
+        let plan = PreparedPrivateSelfMethod::prepare(self_src).unwrap();
+        let mut method = plan.execute_with_fault(true).unwrap();
+        assert_eq!(method.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(method.has_balanced_self_borrow_trace());
+        method.exit_events.retain(|event| !matches!(
+            event, PrivateSharedCallExitEvent::UnwindStarted
+        ));
+        assert!(!method.has_balanced_self_borrow_trace());
     }
 
 

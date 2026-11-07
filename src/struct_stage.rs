@@ -158,6 +158,8 @@ include!("struct_stage/execute_borrow.rs");
 // G18／P18-B/C：已驗證有限 for／while 真控制與 P16 UTF-8 清理。
 include!("struct_stage/execute_loop.rs");
 
+// G18／R05：各執行器共同核實真函式進退、回滾與票據歸還。
+include!("struct_stage/shared_call_exit.rs");
 // G18／P18-D：原 Checker 每次函式呼叫借用票據真正執行和出口歸還。
 include!("struct_stage/execute_call_borrow.rs");
 include!("struct_stage/execute_call_scalar.rs");

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／R06：核對五十二項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
+"""G18／R06：核對五十四項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,8 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_r06_普通函式與同步self真呼叫均須通過共用框架票據進退帳",
+    "g18_r05_r06_普通函式與同步self錯誤均須真回滾且拒絕偽造退出",
     "g18_r05_r06_正式回滾後不得補造新的條件計算事件",
     "g18_r05_r06_正式回滾後即使局部事件平衡也不能重新初始化",
     "g18_r05_r06_未進入子框架的借用失敗不能先於回滾起點還票",

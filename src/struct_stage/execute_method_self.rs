@@ -28,16 +28,41 @@ struct PrivateSelfMethodOutcome {
     ticket_returned: bool,
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
     main_local_slots_after_exit: usize,
+    /// R05：真 BorrowSafety 簽發、方法 Return／Unwind 及歸還後
+    /// 逐筆記錄；不再只靠方法布林旗標冒充退出已驗證。
+    checked_loan: BorrowFact,
+    exit_events: Vec<PrivateSharedCallExitEvent>,
 }
 
 impl PrivateSelfMethodOutcome {
     /// 只涵蓋目前 Checker 核准的 int 欄位同步 self 方法。
     /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
     fn has_balanced_self_borrow_trace(&self) -> bool {
+        let entered = self.exit_events.iter().filter(|event|
+            matches!(event, PrivateSharedCallExitEvent::FunctionEntered)
+        ).count();
+        let returned = self.exit_events.iter().filter(|event|
+            matches!(event, PrivateSharedCallExitEvent::Returned)
+        ).count();
+        let acquired = self.exit_events.iter().filter(|event| match event {
+            PrivateSharedCallExitEvent::LoanAcquired(ticket) =>
+                ticket.fact() == self.checked_loan,
+            _ => false,
+        }).count();
+        let all_issued = self.exit_events.iter().filter(|event|
+            matches!(event, PrivateSharedCallExitEvent::LoanAcquired(_))
+        ).count();
         self.ticket_returned
             && self.main_local_slots_after_exit == 0
             && self.events.is_empty()
             && crate::owned_str_runtime::event_trace_balanced(&self.events)
+            && private_shared_call_exit_balanced(
+                &self.exit_events, self.result.is_ok(),
+            )
+            && entered <= 1 && returned <= 1 && acquired == all_issued
+            && all_issued <= 1
+            && self.method_entered == (entered == 1)
+            && self.method_exited == (returned == 1)
             && (!self.method_exited || self.method_entered)
             && self.method_exited == self.result.is_ok()
     }
@@ -655,6 +680,7 @@ impl PreparedPrivateSelfMethod {
         let mut facts = Vec::new();
         let mut method_entered = false;
         let mut method_exited = false;
+        let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
         let main_locals_complete = main_initialization_error.is_none();
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
@@ -681,6 +707,7 @@ impl PreparedPrivateSelfMethod {
             }
             let ticket = tracker.acquire(self.loan.source, self.loan.kind)
                 .map_err(PrivateSelfMethodRuntimeError::Ticket)?;
+            exit_events.push(PrivateSharedCallExitEvent::LoanAcquired(ticket));
             tickets.push(ticket);
             facts.push(self.loan);
             tracker.verify_static_snapshot(facts.iter().copied())
@@ -691,6 +718,7 @@ impl PreparedPrivateSelfMethod {
                 Ok(()) => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
             }
             method_entered = true;
+            exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
             if fail_inside_method {
                 return Err(PrivateSelfMethodRuntimeError::InjectedFailure);
             }
@@ -782,14 +810,28 @@ impl PreparedPrivateSelfMethod {
                 }
             };
             method_exited = true;
+            exit_events.push(PrivateSharedCallExitEvent::Returned);
             Ok(calculated)
         })();
+        if result.is_err() && !exit_events.is_empty() {
+            exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
+        }
         // 不論成功或錯誤，實際參數框架不可洩漏至後續呼叫。
         parameter_frame.clear();
         // 不論成功與否，先按原 Checker 動態 self BorrowFact 原子歸還，
         // 再釋放真正結構資源；失敗不可偽裝成功 return。
         let released = tracker.finish_scope_verified(&tickets, &facts)
             .map_err(PrivateSelfMethodRuntimeError::Ticket);
+        if released.is_ok() {
+            for ticket in tickets.iter().rev() {
+                exit_events.push(PrivateSharedCallExitEvent::LoanReturned(*ticket));
+            }
+        }
+        if method_entered {
+            exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                returned: method_exited,
+            });
+        }
         let result = match (result, released) {
             (Err(problem), _) => Err(problem),
             (Ok(_), Err(problem)) => Err(problem),
@@ -810,6 +852,7 @@ impl PreparedPrivateSelfMethod {
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
             main_local_slots_after_exit: main_values.len(),
+            checked_loan: self.loan, exit_events,
         };
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
@@ -1753,6 +1796,85 @@ mod g18_private_method_self_tests {
         );
         assert!(matches!(PreparedPrivateSelfMethod::prepare(&bad),
             Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
+    #[test]
+    fn g18_r05_同步self真共享借用及成功返回逐筆由共用進退帳驗證() {
+        let out = checked(normal()).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        let ticket = match out.exit_events.first() {
+            Some(PrivateSharedCallExitEvent::LoanAcquired(ticket)) => *ticket,
+            _ => panic!("必須是實際簽發的 self BorrowTicket"),
+        };
+        assert_eq!(ticket.fact(), out.checked_loan);
+        assert_eq!(out.exit_events, [
+            PrivateSharedCallExitEvent::LoanAcquired(ticket),
+            PrivateSharedCallExitEvent::FunctionEntered,
+            PrivateSharedCallExitEvent::Returned,
+            PrivateSharedCallExitEvent::LoanReturned(ticket),
+            PrivateSharedCallExitEvent::FunctionExited { returned: true },
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_同步self故障須真回滾後歸還同張票據再退出() {
+        let out = checked(normal()).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        let ticket = match out.exit_events.first() {
+            Some(PrivateSharedCallExitEvent::LoanAcquired(ticket)) => *ticket,
+            _ => panic!("應有真自動 self 借用"),
+        };
+        assert_eq!(out.exit_events, [
+            PrivateSharedCallExitEvent::LoanAcquired(ticket),
+            PrivateSharedCallExitEvent::FunctionEntered,
+            PrivateSharedCallExitEvent::UnwindStarted,
+            PrivateSharedCallExitEvent::LoanReturned(ticket),
+            PrivateSharedCallExitEvent::FunctionExited { returned: false },
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法引數尚未求值成功不得假造self借用或進入退出() {
+        let src = main_named_method_source(
+            "const amount:int = 1", "3,amount+9223372036854775807",
+            "return a+b",
+        );
+        let out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(out.exit_events.is_empty());
+        assert!(!out.method_entered && !out.method_exited && out.ticket_returned);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_偽造同步self歸還票據缺失或重複均由共用帳簿拒絕() {
+        let mut out = checked(normal()).execute().unwrap();
+        out.exit_events.retain(|event| !matches!(
+            event, PrivateSharedCallExitEvent::LoanReturned(_)
+        ));
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(normal()).execute().unwrap();
+        let returned = out.exit_events.iter().position(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanReturned(_)
+        )).unwrap();
+        let duplicate = out.exit_events[returned].clone();
+        out.exit_events.insert(returned, duplicate);
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_同步self刪真返回改退出及竄改票據來源均不可交付() {
+        let mut out = checked(normal()).execute().unwrap();
+        out.exit_events.retain(|event| !matches!(
+            event, PrivateSharedCallExitEvent::Returned
+        ));
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(normal()).execute().unwrap();
+        out.checked_loan = BorrowFact::new(DeclarationId(0), BorrowKind::SharedRead);
+        assert!(!out.has_balanced_self_borrow_trace());
     }
 
 
