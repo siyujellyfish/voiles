@@ -466,6 +466,68 @@ enum PrivateScalarTask<'a> {
 }
 
 impl PreparedPrivateScalarCall {
+    /// 本批先接通單筆直接返回的 if／else-if／else 葉分支；
+    /// 分支語句來源及條件均由原 Parser、Checker 審定。
+    fn compile_early_return(
+        statements: &[Stmt],
+        int_bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarReturnExpr, PrivateScalarCallPrepareError> {
+        let [statement] = statements else {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "if 提前返回子集要求此分支恰一筆已核准的 return",
+            ));
+        };
+        let StmtKind::Return(ret) = &statement.kind else {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "if 分支須由原 Parser 真 return 產生",
+            ));
+        };
+        PrivateScalarReturnExpr::from_checked_bindings(
+            &ret.expression, int_bindings, verified,
+        )
+    }
+
+    fn compile_early_if(
+        stmt: &Stmt,
+        int_bindings: &BTreeMap<String, DeclarationId>,
+        bool_bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarEarlyIf, PrivateScalarCallPrepareError> {
+        let StmtKind::If { branch, no } = &stmt.kind else {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "else-if 必須保持原 Parser 真 If 節點",
+            ));
+        };
+        let condition = PrivateScalarBoolExpr::from_checked(
+            &branch.branch.condition, bool_bindings, verified,
+        )?;
+        let when_true = Self::compile_early_return(
+            &branch.body.statements, int_bindings, verified,
+        )?;
+        let when_false = match no.as_ref() {
+            None => None,
+            Some(crate::syntax_shared::ParsedElse::Block(block)) =>
+                Some(PrivateScalarEarlyElse::Return(
+                    Self::compile_early_return(
+                        &block.statements, int_bindings, verified,
+                    )?,
+                )),
+            Some(crate::syntax_shared::ParsedElse::ElseIf(next)) =>
+                Some(PrivateScalarEarlyElse::ElseIf(Box::new(
+                    Self::compile_early_if(
+                        next, int_bindings, bool_bindings, verified,
+                    )?,
+                ))),
+            #[cfg(test)]
+            Some(crate::syntax_shared::ParsedElse::SyntheticTest(_)) =>
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "Rust 合成 else 不是原 Parser 合法執行來源",
+                )),
+        };
+        Ok(PrivateScalarEarlyIf { condition, when_true, when_false })
+    }
+
     /// P18.1：從同一原 Parser／Checker 的真宣告序列，逐筆編譯
     /// 函式內 Copyable int 初始化；一律保留 DeclarationId，
     /// 不以函式名稱／變數字面名稱重新解析安全身份。
@@ -488,8 +550,39 @@ impl PreparedPrivateScalarCall {
         ).collect::<BTreeMap<_, _>>();
         let mut local_inits = Vec::new();
         let mut local_steps = Vec::new();
+        let mut bool_bindings = BTreeMap::<String, DeclarationId>::new();
         for statement in prefix {
+            if matches!(&statement.kind, StmtKind::If { .. }) {
+                let branch = Self::compile_early_if(
+                    statement, &bindings, &bool_bindings, verified,
+                )?;
+                local_steps.push(PrivateScalarLocalStep::EarlyReturn(branch));
+                continue;
+            }
             if let StmtKind::Assign(assign) = &statement.kind {
+                if let Some(id) = bool_bindings.get(&assign.name).copied() {
+                    if !verified.plan.declarations.typed_declaration(id)
+                        .is_some_and(|fact| fact.ty == "bool" && fact.mutable)
+                        || verified.plan.scalar_hir.assignment(statement.node_span())
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != id
+                                    || fact.resolved.ty != crate::common_ir::ScalarType::Bool)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == statement.start
+                                && matches!(&token.kind,
+                                    TokenKind::Name(found) if found == &assign.name)) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "bool var 賦值缺少原 Checker 可寫身分與 Token",
+                        ));
+                    }
+                    let value = PrivateScalarBoolExpr::from_checked(
+                        &assign.expression, &bool_bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::AssignBool {
+                        declaration: id, value,
+                    });
+                    continue;
+                }
                 let id = *bindings.get(&assign.name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
                         "int 賦值目標不是已驗證的本函式宣告或參數",
@@ -524,6 +617,26 @@ impl PreparedPrivateScalarCall {
                 ));
             };
             let declaration = DeclarationId(statement.start);
+            if owner.ty == "bool" {
+                if !verified.plan.declarations.matches(declaration, "bool", owner.mutable) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 區域宣告缺少原 Checker 唯一宣告身分",
+                    ));
+                }
+                let initializer = owner.initializer.as_ref().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "bool 純值宣告須具真初始化式",
+                    ),
+                )?;
+                let value = PrivateScalarBoolExpr::from_checked(
+                    initializer, &bool_bindings, verified,
+                )?;
+                local_steps.push(PrivateScalarLocalStep::DeclareBool {
+                    declaration, value,
+                });
+                bool_bindings.insert(owner.name.clone(), declaration);
+                continue;
+            }
             if owner.ty != "int"
                 || !verified.plan.declarations.matches(declaration, "int", owner.mutable)
             {
