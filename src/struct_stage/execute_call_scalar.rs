@@ -6861,4 +6861,84 @@ mod g18_r06_cross_runtime_tests {
         )));
     }
 
+
+    #[test]
+    fn g18_r06_三層真函式同一_resourceid_連續跨框架_move_僅一次清理() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn mid(item:str,n:int)->int{\nreturn leaf(item.move(),n)\n}\nfn main()->int{\nvar owner:str = \"三層\"\nreturn mid(owner.move(),5)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceTransferred { resource_id: 1, .. }
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r06_函式_for_每輪新_str_跨函式_move_返回後即時釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn consume(item:str,n:int)->int{\nreturn n+1\n}\nfn run(n:int)->int{\nvar result:int = n\nfor i in 0..2{\nvar owner:str = \"逐輪\"\nresult = consume(owner.move(),result)\n}\nreturn result\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+            R::Created(2), R::Moved(2), R::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r06_同次呼叫先借再_move_不同真來源_各有正確出口() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(borrowed:str,moved:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst read:str = \"讀\"\nvar transfer:str = \"移\"\nreturn inspect(read,transfer.move(),2)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(2),
+            R::Released(2), R::Released(1),
+        ]);
+        let returned = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let released = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).unwrap();
+        assert!(returned < released);
+    }
+
+    #[test]
+    fn g18_r06_移動實參已準備但_callbudget_耗盡不得假轉交() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn parent(n:int)->int{\nvar owner:str = \"預算\"\nreturn leaf(owner.move(),n)\n}\nfn main()->int{\nreturn parent(1)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 100 }
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceTransferred { .. }
+        )));
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造跨框架_move_目標宣告身分須拒絕() {
+        let src = "fn receive(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar owned:str = \"來源\"\nreturn receive(owned.move(),2)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let event = out.events.iter_mut().find(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceTransferred { .. }
+        )).unwrap();
+        if let PrivateScalarCallEvent::ResourceTransferred { target, .. } = event {
+            *target = DeclarationId(0);
+        }
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
 }
