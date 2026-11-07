@@ -68,7 +68,30 @@ impl PrivateSelfMethodOutcome {
                 }
             }
         }
+        // 兩份結果視圖必須投影到完全相同的實際局部事件，
+        // 不能只靠各自末端都平衡而放行跨 Returned/Unwind 的錯序。
+        let local_projection = self.method_local_events.iter().map(|event| match event {
+            PrivateSelfMethodLocalEvent::Initialized(id, _) =>
+                PrivateSharedCallExitEvent::LocalInitialized(*id),
+            PrivateSelfMethodLocalEvent::ScopeEnded(id) =>
+                PrivateSharedCallExitEvent::LocalScopeEnded(*id),
+        }).collect::<Vec<_>>();
+        let exit_projection = self.exit_events.iter().filter(|event| matches!(event,
+            PrivateSharedCallExitEvent::LocalInitialized(_)
+                | PrivateSharedCallExitEvent::LocalScopeEnded(_)
+        )).cloned().collect::<Vec<_>>();
+        let failure_unwind_precedes_cleanup = self.result.is_ok()
+            || !self.exit_events.iter().any(|event| matches!(event,
+                PrivateSharedCallExitEvent::LocalScopeEnded(_)
+            ))
+            || self.exit_events.iter().position(|event| matches!(event,
+                PrivateSharedCallExitEvent::UnwindStarted
+            )).zip(self.exit_events.iter().position(|event| matches!(event,
+                PrivateSharedCallExitEvent::LocalScopeEnded(_)
+            ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
+            && local_projection == exit_projection
+            && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
             && self.method_local_slots_after_exit == 0
             && self.main_local_slots_after_exit == 0
@@ -838,6 +861,7 @@ impl PreparedPrivateSelfMethod {
                 method_local_events.push(PrivateSelfMethodLocalEvent::Initialized(
                     *id, calculated,
                 ));
+                exit_events.push(PrivateSharedCallExitEvent::LocalInitialized(*id));
             }
             // 寫入屬已核准之獨占 self：先驗真 BorrowTicket 身分、
             // 來源及權限，再寫真 MixedStructRuntime 的 Copyable int。
@@ -946,6 +970,7 @@ impl PreparedPrivateSelfMethod {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
             method_local_events.push(PrivateSelfMethodLocalEvent::ScopeEnded(*id));
+            exit_events.push(PrivateSharedCallExitEvent::LocalScopeEnded(*id));
         }
         initialized_method_locals.clear();
         // 不論成功或錯誤，實際參數框架不可洩漏至後續呼叫。
@@ -2183,6 +2208,115 @@ mod g18_private_method_self_tests {
         assert!(!out.has_balanced_self_borrow_trace());
         let mut out = checked(&src).execute().unwrap();
         out.method_local_events.insert(1, out.method_local_events[0].clone());
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+
+    #[test]
+    fn g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序() {
+        let src = checked_method_local_source(
+            "const first:int = a+2\nreturn first", "3,4",
+        );
+        let out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_self_borrow_trace());
+        let id = match &out.method_local_events[0] {
+            PrivateSelfMethodLocalEvent::Initialized(id, 5) => *id,
+            _ => panic!("方法局部須有真來源值"),
+        };
+        assert!(matches!(out.exit_events.as_slice(), [
+            PrivateSharedCallExitEvent::LoanAcquired(_),
+            PrivateSharedCallExitEvent::FunctionEntered,
+            PrivateSharedCallExitEvent::LocalInitialized(actual),
+            PrivateSharedCallExitEvent::Returned,
+            PrivateSharedCallExitEvent::LocalScopeEnded(exited),
+            PrivateSharedCallExitEvent::LoanReturned(_),
+            PrivateSharedCallExitEvent::FunctionExited { returned: true },
+        ] if *actual == id && *exited == id));
+    }
+
+    #[test]
+    fn g18_r05_偽造同步方法在真正_return_之後才初始化局部必拒絕() {
+        let src = checked_method_local_source(
+            "const first:int = a+2\nreturn first", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        let first = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::LocalInitialized(_)
+        )).unwrap();
+        let forged = out.exit_events.remove(first);
+        let returned = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::Returned
+        )).unwrap();
+        out.exit_events.insert(returned + 1, forged);
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_偽造同步方法退出之後才清理局部雖總數相等仍拒絕() {
+        let src = checked_method_local_source(
+            "const first:int = a+2\nreturn first", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        let at = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::LocalScopeEnded(_)
+        )).unwrap();
+        let forged = out.exit_events.remove(at);
+        out.exit_events.push(forged);
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法局部另一張事件帳漏一筆即使單帳平衡仍禁止交付() {
+        let src = checked_method_local_source(
+            "const first:int = a+2\nreturn first", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        out.method_local_events.clear();
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(&src).execute().unwrap();
+        out.exit_events.retain(|e| !matches!(
+            e, PrivateSharedCallExitEvent::LocalInitialized(_)
+                | PrivateSharedCallExitEvent::LocalScopeEnded(_)
+        ));
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_錯誤回滾起點前假清理方法局部不得冒充合法離域() {
+        let src = checked_method_local_source(
+            "const first:int = 11\nconst overflow:int = first+9223372036854775807\nreturn overflow",
+            "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_self_borrow_trace());
+        let at = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::LocalScopeEnded(_)
+        )).unwrap();
+        let cleanup = out.exit_events.remove(at);
+        let unwind = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::UnwindStarted
+        )).unwrap();
+        out.exit_events.insert(unwind, cleanup);
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法回滾後新建int局部即使補做離域亦不可通過() {
+        let src = checked_method_local_source(
+            "const first:int = 11\nconst overflow:int = first+9223372036854775807\nreturn overflow",
+            "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        let extra = DeclarationId(0);
+        let at = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::UnwindStarted
+        )).unwrap();
+        out.exit_events.insert(at + 1,
+            PrivateSharedCallExitEvent::LocalInitialized(extra));
+        out.exit_events.insert(at + 2,
+            PrivateSharedCallExitEvent::LocalScopeEnded(extra));
         assert!(!out.has_balanced_self_borrow_trace());
     }
 

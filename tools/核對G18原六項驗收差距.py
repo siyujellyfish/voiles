@@ -155,6 +155,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式bool局部亦納入共用真退出帳的局部來源責任",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法int局部均沿用原_checker_真正求值且離域",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self局部溢位均保留真失敗回滾與乾淨離域",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式真借用票據不得早於返回或晚於離域",
@@ -279,6 +281,12 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_method_self_tests::g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序",
+        "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法在真正_return_之後才初始化局部必拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法退出之後才清理局部雖總數相等仍拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法局部另一張事件帳漏一筆即使單帳平衡仍禁止交付",
+        "struct_stage::g18_private_method_self_tests::g18_r05_錯誤回滾起點前假清理方法局部不得冒充合法離域",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法回滾後新建int局部即使補做離域亦不可通過",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法int局部以真參數初始化後正確返回",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self連續兩個int局部依原checker宣告先後傳值及逆序離域",
         "struct_stage::g18_private_method_self_tests::g18_r04_方法局部Copyable同一來源多次讀取不當成Move或重借",
@@ -380,6 +388,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式bool局部亦納入共用真退出帳的局部來源責任",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法int局部均沿用原_checker_真正求值且離域",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self局部溢位均保留真失敗回滾與乾淨離域",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式真借用票據不得早於返回或晚於離域",
@@ -462,6 +472,12 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序",
+        "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法在真正_return_之後才初始化局部必拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法退出之後才清理局部雖總數相等仍拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法局部另一張事件帳漏一筆即使單帳平衡仍禁止交付",
+        "struct_stage::g18_private_method_self_tests::g18_r05_錯誤回滾起點前假清理方法局部不得冒充合法離域",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法回滾後新建int局部即使補做離域亦不可通過",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法int局部以真參數初始化後正確返回",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self連續兩個int局部依原checker宣告先後傳值及逆序離域",
         "struct_stage::g18_private_method_self_tests::g18_r04_方法局部Copyable同一來源多次讀取不當成Move或重借",

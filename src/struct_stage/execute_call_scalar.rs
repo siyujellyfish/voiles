@@ -361,6 +361,12 @@ impl PrivateScalarCallOutcome {
                 Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
             PrivateScalarCallEvent::FunctionEntered(_) =>
                 Some(PrivateSharedCallExitEvent::FunctionEntered),
+            PrivateScalarCallEvent::LocalInitialized(id, _)
+                | PrivateScalarCallEvent::BoolInitialized(id, _) =>
+                Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
+            PrivateScalarCallEvent::LocalScopeEnded(id)
+                | PrivateScalarCallEvent::BoolScopeEnded(id) =>
+                Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
             PrivateScalarCallEvent::Returned(_) =>
                 Some(PrivateSharedCallExitEvent::Returned),
             PrivateScalarCallEvent::UnwindStarted =>
@@ -7413,6 +7419,39 @@ mod g18_r06_cross_runtime_tests {
         assert!(method.method_entered && !method.method_exited && method.ticket_returned);
         assert_eq!(method.method_local_events.len(), 2);
         assert_eq!(method.method_local_slots_after_exit, 0);
+    }
+
+
+    #[test]
+    fn g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序() {
+        let src = "fn calculate(n:int)->int{\nconst temp:int = n+2\nreturn temp\n}\nfn main()->int{\nreturn calculate(4)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let at = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(_, _)
+        )).unwrap();
+        let forged = out.events.remove(at);
+        let returned = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_)
+        )).unwrap();
+        out.events.insert(returned + 1, forged);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_r06_普通函式bool局部亦納入共用真退出帳的局部來源責任() {
+        let src = "fn choose(n:int)->int{\nconst flag:bool = false\nif(flag){\nreturn n+1\n}\nreturn n+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let at = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::BoolScopeEnded(_)
+        )).unwrap();
+        out.events.remove(at);
+        assert!(!out.has_balanced_frame_trace());
     }
 
 

@@ -5,6 +5,9 @@
 enum PrivateSharedCallExitEvent {
     LoanAcquired(crate::borrow_safety::BorrowTicket),
     FunctionEntered,
+    /// Copyable 局部真進／離域責任共用框架驗收，不冒充 ResourceId。
+    LocalInitialized(crate::ownership_ledger::DeclarationId),
+    LocalScopeEnded(crate::ownership_ledger::DeclarationId),
     Returned,
     UnwindStarted,
     LoanReturned(crate::borrow_safety::BorrowTicket),
@@ -24,6 +27,9 @@ fn private_shared_call_exit_balanced(
         return !succeeded;
     }
     let mut frames = Vec::<bool>::new();
+    // index 0 是 main 基底詞彙作用域；每次真 FunctionEntered
+    // 增加一個 frame 局部棧，離域前必須清空。
+    let mut local_scopes = vec![Vec::<crate::ownership_ledger::DeclarationId>::new()];
     let mut tickets = Vec::<crate::borrow_safety::BorrowTicket>::new();
     let mut unwinding = false;
     let mut entered_any = false;
@@ -43,7 +49,20 @@ fn private_shared_call_exit_balanced(
                     return false;
                 }
                 frames.push(false);
+                local_scopes.push(Vec::new());
                 entered_any = true;
+            }
+            PrivateSharedCallExitEvent::LocalInitialized(id) => {
+                if unwinding || frames.last().is_some_and(|returned| *returned) {
+                    return false;
+                }
+                let Some(locals) = local_scopes.last_mut() else { return false; };
+                if locals.contains(id) { return false; }
+                locals.push(*id);
+            }
+            PrivateSharedCallExitEvent::LocalScopeEnded(id) => {
+                let Some(locals) = local_scopes.last_mut() else { return false; };
+                if locals.pop() != Some(*id) { return false; }
             }
             PrivateSharedCallExitEvent::Returned => {
                 if unwinding { return false; }
@@ -73,10 +92,13 @@ fn private_shared_call_exit_balanced(
                     || (!unwinding && !*returned) {
                     return false;
                 }
+                let Some(locals) = local_scopes.pop() else { return false; };
+                if !locals.is_empty() { return false; }
             }
         }
     }
     frames.is_empty() && tickets.is_empty()
+        && local_scopes.len() == 1 && local_scopes[0].is_empty()
         && unwinding == !succeeded
         && (!succeeded || entered_any)
 }
