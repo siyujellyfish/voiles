@@ -20,6 +20,7 @@ enum PrivateScalarCallRuntimeError {
     CallBudget,
     StepBudget,
     Resource(crate::owned_str_runtime::StrRuntimeError),
+    Borrow(crate::borrow_safety::BorrowSafetyError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -45,6 +46,10 @@ enum PrivateScalarCallEvent {
     /// R05：由真正 OwnedStrRuntime 當下產生的 ResourceId 事件，
     /// 在同一個函式進退序列中保留相對順序，不虛構新資源。
     OwnedResource(crate::owned_str_runtime::ResourceEvent),
+    /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
+    LoanAcquired(crate::borrow_safety::BorrowTicket),
+    LoanReturned(crate::borrow_safety::BorrowTicket),
+    BorrowParameterBound(DeclarationId, BorrowFact),
     Returned(i64),
     FunctionExited { name: String, returned: bool },
 }
@@ -68,11 +73,13 @@ impl PrivateScalarCallOutcome {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
             resource_ids: std::collections::HashSet<u64>,
+            loans: Vec<crate::borrow_safety::BorrowTicket>,
             returned: bool,
         }
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
-            resource_ids: std::collections::HashSet::new(), returned: false,
+            resource_ids: std::collections::HashSet::new(),
+            loans: Vec::new(), returned: false,
         }];
         let mut recorded = Vec::new();
         let mut created_ids = std::collections::HashSet::<u64>::new();
@@ -82,11 +89,13 @@ impl PrivateScalarCallOutcome {
                     if frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
-                        resource_ids: std::collections::HashSet::new(), returned: false,
+                        resource_ids: std::collections::HashSet::new(),
+            loans: Vec::new(), returned: false,
                     });
                 }
                 PrivateScalarCallEvent::ParameterBound(..)
-                    | PrivateScalarCallEvent::BoolParameterBound(..) => {
+                    | PrivateScalarCallEvent::BoolParameterBound(..)
+                    | PrivateScalarCallEvent::BorrowParameterBound(..) => {
                     if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
                         return false;
                     }
@@ -131,6 +140,19 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
+                PrivateScalarCallEvent::LoanAcquired(ticket) => {
+                    let duplicate = frames.iter().any(|frame| frame.loans.contains(ticket));
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || duplicate { return false; }
+                    frame.loans.push(*ticket);
+                }
+                PrivateScalarCallEvent::LoanReturned(ticket) => {
+                    let Some(frame) = frames.iter_mut().rev()
+                        .find(|frame| frame.loans.contains(ticket)) else { return false; };
+                    let index = frame.loans.iter().position(|loan| loan == ticket)
+                        .expect("已確認同一真 BorrowTicket");
+                    frame.loans.remove(index);
+                }
                 PrivateScalarCallEvent::OwnedResource(resource) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     let valid = match resource {
@@ -156,7 +178,7 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.pop() else { return false; };
                     if frame.name.as_deref() != Some(name.as_str())
                         || frame.returned != *returned || !frame.locals.is_empty()
-                        || !frame.resource_ids.is_empty() {
+                        || !frame.resource_ids.is_empty() || !frame.loans.is_empty() {
                         return false;
                     }
                 }
@@ -167,6 +189,7 @@ impl PrivateScalarCallOutcome {
         }
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
+            && frames[0].loans.is_empty()
             && self.parameter_slots_after_exit == 0
             && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
@@ -728,6 +751,20 @@ struct PrivateScalarActiveFrame {
     initialized_order: Vec<PrivateScalarLocalBinding>,
     /// 同一 OwnedStrRuntime 已進入的本函式資源詞彙作用域數。
     resource_scopes: usize,
+    /// 每一詞彙層原 Checker 的真 str 宣告身分。
+    str_owner_scopes: Vec<Vec<(DeclarationId, String)>>,
+    borrow_tracker: crate::borrow_safety::BorrowSafety,
+    incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
+}
+
+/// 各已完成實參維持正式型別，不以整數佔位冒充字串。
+enum PrivateScalarEvaluatedArgument {
+    Int(i64),
+    Bool(bool),
+    Borrow {
+        ticket: crate::borrow_safety::BorrowTicket,
+        fact: BorrowFact,
+    },
 }
 
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
@@ -738,11 +775,12 @@ enum PrivateScalarTask<'a> {
     RecordArgument,
     EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
     RecordBoolArgument,
+    BorrowArgument(&'a str, BorrowFact),
     Apply(char),
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
-    DeclareStr(&'a str, bool, &'a PrivateScalarStrInitializer),
+    DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
@@ -753,7 +791,7 @@ enum PrivateScalarTask<'a> {
     UnbindIterator(DeclarationId),
     EndScope(usize),
     ExecuteBranchAction(&'a PrivateScalarBranchAction),
-    EnterCall(&'a str, usize, bool),
+    EnterCall(&'a str, &'a [PrivateScalarCallArgument], bool),
     ExitCall,
 }
 
@@ -2371,6 +2409,8 @@ impl PreparedPrivateScalarCall {
         ).collect();
         let callee_parameter_is_bool = callee.params.iter()
             .map(|param| param.ty == "bool").collect();
+        let callee_parameter_is_str = callee.params.iter()
+            .map(|param| param.ty == "str").collect();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
             verified, original, call_span, callee_span, callee_name,
@@ -2380,6 +2420,7 @@ impl PreparedPrivateScalarCall {
             additional_arguments, main_owners, nested_callees,
             main_dynamic_call, main_dynamic_inits, main_dynamic_steps,
             callee_parameter_ids, callee_parameter_is_bool,
+            callee_parameter_is_str,
         })
     }
 
@@ -2405,6 +2446,7 @@ impl PreparedPrivateScalarCall {
             && self.main_dynamic_steps == fresh.main_dynamic_steps
             && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.callee_parameter_is_bool == fresh.callee_parameter_is_bool
+            && self.callee_parameter_is_str == fresh.callee_parameter_is_str
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
             && self.verified.plan.declarations.by_source
