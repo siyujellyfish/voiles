@@ -7378,4 +7378,42 @@ mod g18_r06_cross_runtime_tests {
     }
 
 
+    #[test]
+    fn g18_r06_普通函式與同步self方法int局部均沿用原_checker_真正求值且離域() {
+        let scalar_src = "fn calc(a:int)->int{\nconst local:int = a+4\nreturn local-2\n}\nfn main()->int{\nreturn calc(5)\n}\n";
+        let scalar = PreparedPrivateScalarCall::prepare(scalar_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(scalar.result, Ok(7));
+        assert!(scalar.has_balanced_frame_trace());
+
+        let method_src = "struct Counter{\nvar count:int = 7\nfn calc(a:int)->int{\nconst local:int = a+4\nreturn local-2\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.calc(5)\n}\n";
+        let method = PreparedPrivateSelfMethod::prepare(method_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(method.result, Ok(7));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert_eq!(method.method_local_events.len(), 2);
+        assert_eq!(method.method_local_slots_after_exit, 0);
+        assert!(method.exit_events.iter().any(|e| matches!(
+            e, PrivateSharedCallExitEvent::LoanReturned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r06_普通函式與同步self局部溢位均保留真失敗回滾與乾淨離域() {
+        let scalar_src = "fn calc(a:int)->int{\nconst first:int = 11\nconst overflow:int = first+9223372036854775807\nreturn overflow\n}\nfn main()->int{\nreturn calc(5)\n}\n";
+        let scalar = PreparedPrivateScalarCall::prepare(scalar_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(scalar.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(scalar.has_balanced_frame_trace());
+        let method_src = "struct Counter{\nvar count:int = 7\nfn calc(a:int)->int{\nconst first:int = 11\nconst overflow:int = first+9223372036854775807\nreturn overflow\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.calc(5)\n}\n";
+        let method = PreparedPrivateSelfMethod::prepare(method_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(method.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert!(method.method_entered && !method.method_exited && method.ticket_returned);
+        assert_eq!(method.method_local_events.len(), 2);
+        assert_eq!(method.method_local_slots_after_exit, 0);
+    }
+
+
 }
