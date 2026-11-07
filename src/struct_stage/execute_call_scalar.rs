@@ -7035,6 +7035,82 @@ mod g18_private_scalar_call_tests {
     }
 
 
+
+    #[test]
+    fn g18_r01_r03_main選中if內真utf8局部借用給函式後才離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar owner:str = \"分支🪼\"\nresult = inspect(owner,4)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let borrowed = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_))).unwrap();
+        let returned = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).unwrap();
+        let released = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::OwnedResource(R::Released(1)))).unwrap();
+        assert!(borrowed < returned && returned < released);
+    }
+
+    #[test]
+    fn g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nvar owner:str = \"不執行\"\nresult = inspect(owner,9)\n}else{\nvar owner:str = \"唯一🪼\"\nresult = inspect(owner,4)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst owner:str = \"外層🪼\"\nvar result:int = 0\nfor i in 0..3{\nresult = result+inspect(owner,i)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_))).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 3);
+    }
+
+    #[test]
+    fn g18_r03_main_while內真字串借用隨continue先還票再釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar active:bool = true\nvar result:int = 0\nwhile(active){\nvar owner:str = \"每輪🪼\"\nresult = inspect(owner,3)\nactive = false\ncontinue\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ConditionalChecked(_))).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar owner:str = \"錯誤🪼\"\nresult = inspect(owner,1+9223372036854775807)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_))).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )));
+    }
+
+
 }
 
 

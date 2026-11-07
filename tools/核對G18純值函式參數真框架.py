@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百四十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百四十七項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
+    "g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
+    "g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
+    "g18_r03_main_while內真字串借用隨continue先還票再釋放",
+    "g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
     "g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
     "g18_r03_main_if_false未選函式零事件且else選中另一真函式",
     "g18_r03_main_while逐輪重讀條件內的真函式來源",
