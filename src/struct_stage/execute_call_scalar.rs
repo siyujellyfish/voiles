@@ -6992,4 +6992,59 @@ mod g18_r06_cross_runtime_tests {
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
+
+    #[test]
+    fn g18_r06_同一真_call_雙_resourceid_整筆_move_依原參數順序交付逆序釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn consume(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙🪼\"\nreturn consume(first.move(),second.move(),5)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Moved(2),
+            R::Released(2), R::Released(1),
+        ]);
+        let handoffs = out.events.iter().filter_map(|ev| match ev {
+            PrivateScalarCallEvent::ResourceTransferred { resource_id, .. } =>
+                Some(*resource_id),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(handoffs, [1, 2]);
+    }
+
+    #[test]
+    fn g18_r06_雙_move_後續_int_實參動態溢位不可提前移交任何資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn consume(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nreturn consume(first.move(),second.move(),1+9223372036854775807)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|ev| matches!(ev,
+            PrivateScalarCallEvent::ResourceTransferred { .. }
+        )));
+    }
+
+    #[test]
+    fn g18_r06_雙_resourceid_跨三層函式_每層重新綁定但零複製零洩漏() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(a:str,b:str,n:int)->int{\nreturn n+1\n}\nfn bridge(a:str,b:str,n:int)->int{\nreturn leaf(a.move(),b.move(),n)\n}\nfn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nreturn bridge(first.move(),second.move(),2)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Moved(2),
+            R::Moved(1), R::Moved(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r06_同一來源重複兩次_move_必由_checker_阻止進入真框架() {
+        let src = "fn consume(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar first:str = \"甲\"\nreturn consume(first.move(),first.move(),2)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
 }
