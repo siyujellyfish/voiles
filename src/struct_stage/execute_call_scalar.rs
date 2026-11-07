@@ -6324,4 +6324,31 @@ mod g18_r06_cross_runtime_tests {
         assert!(!missing.has_balanced_frame_trace());
     }
 
+
+    #[test]
+    fn g18_r05_r06_同框架兩個存活_resourceid_借用不得錯綁他人() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst first:str = \"甲\"\nconst second:str = \"乙\"\nreturn inspect(first,4)\n}\n";
+        let baseline = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(baseline.result, Ok(4));
+        assert!(baseline.has_balanced_frame_trace());
+        assert_eq!(baseline.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        // 真來源是 first / ResourceId 1。假裝其連結是同樣活躍的
+        // second / ResourceId 2：僅驗證 ResourceId 存在仍會誤放行。
+        let mut wrong = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        let linked = wrong.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).unwrap();
+        if let PrivateScalarCallEvent::LoanResourceLinked(_, resource) =
+            &mut wrong.events[linked] {
+            *resource = 2;
+        } else { panic!("缺少真連結"); }
+        assert!(!wrong.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(wrong),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
 }
