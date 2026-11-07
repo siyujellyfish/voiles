@@ -213,3 +213,14 @@
 - 第一輪 CI Rust P04 共 1563 項成功，僅新增 else-if 回歸因尾端 `return n+4` 無 HIR 而被 `Unsupported`。原 Checker 能證明本來源 `if(first) return／else if(second) return／else return` 全部返回，所以尾端在原靜態控制流上完全不可達，不應造假必需的 TypedHIR。
 - 新增 `PrivateScalarEarlyIf::always_returns()` 只對完整已編譯真葉返回的 else／else-if 鏈證明全路徑退出；**僅當原 Checker 確實沒有該尾端 Expression HIR** 才使用不可達 Sentinel。其執行期若被意外執行，回報 `StateMismatch`，絕不假裝正常 int return；不省略任何仍可達且缺 HIR 的合法執行。
 - 已更新 Rust 原來源邊界與文件。需要在修訂後最新 PR HEAD 三項必要 CI 全 completed/success，再合併。
+
+
+---
+
+## V1-R04-01：原 Checker int/bool 混合正式函式參數（2026-11-07）
+
+- 基線 main `67863e834ba58b78ee7dabe84ed7359f40df8d70`（R03 #581 以最新 HEAD 三必要 CI success 合併）；原 evaluator 已接通 bool 局部宣告與提前 Return，但所有普通函式簽章和引數仍強制 `int`，原 Checker 核准的 `fn choose(flag:bool,n:int)->int` 遭人為 Unsupported。
+- **保持真 Checker 完整型別決議**，在 `PrivateScalarCallArgument` 明確分流 `Int／Bool`。參數實參解析需原 Lexer、TypedHIR bool／int、Reference HIR、DeclarationId 及原 Checker 簽章個數／順序完全相符；不得用 runtime 值推斷類型。原動態顯式工作堆疊可以於 int 暫存槽中短暫編碼 bool 0／1 供已核准參數傳遞，進入正式函式 frame 時**必依簽章重新恢復 bool slot**；不得讓 bool 參與 int 算術，也不產生借用或 Move。
+- 新增 `BoolArgumentEvaluated`／`BoolParameterBound` 真事件，並且為每個呼叫函式保存 `parameter_is_bool` 真 Checker 完整簽章；`main` 即使傳字面 bool 也改走原動態實參工作堆疊，巢狀函式 int/bool 混用不共用參數 slot，函式內 bool Name 讀取同一框架。
+- 新增七項 Rust 原來源正反：bool true 單參數提前 return、bool false+int 混合宣告順序、巢狀 bool+int 跨兩框架、main bool var 更新後傳參、綁定後故障真退出、錯型別／漏參數原 Checker 拒絕、竄改簽章布林標記執行前 SourceChanged。函式專項 Gate **117→124**，G18 原 P18.1／P18.3／P18.4／P18.5 與 CI 追溯同步。
+- **R04 仍未全部完成**：str OwnedStr／BorrowTicket／明確 move 的多參數混合來源已有獨立 G18 執行器，但尚未與此 Copyable 函式圖共享同一統一框架／退出協定；此批不將 bool 純值事件冒充真資源釋放或 P18.4 全部驗收。P18 六原項維持 0/6 正式 Passed。僅依 PR 最新 HEAD 三必要 CI completed/success 並 Squash merge、新 main 同 SHA 再驗。
