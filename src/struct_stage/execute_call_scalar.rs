@@ -6941,4 +6941,55 @@ mod g18_r06_cross_runtime_tests {
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
+
+    #[test]
+    fn g18_r06_原_checker_VB14_借用別名缺乏重借證明不得進真子呼叫() {
+        let invalid = [
+            "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn bridge(owner,2)\n}\n",
+            "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nvar owner:str = \"來源\"\nreturn bridge(owner,2)\n}\n",
+            "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nvar value:int = n\nfor i in 0..2{\nvalue = leaf(item,value)\n}\nreturn value\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn bridge(owner,2)\n}\n",
+        ];
+        for src in invalid {
+            let Err(PrivateScalarCallPrepareError::Check(diagnostic)) =
+                PreparedPrivateScalarCall::prepare(src) else {
+                panic!("VB14 必須由正式 Checker 拒絕，不能交由 runtime 猜測");
+            };
+            assert!(format!("{diagnostic:?}").contains("VB14"));
+        }
+    }
+
+    #[test]
+    fn g18_r06_原_checker_准許真持有者_move_給子函式不受_VB14_錯誤擴張() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn bridge(n:int)->int{\nvar owned:str = \"合法\"\nreturn leaf(owned.move(),n)\n}\nfn main()->int{\nreturn bridge(5)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r05_r06_存活借用票據期間偽造同源跨框架_move_仍須拒絕() {
+        let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"不可移\"\nreturn observe(owner,3)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let ticket = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterBound(_, _)
+        )).unwrap();
+        let source = out.events.iter().find_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(ticket.fact().source),
+            _ => None,
+        }).unwrap();
+        // 借用函式已進入，來源 LoanResourceLinked 仍有效；
+        // 即使 forged transfer 指向存在的 ResourceId，也不可認領。
+        out.events.insert(ticket + 1, PrivateScalarCallEvent::ResourceTransferred {
+            source, target: DeclarationId(0), resource_id: 1,
+        });
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
 }
