@@ -7493,6 +7493,80 @@ mod g18_private_scalar_call_tests {
     }
 
 
+    // R03：跨 if／else-if／while／for 的真控制邊，必須在同一
+    // 原 Checker 核准工作堆疊依實際進入路徑清理 Move／BorrowTicket。
+    #[test]
+    fn g18_r03_main_else_if選中分支str_move借用只建立一個resourceid() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nvar source:str = \"未選一\"\nresult = inspect(source,100)\n}else if(true){\nvar source:str = \"選中🪼\"\nvar target:str\ntarget = source.move()\nresult = inspect(target,3)\n}else{\nvar source:str = \"未選二\"\nresult = inspect(source,200)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Moved(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_while內for_break只清理內層move借用且外層仍繼續() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar active:bool = true\nvar total:int = 0\nwhile(active){\nfor i in 0..3{\nvar source:str = \"內層🪼\"\nvar target:str\ntarget = source.move()\ntotal = total+inspect(target,i)\nbreak\n}\nactive = false\n}\nreturn total\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Moved(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_for內提前return完成真move借用且不進後續迭代() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn fallback(n:int)->int{\nreturn n\n}\nfn main()->int{\nfor i in 0..4{\nvar source:str = \"第一輪🪼\"\nvar target:str\ntarget = source.move()\nreturn inspect(target,i+5)\n}\nreturn fallback(0)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Moved(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "fallback"
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main_else_if真move後第二引數溢位須回滾票據和唯一資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nresult = 99\n}else if(true){\nvar source:str = \"錯誤🪼\"\nvar target:str\ntarget = source.move()\nresult = inspect(target,1+9223372036854775807)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Moved(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main_else_if已move來源再借用由原checker提前拒絕() {
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nresult = 1\n}else if(true){\nvar source:str = \"單一🪼\"\nvar target:str\ntarget = source.move()\nresult = inspect(source,3)\n}\nreturn result\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+
 }
 
 
