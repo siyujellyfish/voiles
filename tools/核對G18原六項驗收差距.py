@@ -19,6 +19,12 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_false未選函式零事件且else選中另一真函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while逐輪重讀條件內的真函式來源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_for迭代值在真函式參數中按半開區間逐輪傳入",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main巢狀控制真函式源計畫篡改必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var首次賦值的普通函式來源必真執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main先返回葉函式後更新局部不得逆序求值",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_main同一var先以函式初次賦值再由函式重賦值",
@@ -146,6 +152,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_false未選函式零事件且else選中另一真函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while逐輪重讀條件內的真函式來源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_for迭代值在真函式參數中按半開區間逐輪傳入",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main巢狀控制真函式源計畫篡改必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_main同一var先以函式初次賦值再由函式重賦值",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_未選分支的str空宣告與賦值不建立UTF8資源",
@@ -180,6 +192,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_for_逐輪無初值str先賦值每輪唯一ResourceId清理",
@@ -437,6 +450,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_false未選函式零事件且else選中另一真函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while逐輪重讀條件內的真函式來源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main_for迭代值在真函式參數中按半開區間逐輪傳入",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_main巢狀控制真函式源計畫篡改必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main_var首次賦值的普通函式來源必真執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main先返回葉函式後更新局部不得逆序求值",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_main同一var先以函式初次賦值再由函式重賦值",

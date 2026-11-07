@@ -706,6 +706,27 @@ impl PrivateScalarReturnExpr {
         }
     }
 
+    /// R01～R03：只遍歷原 Parser 取得的來源 AST，找出在已核准
+    /// 真 CFG 裡可能被選中的第一個具名呼叫。這只是建立函式圖的
+    /// 靜態目錄：不猜測選中的分支、不提前執行呼叫；各控制邊
+    /// 必須仍經原 Checker TypedHIR 和動態工作堆疊守門。
+    fn first_source_call_in_statements(statements: &[Stmt]) -> Option<&str> {
+        statements.iter().find_map(|statement| match &statement.kind {
+            StmtKind::Declare(owner) => owner.initializer.as_ref()
+                .and_then(Self::first_source_call),
+            StmtKind::Assign(assignment) =>
+                Self::first_source_call(&assignment.expression),
+            StmtKind::Return(ret) => Self::first_source_call(&ret.expression),
+            StmtKind::If { branch, no } =>
+                Self::first_source_call_in_statements(&branch.body)
+                    .or_else(|| no.as_ref().and_then(|other|
+                        Self::first_source_call_in_statements(other))),
+            StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } =>
+                Self::first_source_call_in_statements(&body.statements),
+            _ => None,
+        })
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
@@ -2787,20 +2808,9 @@ impl PreparedPrivateScalarCall {
         // 即使最後只是 return 先前取得的 Copyable 結果，仍可由
         // 原 Parser AST 找到同一已核准函式圖，不猜測字串名稱。
         let source_name = PrivateScalarReturnExpr::first_source_call(return_call)
-            .or_else(|| main.body.statements.iter().find_map(|statement| {
-                match &statement.kind {
-                    StmtKind::Declare(owner) => owner.initializer.as_ref()
-                        .and_then(PrivateScalarReturnExpr::first_source_call),
-                    // R01：原 Checker 合法的 var 首賦值／後續更新，
-                    // RHS 一樣可能是真普通函式呼叫。只尋找來源，
-                    // 不提前求值、不把未選中的分支當成已呼叫。
-                    StmtKind::Assign(assignment) =>
-                        PrivateScalarReturnExpr::first_source_call(
-                            &assignment.expression,
-                        ),
-                    _ => None,
-                }
-            }))
+            .or_else(|| PrivateScalarReturnExpr::first_source_call_in_statements(
+                &main.body.statements,
+            ))
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
                 "main 來源缺少原 Parser 真具名函式呼叫",
             ))?;
@@ -2921,7 +2931,9 @@ impl PreparedPrivateScalarCall {
         // 非字面／名稱的合法 main int 初始化可能含算術、真函式
         // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
         let needs_main_local_runtime = main_prefix.iter().any(|statement| {
-            if matches!(&statement.kind, StmtKind::Assign(_) | StmtKind::If { .. }) {
+            if matches!(&statement.kind,
+                StmtKind::Assign(_) | StmtKind::If { .. }
+                    | StmtKind::While { .. } | StmtKind::ForRange { .. }) {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
@@ -6946,6 +6958,78 @@ mod g18_private_scalar_call_tests {
             = &mut plan.main_dynamic_steps[1] {
             *value = PrivateScalarReturnExpr::Constant(900);
         } else { panic!("原 Checker 的 main 右值真呼叫必須保留"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+
+    #[test]
+    fn g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nresult = inc(3)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inc"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_if_false未選函式零事件且else選中另一真函式() {
+        let src = "fn unused()->int{\nreturn 99\n}\nfn chosen()->int{\nreturn 7\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nresult = unused()\n}else{\nresult = chosen()\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let enters = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(enters, ["chosen"]);
+    }
+
+    #[test]
+    fn g18_r03_main_while逐輪重讀條件內的真函式來源() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar active:bool = true\nvar result:int = 0\nwhile(active){\nresult = inc(result)\nactive = false\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ConditionalChecked(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r01_main_for迭代值在真函式參數中按半開區間逐輪傳入() {
+        let src = "fn add(a:int,b:int)->int{\nreturn a+b\n}\nfn main()->int{\nvar result:int = 0\nfor i in 1..4{\nresult = add(result,i)\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "add"
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回() {
+        let src = "fn overflow(n:int)->int{\nreturn n+1\n}\nfn skipped()->int{\nreturn 9\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nresult = overflow(9223372036854775807)\n}else{\nresult = skipped()\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "skipped"
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_main巢狀控制真函式源計畫篡改必在執行前拒絕() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nresult = inc(4)\n}\nreturn result\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(5));
+        plan.main_dynamic_steps.clear();
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
