@@ -657,7 +657,7 @@ impl PreparedPrivateScalarCall {
                         "if 賦值缺少原 Checker 變數宣告",
                     ),
                 )?;
-                if !fact.mutable || !matches!(fact.ty, "int" | "bool")
+                if !fact.mutable || (fact.ty != "int" && fact.ty != "bool")
                     || verified.plan.scalar_hir.assignment(statement.node_span())
                         .is_none_or(|record|
                             record.resolved.declaration != id
