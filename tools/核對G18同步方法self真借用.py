@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 一百零四項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 一百一十一項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r04_同步self方法var_int_局部可按原checker賦值後真返回",
+    "g18_r04_同步self方法連續兩次_var_int_更新沿用最新動態值",
+    "g18_r04_同步self方法第二個var局部可讀取第一個已更新值",
+    "g18_r05_同步self第二次更新溢位須保留已提交第一次更新及逆序離域",
+    "g18_r04_方法const_int_重新賦值或參數賦值仍原checker靜態拒絕",
+    "g18_r04_方法var_int_更新後再宣告尚未證明重排必拒絕",
+    "g18_r05_竄改方法var_int_賦值計畫或兩張帳中的更新身分須拒絕",
     "g18_r05_合法方法兩個真局部初始化必對應原_checker_宣告順序",
     "g18_r05_偽造成功方法內額外平衡局部即使兩帳一致仍須拒絕",
     "g18_r05_同步方法即使兩張事件帳同時篡改局部身份也不得冒充checker來源",
