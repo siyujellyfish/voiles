@@ -876,7 +876,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         || vars[0].contains_key(&local.name) {
                         return Err(Diagnostic {
                             kind: DiagnosticKind::Static,
-                            message: "方法 int 局部只接受先宣告後賦值的唯一 Copyable 來源".into(),
+                            message: "方法 int 局部只接受先宣告後賦值的唯一 Copyable int 來源".into(),
                             span: Some(self.source.span(statement.start, statement.end)),
                         });
                     }
