@@ -6528,4 +6528,74 @@ mod g18_r06_cross_runtime_tests {
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
+
+    #[test]
+    fn g18_r06_str_覆寫後再借新_resourceid_票據須對應最新擁有者() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn run(n:int)->int{\nvar owner:str = \"舊\"\nowner = \"新\"\nreturn inspect(owner,n)\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 2)
+        )).count(), 1);
+        let returned = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let release = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(2))
+        )).unwrap();
+        assert!(returned < release);
+    }
+
+    #[test]
+    fn g18_r06_真_move_覆寫後借目標仍指同一原始_resourceid() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn run(n:int)->int{\nvar source:str = \"甲\"\nvar target:str = \"乙\"\ntarget = source.move()\nreturn inspect(target,n)\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1),
+            R::Released(2), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanResourceLinked(_, 1)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造_str_覆寫後仍由舊資源認領必拒絕() {
+        let src = "fn run(n:int)->int{\nvar owner:str = \"原\"\nowner = \"新\"\nreturn n\n}\nfn main()->int{\nreturn run(3)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let index = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceOwnerBound(_, 2)
+        )).unwrap();
+        if let PrivateScalarCallEvent::ResourceOwnerBound(_, resource) = &mut out.events[index] {
+            *resource = 1; // 舊資源早已 Released，不能被同一 DeclarationId 復活
+        } else { panic!("缺少真擁有者轉移事件"); }
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r06_str_覆寫後整數溢位仍釋放目前唯一擁有者() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"原\"\nowner = \"新\"\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn run(1)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
 }
