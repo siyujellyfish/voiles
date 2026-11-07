@@ -119,6 +119,13 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真直接遞迴_utf8_借用與返回框架交付前全數一致",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真互相遞迴多_resourceid_跨四框架逆序退出必一致",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真資源遞迴預算耗盡與局部建立故障均須完整退出",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真零預算尚未進入主框架不允許假資源事件",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_動態資源返回後偽造退出名字與成功標記必拒絕",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真資源釋放或票據空集合遭竄改必拒絕交付",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_動態框架重複進入與漏退出不得因資源表平衡而放行",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_動態整數溢位與真失敗退出仍保留合法平衡事件",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_遞迴重入相同靜態宣告身分不應誤判為重複清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造未建立區域的離域與錯順序均遭事件帳簿拒絕",
@@ -242,6 +249,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_動態資源返回後偽造退出名字與成功標記必拒絕",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真資源釋放或票據空集合遭竄改必拒絕交付",
+        "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_動態框架重複進入與漏退出不得因資源表平衡而放行",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_布林與整數反向離域跨型別錯序不可冒充真清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_純值事件帳簿不得將錯誤參數綁定或布林寫入當作合法框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_bool_參數綁定靜態型別被竄改前必拒絕",
