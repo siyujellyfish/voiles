@@ -4550,12 +4550,15 @@ mod g18_private_scalar_call_tests {
         let out = checked(src).execute().unwrap();
         assert_eq!(out.result, Ok(9));
         assert!(out.has_balanced_frame_trace());
-        let iter = out.events.iter().filter_map(|event| {
+        // 外層 var value 的初值恰好也是 1；只按語意事件順序
+        // 排除首個本地宣告，再核對兩個真正 for 迭代的來源身份。
+        let locals = out.events.iter().filter_map(|event| {
             if let PrivateScalarCallEvent::LocalInitialized(id, value) = event {
-                if matches!(*value, 1 | 8) { return Some((*id, *value)); }
-            }
-            None
+                Some((*id, *value))
+            } else { None }
         }).collect::<Vec<_>>();
+        assert_eq!(locals.len(), 3);
+        let iter = &locals[1..];
         assert_eq!(iter.len(), 2);
         assert_ne!(iter[0].0, iter[1].0);
         assert_eq!([iter[0].1, iter[1].1], [1, 8]);
