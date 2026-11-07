@@ -619,6 +619,25 @@ impl PreparedPrivateSelfMethod {
             ) || !self.matches_source(text) {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
+        // 在建立任何 method self BorrowTicket 之前，以 main 真宣告順序
+        // 將 Copyable int 局部求值寫入自己的執行期框架。具名複製
+        // 必須實際讀取先前槽位，不把 prepare 中的常值當成唯一動態證據。
+        let mut main_values = BTreeMap::<DeclarationId, i64>::new();
+        for (_, id, planned, source) in &self.main_int_locals {
+            let actual = if let Some(source_id) = source {
+                *main_values.get(source_id).ok_or(
+                    PrivateSelfMethodPrepareError::SourceChanged,
+                )?
+            } else { *planned };
+            if actual != *planned || main_values.insert(*id, actual).is_some() {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+        }
+        if self.argument_sources.len()
+            != usize::from(self.argument_binding.is_some())
+                + self.additional_argument_bindings.len() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
         use crate::borrow_safety::BorrowSafety;
         use crate::mixed_struct_runtime::{
             MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue, Observed,
@@ -640,9 +659,16 @@ impl PreparedPrivateSelfMethod {
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
             // 完成原 Checker 參數的真值框架綁定；選中來源返回時
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
-            for (id, value) in self.argument_binding.into_iter()
-                .chain(self.additional_argument_bindings.iter().copied()) {
-                if parameter_frame.insert(id, value).is_some() {
+            for ((id, value), source) in self.argument_binding.into_iter()
+                .chain(self.additional_argument_bindings.iter().copied())
+                .zip(self.argument_sources.iter().copied()) {
+                let actual = match source {
+                    Some(source_id) => *main_values.get(&source_id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver,
+                    )?,
+                    None => value,
+                };
+                if actual != value || parameter_frame.insert(id, actual).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
             }
@@ -765,8 +791,16 @@ impl PreparedPrivateSelfMethod {
         };
         let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
         let events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+        // 與一般函式的 LocalScopeEnded 契約相同：在 main 返回時
+        // 刪除全部 Copyable int 局部，且不能殘留到重複執行。
+        for (_, id, _, _) in self.main_int_locals.iter().rev() {
+            if main_values.remove(id).is_none() {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+        }
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            main_local_slots_after_exit: main_values.len(),
         };
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
