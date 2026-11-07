@@ -19,6 +19,12 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式_while_false_零迭代仍真正檢查且返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式_for_迭代器真值逐輪參與累加",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_分支同名遮蔽只寫入區塊內宣告_外部值不變",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_同一函式框架真_ownedstr_局部與_copyable_int_返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_具名_const_str_與_int_真同框架借用票據先還才釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_父子真_utf8_資源事件必嵌入函式進退同序序列",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_真巢狀_if_葉提前返回保留雙層條件順序",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉",
@@ -117,6 +123,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_普通函式_while_逐輪重讀_bool_並僅更新到達的_int",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_普通函式_for_continue_每輪清除同一宣告身份",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_for_每輪局部值及_iterator_各自離域後才下一輪",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_真_for_每輪_utf8_各有唯一_resourceid_並先釋放",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_for_重複同一外層_str_真借用逐輪歸還",
         "execution::tests::p18_真控制邊紀錄只包含實際檢查的條件與返回",
         "struct_stage::g18_private_source_loop_tests::g18_b_六十五輪合法半開_for_不再遭私有固定上界拒絕",
         "struct_stage::g18_private_source_loop_tests::g18_b_超過六十四輪的合法_for_依真實步數預算成功或受控耗盡",
@@ -132,6 +143,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_父子函式同時擁有真_utf8_返回後依堆疊逆序釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_步數耗盡與真資源清理必先於失敗函式退出",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_借用首實參後第二實參動態溢位須還真票據再清理_utf8",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_迴圈_break_先釋放局部與遞迴資源耗盡各守真出口",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_巢狀分支第二次_int_更新溢位真框架不補寫後續結果",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_同分支第二更新溢位只保存第一個真更新並失敗退出",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
@@ -229,6 +244,13 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_具名_var_str_獨占借用與_copyable_int_真返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_父函式局部_ownedstr_真正借用給子函式並續算",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_真_checker_借用來源篡改或隱含複製仍拒絕",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一函式圖兩張_const_str_共享票據來源相同但序號不同",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_兩個獨立_var_str_同一次真呼叫各有獨占票據",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一真函式堆疊先_move_後借另一_source_資源不混淆",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_偽造借用函式已退出後才歸還票據必拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
         "struct_stage::g18_private_call_borrow_tests::g18_r05_共享與獨占真借用返回或故障皆須資源票據聯合平衡",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_r05_同次真_move_與_borrow_兩資源及票據共同平衡",
@@ -272,6 +294,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_真_str_借用參數綁定後故障依原快照全數歸還",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造另一份平衡_resourceid_不得繞過真事件映射",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_偽造提前函式退出再釋放真_resourceid_必被拒絕",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_未選中的_if_真借用不簽發任何動態票據",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一真函式堆疊先_move_後借另一_source_資源不混淆",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_for_重複同一外層_str_真借用逐輪歸還",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_真巢狀_if_葉提前返回保留雙層條件順序",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉",
