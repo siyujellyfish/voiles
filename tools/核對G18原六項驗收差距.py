@@ -19,6 +19,8 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一真_call_雙_resourceid_整筆_move_依原參數順序交付逆序釋放",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_雙_resourceid_跨三層函式_每層重新綁定但零複製零洩漏",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_原_checker_str_move_真跨函式_唯一_utf8_交接",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_父函式局部_整筆_move_交給子函式同一資源",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_三層真函式同一_resourceid_連續跨框架_move_僅一次清理",
@@ -154,6 +156,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_雙_move_後續_int_實參動態溢位不可提前移交任何資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_跨框架_move_已完成綁定後故障由子框架釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_第二實參溢位時_move_仍由原呼叫者唯一釋放",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_移動實參已準備但_callbudget_耗盡不得假轉交",
@@ -264,6 +267,7 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一來源重複兩次_move_必由_checker_阻止進入真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同次呼叫先借再_move_不同真來源_各有正確出口",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_跨函式_move_真來源被_cherker_禁止重複及隱含複製",
