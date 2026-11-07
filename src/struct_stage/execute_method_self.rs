@@ -1662,4 +1662,98 @@ mod g18_private_method_self_tests {
     }
 
 
+    #[test]
+    fn g18_r02_r04_main整數複合初始化使用同一_typedhir_再傳同步方法() {
+        let src = main_named_method_source(
+            "const base:int = 5\nconst delta:int = (base+4)",
+            "delta,2", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals.len(), 2);
+        assert_eq!(plan.main_init_plans.len(), 2);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.ticket_returned && out.method_exited);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_巢狀main局部初始化依原整數減法左右次序傳入方法() {
+        let src = main_named_method_source(
+            "const first:int = 12\nconst second:int = ((first-4)+2)",
+            "second,3", "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals[1].2, 10);
+        assert_eq!(plan.execute().unwrap().result, Ok(7));
+    }
+
+    #[test]
+    fn g18_r02_r04_已計算main局部可再被Copyable名稱引用並與_self_欄位混算() {
+        let src = "struct Counter{\nvar count:int = 7\nfn calc(n:int)->int{\nreturn self.count+n\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nconst first:int = 3\nconst computed:int = first+4\nconst forwarded:int = computed\nreturn value.calc(forwarded)\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.main_int_locals.len(), 3);
+        assert_eq!(plan.main_int_locals[2].3, Some(plan.main_int_locals[1].1));
+        assert_eq!(plan.execute().unwrap().result, Ok(14));
+    }
+
+    #[test]
+    fn g18_r02_r05_main局部動態加法溢位在方法借用前受控失敗() {
+        let src = main_named_method_source(
+            "const first:int = 1\nconst overflow:int = first+9223372036854775807",
+            "overflow,2", "return a+b",
+        );
+        let plan = checked(&src);
+        for _ in 0..2 {
+            let out = plan.execute().unwrap();
+            assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+            assert!(!out.method_entered && !out.method_exited);
+            assert!(out.ticket_returned && out.events.is_empty());
+            assert_eq!(out.main_local_slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_r02_r05_中途初始化溢位不可清理未進入的後續局部也不能假造返回() {
+        let src = main_named_method_source(
+            "const first:int = 1\nconst overflow:int = first+9223372036854775807\nconst later:int = 5",
+            "later,2", "return a+b",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_entered && !out.method_exited);
+        assert!(out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_篡改已編譯main整數初始化工作樹必在真執行前拒絕() {
+        let src = main_named_method_source(
+            "const first:int = 3\nconst second:int = first+4",
+            "second,2", "return a+b",
+        );
+        let mut plan = checked(&src);
+        plan.main_init_plans[1] = PrivateScalarReturnExpr::Constant(7);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.main_int_locals[1].2 = 99;
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r02_r04_main複合初始化未知或錯型別來源由原_checker_先拒絕() {
+        let unknown = main_named_method_source(
+            "const amount:int = missing+3", "amount,2", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&unknown),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let bad = main_named_method_source(
+            "const amount:int = true+3", "amount,2", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&bad),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
 }
