@@ -156,6 +156,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_函式失敗還入參票據必先留下真逐框架回滾起點",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_偽造成功路徑開始回滾或失敗路徑重複開始均須拒絕",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_雙_move_後續_int_實參動態溢位不可提前移交任何資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_跨框架_move_已完成綁定後故障由子框架釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_第二實參溢位時_move_仍由原呼叫者唯一釋放",
@@ -267,6 +269,7 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_成功函式未真正_return_不得提前歸還其入參票據",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同一來源重複兩次_move_必由_checker_阻止進入真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同次呼叫先借再_move_不同真來源_各有正確出口",

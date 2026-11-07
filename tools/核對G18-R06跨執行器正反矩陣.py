@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／R06：核對四十三項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
+"""G18／R06：核對四十六項原 Checker 真執行、資源／票據退出交叉矩陣；並非 G18 全項 Passed。"""
 
 from __future__ import annotations
 
@@ -11,6 +11,9 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_r06_成功函式未真正_return_不得提前歸還其入參票據",
+    "g18_r05_r06_函式失敗還入參票據必先留下真逐框架回滾起點",
+    "g18_r05_r06_偽造成功路徑開始回滾或失敗路徑重複開始均須拒絕",
     "g18_r06_同一真_call_雙_resourceid_整筆_move_依原參數順序交付逆序釋放",
     "g18_r06_雙_move_後續_int_實參動態溢位不可提前移交任何資源",
     "g18_r06_雙_resourceid_跨三層函式_每層重新綁定但零複製零洩漏",

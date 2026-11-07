@@ -56,6 +56,8 @@ enum PrivateScalarCallEvent {
     /// R05：真取得票據時同步記錄其 UTF-8 資源身分，防止先釋放後歸還。
     LoanResourceLinked(crate::borrow_safety::BorrowTicket, u64),
     LoanReturned(crate::borrow_safety::BorrowTicket),
+    /// R05：失敗時正式進入逐框架回滾，不能與一般成功呼叫混淆。
+    UnwindStarted,
     BorrowParameterBound(DeclarationId, BorrowFact),
     Returned(i64),
     FunctionExited { name: String, returned: bool },
@@ -99,11 +101,12 @@ impl PrivateScalarCallOutcome {
             imported_loans: Vec::new(), returned: false,
         }];
         let mut recorded = Vec::new();
+        let mut unwinding = false;
         let mut created_ids = std::collections::HashSet::<u64>::new();
         for event in &self.events {
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
-                    if frames.last().is_none_or(|f| f.returned) { return false; }
+                    if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
                         resource_ids: std::collections::HashSet::new(),
@@ -214,6 +217,11 @@ impl PrivateScalarCallOutcome {
                     frame.loan_resources.push((*ticket, *resource_id));
                 }
                 PrivateScalarCallEvent::LoanReturned(ticket) => {
+                    // 成功路徑必須等被呼叫者真正 Returned 才能還入參票據；
+                    // 失敗路徑只有明確進入回滾後才允許提前還票。
+                    if frames.last().is_some_and(|child|
+                        child.imported_loans.contains(ticket) && !child.returned)
+                        && !unwinding { return false; }
                     let Some(frame) = frames.iter_mut().rev()
                         .find(|frame| frame.loans.contains(ticket)) else { return false; };
                     let index = frame.loans.iter().position(|loan| loan == ticket)
@@ -222,6 +230,10 @@ impl PrivateScalarCallOutcome {
                     let Some(link) = frame.loan_resources.iter()
                         .position(|(loan, _)| loan == ticket) else { return false; };
                     frame.loan_resources.remove(link);
+                }
+                PrivateScalarCallEvent::UnwindStarted => {
+                    if unwinding || self.result.is_ok() { return false; }
+                    unwinding = true;
                 }
                 PrivateScalarCallEvent::OwnedResource(resource) => {
                     // 票據未歸還前，所指向的實際 UTF-8 資源不得被移動、
@@ -279,6 +291,7 @@ impl PrivateScalarCallOutcome {
                     frame.owner_resources.insert(*declaration, *resource_id);
                 }
                 PrivateScalarCallEvent::Returned(_) => {
+                    if unwinding { return false; }
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.name.is_none() || frame.returned { return false; }
                     frame.returned = true;
@@ -287,6 +300,7 @@ impl PrivateScalarCallOutcome {
                     if frames.len() <= 1 { return false; }
                     let Some(frame) = frames.pop() else { return false; };
                     if frame.name.as_deref() != Some(name.as_str())
+                        || (unwinding && *returned)
                         || frame.returned != *returned || !frame.locals.is_empty()
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
                         || !frame.owner_resources.is_empty()
@@ -2348,6 +2362,7 @@ impl PreparedPrivateScalarCall {
             Ok(values[0])
         })();
         if result.is_err() {
+            events.push(PrivateScalarCallEvent::UnwindStarted);
             // 任何實參已取得票據而父 Call 尚未真正進入時，失敗路徑
             // 必先從簽發者 tracker 歸還，不能只在函式退出清除參數。
             for pending in completed_arguments.iter().rev() {
@@ -7045,6 +7060,66 @@ mod g18_r06_cross_runtime_tests {
         let src = "fn consume(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar first:str = \"甲\"\nreturn consume(first.move(),first.move(),2)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+
+    #[test]
+    fn g18_r05_r06_成功函式未真正_return_不得提前歸還其入參票據() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner,3)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let before = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::Returned(3)
+        )).unwrap();
+        let after = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        assert!(before < after);
+        let premature = out.events.remove(after);
+        out.events.insert(before, premature);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_函式失敗還入參票據必先留下真逐框架回滾起點() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nconst owner:str = \"失敗\"\nreturn inspect(owner,1)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let unwind = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        let returned = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        assert!(unwind < returned);
+        out.events.remove(unwind);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造成功路徑開始回滾或失敗路徑重複開始均須拒絕() {
+        let valid = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"真\"\nreturn inspect(owner,2)\n}\n";
+        let mut completed = PreparedPrivateScalarCall::prepare(valid).unwrap()
+            .execute().unwrap();
+        assert!(completed.has_balanced_frame_trace());
+        completed.events.insert(0, PrivateScalarCallEvent::UnwindStarted);
+        assert!(!completed.has_balanced_frame_trace());
+
+        let fails = "fn inspect(item:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nconst owner:str = \"真\"\nreturn inspect(owner,1)\n}\n";
+        let mut failed = PreparedPrivateScalarCall::prepare(fails).unwrap()
+            .execute().unwrap();
+        assert!(failed.has_balanced_frame_trace());
+        let at = failed.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        failed.events.insert(at + 1, PrivateScalarCallEvent::UnwindStarted);
+        assert!(!failed.has_balanced_frame_trace());
     }
 
 }
