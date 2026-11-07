@@ -6503,6 +6503,196 @@ mod g18_private_scalar_call_tests {
         assert!(!wrong_id.has_balanced_frame_trace());
     }
 
+
+    #[test]
+    fn g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽() {
+        let src = "fn calc(n:int)->int{\nvar local:int\nlocal = n+4\nreturn local\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let declared = out.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalDeclaredEmpty(_))).unwrap();
+        let initialized = out.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalInitialized(_, 7))).unwrap();
+        let ended = out.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalScopeEnded(_))).unwrap();
+        assert!(declared < initialized && initialized < ended);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_宣告未初始化int離域不虛構初始化值或回收資源() {
+        let src = "fn calc(n:int)->int{\nvar spare:int\nreturn n+1\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(..)
+        )));
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_r02_函式var_bool無初值先合法賦值後用於提前return() {
+        let src = "fn calc(n:int)->int{\nvar ready:bool\nready = true\nif(ready){\nreturn n+2\n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::BoolDeclaredEmpty(_)
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::BoolInitialized(_, true)
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::BoolScopeEndedEmpty(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_同作用域未初始化與已初始化局部按宣告逆序離域() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\nconst later:int = 6\npending = n+1\nreturn later\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let values = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalScopeEnded(id) => Some(*id),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        let prepared = checked(src);
+        let prefix = &prepared.root_local_steps;
+        let a = match &prefix[0] {
+            PrivateScalarLocalStep::DeclareEmptyInt(id) => *id,
+            _ => panic!("原 Checker 無初值宣告來源不存在"),
+        };
+        let b = match &prefix[1] {
+            PrivateScalarLocalStep::Declare(init) => init.declaration,
+            _ => panic!("原 Checker 常值宣告來源不存在"),
+        };
+        assert_eq!(values, [b, a]);
+    }
+
+    #[test]
+    fn g18_r02_分支var_int尚未初始化後更新不污染外層遮蔽() {
+        let src = "fn calc(n:int)->int{\nvar result:int = n\nif(true){\nvar result:int\nresult = 15\n}\nreturn result\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let declare_empty = out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )).count();
+        assert_eq!(declare_empty, 1);
+    }
+
+    #[test]
+    fn g18_r03_for_逐輪var_int先保留空槽再第一次賦值與continue() {
+        let src = "fn calc(n:int)->int{\nvar total:int = 0\nfor i in 0..3{\nvar step:int\nstep = i+2\ntotal = total+step\ncontinue\n}\nreturn total+n\n}\nfn main()->int{\nreturn calc(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )).count(), 0);
+    }
+
+    #[test]
+    fn g18_r03_while_continue_未初始化bool與int只執行選中路徑() {
+        let src = "fn calc(n:int)->int{\nvar active:bool\nactive = true\nvar count:int = n\nwhile(active){\nvar next:int\nnext = count+4\ncount = next\nactive = false\ncontinue\n}\nreturn count\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ConditionalChecked(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r03_初始化右值溢位時空局部只離域不造假值() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\npending = n+9223372036854775807\nreturn pending\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(..)
+                | PrivateScalarCallEvent::Returned(..)
+        )));
+    }
+
+    #[test]
+    fn g18_r01_main_var_int無初值賦值後真傳入普通函式() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar base:int\nbase = 4\nreturn inc(base)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(_, 4)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_無初值int_bool未合法賦值即讀由原checker拒絕() {
+        let invalid = [
+            "fn calc(n:int)->int{\nvar pending:int\nreturn pending\n}\nfn main()->int{\nreturn calc(3)\n}\n",
+            "fn calc(n:int)->int{\nvar flag:bool\nif(flag){return n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_r02_未初始化來源計畫篡改類型執行前零事件拒絕() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\npending = n+1\nreturn pending\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(4));
+        plan.root_local_steps[0] =
+            PrivateScalarLocalStep::DeclareEmptyBool(DeclarationId(0));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r05_偽造未初始化局部冒充已初始化或刪除真離域須拒絕() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let mut altered = checked(src).execute().unwrap();
+        altered.events.retain(|e| !matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        ));
+        assert!(!altered.has_balanced_frame_trace());
+        let mut altered = checked(src).execute().unwrap();
+        let at = altered.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalDeclaredEmpty(_))
+        ).unwrap();
+        let id = match altered.events[at] {
+            PrivateScalarCallEvent::LocalDeclaredEmpty(id) => id,
+            _ => unreachable!(),
+        };
+        altered.events.insert(at+1, PrivateScalarCallEvent::LocalInitialized(id, 99));
+        assert!(!altered.has_balanced_frame_trace());
+    }
+
+
 }
 
 
