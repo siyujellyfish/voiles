@@ -626,24 +626,80 @@ enum PrivateScalarTask<'a> {
 impl PreparedPrivateScalarCall {
     /// 本批先接通單筆直接返回的 if／else-if／else 葉分支；
     /// 分支語句來源及條件均由原 Parser、Checker 審定。
-    fn compile_early_return(
+    /// 僅接通分支內一筆原 Checker 已核准的 return 或
+    /// 對分支外已存在 var int/bool 的賦值；沒有未證明的作用域逃逸。
+    fn compile_early_branch(
         statements: &[Stmt],
         int_bindings: &BTreeMap<String, DeclarationId>,
+        bool_bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
-    ) -> Result<PrivateScalarReturnExpr, PrivateScalarCallPrepareError> {
+    ) -> Result<PrivateScalarBranchAction, PrivateScalarCallPrepareError> {
         let [statement] = statements else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "if 提前返回子集要求此分支恰一筆已核准的 return",
+                "if 此子集只接受單筆真 return 或原 Checker var 純值更新",
             ));
         };
-        let StmtKind::Return(ret) = &statement.kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "if 分支須由原 Parser 真 return 產生",
-            ));
-        };
-        PrivateScalarReturnExpr::from_checked_bindings(
-            &ret.expression, int_bindings, verified,
-        )
+        match &statement.kind {
+            StmtKind::Return(ret) =>
+                Ok(PrivateScalarBranchAction::Return(
+                    PrivateScalarReturnExpr::from_checked_bindings(
+                        &ret.expression, int_bindings, verified,
+                    )?,
+                )),
+            StmtKind::Assign(assign) => {
+                let id = *int_bindings.get(&assign.name).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "if 純值賦值目標缺少原 Checker 已驗證 DeclarationId",
+                    ),
+                )?;
+                let fact = verified.plan.declarations.typed_declaration(id).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "if 賦值缺少原 Checker 變數宣告",
+                    ),
+                )?;
+                if !fact.mutable || !matches!(fact.ty, "int" | "bool")
+                    || verified.plan.scalar_hir.assignment(statement.node_span())
+                        .is_none_or(|record|
+                            record.resolved.declaration != id
+                                || record.resolved.ty !=
+                                    (if fact.ty == "bool" {
+                                        crate::common_ir::ScalarType::Bool
+                                    } else {
+                                        crate::common_ir::ScalarType::Int
+                                    }))
+                    || !verified.tokens.iter().any(|token|
+                        token.start == statement.start
+                            && matches!(&token.kind, TokenKind::Name(name)
+                                if name == &assign.name)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "if 更新缺少真可寫 Checker HIR、Lexer 或型別來源",
+                    ));
+                }
+                if fact.ty == "bool" {
+                    if bool_bindings.get(&assign.name) != Some(&id) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "if bool 更新目標不是原 Matcher 同一 bool 宣告",
+                        ));
+                    }
+                    Ok(PrivateScalarBranchAction::AssignBool {
+                        declaration: id,
+                        value: PrivateScalarBoolExpr::from_checked(
+                            &assign.expression, bool_bindings, verified,
+                        )?,
+                    })
+                } else {
+                    Ok(PrivateScalarBranchAction::AssignInt {
+                        declaration: id,
+                        value: PrivateScalarReturnExpr::from_checked_bindings(
+                            &assign.expression, int_bindings, verified,
+                        )?,
+                    })
+                }
+            }
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "if 其餘語句待獨立控制流程與區域資源證據完成",
+            )),
+        }
     }
 
     fn compile_early_if(
@@ -660,15 +716,15 @@ impl PreparedPrivateScalarCall {
         let condition = PrivateScalarBoolExpr::from_checked(
             &branch.branch.condition, bool_bindings, verified,
         )?;
-        let when_true = Self::compile_early_return(
-            &branch.body.statements, int_bindings, verified,
+        let when_true = Self::compile_early_branch(
+            &branch.body.statements, int_bindings, bool_bindings, verified,
         )?;
         let when_false = match no.as_ref() {
             None => None,
             Some(crate::syntax_shared::ParsedElse::Block(block)) =>
-                Some(PrivateScalarEarlyElse::Return(
-                    Self::compile_early_return(
-                        &block.statements, int_bindings, verified,
+                Some(PrivateScalarEarlyElse::Branch(
+                    Self::compile_early_branch(
+                        &block.statements, int_bindings, bool_bindings, verified,
                     )?,
                 )),
             Some(crate::syntax_shared::ParsedElse::ElseIf(next)) =>
