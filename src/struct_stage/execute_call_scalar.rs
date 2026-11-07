@@ -146,16 +146,25 @@ impl PrivateScalarReturnExpr {
                     ))?;
                 if target.name == "main" || target.result_ty != "int"
                     || target.params.len() != call.arguments.len()
-                    || target.params.iter().any(|param| param.ty != "int")
+                    || target.params.iter().any(|param|
+                        !matches!(param.ty.as_str(), "int" | "bool"))
                     || verified.plan.declarations.call_borrows_at(span)
                         .is_some_and(|facts| !facts.is_empty()) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "巢狀呼叫必須使用已核准純 Copyable int 的完整參數簽章",
+                        "巢狀呼叫只接通原 Checker Copyable int／bool 完整簽章",
                     ));
                 }
                 let mut arguments = Vec::new();
-                for argument in &call.arguments {
-                    arguments.push(Self::from_checked_bindings(argument, bindings, verified)?);
+                for (argument, parameter) in call.arguments.iter().zip(&target.params) {
+                    arguments.push(if parameter.ty == "bool" {
+                        PrivateScalarCallArgument::Bool(
+                            PrivateScalarBoolExpr::from_checked(argument, bindings, verified)?,
+                        )
+                    } else {
+                        PrivateScalarCallArgument::Int(
+                            Self::from_checked_bindings(argument, bindings, verified)?,
+                        )
+                    });
                 }
                 Ok(Self::Call { name: call.name.clone(), arguments })
             }
@@ -588,7 +597,10 @@ impl PreparedPrivateScalarCall {
         ).collect::<BTreeMap<_, _>>();
         let mut local_inits = Vec::new();
         let mut local_steps = Vec::new();
-        let mut bool_bindings = BTreeMap::<String, DeclarationId>::new();
+        let mut bool_bindings = function.params.iter()
+            .filter(|param| param.ty == "bool")
+            .map(|param| (param.name.clone(), DeclarationId(param.declaration_start)))
+            .collect::<BTreeMap<_, _>>();
         for statement in prefix {
             if matches!(&statement.kind, StmtKind::If { .. }) {
                 let branch = Self::compile_early_if(
@@ -1117,7 +1129,8 @@ impl PreparedPrivateScalarCall {
             ))?;
         if main.result_ty != "int" || !main.params.is_empty()
             || callee.result_ty != "int"
-            || callee.params.iter().any(|param| param.ty != "int")
+            || callee.params.iter().any(|param|
+                !matches!(param.ty.as_str(), "int" | "bool"))
             || callee.body.statements.is_empty()
             || main.body.statements.is_empty() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1135,7 +1148,7 @@ impl PreparedPrivateScalarCall {
             ).ok_or(PrivateScalarCallPrepareError::Unsupported(
                 "多參數缺少原 Parser／Lexer 的名稱與 int 型別身分",
             ))?;
-            if !verified.plan.declarations.matches(id, "int", false)
+            if !verified.plan.declarations.matches(id, &param.ty, false)
                 || verified.plan.members.get(&member.identity) != Some(&member) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多參數缺少原 Checker const int 宣告及 P16 型別來源事實",
@@ -1149,7 +1162,8 @@ impl PreparedPrivateScalarCall {
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name) {
             if function.result_ty != "int"
-                || function.params.iter().any(|param| param.ty != "int")
+                || function.params.iter().any(|param|
+                    !matches!(param.ty.as_str(), "int" | "bool"))
                 || function.body.statements.is_empty() {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "多層函式須為已核准單 return 的純 int 完整簽章",
@@ -1165,7 +1179,7 @@ impl PreparedPrivateScalarCall {
                 ).ok_or(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀函式參數缺少原 Parser/Lexer 型別身分",
                 ))?;
-                if !verified.plan.declarations.matches(id, "int", false)
+                if !verified.plan.declarations.matches(id, &param.ty, false)
                     || verified.plan.members.get(&member.identity) != Some(&member) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
                         "巢狀函式參數缺少原 Checker DeclarationId／P16 TypedMember",
