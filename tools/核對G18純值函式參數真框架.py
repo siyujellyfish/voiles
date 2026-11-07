@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百零二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百零九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_r02_函式內多筆可寫純值賦值必依原_checker_語句次序",
+    "g18_r01_r02_賦值右值真呼叫先完成後才寫入持有者",
+    "g18_r01_r02_main_具名_copyable_int_多次更新後才進入普通函式",
+    "g18_r01_r02_真巢狀函式可寫宣告不能跨動態框架共用",
+    "g18_r01_r02_賦值右值溢位不得補記後續賦值或假返回",
+    "g18_r01_r02_const_重賦值與錯型別必由真_checker_先拒絕",
+    "g18_r01_r02_已編譯賦值的_checker_身分遭竄改在執行前拒絕",
     "g18_a_main_動態整數初始化應真執行後再傳入普通函式",
     "g18_a_main_函式結果可先存入區域再用純值算術返回",
     "g18_a_main_前向零參數結果可作為初始化再跨局部複製",
