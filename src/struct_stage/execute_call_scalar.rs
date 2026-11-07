@@ -7062,4 +7062,64 @@ mod g18_r06_cross_runtime_tests {
             Err(PrivateScalarCallPrepareError::Check(_))));
     }
 
+
+    #[test]
+    fn g18_r05_r06_成功函式未真正_return_不得提前歸還其入參票據() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn inspect(owner,3)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let before = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::Returned(3)
+        )).unwrap();
+        let after = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        assert!(before < after);
+        let premature = out.events.remove(after);
+        out.events.insert(before, premature);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_函式失敗還入參票據必先留下真逐框架回滾起點() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nconst owner:str = \"失敗\"\nreturn inspect(owner,1)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let unwind = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        let returned = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        assert!(unwind < returned);
+        out.events.remove(unwind);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造成功路徑開始回滾或失敗路徑重複開始均須拒絕() {
+        let valid = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"真\"\nreturn inspect(owner,2)\n}\n";
+        let mut completed = PreparedPrivateScalarCall::prepare(valid).unwrap()
+            .execute().unwrap();
+        assert!(completed.has_balanced_frame_trace());
+        completed.events.insert(0, PrivateScalarCallEvent::UnwindStarted);
+        assert!(!completed.has_balanced_frame_trace());
+
+        let fails = "fn inspect(item:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nconst owner:str = \"真\"\nreturn inspect(owner,1)\n}\n";
+        let mut failed = PreparedPrivateScalarCall::prepare(fails).unwrap()
+            .execute().unwrap();
+        assert!(failed.has_balanced_frame_trace());
+        let at = failed.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        failed.events.insert(at + 1, PrivateScalarCallEvent::UnwindStarted);
+        assert!(!failed.has_balanced_frame_trace());
+    }
+
 }
