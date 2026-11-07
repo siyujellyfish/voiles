@@ -2216,7 +2216,7 @@ impl PreparedPrivateScalarCall {
                         }
                         // 真 Move 原始來源必屬目前 caller 的活擁有者；
                         // 先核對所有來源與借用衝突，再移交，避免部分改動。
-                        let mut distinct_sources = std::collections::HashSet::new();
+                        let mut distinct_sources = std::collections::BTreeSet::new();
                         for (owner, source, _, _) in &pending_moves {
                             let parent = frames.last().ok_or(
                                 PrivateScalarCallRuntimeError::StateMismatch,
