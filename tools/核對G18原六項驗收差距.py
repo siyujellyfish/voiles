@@ -274,6 +274,13 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_main整數複合初始化使用同一_typedhir_再傳同步方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_巢狀main局部初始化依原整數減法左右次序傳入方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_已計算main局部可再被Copyable名稱引用並與_self_欄位混算",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_main局部動態加法溢位在方法借用前受控失敗",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_中途初始化溢位不可清理未進入的後續局部也不能假造返回",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_篡改已編譯main整數初始化工作樹必在真執行前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_main複合初始化未知或錯型別來源由原_checker_先拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法實參共用原_typedhir_具名加法括號與返回",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_巢狀括號與左右加減依原_checker_樹求值",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_已核准複合整數實參與_self_欄位回傳使用同一真框架",
@@ -429,6 +436,13 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_main整數複合初始化使用同一_typedhir_再傳同步方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_巢狀main局部初始化依原整數減法左右次序傳入方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_已計算main局部可再被Copyable名稱引用並與_self_欄位混算",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_main局部動態加法溢位在方法借用前受控失敗",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_中途初始化溢位不可清理未進入的後續局部也不能假造返回",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_篡改已編譯main整數初始化工作樹必在真執行前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_main複合初始化未知或錯型別來源由原_checker_先拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法實參共用原_typedhir_具名加法括號與返回",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_巢狀括號與左右加減依原_checker_樹求值",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_已核准複合整數實參與_self_欄位回傳使用同一真框架",
