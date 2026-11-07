@@ -119,6 +119,22 @@ impl PrivateScalarCallOutcome {
         let mut returned_imported_loans =
             Vec::<crate::borrow_safety::BorrowTicket>::new();
         for event in &self.events {
+            // 一旦真執行期失敗並開始回滾，後續只能歸還借用、
+            // 撤除純值局部、釋放 OwnedStr 與失敗函式離域；
+            // 新的求值／綁定／配置／轉移均不應在失敗後復活。
+            if unwinding && !matches!(event,
+                PrivateScalarCallEvent::LoanReturned(_)
+                    | PrivateScalarCallEvent::LocalScopeEnded(_)
+                    | PrivateScalarCallEvent::BoolScopeEnded(_)
+                    | PrivateScalarCallEvent::OwnedResource(
+                        crate::owned_str_runtime::ResourceEvent::Released(_)
+                    )
+                    | PrivateScalarCallEvent::FunctionExited {
+                        returned: false, ..
+                    }
+            ) {
+                return false;
+            }
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
@@ -7231,6 +7247,39 @@ mod g18_r06_cross_runtime_tests {
             event, PrivateScalarCallEvent::UnwindStarted
         )).unwrap();
         assert!(success < returned && returned < unwind);
+    }
+
+
+    #[test]
+    fn g18_r05_r06_正式回滾後不得補造新的條件計算事件() {
+        let src = "fn fail(n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn fail(1)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let at = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        out.events.insert(at + 1, PrivateScalarCallEvent::ConditionalChecked(true));
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_正式回滾後即使局部事件平衡也不能重新初始化() {
+        let src = "fn fail(n:int)->int{\nreturn n+9223372036854775807\n}\nfn main()->int{\nreturn fail(1)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let at = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        let fake = DeclarationId(0);
+        out.events.insert(at + 1, PrivateScalarCallEvent::LocalInitialized(fake, 7));
+        out.events.insert(at + 2, PrivateScalarCallEvent::LocalScopeEnded(fake));
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
 
