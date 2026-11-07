@@ -1158,29 +1158,35 @@ impl PreparedPrivateScalarCall {
                             }
                         }
                         if let Some(selected) = selected {
-                            match selected {
-                                PrivateScalarBranchAction::Return(returned) => {
-                                    // 只取消此函式後續不可達語句，保留本次
-                                    // ExitCall 與父呼叫者的後續工作。
-                                    while !tasks.is_empty()
-                                        && !matches!(tasks.last(),
-                                            Some(PrivateScalarTask::ExitCall)) {
-                                        tasks.pop();
-                                    }
-                                    tasks.push(PrivateScalarTask::Evaluate(returned, false));
-                                }
-                                PrivateScalarBranchAction::AssignInt { declaration, value } => {
-                                    // 分支更新不構成函式 return；原來源
-                                    // 後續語句仍須真正執行。
-                                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
-                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
-                                }
-                                PrivateScalarBranchAction::AssignBool { declaration, value } => {
-                                    tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
-                                }
-                            }
+                            tasks.push(PrivateScalarTask::ExecuteBranchAction(selected));
                         }
                     }
+                    PrivateScalarTask::ExecuteBranchAction(action) => match action {
+                        PrivateScalarBranchAction::Sequence(actions) => {
+                            // 原 Parser 分支先後次序必須保持；工作堆疊
+                            // LIFO 以反序放入，未選中的分支不排任何工作。
+                            for action in actions.iter().rev() {
+                                tasks.push(PrivateScalarTask::ExecuteBranchAction(action));
+                            }
+                        }
+                        PrivateScalarBranchAction::Return(returned) => {
+                            // 提前 return 只裁掉目前函式尚未執行的語句，
+                            // 保留目前 ExitCall 與呼叫者外層工作。
+                            while !tasks.is_empty()
+                                && !matches!(tasks.last(),
+                                    Some(PrivateScalarTask::ExitCall)) {
+                                tasks.pop();
+                            }
+                            tasks.push(PrivateScalarTask::Evaluate(returned, false));
+                        }
+                        PrivateScalarBranchAction::AssignInt { declaration, value } => {
+                            tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                            tasks.push(PrivateScalarTask::Evaluate(value, false));
+                        }
+                        PrivateScalarBranchAction::AssignBool { declaration, value } => {
+                            tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
+                        }
+                    },
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
