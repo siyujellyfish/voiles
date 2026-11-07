@@ -2041,4 +2041,150 @@ mod g18_private_method_self_tests {
     }
 
 
+    fn checked_method_local_source(body: &str, arguments: &str) -> String {
+        format!(
+            "struct Counter{{\nvar count:int = 7\nfn calc(a:int,b:int)->int{{\n{body}\n}}\n}}\nfn main()->int{{\nconst value:Counter = Counter()\nreturn value.calc({arguments})\n}}\n",
+        )
+    }
+
+    #[test]
+    fn g18_r04_同步self方法int局部以真參數初始化後正確返回() {
+        let src = checked_method_local_source(
+            "const intermediate:int = a+4\nreturn intermediate", "5,2",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.method_int_locals.len(), 1);
+        let result = plan.execute().unwrap();
+        assert_eq!(result.result, Ok(9));
+        assert!(result.has_balanced_self_borrow_trace());
+        assert_eq!(result.method_local_slots_after_exit, 0);
+        assert_eq!(result.method_local_events.len(), 2);
+        assert_eq!(result.exit_events.iter().filter(|e|
+            matches!(e, PrivateSharedCallExitEvent::Returned)
+        ).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_同步self連續兩個int局部依原checker宣告先後傳值及逆序離域() {
+        let src = checked_method_local_source(
+            "const first:int = a+b\nconst second:int = (first-2)\nreturn second+first",
+            "11,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(28));
+        let first = plan.method_int_locals[0].0;
+        let second = plan.method_int_locals[1].0;
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(first, 15),
+            PrivateSelfMethodLocalEvent::Initialized(second, 13),
+            PrivateSelfMethodLocalEvent::ScopeEnded(second),
+            PrivateSelfMethodLocalEvent::ScopeEnded(first),
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r04_方法局部Copyable同一來源多次讀取不當成Move或重借() {
+        let src = checked_method_local_source(
+            "const initial:int = a+1\nconst copied:int = initial\nreturn initial+copied",
+            "3,2",
+        );
+        let out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.ticket_returned && out.events.is_empty());
+        assert_eq!(out.method_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r05_方法第二int局部初始化溢位只離域已初始化第一槽() {
+        let src = checked_method_local_source(
+            "const first:int = 11\nconst overflow:int = first+9223372036854775807\nreturn overflow",
+            "3,4",
+        );
+        let plan = checked(&src);
+        let first = plan.method_int_locals[0].0;
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(out.method_entered && !out.method_exited && out.ticket_returned);
+        assert_eq!(out.method_local_slots_after_exit, 0);
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(first, 11),
+            PrivateSelfMethodLocalEvent::ScopeEnded(first),
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法返回算式溢位先逆序清真int局部再歸還self票據() {
+        let src = checked_method_local_source(
+            "const value:int = 9223372036854775807\nreturn value+1",
+            "3,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_exited && out.ticket_returned);
+        assert_eq!(out.method_local_events.len(), 2);
+        assert!(out.exit_events.iter().any(|event| matches!(
+            event, PrivateSharedCallExitEvent::UnwindStarted
+        )));
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法存在int局部且方法故障注入前不假造初始化() {
+        let src = checked_method_local_source(
+            "const value:int = a+4\nreturn value", "5,2",
+        );
+        let plan = checked(&src);
+        let out = plan.execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(out.method_local_events.is_empty());
+        assert!(out.ticket_returned && out.has_balanced_self_borrow_trace());
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+    }
+
+    #[test]
+    fn g18_r04_篡改方法int局部編譯TypedHIR樹及真宣告身分一律執行前拒絕() {
+        let src = checked_method_local_source(
+            "const value:int = a+4\nreturn value", "5,2",
+        );
+        let mut plan = checked(&src);
+        plan.method_int_locals[0].1 = PrivateScalarReturnExpr::Constant(9);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.method_int_locals[0].0 = DeclarationId(0);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r04_方法局部未知名稱或bool混入初始化交由原Checker拒絕() {
+        let unknown = checked_method_local_source(
+            "const value:int = missing+4\nreturn value", "5,2",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&unknown),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let wrong_type = checked_method_local_source(
+            "const value:int = true\nreturn value", "5,2",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&wrong_type),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r05_偽造方法局部逆序離域或重複初始化皆拒絕() {
+        let src = checked_method_local_source(
+            "const first:int = a\nconst second:int = b\nreturn first+second", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        assert!(out.has_balanced_self_borrow_trace());
+        out.method_local_events.swap(2, 3);
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(&src).execute().unwrap();
+        out.method_local_events.insert(1, out.method_local_events[0].clone());
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+
 }
