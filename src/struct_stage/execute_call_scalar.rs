@@ -754,7 +754,7 @@ impl PreparedPrivateScalarCall {
             }
         }
         let param = callee.params.first();
-        let (root_local_inits, return_expr, param_return_span) =
+        let (root_local_inits, root_local_steps, return_expr, param_return_span) =
             Self::prepare_function_locals(callee, &verified)?;
         let mut nested_callees = Vec::new();
         for function in verified.functions.iter()
@@ -784,7 +784,7 @@ impl PreparedPrivateScalarCall {
                 }
                 parameter_ids.push(id);
             }
-            let (local_inits, result, result_span) =
+            let (local_inits, local_steps, result, result_span) =
                 Self::prepare_function_locals(function, &verified)?;
             nested_callees.push(PrivateScalarNestedCallee {
                 name: function.name.clone(),
@@ -793,6 +793,7 @@ impl PreparedPrivateScalarCall {
                 result_span,
                 result,
                 local_inits,
+                local_steps,
             });
         }
         // 每個可達或不可達的已編譯函式 Call 必須在同一份
@@ -804,14 +805,14 @@ impl PreparedPrivateScalarCall {
         for (name, expression) in &graph {
             let mut calls = Vec::new();
             expression.collect_calls(&mut calls);
-            let locals = if *name == callee.name {
-                &root_local_inits
+            let steps = if *name == callee.name {
+                &root_local_steps
             } else {
                 &nested_callees.iter().find(|fun| fun.name == *name)
-                    .expect("已收錄的巢狀真函式").local_inits
+                    .expect("已收錄的巢狀真函式").local_steps
             };
-            for local in locals {
-                local.value.collect_calls(&mut calls);
+            for step in steps {
+                step.expression().collect_calls(&mut calls);
             }
             if calls.iter().any(|called|
                 !graph.iter().any(|(candidate, _)| candidate == called)) {
@@ -830,6 +831,9 @@ impl PreparedPrivateScalarCall {
         // 非字面／名稱的合法 main int 初始化可能含算術、真函式
         // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
         let needs_main_local_runtime = main_prefix.iter().any(|statement| {
+            if matches!(statement.kind, StmtKind::Assign(_)) {
+                return true;
+            }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
                     let mut inner = initializer;
@@ -977,10 +981,12 @@ impl PreparedPrivateScalarCall {
                 | TermKind::Name(_))
         });
         let mut main_dynamic_inits = Vec::new();
+        let mut main_dynamic_steps = Vec::new();
         let main_dynamic_call = if needs_main_local_runtime {
-            let (inits, result, _) =
+            let (inits, steps, result, _) =
                 Self::prepare_function_locals(main, &verified)?;
             main_dynamic_inits = inits;
+            main_dynamic_steps = steps;
             Some(result)
         } else if needs_dynamic {
             let bindings = owners.iter().map(|(name, (id, _))|
@@ -1094,9 +1100,10 @@ impl PreparedPrivateScalarCall {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id,
             parameter_return_span: param_return_span, return_expr,
-            root_local_inits, owner_id, argument,
+            root_local_inits, root_local_steps, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
-            main_dynamic_call, main_dynamic_inits, callee_parameter_ids,
+            main_dynamic_call, main_dynamic_inits, main_dynamic_steps,
+            callee_parameter_ids,
         })
     }
 
@@ -1111,6 +1118,7 @@ impl PreparedPrivateScalarCall {
             && self.parameter_return_span == fresh.parameter_return_span
             && self.return_expr == fresh.return_expr
             && self.root_local_inits == fresh.root_local_inits
+            && self.root_local_steps == fresh.root_local_steps
             && self.owner_id == fresh.owner_id
             && self.argument == fresh.argument
             && self.additional_arguments == fresh.additional_arguments
@@ -1118,6 +1126,7 @@ impl PreparedPrivateScalarCall {
             && self.nested_callees == fresh.nested_callees
             && self.main_dynamic_call == fresh.main_dynamic_call
             && self.main_dynamic_inits == fresh.main_dynamic_inits
+            && self.main_dynamic_steps == fresh.main_dynamic_steps
             && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
@@ -1190,7 +1199,7 @@ impl PreparedPrivateScalarCall {
             };
             let result = self.evaluate_graph(
                 dynamic_call, &main_frame, &mut events,
-                adjusted_budget, fail_after_binding, &self.main_dynamic_inits,
+                adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
             );
             return Ok(PrivateScalarCallOutcome {
                 result, events, parameter_slots_after_exit: 0,
@@ -1217,7 +1226,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, &self.root_local_inits)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, &self.root_local_steps)
             }
         });
         if let Ok(value) = result {
