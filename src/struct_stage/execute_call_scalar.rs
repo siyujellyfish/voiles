@@ -6110,6 +6110,125 @@ mod g18_private_scalar_call_tests {
         }
     }
 
+
+    #[test]
+    fn g18_r04_原_checker_str_move_真跨函式_唯一_utf8_交接() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn receive(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar owned:str = \"所有權🪼\"\nreturn receive(owned.move(),4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|ev| matches!(ev,
+            PrivateScalarCallEvent::ResourceTransferred {
+                resource_id: 1, ..
+            }
+        )).count(), 1);
+        assert!(!out.events.iter().any(|ev| matches!(ev,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r04_父函式局部_整筆_move_交給子函式同一資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn parent(n:int)->int{\nconst local:str = \"父框架\"\nreturn leaf(local.move(),n)\n}\nfn main()->int{\nreturn parent(2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(moved:str,borrowed:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar first:str = \"移動\"\nconst second:str = \"借用\"\nreturn inspect(first.move(),second,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1),
+            R::Released(1), R::Released(2),
+        ]);
+        let ticket = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let borrowed_release = out.events.iter().position(|event| matches!(event,
+            PrivateScalarCallEvent::OwnedResource(R::Released(2))
+        )).unwrap();
+        assert!(ticket < borrowed_release);
+    }
+
+    #[test]
+    fn g18_r05_跨框架_move_已完成綁定後故障由子框架釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn receive(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar owned:str = \"中途失敗\"\nreturn receive(owned.move(),4)\n}\n";
+        let out = checked(src).execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r05_第二實參溢位時_move_仍由原呼叫者唯一釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn receive(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar owned:str = \"求值失敗\"\nreturn receive(owned.move(),1+9223372036854775807)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceTransferred { .. }
+                | PrivateScalarCallEvent::FunctionEntered(name) if name == "receive"
+        )));
+    }
+
+    #[test]
+    fn g18_r04_跨函式_move_真來源被_cherker_禁止重複及隱含複製() {
+        let invalid = [
+            "fn receive(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar owned:str = \"來源\"\nreturn receive(owned,owned.move())\n}\n",
+            "fn receive(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar owned:str = \"來源\"\nvar duplicate:str = owned\nreturn receive(owned.move(),1)\n}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_r05_真跨函式移動事件篡改來源或資源編號均拒絕() {
+        let src = "fn receive(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar owned:str = \"來源\"\nreturn receive(owned.move(),3)\n}\n";
+        let baseline = checked(src).execute().unwrap();
+        assert!(baseline.has_balanced_frame_trace());
+        let mut wrong_source = checked(src).execute().unwrap();
+        let event = wrong_source.events.iter_mut().find(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceTransferred { .. }
+        )).unwrap();
+        if let PrivateScalarCallEvent::ResourceTransferred { source, .. } = event {
+            *source = DeclarationId(0);
+        }
+        assert!(!wrong_source.has_balanced_frame_trace());
+        let mut wrong_id = checked(src).execute().unwrap();
+        let event = wrong_id.events.iter_mut().find(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceTransferred { .. }
+        )).unwrap();
+        if let PrivateScalarCallEvent::ResourceTransferred { resource_id, .. } = event {
+            *resource_id = 999;
+        }
+        assert!(!wrong_id.has_balanced_frame_trace());
+    }
+
 }
 
 
