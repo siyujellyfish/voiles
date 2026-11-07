@@ -5990,4 +5990,114 @@ mod g18_r06_cross_runtime_tests {
         assert!(mixed.has_balanced_mixed_resource_trace());
     }
 
+    #[test]
+    fn g18_r06_同一函式圖兩張_const_str_共享票據來源相同但序號不同() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst shared:str = \"共享🪼\"\nreturn inspect(shared,shared,4)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let tickets = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(*ticket),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(tickets.len(), 2);
+        assert_ne!(tickets[0], tickets[1]);
+        assert_eq!(tickets[0].fact(), tickets[1].fact());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r06_兩個獨立_var_str_同一次真呼叫各有獨占票據() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar first:str = \"甲\"\nvar second:str = \"乙\"\nreturn inspect(first,second,4)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let facts = out.events.iter().filter_map(|event| {
+            if let PrivateScalarCallEvent::BorrowParameterBound(_, fact) = event {
+                Some(*fact)
+            } else { None }
+        }).collect::<Vec<_>>();
+        assert_eq!(facts.len(), 2);
+        assert_eq!(facts[0].kind, BorrowKind::ExclusiveWrite);
+        assert_eq!(facts[1].kind, BorrowKind::ExclusiveWrite);
+        assert_ne!(facts[0].source, facts[1].source);
+    }
+
+    #[test]
+    fn g18_r06_同一真函式堆疊先_move_後借另一_source_資源不混淆() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar moved:str = \"搬移\"\nconst observed:str = \"觀察\"\nconst destination:str = moved.move()\nreturn inspect(observed,4)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1),
+            R::Released(1), R::Released(2),
+        ]);
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(_))
+        )).unwrap();
+        assert!(returned < released);
+    }
+
+    #[test]
+    fn g18_r06_for_重複同一外層_str_真借用逐輪歸還() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn count(n:int)->int{\nconst source:str = \"外\"\nvar result:int = n\nfor i in 0..2{\nresult = inspect(source,result)\n}\nreturn result\n}\nfn main()->int{\nreturn count(1)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r06_未選中的_if_真借用不簽發任何動態票據() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn choose(n:int)->int{\nconst source:str = \"外\"\nif(false){\nreturn inspect(source,n)\n}\nreturn n\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+                | PrivateScalarCallEvent::LoanReturned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r05_r06_偽造借用函式已退出後才歸還票據必拒絕() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"外\"\nreturn inspect(source,4)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let exit = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited { name, .. }
+                if name == "inspect"
+        )).unwrap();
+        let loan = out.events.remove(returned);
+        let new_exit = if returned < exit { exit - 1 } else { exit };
+        out.events.insert(new_exit + 1, loan);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
 }
