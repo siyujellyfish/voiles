@@ -86,6 +86,9 @@ struct PreparedPrivateSelfMethod {
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
+    /// 與 main int 局部宣告一一對應，使用一般函式的同一
+    /// Checked int expression HIR 執行樹，不另造初始化求值器。
+    main_init_plans: Vec<PrivateScalarReturnExpr>,
     /// 與方法所有實參原來源順序一一對應；None 是 int 字面值。
     argument_sources: Vec<Option<DeclarationId>>,
     /// R02／R04 直接重用一般函式已核准的 int TypedHIR 編譯樹，
@@ -160,6 +163,9 @@ impl PreparedPrivateSelfMethod {
         let mut main_int_locals = Vec::<(
             String, DeclarationId, i64, Option<DeclarationId>,
         )>::new();
+        let mut main_init_plans = Vec::<PrivateScalarReturnExpr>::new();
+        let mut known_int_bindings = BTreeMap::<String, DeclarationId>::new();
+        let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
         for statement in main.body.statements.iter().skip(1)
             .take(main.body.statements.len() - 2) {
             let StmtKind::Declare(local) = &statement.kind else {
@@ -174,60 +180,49 @@ impl PreparedPrivateSelfMethod {
                 ),
             )?;
             if local.ty != "int"
-                || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
-                || verified.plan.scalar_hir.expression(initializer.node_span())
-                    .is_none_or(|fact| fact.ty != ScalarType::Int) {
+                || !verified.plan.declarations.matches(id, &local.ty, local.mutable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 局部缺少原 Checker 宣告與 TypedHIR",
+                    "main int 局部缺少原 Checker 宣告與型別身分",
                 ));
             }
-            let (value, source) = match &initializer.kind {
-                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
-                    if !verified.tokens.iter().any(|token|
-                        token.start == initializer.start && token.end == initializer.end
-                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
-                    ) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "main int 局部字面值缺少原 Lexer token",
-                        ));
-                    }
-                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
-                        PrivateSelfMethodPrepareError::Unsupported(
-                            "main int 局部初始值超過 i64",
-                        ),
-                    )?, None)
-                }
-                TermKind::Name(name) => {
-                    let (_, source_id, value, _) = main_int_locals.iter().rev()
-                        .find(|(old, _, _, _)| old == name)
-                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                            "main int 局部名稱來源尚未完成合法宣告",
-                        ))?;
-                    if verified.plan.scalar_hir.reference(initializer.node_span())
-                        .is_none_or(|fact|
-                            fact.resolved.declaration != *source_id
-                                || fact.resolved.ty != ScalarType::Int)
-                        || !verified.tokens.iter().any(|token|
-                            token.start == initializer.start && token.end == initializer.end
-                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
-                        ) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "main int 局部 Copyable 名稱缺少原 Reference HIR",
-                        ));
-                    }
-                    (*value, Some(*source_id))
-                }
-                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 局部只接通已驗證整數常值及已初始化 Copyable 名稱",
+            // 與普通函式共用已核准 TypedHIR Expression／Reference／
+            // Arithmetic、原 Lexer token 及括號身分，並只允許
+            // 先前已正式宣告的 Copyable int 名稱。
+            let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                initializer, &known_int_bindings, &verified,
+            ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                "main int 初始化缺少真 Checker TypedHIR／詞彙與位置",
+            ))?;
+            let mut calls = Vec::new();
+            plan.collect_calls(&mut calls);
+            if !calls.is_empty() || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 初始化不支援未接通的普通函式呼叫",
+                ));
+            }
+            let value = match plan.evaluate(&known_int_values) {
+                Ok(value) => value,
+                // 已核准動態名稱參與的運算可能溢位；prepare 只
+                // 封存真計畫，execute 再回報受控溢位且清理已建局部。
+                Err(PrivateScalarCallRuntimeError::IntegerOverflow) => 0,
+                Err(_) => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 局部初始化缺少已宣告來源",
                 )),
             };
-            if main_int_locals.iter().any(|(old, old_id, _, _)|
-                old == &local.name || old_id == &id) {
+            let source = match &plan {
+                PrivateScalarReturnExpr::Parameter(source) => Some(*source),
+                _ => None,
+            };
+            if known_int_bindings.contains_key(&local.name)
+                || known_int_values.contains_key(&id) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "同作用域局部來源或 DeclarationId 不可重複",
+                    "同作用域 Copyable int 局部重複宣告",
                 ));
             }
+            known_int_bindings.insert(local.name.clone(), id);
+            known_int_values.insert(id, value);
             main_int_locals.push((local.name.clone(), id, value, source));
+            main_init_plans.push(plan);
         }
         // 同步方法實參與普通函式共用原 Checker→TypedHIR 的
         // Copyable int 表達式編譯；不另造方法專屬的名稱／運算子解析。
@@ -571,7 +566,7 @@ impl PreparedPrivateSelfMethod {
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
-            main_int_locals, argument_sources, argument_plans,
+            main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -590,6 +585,7 @@ impl PreparedPrivateSelfMethod {
             && self.argument_binding == fresh.argument_binding
             && self.additional_argument_bindings == fresh.additional_argument_bindings
             && self.main_int_locals == fresh.main_int_locals
+            && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
             && self.argument_plans == fresh.argument_plans
             && self.verified.plan.method_safety == fresh.verified.plan.method_safety
@@ -616,13 +612,22 @@ impl PreparedPrivateSelfMethod {
         // 在建立任何 method self BorrowTicket 之前，以 main 真宣告順序
         // 將 Copyable int 局部求值寫入自己的執行期框架。具名複製
         // 必須實際讀取先前槽位，不把 prepare 中的常值當成唯一動態證據。
+        if self.main_int_locals.len() != self.main_init_plans.len() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
         let mut main_values = BTreeMap::<DeclarationId, i64>::new();
-        for (_, id, planned, source) in &self.main_int_locals {
-            let actual = if let Some(source_id) = source {
-                *main_values.get(source_id).ok_or(
-                    PrivateSelfMethodPrepareError::SourceChanged,
-                )?
-            } else { *planned };
+        let mut main_initialization_error = None;
+        for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
+            .zip(&self.main_init_plans) {
+            let actual = match initializer.evaluate(&main_values) {
+                Ok(value) => value,
+                Err(PrivateScalarCallRuntimeError::IntegerOverflow) => {
+                    main_initialization_error =
+                        Some(PrivateSelfMethodRuntimeError::IntegerOverflow);
+                    break;
+                }
+                Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+            };
             if actual != *planned || main_values.insert(*id, actual).is_some() {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
@@ -651,7 +656,13 @@ impl PreparedPrivateSelfMethod {
         let mut method_entered = false;
         let mut method_exited = false;
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
+        let main_locals_complete = main_initialization_error.is_none();
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
+            // main 複合 int 初始化在任何方法 BorrowTicket 簽發前
+            // 就可能受控溢位，尚未進入的方法不能留下假進／退出。
+            if let Some(error) = main_initialization_error {
+                return Err(error);
+            }
             // 完成原 Checker 參數的真值框架綁定；選中來源返回時
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
             for ((id, prepared), expression) in self.argument_binding.into_iter()
@@ -790,7 +801,9 @@ impl PreparedPrivateSelfMethod {
         // 與一般函式的 LocalScopeEnded 契約相同：在 main 返回時
         // 刪除全部 Copyable int 局部，且不能殘留到重複執行。
         for (_, id, _, _) in self.main_int_locals.iter().rev() {
-            if main_values.remove(id).is_none() {
+            // 若前一個初始化溢位，後面的宣告尚未真正走到，
+            // 不能假造其作用域或要求釋放從未配置的純值槽。
+            if main_values.remove(id).is_none() && main_locals_complete {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
         }
@@ -1645,6 +1658,100 @@ mod g18_private_method_self_tests {
             "const amount:int = 5", "(missing+3),4", "return a+b",
         );
         assert!(matches!(PreparedPrivateSelfMethod::prepare(&unknown),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
+    #[test]
+    fn g18_r02_r04_main整數複合初始化使用同一_typedhir_再傳同步方法() {
+        let src = main_named_method_source(
+            "const base:int = 5\nconst delta:int = (base+4)",
+            "delta,2", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals.len(), 2);
+        assert_eq!(plan.main_init_plans.len(), 2);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.ticket_returned && out.method_exited);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_巢狀main局部初始化依原整數減法左右次序傳入方法() {
+        let src = main_named_method_source(
+            "const first:int = 12\nconst second:int = ((first-4)+2)",
+            "second,3", "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals[1].2, 10);
+        assert_eq!(plan.execute().unwrap().result, Ok(7));
+    }
+
+    #[test]
+    fn g18_r02_r04_已計算main局部可再被Copyable名稱引用並與_self_欄位混算() {
+        let src = "struct Counter{\nvar count:int = 7\nfn calc(n:int)->int{\nreturn self.count+n\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nconst first:int = 3\nconst computed:int = first+4\nconst forwarded:int = computed\nreturn value.calc(forwarded)\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.main_int_locals.len(), 3);
+        assert_eq!(plan.main_int_locals[2].3, Some(plan.main_int_locals[1].1));
+        assert_eq!(plan.execute().unwrap().result, Ok(14));
+    }
+
+    #[test]
+    fn g18_r02_r05_main局部動態加法溢位在方法借用前受控失敗() {
+        let src = main_named_method_source(
+            "const first:int = 1\nconst overflow:int = first+9223372036854775807",
+            "overflow,2", "return a+b",
+        );
+        let plan = checked(&src);
+        for _ in 0..2 {
+            let out = plan.execute().unwrap();
+            assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+            assert!(!out.method_entered && !out.method_exited);
+            assert!(out.ticket_returned && out.events.is_empty());
+            assert_eq!(out.main_local_slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_r02_r05_中途初始化溢位不可清理未進入的後續局部也不能假造返回() {
+        let src = main_named_method_source(
+            "const first:int = 1\nconst overflow:int = first+9223372036854775807\nconst later:int = 5",
+            "later,2", "return a+b",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_entered && !out.method_exited);
+        assert!(out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_篡改已編譯main整數初始化工作樹必在真執行前拒絕() {
+        let src = main_named_method_source(
+            "const first:int = 3\nconst second:int = first+4",
+            "second,2", "return a+b",
+        );
+        let mut plan = checked(&src);
+        plan.main_init_plans[1] = PrivateScalarReturnExpr::Constant(7);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.main_int_locals[1].2 = 99;
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r02_r04_main複合初始化未知或錯型別來源由原_checker_先拒絕() {
+        let unknown = main_named_method_source(
+            "const amount:int = missing+3", "amount,2", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&unknown),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let bad = main_named_method_source(
+            "const amount:int = true+3", "amount,2", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&bad),
             Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 

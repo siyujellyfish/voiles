@@ -169,7 +169,7 @@ jobs:
       - name: G18 P18.3／18.4 真多 str BorrowTicket 與多 int 遞迴與真資源退出五十項 Gate
         run: python3 tools/核對G18遞迴真資源逐框架.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.6 真同步 self／複合整數參數七十項實際執行 Gate
+      - name: G18 P18.6 真同步 self／主函式整數初始化七十七項實際執行 Gate
         run: python3 tools/核對G18同步方法self真借用.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.6 S20 同名方法靜態唯一簽章九項來源正反 Gate
