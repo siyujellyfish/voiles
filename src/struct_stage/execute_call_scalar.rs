@@ -33,6 +33,11 @@ enum PrivateScalarCallEvent {
     BoolParameterBound(DeclarationId, bool),
     /// 每筆經 Checker 核准的純值區域初始化只在真正寫入框架後記錄。
     LocalInitialized(DeclarationId, i64),
+    /// 宣告已達但暫無值槽；不可誤寫成 LocalInitialized。
+    LocalDeclaredEmpty(DeclarationId),
+    LocalScopeEndedEmpty(DeclarationId),
+    BoolDeclaredEmpty(DeclarationId),
+    BoolScopeEndedEmpty(DeclarationId),
     /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
     LocalAssigned(DeclarationId, i64),
     /// 原 Checker 已核准的 bool Copyable 專用局部事件（非資源事件）。
@@ -126,6 +131,8 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::LoanReturned(_)
                     | PrivateScalarCallEvent::LocalScopeEnded(_)
                     | PrivateScalarCallEvent::BoolScopeEnded(_)
+                    | PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+                    | PrivateScalarCallEvent::BoolScopeEndedEmpty(_)
                     | PrivateScalarCallEvent::OwnedResource(
                         crate::owned_str_runtime::ResourceEvent::Released(_)
                     )
@@ -192,19 +199,51 @@ impl PrivateScalarCallOutcome {
                     };
                     child.imported_loans.push(ticket);
                 }
+                PrivateScalarCallEvent::LocalDeclaredEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry| matches!(entry,
+                        PrivateScalarLocalBinding::Int(old)
+                            | PrivateScalarLocalBinding::UninitializedInt(old)
+                            if old == id
+                    )) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::UninitializedInt(*id));
+                }
+                PrivateScalarCallEvent::BoolDeclaredEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry| matches!(entry,
+                        PrivateScalarLocalBinding::Bool(old)
+                            | PrivateScalarLocalBinding::UninitializedBool(old)
+                            if old == id
+                    )) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::UninitializedBool(*id));
+                }
                 PrivateScalarCallEvent::LocalInitialized(id, _) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || frame.locals.iter().any(|entry|
                         matches!(entry, PrivateScalarLocalBinding::Int(old) if old == id)
                     ) { return false; }
-                    frame.locals.push(PrivateScalarLocalBinding::Int(*id));
+                    if let Some(pending) = frame.locals.iter_mut().find(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::UninitializedInt(old)
+                            if old == id)
+                    ) {
+                        *pending = PrivateScalarLocalBinding::Int(*id);
+                    } else {
+                        frame.locals.push(PrivateScalarLocalBinding::Int(*id));
+                    }
                 }
                 PrivateScalarCallEvent::BoolInitialized(id, _) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || frame.locals.iter().any(|entry|
                         matches!(entry, PrivateScalarLocalBinding::Bool(old) if old == id)
                     ) { return false; }
-                    frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
+                    if let Some(pending) = frame.locals.iter_mut().find(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::UninitializedBool(old)
+                            if old == id)
+                    ) {
+                        *pending = PrivateScalarLocalBinding::Bool(*id);
+                    } else {
+                        frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
+                    }
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -229,6 +268,22 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
                         Some(PrivateScalarLocalBinding::Bool(previous)) if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::LocalScopeEndedEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::UninitializedInt(previous))
+                            if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::BoolScopeEndedEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::UninitializedBool(previous))
+                            if previous == *id) {
                         return false;
                     }
                 }
@@ -361,6 +416,9 @@ impl PrivateScalarCallOutcome {
                 Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
             PrivateScalarCallEvent::FunctionEntered(_) =>
                 Some(PrivateSharedCallExitEvent::FunctionEntered),
+            PrivateScalarCallEvent::LocalDeclaredEmpty(id)
+                | PrivateScalarCallEvent::BoolDeclaredEmpty(id) =>
+                Some(PrivateSharedCallExitEvent::LocalDeclaredEmpty(*id)),
             PrivateScalarCallEvent::LocalInitialized(id, _)
                 | PrivateScalarCallEvent::BoolInitialized(id, _) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
@@ -370,6 +428,9 @@ impl PrivateScalarCallOutcome {
             PrivateScalarCallEvent::LocalScopeEnded(id)
                 | PrivateScalarCallEvent::BoolScopeEnded(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
+            PrivateScalarCallEvent::LocalScopeEndedEmpty(id)
+                | PrivateScalarCallEvent::BoolScopeEndedEmpty(id) =>
+                Some(PrivateSharedCallExitEvent::LocalScopeEndedEmpty(*id)),
             PrivateScalarCallEvent::Returned(_) =>
                 Some(PrivateSharedCallExitEvent::Returned),
             PrivateScalarCallEvent::UnwindStarted =>
@@ -794,7 +855,9 @@ enum PrivateScalarBranchAction {
     /// 原 Checker 區塊內的每一筆局部宣告，離開本區塊必須依真建立順序逆序離域。
     Scoped(Vec<PrivateScalarBranchAction>),
     DeclareInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+    DeclareEmptyInt { declaration: DeclarationId },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    DeclareEmptyBool { declaration: DeclarationId },
     /// 原 Checker 唯一 str 擁有者；由真 OwnedStrRuntime 配置／逆序釋放。
     DeclareStr {
         declaration: DeclarationId, name: String, mutable: bool,
@@ -831,6 +894,7 @@ impl PrivateScalarBranchAction {
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
             Self::AssignBool { .. } | Self::DeclareBool { .. }
+                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::AssignStr { .. }
                 | Self::Break | Self::Continue => {}
         }
@@ -845,6 +909,7 @@ impl PrivateScalarBranchAction {
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
+                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -889,6 +954,8 @@ impl PrivateScalarEarlyIf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarLocalStep {
     Declare(PrivateScalarLocalInit),
+    DeclareEmptyInt(DeclarationId),
+    DeclareEmptyBool(DeclarationId),
     Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
@@ -906,6 +973,7 @@ impl PrivateScalarLocalStep {
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
+                | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::AssignStr { .. } => {}
         }
     }
@@ -973,6 +1041,8 @@ impl Default for PrivateScalarExecutionBudget {
 enum PrivateScalarLocalBinding {
     Int(DeclarationId),
     Bool(DeclarationId),
+    UninitializedInt(DeclarationId),
+    UninitializedBool(DeclarationId),
 }
 
 struct PrivateScalarActiveFrame {
@@ -1013,6 +1083,8 @@ enum PrivateScalarTask<'a> {
     MoveArgument(&'a str, DeclarationId),
     Apply(char),
     BindLocal(DeclarationId),
+    DeclareEmptyInt(DeclarationId),
+    DeclareEmptyBool(DeclarationId),
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
@@ -1127,6 +1199,8 @@ impl PreparedPrivateScalarCall {
         match action {
             PrivateScalarBranchAction::DeclareInt { .. }
                 | PrivateScalarBranchAction::DeclareBool { .. }
+                | PrivateScalarBranchAction::DeclareEmptyInt { .. }
+                | PrivateScalarBranchAction::DeclareEmptyBool { .. }
                 | PrivateScalarBranchAction::DeclareStr { .. } =>
                     PrivateScalarBranchAction::Scoped(vec![action]),
             other => other,
@@ -1155,6 +1229,18 @@ impl PreparedPrivateScalarCall {
                         return Err(PrivateScalarCallRuntimeError::StateMismatch);
                     }
                     events.push(PrivateScalarCallEvent::BoolScopeEnded(id));
+                }
+                Some(PrivateScalarLocalBinding::UninitializedInt(id)) => {
+                    if frame.values.contains_key(&id) {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(id));
+                }
+                Some(PrivateScalarLocalBinding::UninitializedBool(id)) => {
+                    if frame.bool_values.contains_key(&id) {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(id));
                 }
                 None => return Err(PrivateScalarCallRuntimeError::StateMismatch),
             }
@@ -1250,11 +1336,18 @@ impl PreparedPrivateScalarCall {
                         "區塊局部宣告缺少原 Checker 可寫性／型別／DeclarationId",
                     ));
                 }
-                let init = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "此純值執行子集的區塊局部宣告必須有已核准初始化式",
-                    ),
-                )?;
+                let Some(init) = owner.initializer.as_ref() else {
+                    if !owner.mutable {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "未初始化宣告只允許原 Checker 核准的 var",
+                        ));
+                    }
+                    return Ok(if owner.ty == "bool" {
+                        PrivateScalarBranchAction::DeclareEmptyBool { declaration: id }
+                    } else {
+                        PrivateScalarBranchAction::DeclareEmptyInt { declaration: id }
+                    });
+                };
                 if owner.ty == "bool" {
                     Ok(PrivateScalarBranchAction::DeclareBool {
                         declaration: id,
@@ -1584,17 +1677,20 @@ impl PreparedPrivateScalarCall {
                         "bool 區域宣告缺少原 Checker 唯一宣告身分",
                     ));
                 }
-                let initializer = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "bool 純值宣告須具真初始化式",
-                    ),
-                )?;
-                let value = PrivateScalarBoolExpr::from_checked(
-                    initializer, &bool_bindings, verified,
-                )?;
-                local_steps.push(PrivateScalarLocalStep::DeclareBool {
-                    declaration, value,
-                });
+                if let Some(initializer) = owner.initializer.as_ref() {
+                    let value = PrivateScalarBoolExpr::from_checked(
+                        initializer, &bool_bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::DeclareBool {
+                        declaration, value,
+                    });
+                } else if owner.mutable {
+                    local_steps.push(PrivateScalarLocalStep::DeclareEmptyBool(declaration));
+                } else {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "原 Checker 未初始化的 const bool 不可交付",
+                    ));
+                }
                 bool_bindings.insert(owner.name.clone(), declaration);
                 // 共用原 Checker DeclarationId 名稱表同時供正式函式
                 // bool 實參使用；型別仍由 Reference HIR 唯一核對，
@@ -1609,17 +1705,20 @@ impl PreparedPrivateScalarCall {
                     "函式內 int 區域宣告缺少 Checker 唯一宣告身分",
                 ));
             }
-            let initializer = owner.initializer.as_ref().ok_or(
-                PrivateScalarCallPrepareError::Unsupported(
-                    "函式內此子集須有真 int 初始化式",
-                ),
-            )?;
-            let value = PrivateScalarReturnExpr::from_checked_bindings(
-                initializer, &bindings, verified,
-            )?;
-            let init = PrivateScalarLocalInit { declaration, value };
-            local_steps.push(PrivateScalarLocalStep::Declare(init.clone()));
-            local_inits.push(init);
+            if let Some(initializer) = owner.initializer.as_ref() {
+                let value = PrivateScalarReturnExpr::from_checked_bindings(
+                    initializer, &bindings, verified,
+                )?;
+                let init = PrivateScalarLocalInit { declaration, value };
+                local_steps.push(PrivateScalarLocalStep::Declare(init.clone()));
+                local_inits.push(init);
+            } else if owner.mutable {
+                local_steps.push(PrivateScalarLocalStep::DeclareEmptyInt(declaration));
+            } else {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "原 Checker 未初始化 const int 不可交付",
+                ));
+            }
             bindings.insert(owner.name.clone(), declaration);
         }
         let return_span = ret.expression.node_span();
@@ -1679,6 +1778,10 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                 }
+                PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
+                    tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
+                PrivateScalarLocalStep::DeclareEmptyBool(declaration) =>
+                    tasks.push(PrivateScalarTask::DeclareEmptyBool(*declaration)),
                 PrivateScalarLocalStep::DeclareBool { declaration, value } =>
                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
@@ -1853,6 +1956,40 @@ impl PreparedPrivateScalarCall {
                         }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                         values.push(value);
                     }
+                    PrivateScalarTask::DeclareEmptyInt(id) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.values.contains_key(&id)
+                            || frame.initialized_order.iter().any(|entry| matches!(entry,
+                                PrivateScalarLocalBinding::Int(old)
+                                    | PrivateScalarLocalBinding::UninitializedInt(old)
+                                    if *old == id
+                            )) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.initialized_order.push(
+                            PrivateScalarLocalBinding::UninitializedInt(id),
+                        );
+                        events.push(PrivateScalarCallEvent::LocalDeclaredEmpty(id));
+                    }
+                    PrivateScalarTask::DeclareEmptyBool(id) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.bool_values.contains_key(&id)
+                            || frame.initialized_order.iter().any(|entry| matches!(entry,
+                                PrivateScalarLocalBinding::Bool(old)
+                                    | PrivateScalarLocalBinding::UninitializedBool(old)
+                                    if *old == id
+                            )) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.initialized_order.push(
+                            PrivateScalarLocalBinding::UninitializedBool(id),
+                        );
+                        events.push(PrivateScalarCallEvent::BoolDeclaredEmpty(id));
+                    }
                     PrivateScalarTask::BindLocal(id) => {
                         let value = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -1875,11 +2012,21 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let slot = frame.values.get_mut(&id).ok_or(
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
-                        *slot = value;
-                        events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
+                        if let Some(slot) = frame.values.get_mut(&id) {
+                            *slot = value;
+                            events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
+                        } else {
+                            let pending = frame.initialized_order.iter_mut()
+                                .find(|entry| matches!(entry,
+                                    PrivateScalarLocalBinding::UninitializedInt(old)
+                                        if *old == id
+                                )).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            *pending = PrivateScalarLocalBinding::Int(id);
+                            if frame.values.insert(id, value).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
+                        }
                     }
                     PrivateScalarTask::BindBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
@@ -1968,11 +2115,21 @@ impl PreparedPrivateScalarCall {
                                     PrivateScalarCallRuntimeError::StateMismatch,
                                 )?,
                         };
-                        let slot = frame.bool_values.get_mut(&id).ok_or(
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
-                        *slot = value;
-                        events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                        if let Some(slot) = frame.bool_values.get_mut(&id) {
+                            *slot = value;
+                            events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                        } else {
+                            let pending = frame.initialized_order.iter_mut()
+                                .find(|entry| matches!(entry,
+                                    PrivateScalarLocalBinding::UninitializedBool(old)
+                                        if *old == id
+                                )).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            *pending = PrivateScalarLocalBinding::Bool(id);
+                            if frame.bool_values.insert(id, value).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                        }
                     }
                     PrivateScalarTask::CheckEarlyReturn(branch) => {
                         let frame = frames.last().ok_or(
@@ -2157,6 +2314,10 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarBranchAction::DeclareBool { declaration, value } => {
                             tasks.push(PrivateScalarTask::BindBool(*declaration, value));
                         }
+                        PrivateScalarBranchAction::DeclareEmptyInt { declaration } =>
+                            tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
+                        PrivateScalarBranchAction::DeclareEmptyBool { declaration } =>
+                            tasks.push(PrivateScalarTask::DeclareEmptyBool(*declaration)),
                         PrivateScalarBranchAction::DeclareStr {
                             declaration, name, mutable, initializer,
                         } => {
@@ -2365,6 +2526,10 @@ impl PreparedPrivateScalarCall {
                                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                                 }
+                                PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
+                                    tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
+                                PrivateScalarLocalStep::DeclareEmptyBool(declaration) =>
+                                    tasks.push(PrivateScalarTask::DeclareEmptyBool(*declaration)),
                                 PrivateScalarLocalStep::DeclareBool { declaration, value } =>
                                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
@@ -2407,6 +2572,10 @@ impl PreparedPrivateScalarCall {
                                     events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
                                 PrivateScalarLocalBinding::Bool(id) =>
                                     events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                                PrivateScalarLocalBinding::UninitializedInt(id) =>
+                                    events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
+                                PrivateScalarLocalBinding::UninitializedBool(id) =>
+                                    events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
                             }
                         }
                         frame.values.clear();
@@ -2464,6 +2633,10 @@ impl PreparedPrivateScalarCall {
                             events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
                         PrivateScalarLocalBinding::Bool(id) =>
                             events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                        PrivateScalarLocalBinding::UninitializedInt(id) =>
+                            events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
+                        PrivateScalarLocalBinding::UninitializedBool(id) =>
+                            events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
                     }
                 }
                 frame.values.clear();
@@ -2489,6 +2662,10 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
                     PrivateScalarLocalBinding::Bool(id) =>
                         events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                    PrivateScalarLocalBinding::UninitializedInt(id) =>
+                        events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
+                    PrivateScalarLocalBinding::UninitializedBool(id) =>
+                        events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
                 }
             }
             root.initialized_order.clear();
@@ -2694,7 +2871,9 @@ impl PreparedPrivateScalarCall {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
-                if owner.ty != "int" { return true; }
+                if owner.ty != "int" || owner.initializer.is_none() {
+                    return true;
+                }
             }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
@@ -6323,6 +6502,196 @@ mod g18_private_scalar_call_tests {
         }
         assert!(!wrong_id.has_balanced_frame_trace());
     }
+
+
+    #[test]
+    fn g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽() {
+        let src = "fn calc(n:int)->int{\nvar local:int\nlocal = n+4\nreturn local\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let declared = out.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalDeclaredEmpty(_))).unwrap();
+        let initialized = out.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalInitialized(_, 7))).unwrap();
+        let ended = out.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalScopeEnded(_))).unwrap();
+        assert!(declared < initialized && initialized < ended);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_宣告未初始化int離域不虛構初始化值或回收資源() {
+        let src = "fn calc(n:int)->int{\nvar spare:int\nreturn n+1\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(..)
+        )));
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_r02_函式var_bool無初值先合法賦值後用於提前return() {
+        let src = "fn calc(n:int)->int{\nvar ready:bool\nready = true\nif(ready){\nreturn n+2\n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::BoolDeclaredEmpty(_)
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::BoolInitialized(_, true)
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::BoolScopeEndedEmpty(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_同作用域未初始化與已初始化局部按宣告逆序離域() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\nconst later:int = 6\npending = n+1\nreturn later\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let values = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalScopeEnded(id) => Some(*id),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(values.len(), 2);
+        let prepared = checked(src);
+        let prefix = &prepared.root_local_steps;
+        let a = match &prefix[0] {
+            PrivateScalarLocalStep::DeclareEmptyInt(id) => *id,
+            _ => panic!("原 Checker 無初值宣告來源不存在"),
+        };
+        let b = match &prefix[1] {
+            PrivateScalarLocalStep::Declare(init) => init.declaration,
+            _ => panic!("原 Checker 常值宣告來源不存在"),
+        };
+        assert_eq!(values, [b, a]);
+    }
+
+    #[test]
+    fn g18_r02_分支var_int尚未初始化後更新不污染外層遮蔽() {
+        let src = "fn calc(n:int)->int{\nvar result:int = n\nif(true){\nvar result:int\nresult = 15\n}\nreturn result\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let declare_empty = out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )).count();
+        assert_eq!(declare_empty, 1);
+    }
+
+    #[test]
+    fn g18_r03_for_逐輪var_int先保留空槽再第一次賦值與continue() {
+        let src = "fn calc(n:int)->int{\nvar total:int = 0\nfor i in 0..3{\nvar step:int\nstep = i+2\ntotal = total+step\ncontinue\n}\nreturn total+n\n}\nfn main()->int{\nreturn calc(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )).count(), 0);
+    }
+
+    #[test]
+    fn g18_r03_while_continue_未初始化bool與int只執行選中路徑() {
+        let src = "fn calc(n:int)->int{\nvar active:bool\nactive = true\nvar count:int = n\nwhile(active){\nvar next:int\nnext = count+4\ncount = next\nactive = false\ncontinue\n}\nreturn count\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ConditionalChecked(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r03_初始化右值溢位時空局部只離域不造假值() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\npending = n+9223372036854775807\nreturn pending\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalDeclaredEmpty(_)
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(..)
+                | PrivateScalarCallEvent::Returned(..)
+        )));
+    }
+
+    #[test]
+    fn g18_r01_main_var_int無初值賦值後真傳入普通函式() {
+        let src = "fn inc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar base:int\nbase = 4\nreturn inc(base)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LocalInitialized(_, 4)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_無初值int_bool未合法賦值即讀由原checker拒絕() {
+        let invalid = [
+            "fn calc(n:int)->int{\nvar pending:int\nreturn pending\n}\nfn main()->int{\nreturn calc(3)\n}\n",
+            "fn calc(n:int)->int{\nvar flag:bool\nif(flag){return n}\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_r02_未初始化來源計畫篡改類型執行前零事件拒絕() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\npending = n+1\nreturn pending\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(4));
+        plan.root_local_steps[0] =
+            PrivateScalarLocalStep::DeclareEmptyBool(DeclarationId(0));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r05_偽造未初始化局部冒充已初始化或刪除真離域須拒絕() {
+        let src = "fn calc(n:int)->int{\nvar pending:int\nreturn n\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let mut altered = checked(src).execute().unwrap();
+        altered.events.retain(|e| !matches!(
+            e, PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+        ));
+        assert!(!altered.has_balanced_frame_trace());
+        let mut altered = checked(src).execute().unwrap();
+        let at = altered.events.iter().position(|e|
+            matches!(e, PrivateScalarCallEvent::LocalDeclaredEmpty(_))
+        ).unwrap();
+        let id = match altered.events[at] {
+            PrivateScalarCallEvent::LocalDeclaredEmpty(id) => id,
+            _ => unreachable!(),
+        };
+        altered.events.insert(at+1, PrivateScalarCallEvent::LocalInitialized(id, 99));
+        assert!(!altered.has_balanced_frame_trace());
+    }
+
 
 }
 

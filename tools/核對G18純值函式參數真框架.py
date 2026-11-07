@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百零九項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百二十一項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,18 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r02_函式var_int無初值在原checker准許後第一次賦值才建立值槽",
+    "g18_r02_宣告未初始化int離域不虛構初始化值或回收資源",
+    "g18_r02_函式var_bool無初值先合法賦值後用於提前return",
+    "g18_r02_同作用域未初始化與已初始化局部按宣告逆序離域",
+    "g18_r02_分支var_int尚未初始化後更新不污染外層遮蔽",
+    "g18_r03_for_逐輪var_int先保留空槽再第一次賦值與continue",
+    "g18_r03_while_continue_未初始化bool與int只執行選中路徑",
+    "g18_r03_初始化右值溢位時空局部只離域不造假值",
+    "g18_r01_main_var_int無初值賦值後真傳入普通函式",
+    "g18_r02_無初值int_bool未合法賦值即讀由原checker拒絕",
+    "g18_r02_未初始化來源計畫篡改類型執行前零事件拒絕",
+    "g18_r05_偽造未初始化局部冒充已初始化或刪除真離域須拒絕",
     "g18_r04_原_checker_str_move_真跨函式_唯一_utf8_交接",
     "g18_r04_父函式局部_整筆_move_交給子函式同一資源",
     "g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分",
