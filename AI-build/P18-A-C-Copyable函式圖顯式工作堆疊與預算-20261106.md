@@ -224,3 +224,10 @@
 - 新增 `BoolArgumentEvaluated`／`BoolParameterBound` 真事件，並且為每個呼叫函式保存 `parameter_is_bool` 真 Checker 完整簽章；`main` 即使傳字面 bool 也改走原動態實參工作堆疊，巢狀函式 int/bool 混用不共用參數 slot，函式內 bool Name 讀取同一框架。
 - 新增七項 Rust 原來源正反：bool true 單參數提前 return、bool false+int 混合宣告順序、巢狀 bool+int 跨兩框架、main bool var 更新後傳參、綁定後故障真退出、錯型別／漏參數原 Checker 拒絕、竄改簽章布林標記執行前 SourceChanged。函式專項 Gate **117→124**，G18 原 P18.1／P18.3／P18.4／P18.5 與 CI 追溯同步。
 - **R04 仍未全部完成**：str OwnedStr／BorrowTicket／明確 move 的多參數混合來源已有獨立 G18 執行器，但尚未與此 Copyable 函式圖共享同一統一框架／退出協定；此批不將 bool 純值事件冒充真資源釋放或 P18.4 全部驗收。P18 六原項維持 0/6 正式 Passed。僅依 PR 最新 HEAD 三必要 CI completed/success 並 Squash merge、新 main 同 SHA 再驗。
+
+
+### V1-R04 CI 修正：具名 bool 區域來源須交付同一原 Checker 綁定表
+
+- 第一輪 Rust P04 有 1570 項成功、唯一新正例 `main` 在 `switched = true` 後傳 `choose(switched,5)` 被私有 Prepare 錯誤拒絕。原 Checker 已確認合法，錯誤原因是 bool 宣告只加入條件專用 `bool_bindings`，尚未加入普通函式實參共用 `bindings`。
+- 修正真 bool 區域宣告成功後同時交付同一 `DeclarationId` 至共用來源名稱表；bool 實參仍須原 HIR bool 類型、真 Lexer Name 與宣告身份一致，不進行隱含 int 轉型。不是放寬錯誤程式或測試預期。
+- 以最新 HEAD 重跑三項必要 CI，全 success 才能合併本批。
