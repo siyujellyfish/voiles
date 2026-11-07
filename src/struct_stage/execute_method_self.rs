@@ -30,6 +30,9 @@ struct PrivateSelfMethodOutcome {
     main_local_slots_after_exit: usize,
     method_local_slots_after_exit: usize,
     method_local_events: Vec<PrivateSelfMethodLocalEvent>,
+    /// 原 Checker/Parser 封存的方法真 int 局部 DeclarationId
+    /// 按來源先後排列；故障執行只容許已走到的合法前綴。
+    expected_method_local_ids: Vec<DeclarationId>,
     /// R05：真 BorrowSafety 簽發、方法 Return／Unwind 及歸還後
     /// 逐筆記錄；不再只靠方法布林旗標冒充退出已驗證。
     checked_loan: BorrowFact,
@@ -55,6 +58,7 @@ impl PrivateSelfMethodOutcome {
             matches!(event, PrivateSharedCallExitEvent::LoanAcquired(_))
         ).count();
         let mut local_stack = Vec::<DeclarationId>::new();
+        let mut initialized_local_ids = Vec::<DeclarationId>::new();
         for event in &self.method_local_events {
             match event {
                 PrivateSelfMethodLocalEvent::Initialized(id, _) => {
@@ -62,6 +66,7 @@ impl PrivateSelfMethodOutcome {
                         return false;
                     }
                     local_stack.push(*id);
+                    initialized_local_ids.push(*id);
                 }
                 PrivateSelfMethodLocalEvent::ScopeEnded(id) => {
                     if local_stack.pop() != Some(*id) { return false; }
@@ -70,6 +75,30 @@ impl PrivateSelfMethodOutcome {
         }
         // 兩份結果視圖必須投影到完全相同的實際局部事件，
         // 不能只靠各自末端都平衡而放行跨 Returned/Unwind 的錯序。
+        // 原 Checker 所允許的宣告先後是唯一真來源；執行期
+        // 出錯時只可能初始化其前綴，不能插入其他平衡的幽靈
+        // 局部，成功時則應完整執行所有局部宣告。
+        let approved_local_prefix = initialized_local_ids.len()
+            <= self.expected_method_local_ids.len()
+            && self.expected_method_local_ids.starts_with(&initialized_local_ids)
+            && (!self.result.is_ok()
+                || initialized_local_ids.len() == self.expected_method_local_ids.len());
+        // 同步方法只有一個已核准的 self 框架；局部不應被
+        // 記錄在真正 FunctionEntered 之前，亦不應在其
+        // FunctionExited 之後以 main 的匿名基底框架補造。
+        let mut inside_method = false;
+        let mut local_events_inside_real_method = true;
+        for event in &self.exit_events {
+            match event {
+                PrivateSharedCallExitEvent::FunctionEntered => inside_method = true,
+                PrivateSharedCallExitEvent::FunctionExited { .. } => inside_method = false,
+                PrivateSharedCallExitEvent::LocalInitialized(_)
+                    | PrivateSharedCallExitEvent::LocalScopeEnded(_) if !inside_method => {
+                    local_events_inside_real_method = false;
+                }
+                _ => {}
+            }
+        }
         let local_projection = self.method_local_events.iter().map(|event| match event {
             PrivateSelfMethodLocalEvent::Initialized(id, _) =>
                 PrivateSharedCallExitEvent::LocalInitialized(*id),
@@ -90,6 +119,8 @@ impl PrivateSelfMethodOutcome {
                 PrivateSharedCallExitEvent::LocalScopeEnded(_)
             ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
+            && approved_local_prefix
+            && local_events_inside_real_method
             && local_projection == exit_projection
             && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
@@ -1010,7 +1041,11 @@ impl PreparedPrivateSelfMethod {
             result, events, method_entered, method_exited, ticket_returned,
             main_local_slots_after_exit: main_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
-            method_local_events, checked_loan: self.loan, exit_events,
+            method_local_events,
+            expected_method_local_ids: self.method_int_locals.iter().map(
+                |(id, _)| *id,
+            ).collect(),
+            checked_loan: self.loan, exit_events,
         };
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
