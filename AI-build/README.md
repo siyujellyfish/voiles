@@ -151,4 +151,4 @@
 
 > **G18.6 S20 同名方法靜態唯一選擇（2026-11-05，非公開施工）**：[真 Parser 保留多載候選、原 Checker 僅依參數完整靜態型別唯一選擇，重複簽章與欄位／方法同名拒絕，保留共享／獨占 self 安全證據](P18-F-S20方法多載靜態唯一簽章選擇-20261105.md)。新增 9 項 Rust 來源正反與專用 Gate；**不是多載動態執行，更非原 P18.6 Passed**。
 
-> **G18／R05 借用票據與真資源身分對帳（2026-11-07；候選）**：[V1 R01～R07 收口矩陣第 18 節](G18-V1-R01-R07-驗收收口矩陣-20261107.md)：BorrowTicket 直接綁定原 OwnedStr ResourceId，未還票禁止資源 Moved／Returned／Released；R06 正反 Gate 23→26。尚非 R05／R06 全項或 P18 原六項 Passed。
+> **G18／R05 借用票據與真資源身分對帳（2026-11-07；候選）**：[V1 R01～R07 收口矩陣第 18 節](G18-V1-R01-R07-驗收收口矩陣-20261107.md)：BorrowTicket 以原 DeclarationId 的真持有者對帳綁定 OwnedStr ResourceId，未還票禁止資源 Moved／Returned／Released；R06 正反 Gate 23→27。尚非 R05／R06 全項或 P18 原六項 Passed。
