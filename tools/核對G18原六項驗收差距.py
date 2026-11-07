@@ -274,6 +274,12 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法實參共用原_typedhir_具名加法括號與返回",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_巢狀括號與左右加減依原_checker_樹求值",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_已核准複合整數實參與_self_欄位回傳使用同一真框架",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_第二個整數複合實參溢位不可提前取得_self_借用或進入方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_第一個複合實參溢位不得執行後續方法本體",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_偽造已編譯方法實參算術樹或來源位置於執行前拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法讀取main具名_const_int_真局部框架",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_雙具名_copyable_int_按main宣告及原方法參數次序做減法",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_main整數局部由前一已初始化名稱複製再傳入self方法",
@@ -423,6 +429,13 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法實參共用原_typedhir_具名加法括號與返回",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_巢狀括號與左右加減依原_checker_樹求值",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_已核准複合整數實參與_self_欄位回傳使用同一真框架",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_第二個整數複合實參溢位不可提前取得_self_借用或進入方法",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r05_第一個複合實參溢位不得執行後續方法本體",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_偽造已編譯方法實參算術樹或來源位置於執行前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r02_r04_非法布林混用與未宣告名稱在方法複合引數前先被_checker_拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_同步方法讀取main具名_const_int_真局部框架",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_雙具名_copyable_int_按main宣告及原方法參數次序做減法",
         "struct_stage::g18_private_method_self_tests::g18_r02_r04_main整數局部由前一已初始化名稱複製再傳入self方法",
