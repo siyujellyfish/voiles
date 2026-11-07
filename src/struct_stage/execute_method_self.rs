@@ -2554,4 +2554,112 @@ mod g18_private_method_self_tests {
     }
 
 
+    #[test]
+    fn g18_r04_同步self方法var_int_局部可按原checker賦值後真返回() {
+        let src = checked_method_local_source(
+            "var amount:int = a\namount = amount+b\nreturn amount", "3,4",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.method_int_assignments.len(), 1);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_self_borrow_trace() && out.ticket_returned);
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(plan.method_int_locals[0].0, 3),
+            PrivateSelfMethodLocalEvent::Assigned(plan.method_int_locals[0].0, 7),
+            PrivateSelfMethodLocalEvent::ScopeEnded(plan.method_int_locals[0].0),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_同步self方法連續兩次_var_int_更新沿用最新動態值() {
+        let src = checked_method_local_source(
+            "var amount:int = a\namount = amount+b\namount = (amount-2)\nreturn amount",
+            "11,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(13));
+        assert_eq!(out.expected_method_assignment_ids,
+            [plan.method_int_locals[0].0, plan.method_int_locals[0].0]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r04_同步self方法第二個var局部可讀取第一個已更新值() {
+        let src = checked_method_local_source(
+            "var first:int = a\nvar second:int = b\nfirst = first+3\nsecond = first+second\nreturn second",
+            "4,5",
+        );
+        let out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert!(out.has_balanced_self_borrow_trace());
+        assert_eq!(out.method_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r05_同步self第二次更新溢位須保留已提交第一次更新及逆序離域() {
+        let src = checked_method_local_source(
+            "var amount:int = 2\namount = amount+3\namount = amount+9223372036854775807\nreturn amount",
+            "3,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_exited && out.ticket_returned);
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(plan.method_int_locals[0].0, 2),
+            PrivateSelfMethodLocalEvent::Assigned(plan.method_int_locals[0].0, 5),
+            PrivateSelfMethodLocalEvent::ScopeEnded(plan.method_int_locals[0].0),
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r04_方法const_int_重新賦值或參數賦值仍原checker靜態拒絕() {
+        let const_src = checked_method_local_source(
+            "const amount:int = a\namount = b\nreturn amount", "3,4",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&const_src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let param_src = checked_method_local_source(
+            "var amount:int = a\na = b\nreturn amount", "3,4",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&param_src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r04_方法var_int_更新後再宣告尚未證明重排必拒絕() {
+        let src = checked_method_local_source(
+            "var first:int = a\nfirst = first+b\nconst later:int = first\nreturn later",
+            "3,4",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r05_竄改方法var_int_賦值計畫或兩張帳中的更新身分須拒絕() {
+        let src = checked_method_local_source(
+            "var amount:int = a\namount = amount+b\nreturn amount", "3,4",
+        );
+        let mut plan = checked(&src);
+        plan.method_int_assignments[0].1 = PrivateScalarReturnExpr::Constant(7);
+        assert!(matches!(plan.execute(),
+            Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut out = checked(&src).execute().unwrap();
+        assert!(out.has_balanced_self_borrow_trace());
+        out.expected_method_assignment_ids = vec![DeclarationId(0)];
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(&src).execute().unwrap();
+        for event in &mut out.method_local_events {
+            if let PrivateSelfMethodLocalEvent::Assigned(id, _) = event {
+                *id = DeclarationId(0);
+            }
+        }
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+
 }
