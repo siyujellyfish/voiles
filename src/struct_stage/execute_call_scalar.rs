@@ -727,6 +727,61 @@ impl PrivateScalarReturnExpr {
         })
     }
 
+    /// R01：由原 Parser AST 收集全部可能的具名函式呼叫，包含
+    /// 多層實參及巢狀條件分支。此處只建立來源目錄，
+    /// 不選擇動態分支、不創建框架、不執行任何表達式。
+    fn collect_source_calls_in_term<'a>(term: &'a Term, names: &mut Vec<&'a str>) {
+        match &term.kind {
+            TermKind::Call(call) => {
+                names.push(call.name.as_str());
+                for argument in &call.arguments {
+                    Self::collect_source_calls_in_term(argument, names);
+                }
+            }
+            TermKind::UnresolvedZeroArgs(name) => names.push(name.as_str()),
+            TermKind::Group(inner) => Self::collect_source_calls_in_term(inner, names),
+            TermKind::BinaryInt(binary) => {
+                Self::collect_source_calls_in_term(&binary.left, names);
+                Self::collect_source_calls_in_term(&binary.right, names);
+            }
+            // 未經本 evaluator 接通的型別／語法仍須於正式編譯時保守拒絕；
+            // 不從來源名稱字面自行推出可執行的其他語意。
+            _ => {}
+        }
+    }
+
+    fn collect_source_calls_in_statements<'a>(
+        statements: &'a [Stmt], names: &mut Vec<&'a str>,
+    ) {
+        for statement in statements {
+            match &statement.kind {
+                StmtKind::Declare(owner) => {
+                    if let Some(initializer) = owner.initializer.as_ref() {
+                        Self::collect_source_calls_in_term(initializer, names);
+                    }
+                }
+                StmtKind::Assign(assignment) =>
+                    Self::collect_source_calls_in_term(&assignment.expression, names),
+                StmtKind::Return(ret) =>
+                    Self::collect_source_calls_in_term(&ret.expression, names),
+                StmtKind::If { branch, no } => {
+                    Self::collect_source_calls_in_term(&branch.branch.condition, names);
+                    Self::collect_source_calls_in_statements(&branch.body, names);
+                    if let Some(other) = no.as_ref() {
+                        Self::collect_source_calls_in_statements(other, names);
+                    }
+                }
+                StmtKind::While { condition, body } => {
+                    Self::collect_source_calls_in_term(condition, names);
+                    Self::collect_source_calls_in_statements(&body.statements, names);
+                }
+                StmtKind::ForRange { body, .. } =>
+                    Self::collect_source_calls_in_statements(&body.statements, names),
+                _ => {}
+            }
+        }
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
@@ -2850,9 +2905,39 @@ impl PreparedPrivateScalarCall {
         let param = callee.params.first();
         let (root_local_inits, root_local_steps, return_expr, param_return_span) =
             Self::prepare_function_locals(callee, &verified)?;
+        // R01：先以原 AST 列出 main 可能到達的呼叫，再遞迴走訪
+        // 每個已宣告的函式本體。未在呼叫閉包內的合法輔助函式
+        // 不應被錯誤當成必須支援的動態執行目標；可達但
+        // 非 int／未證明的函式仍由下方正式型別／圖核對拒絕。
+        let mut reachable = std::collections::BTreeSet::<String>::new();
+        let mut pending = Vec::<String>::new();
+        let mut main_names = Vec::new();
+        PrivateScalarReturnExpr::collect_source_calls_in_statements(
+            &main.body.statements, &mut main_names,
+        );
+        for name in main_names {
+            if reachable.insert(name.to_owned()) {
+                pending.push(name.to_owned());
+            }
+        }
+        while let Some(name) = pending.pop() {
+            if let Some(function) = verified.functions.iter()
+                .find(|fun| fun.name == name) {
+                let mut nested_names = Vec::new();
+                PrivateScalarReturnExpr::collect_source_calls_in_statements(
+                    &function.body.statements, &mut nested_names,
+                );
+                for nested in nested_names {
+                    if reachable.insert(nested.to_owned()) {
+                        pending.push(nested.to_owned());
+                    }
+                }
+            }
+        }
         let mut nested_callees = Vec::new();
         for function in verified.functions.iter()
-            .filter(|fun| fun.name != "main" && fun.name != callee.name) {
+            .filter(|fun| fun.name != "main" && fun.name != callee.name
+                && reachable.contains(&fun.name)) {
             if function.result_ty != "int"
                 || function.params.iter().any(|param|
                     !matches!(param.ty.as_str(), "int" | "bool" | "str"))
