@@ -84,7 +84,7 @@ jobs:
       - name: G18 P18.2～18.3 真 for／while 可配置步數預算三十六項正反 Gate
         run: python3 tools/核對G18有限迴圈真資源.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.1／18.4 真 str BorrowTicket 與多 Copyable int 三十二項正反 Gate
+      - name: G18 P18.1／18.4 真 str BorrowTicket 與多 Copyable int 三十四項正反 Gate
         run: python3 tools/核對G18函式借用真票據.py --test-bin target/p02/p04_source_internal
 
       - name: P21-A 多檔 canonical／inode 身分與來源快照九項正反 Gate
@@ -167,7 +167,7 @@ jobs:
       - name: G18 P18.3／18.4 真多 str BorrowTicket 與多 int 遞迴與真資源退出五十項 Gate
         run: python3 tools/核對G18遞迴真資源逐框架.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.6 真同步 self／方法多載／整數參數返回三十八項正反 Gate
+      - name: G18 P18.6 真同步 self／方法多載／整數參數返回四十項正反 Gate
         run: python3 tools/核對G18同步方法self真借用.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.6 S20 同名方法靜態唯一簽章九項來源正反 Gate
@@ -176,7 +176,7 @@ jobs:
       - name: G18 P18.3／18.4 原 Checker str.move 真所有權跨函式十項正反 Gate
         run: python3 tools/核對G18整筆移動跨函式真資源.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.4 同一 Call 真 str.move 與 BorrowTicket 八項正反 Gate
+      - name: G18 P18.4 同一 Call 真 str.move 與 BorrowTicket 十項正反 Gate
         run: python3 tools/核對G18同呼叫移動與借用真資源.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
