@@ -1737,6 +1737,24 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarEvaluatedArgument::Borrow { ticket, fact },
                         );
                     }
+                    PrivateScalarTask::MoveArgument(owner, source) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.str_owner_scopes.iter().rev().flatten()
+                            .any(|(id, name)| *id == source && name == owner) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(source)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        resources.read(owner)
+                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        // 已驗證真來源；到被呼叫框架建立時才原子搬移，
+                        // 後續實參失敗則仍由呼叫者清理唯一 UTF-8。
+                        completed_arguments.push(
+                            PrivateScalarEvaluatedArgument::Move { source },
+                        );
+                    }
                     PrivateScalarTask::Apply(operator) => {
                         let right = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -2131,6 +2149,7 @@ impl PreparedPrivateScalarCall {
                         let mut locals = BTreeMap::new();
                         let mut bool_locals = BTreeMap::new();
                         let mut incoming_borrows = Vec::new();
+                        let mut pending_moves = Vec::new();
                         let mut bound_events = Vec::new();
                         for (index, (plan, actual)) in argument_plans.iter()
                             .zip(evaluated).enumerate() {
@@ -2146,6 +2165,22 @@ impl PreparedPrivateScalarCall {
                                     bound_events.push(
                                         PrivateScalarCallEvent::BorrowParameterBound(id, *fact),
                                     );
+                                }
+                                (true, false,
+                                    PrivateScalarCallArgument::MoveStr { owner, source },
+                                    PrivateScalarEvaluatedArgument::Move { source: observed })
+                                    if *source == observed => {
+                                    let actual = self.verified.functions.iter()
+                                        .find(|fun| fun.name == name)
+                                        .and_then(|fun| fun.params.get(index))
+                                        .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                    if DeclarationId(actual.declaration_start) != id
+                                        || actual.ty != "str" {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
+                                    pending_moves.push((
+                                        owner.clone(), *source, id, actual.name.clone(),
+                                    ));
                                 }
                                 (false, true, PrivateScalarCallArgument::Bool(_),
                                     PrivateScalarEvaluatedArgument::Bool(value)) => {
@@ -2179,6 +2214,23 @@ impl PreparedPrivateScalarCall {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
                         }
+                        // 真 Move 原始來源必屬目前 caller 的活擁有者；
+                        // 先核對所有來源與借用衝突，再移交，避免部分改動。
+                        let mut distinct_sources = std::collections::HashSet::new();
+                        for (owner, source, _, _) in &pending_moves {
+                            let parent = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if !distinct_sources.insert(*source)
+                                || !parent.str_owner_scopes.iter().rev().flatten()
+                                    .any(|(id, name)| id == source && name == owner) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            parent.borrow_tracker.check_direct_access(*source)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                            resources.read(owner)
+                                .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        }
                         completed_arguments.truncate(completed_arguments.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         events.extend(bound_events);
@@ -2192,6 +2244,26 @@ impl PreparedPrivateScalarCall {
                             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
                             incoming_borrows,
                         });
+                        // 僅以真 OwnedStrRuntime 的同一 ID 移動，不重新配置
+                        // 字串；在新框架中以原 Checker 正式參數 ID 接管。
+                        for (owner, source, parameter, target) in pending_moves {
+                            let resource_id = resources.resource_id(&owner)
+                                .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                            resources.move_named_as(&owner, &target, false)
+                                .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                            events.push(PrivateScalarCallEvent::ResourceTransferred {
+                                source, target: parameter, resource_id,
+                            });
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            frames.last_mut().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?.str_owner_scopes[0].push((parameter, target));
+                            events.push(PrivateScalarCallEvent::ResourceOwnerBound(
+                                parameter, resource_id,
+                            ));
+                        }
                         // 只有源自 main return 最外層的真 Call 才允許
                         // 故障注入；先求值的同名子呼叫絕不可誤作根框架。
                         if fail_after_root_binding && is_root_call {
