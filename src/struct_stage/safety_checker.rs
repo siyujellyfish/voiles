@@ -913,7 +913,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 不因這條純值局部執行器而取得可寫權。
                     if !target.mutable || target.ty != "int"
                         || target.loan.is_some()
-                        || target.value.state() != ValueState::Initialized
+                        || target.value.state() != ValueState::Available
                         || !pure_int(&assignment.expression) {
                         return Err(self.error(
                             "方法局部賦值僅接受已初始化的 var int 與純整數算式",
