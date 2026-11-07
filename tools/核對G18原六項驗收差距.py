@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_分支內先變更再提前_return_不得執行不可達尾端",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_混合布林整數與真借用成功返回各守門須同時成立",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_false_未選中分支不得寫入而仍由原值返回",
@@ -124,6 +128,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_同分支第二更新溢位只保存第一個真更新並失敗退出",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_不同執行器的正常失敗不得丟失已建資源或複製假返回",
         "struct_stage::g18_private_call_borrow_tests::g18_r05_真借用結果偽造已退出未歸票據或遺失資源一律拒絕",
@@ -262,6 +267,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_分支內先變更再提前_return_不得執行不可達尾端",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_同分支第二更新溢位只保存第一個真更新並失敗退出",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_分支內常值錯誤賦值與真工作計畫竄改均須零額外執行",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_混合布林整數與真借用成功返回各守門須同時成立",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
