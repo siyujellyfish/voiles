@@ -758,6 +758,7 @@ struct PrivateScalarActiveFrame {
 }
 
 /// 各已完成實參維持正式型別，不以整數佔位冒充字串。
+#[derive(Clone, Copy)]
 enum PrivateScalarEvaluatedArgument {
     Int(i64),
     Bool(bool),
@@ -1874,9 +1875,9 @@ impl PreparedPrivateScalarCall {
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
-                        let evaluated = completed_arguments.split_off(
-                            completed_arguments.len() - argc,
-                        );
+                        let evaluated = completed_arguments[
+                            completed_arguments.len() - argc..
+                        ].to_vec();
                         let mut locals = BTreeMap::new();
                         let mut bool_locals = BTreeMap::new();
                         let mut incoming_borrows = Vec::new();
@@ -1928,6 +1929,7 @@ impl PreparedPrivateScalarCall {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
                         }
+                        completed_arguments.truncate(completed_arguments.len() - argc);
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         events.extend(bound_events);
                         resources.enter_scope();
@@ -1982,6 +1984,12 @@ impl PreparedPrivateScalarCall {
                         )?;
                         let mut frame = frames.pop().expect("真子框架仍存在");
                         events.push(PrivateScalarCallEvent::Returned(value));
+                        let parent = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        Self::return_incoming_borrows(
+                            parent, &frame.incoming_borrows, events,
+                        )?;
                         for entry in frame.initialized_order.iter().rev() {
                             match entry {
                                 PrivateScalarLocalBinding::Int(id) =>
@@ -2006,16 +2014,38 @@ impl PreparedPrivateScalarCall {
                     }
                 }
             }
-            if frames.len() != 1 || values.len() != 1 {
+            if frames.len() != 1 || values.len() != 1
+                || !completed_arguments.is_empty() {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
             }
             Ok(values[0])
         })();
         if result.is_err() {
+            // 任何實參已取得票據而父 Call 尚未真正進入時，失敗路徑
+            // 必先從簽發者 tracker 歸還，不能只在函式退出清除參數。
+            for pending in completed_arguments.iter().rev() {
+                if let PrivateScalarEvaluatedArgument::Borrow { ticket, .. } = pending {
+                    let owner = frames.iter_mut().rev().find(|frame|
+                        frame.borrow_tracker.check_ticket_access(
+                            *ticket, BorrowKind::SharedRead,
+                        ).is_ok()
+                    ).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                    owner.borrow_tracker.release(*ticket)
+                        .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                    events.push(PrivateScalarCallEvent::LoanReturned(*ticket));
+                }
+            }
+            completed_arguments.clear();
             // 執行期預算／溢位／狀態錯誤皆不得偽裝成 return。
             // 逐層清除已真正進入的參數框架，不退出未曾進入的函式。
             while frames.len() > 1 {
                 let mut frame = frames.pop().expect("已進入的子框架");
+                let parent = frames.last_mut().ok_or(
+                    PrivateScalarCallRuntimeError::StateMismatch,
+                )?;
+                Self::return_incoming_borrows(
+                    parent, &frame.incoming_borrows, events,
+                )?;
                 for entry in frame.initialized_order.iter().rev() {
                     match entry {
                         PrivateScalarLocalBinding::Int(id) =>
@@ -2051,6 +2081,9 @@ impl PreparedPrivateScalarCall {
             }
             root.initialized_order.clear();
             root.values.clear();
+            root.borrow_tracker.verify_static_snapshot(
+                std::iter::empty::<BorrowFact>(),
+            ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
             for _ in 0..root.resource_scopes {
                 resources.leave_scope().map_err(
                     PrivateScalarCallRuntimeError::Resource,
