@@ -1809,6 +1809,11 @@ impl PreparedPrivateScalarCall {
                 } => tasks.push(PrivateScalarTask::DeclareStr(
                     *declaration, name, *mutable, initializer,
                 )),
+                PrivateScalarLocalStep::DeclareEmptyStr {
+                    declaration, name, mutable,
+                } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
+                    *declaration, name, *mutable,
+                )),
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
                 } => tasks.push(PrivateScalarTask::AssignStr(*declaration, name, initializer)),
@@ -2062,6 +2067,19 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                    }
+                    PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        // 詞彙持有者可先存在，但沒有 UTF-8 資源。
+                        // 真值只會在後續原 Checker 授權的 assign 建立。
+                        resources.declare_empty(name, mutable).map_err(
+                            PrivateScalarCallRuntimeError::Resource,
+                        )?;
+                        frame.str_owner_scopes.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((id, name.to_owned()));
                     }
                     PrivateScalarTask::DeclareStr(id, name, mutable, initializer) => {
                         let frame = frames.last_mut().ok_or(
@@ -2343,6 +2361,11 @@ impl PreparedPrivateScalarCall {
                                 *declaration, name, *mutable, initializer,
                             ));
                         }
+                        PrivateScalarBranchAction::DeclareEmptyStr {
+                            declaration, name, mutable,
+                        } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
+                            *declaration, name, *mutable,
+                        )),
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::AssignStr(
@@ -2556,6 +2579,11 @@ impl PreparedPrivateScalarCall {
                                     declaration, name, mutable, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareStr(
                                     *declaration, name, *mutable, initializer,
+                                )),
+                                PrivateScalarLocalStep::DeclareEmptyStr {
+                                    declaration, name, mutable,
+                                } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
+                                    *declaration, name, *mutable,
                                 )),
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
