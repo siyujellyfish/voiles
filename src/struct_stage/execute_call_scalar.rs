@@ -361,6 +361,12 @@ impl PrivateScalarCallOutcome {
                 Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
             PrivateScalarCallEvent::FunctionEntered(_) =>
                 Some(PrivateSharedCallExitEvent::FunctionEntered),
+            PrivateScalarCallEvent::LocalInitialized(id, _)
+                | PrivateScalarCallEvent::BoolInitialized(id, _) =>
+                Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
+            PrivateScalarCallEvent::LocalScopeEnded(id)
+                | PrivateScalarCallEvent::BoolScopeEnded(id) =>
+                Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
             PrivateScalarCallEvent::Returned(_) =>
                 Some(PrivateSharedCallExitEvent::Returned),
             PrivateScalarCallEvent::UnwindStarted =>
