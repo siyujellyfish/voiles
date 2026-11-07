@@ -183,3 +183,14 @@
 
 - P04 Rust 測試首次執行的 1548 項已通過，惟新測試 `inc(4)` 返回 5 後 `main` 的 `return result+1`，原斷言誤寫為 7。實際正確結果 **6**；執行器與原 Checker 的已核准整數加法一致。
 - 僅將此項測試預期修正為 6，保留對 `Returned(5)`、唯一真函式執行與局部初始化的檢查。**不能為符合錯誤測試而更動計算語意**；以修訂後最新 HEAD 三必要 CI 重新驗收，未成功前不得合併。
+
+
+---
+
+## V1-R01／R02-01｜普通函式原語句次序與已核准 var int 更新（2026-11-07）
+
+- 基線 `main=6cfb79aca1edf4f785b1626780aa99886c2b9916`，102 項函式真來源 Gate 和新 main 的三必要 CI 全 success。依前述 V1 R01～R07 完整施工規劃，首批將原有僅 `Declare…Return` 的執行形狀向**有序語句計畫**延伸，不藉此宣稱已接通所有 if／迴圈／資源。
+- 新增 `PrivateScalarLocalStep` 的真 `Declare`／`Assign` 兩種語句；由原 Parser 的 `StmtKind` 順序準備，由原 Checker `DeclarationId`、`typed_declaration(mutable)`、`VerifiedScalarHir.assignment`、原 Lexer Name Token 與每個 RHS 的 `TypedHIR` 編譯，不自行解讀語法、不允許 const 重賦值。每個函式的 `root_local_steps`、`nested_callees.local_steps`、`main_dynamic_steps` 都納入來源重驗，原有 `root_local_inits` 繼續作為只讀動態宣告追溯。
+- 同一顯式工作堆疊 `AssignLocal(DeclarationId)` **只在 RHS 真求值完成後更新原框架已存在 slot**，寫入時產生 `LocalAssigned`；失敗不更新，也不假造新 `LocalInitialized`／新資源。所有呼叫的區域宣告／寫入保持原來源順序，各真呼叫框架具獨立 slot。原已核准的 `LocalScopeEnded` 仍僅對真正初始化的局部宣告記錄離域。
+- 新增七項原 Checker 真 Rust 正反：多筆更新順序、RHS 子函式先返回再更新、main 多次更新後傳參、兩函式各自更新、第二 RHS 溢位不寫入且真離域、const／錯型別／未知目標 Checker 拒絕、竄改已編譯賦值在執行前 SourceChanged。
+- 函式專項 Gate **102→109**；原 G18 P18.1／P18.3／P18.5 追溯、CI 與 AI-build 同步。**R01/R02 只是首批子集**：仍待控制流程、條件提前返回、所有權混合函式及完整總驗收。原 P18 六項仍 0/6 正式 Passed；最新 PR HEAD 三必要 CI completed/success、作者／base／mergeable 檢查後 Squash merge，新 main 同 SHA 重驗。

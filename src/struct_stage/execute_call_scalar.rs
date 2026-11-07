@@ -26,6 +26,8 @@ enum PrivateScalarCallEvent {
     ParameterBound(DeclarationId, i64),
     /// 每筆經 Checker 核准的純值區域初始化只在真正寫入框架後記錄。
     LocalInitialized(DeclarationId, i64),
+    /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
+    LocalAssigned(DeclarationId, i64),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
     LocalScopeEnded(DeclarationId),
     Returned(i64),
@@ -255,6 +257,23 @@ struct PrivateScalarLocalInit {
     value: PrivateScalarReturnExpr,
 }
 
+/// R01／R02：原 Parser 順序不可被「先宣告、後賦值」重排。
+/// 此執行計畫保留每一筆 Checker 核准的實際宣告與可寫更新。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarLocalStep {
+    Declare(PrivateScalarLocalInit),
+    Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+}
+
+impl PrivateScalarLocalStep {
+    fn expression(&self) -> &PrivateScalarReturnExpr {
+        match self {
+            Self::Declare(init) => &init.value,
+            Self::Assign { value, .. } => value,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarNestedCallee {
     name: String,
@@ -263,6 +282,7 @@ struct PrivateScalarNestedCallee {
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
     local_inits: Vec<PrivateScalarLocalInit>,
+    local_steps: Vec<PrivateScalarLocalStep>,
 }
 
 struct PreparedPrivateScalarCall {
@@ -276,6 +296,7 @@ struct PreparedPrivateScalarCall {
     parameter_return_span: crate::common_ir::NodeSpan,
     return_expr: PrivateScalarReturnExpr,
     root_local_inits: Vec<PrivateScalarLocalInit>,
+    root_local_steps: Vec<PrivateScalarLocalStep>,
     owner_id: Option<DeclarationId>,
     argument: Option<i64>,
     /// 其餘參數從同一原 Checker 函式簽章依宣告順序綁定。
@@ -289,6 +310,7 @@ struct PreparedPrivateScalarCall {
     main_dynamic_call: Option<PrivateScalarReturnExpr>,
     /// main 已核准動態 int 初始化須在執行時逐筆求值，不預算函式結果。
     main_dynamic_inits: Vec<PrivateScalarLocalInit>,
+    main_dynamic_steps: Vec<PrivateScalarLocalStep>,
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
 }
@@ -320,6 +342,7 @@ enum PrivateScalarTask<'a> {
     RecordArgument,
     Apply(char),
     BindLocal(DeclarationId),
+    AssignLocal(DeclarationId),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
@@ -331,8 +354,8 @@ impl PreparedPrivateScalarCall {
     fn prepare_function_locals(
         function: &Function, verified: &VerifiedPrivateSource,
     ) -> Result<(
-        Vec<PrivateScalarLocalInit>, PrivateScalarReturnExpr,
-        crate::common_ir::NodeSpan,
+        Vec<PrivateScalarLocalInit>, Vec<PrivateScalarLocalStep>,
+        PrivateScalarReturnExpr, crate::common_ir::NodeSpan,
     ), PrivateScalarCallPrepareError> {
         let (last, prefix) = function.body.statements.split_last().ok_or(
             PrivateScalarCallPrepareError::Unsupported("普通函式缺少返回"),
@@ -346,10 +369,40 @@ impl PreparedPrivateScalarCall {
             (param.name.clone(), DeclarationId(param.declaration_start))
         ).collect::<BTreeMap<_, _>>();
         let mut local_inits = Vec::new();
+        let mut local_steps = Vec::new();
         for statement in prefix {
+            if let StmtKind::Assign(assign) = &statement.kind {
+                let id = *bindings.get(&assign.name).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "int 賦值目標不是已驗證的本函式宣告或參數",
+                    ),
+                )?;
+                if !verified.plan.declarations.typed_declaration(id)
+                    .is_some_and(|fact| fact.ty == "int" && fact.mutable)
+                    || verified.plan.scalar_hir.assignment(statement.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != id
+                                || fact.resolved.ty != crate::common_ir::ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == statement.start
+                            && matches!(&token.kind,
+                                TokenKind::Name(found) if found == &assign.name))
+                {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "原 Checker int var 賦值缺少完整可寫 HIR／Token",
+                    ));
+                }
+                let value = PrivateScalarReturnExpr::from_checked_bindings(
+                    &assign.expression, &bindings, verified,
+                )?;
+                local_steps.push(PrivateScalarLocalStep::Assign {
+                    declaration: id, value,
+                });
+                continue;
+            }
             let StmtKind::Declare(owner) = &statement.kind else {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "函式前置語句只接通已核准 Copyable int 宣告",
+                    "函式前置語句只接通真 Copyable int 宣告與已核准 var 賦值",
                 ));
             };
             let declaration = DeclarationId(statement.start);
@@ -368,14 +421,16 @@ impl PreparedPrivateScalarCall {
             let value = PrivateScalarReturnExpr::from_checked_bindings(
                 initializer, &bindings, verified,
             )?;
-            local_inits.push(PrivateScalarLocalInit { declaration, value });
+            let init = PrivateScalarLocalInit { declaration, value };
+            local_steps.push(PrivateScalarLocalStep::Declare(init.clone()));
+            local_inits.push(init);
             bindings.insert(owner.name.clone(), declaration);
         }
         let return_span = ret.expression.node_span();
         let result = PrivateScalarReturnExpr::from_checked_bindings(
             &ret.expression, &bindings, verified,
         )?;
-        Ok((local_inits, result, return_span))
+        Ok((local_inits, local_steps, result, return_span))
     }
 
     /// 顯式 expression 工作堆疊＋真函式框架。合法遞迴亦走同一路徑，
@@ -387,17 +442,26 @@ impl PreparedPrivateScalarCall {
         events: &mut Vec<PrivateScalarCallEvent>,
         budget: PrivateScalarExecutionBudget,
         fail_after_root_binding: bool,
-        initial_local_inits: &'a [PrivateScalarLocalInit],
+        initial_local_steps: &'a [PrivateScalarLocalStep],
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
             initialized_locals: Vec::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
-        // 來源同源 int 初始化皆在同一動態工作堆疊依原宣告順序求值。
-        for local in initial_local_inits.iter().rev() {
-            tasks.push(PrivateScalarTask::BindLocal(local.declaration));
-            tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
+        // 原 Checker 語句順序在 LIFO 上反向推入，執行時保持
+        // 宣告、賦值與返回的真實相對次序，不提前求值後續 RHS。
+        for step in initial_local_steps.iter().rev() {
+            match step {
+                PrivateScalarLocalStep::Declare(init) => {
+                    tasks.push(PrivateScalarTask::BindLocal(init.declaration));
+                    tasks.push(PrivateScalarTask::Evaluate(&init.value, false));
+                }
+                PrivateScalarLocalStep::Assign { declaration, value } => {
+                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                }
+            }
         }
         let mut values = Vec::<i64>::new();
         let mut steps = 0usize;
@@ -478,24 +542,37 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_locals.push(id);
                         events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
                     }
+                    PrivateScalarTask::AssignLocal(id) => {
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let slot = frame.values.get_mut(&id).ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        *slot = value;
+                        events.push(PrivateScalarCallEvent::LocalAssigned(id, value));
+                    }
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, result_expr, local_inits): (
+                        let (parameter_ids, result_expr, local_steps): (
                             Vec<DeclarationId>,
                             &PrivateScalarReturnExpr,
-                            &Vec<PrivateScalarLocalInit>,
+                            &Vec<PrivateScalarLocalStep>,
                         ) = if name == self.callee_name {
                             (
                                 self.callee_parameter_ids.clone(),
                                 &self.return_expr,
-                                &self.root_local_inits,
+                                &self.root_local_steps,
                             )
                         } else {
                             let callee = self.nested_callees.iter()
                                 .find(|fun| fun.name == name)
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                            (callee.parameters.clone(), &callee.result, &callee.local_inits)
+                            (callee.parameters.clone(), &callee.result, &callee.local_steps)
                         };
                         if parameter_ids.len() != argc || values.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
@@ -523,9 +600,17 @@ impl PreparedPrivateScalarCall {
                         }
                         tasks.push(PrivateScalarTask::ExitCall);
                         tasks.push(PrivateScalarTask::Evaluate(result_expr, false));
-                        for local in local_inits.iter().rev() {
-                            tasks.push(PrivateScalarTask::BindLocal(local.declaration));
-                            tasks.push(PrivateScalarTask::Evaluate(&local.value, false));
+                        for step in local_steps.iter().rev() {
+                            match step {
+                                PrivateScalarLocalStep::Declare(init) => {
+                                    tasks.push(PrivateScalarTask::BindLocal(init.declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(&init.value, false));
+                                }
+                                PrivateScalarLocalStep::Assign { declaration, value } => {
+                                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                }
+                            }
                         }
                     }
                     PrivateScalarTask::ExitCall => {
@@ -669,7 +754,7 @@ impl PreparedPrivateScalarCall {
             }
         }
         let param = callee.params.first();
-        let (root_local_inits, return_expr, param_return_span) =
+        let (root_local_inits, root_local_steps, return_expr, param_return_span) =
             Self::prepare_function_locals(callee, &verified)?;
         let mut nested_callees = Vec::new();
         for function in verified.functions.iter()
@@ -699,7 +784,7 @@ impl PreparedPrivateScalarCall {
                 }
                 parameter_ids.push(id);
             }
-            let (local_inits, result, result_span) =
+            let (local_inits, local_steps, result, result_span) =
                 Self::prepare_function_locals(function, &verified)?;
             nested_callees.push(PrivateScalarNestedCallee {
                 name: function.name.clone(),
@@ -708,6 +793,7 @@ impl PreparedPrivateScalarCall {
                 result_span,
                 result,
                 local_inits,
+                local_steps,
             });
         }
         // 每個可達或不可達的已編譯函式 Call 必須在同一份
@@ -719,14 +805,14 @@ impl PreparedPrivateScalarCall {
         for (name, expression) in &graph {
             let mut calls = Vec::new();
             expression.collect_calls(&mut calls);
-            let locals = if *name == callee.name {
-                &root_local_inits
+            let steps = if *name == callee.name {
+                &root_local_steps
             } else {
                 &nested_callees.iter().find(|fun| fun.name == *name)
-                    .expect("已收錄的巢狀真函式").local_inits
+                    .expect("已收錄的巢狀真函式").local_steps
             };
-            for local in locals {
-                local.value.collect_calls(&mut calls);
+            for step in steps {
+                step.expression().collect_calls(&mut calls);
             }
             if calls.iter().any(|called|
                 !graph.iter().any(|(candidate, _)| candidate == called)) {
@@ -745,6 +831,9 @@ impl PreparedPrivateScalarCall {
         // 非字面／名稱的合法 main int 初始化可能含算術、真函式
         // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
         let needs_main_local_runtime = main_prefix.iter().any(|statement| {
+            if matches!(&statement.kind, StmtKind::Assign(_)) {
+                return true;
+            }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
                     let mut inner = initializer;
@@ -892,10 +981,12 @@ impl PreparedPrivateScalarCall {
                 | TermKind::Name(_))
         });
         let mut main_dynamic_inits = Vec::new();
+        let mut main_dynamic_steps = Vec::new();
         let main_dynamic_call = if needs_main_local_runtime {
-            let (inits, result, _) =
+            let (inits, steps, result, _) =
                 Self::prepare_function_locals(main, &verified)?;
             main_dynamic_inits = inits;
+            main_dynamic_steps = steps;
             Some(result)
         } else if needs_dynamic {
             let bindings = owners.iter().map(|(name, (id, _))|
@@ -1009,9 +1100,10 @@ impl PreparedPrivateScalarCall {
             verified, original, call_span, callee_span, callee_name,
             parameter_name, parameter_id,
             parameter_return_span: param_return_span, return_expr,
-            root_local_inits, owner_id, argument,
+            root_local_inits, root_local_steps, owner_id, argument,
             additional_arguments, main_owners, nested_callees,
-            main_dynamic_call, main_dynamic_inits, callee_parameter_ids,
+            main_dynamic_call, main_dynamic_inits, main_dynamic_steps,
+            callee_parameter_ids,
         })
     }
 
@@ -1026,6 +1118,7 @@ impl PreparedPrivateScalarCall {
             && self.parameter_return_span == fresh.parameter_return_span
             && self.return_expr == fresh.return_expr
             && self.root_local_inits == fresh.root_local_inits
+            && self.root_local_steps == fresh.root_local_steps
             && self.owner_id == fresh.owner_id
             && self.argument == fresh.argument
             && self.additional_arguments == fresh.additional_arguments
@@ -1033,6 +1126,7 @@ impl PreparedPrivateScalarCall {
             && self.nested_callees == fresh.nested_callees
             && self.main_dynamic_call == fresh.main_dynamic_call
             && self.main_dynamic_inits == fresh.main_dynamic_inits
+            && self.main_dynamic_steps == fresh.main_dynamic_steps
             && self.callee_parameter_ids == fresh.callee_parameter_ids
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
@@ -1105,7 +1199,7 @@ impl PreparedPrivateScalarCall {
             };
             let result = self.evaluate_graph(
                 dynamic_call, &main_frame, &mut events,
-                adjusted_budget, fail_after_binding, &self.main_dynamic_inits,
+                adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
             );
             return Ok(PrivateScalarCallOutcome {
                 result, events, parameter_slots_after_exit: 0,
@@ -1132,7 +1226,7 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, &self.root_local_inits)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, &self.root_local_steps)
             }
         });
         if let Ok(value) = result {
@@ -2683,6 +2777,111 @@ mod g18_private_scalar_call_tests {
             assert!(matches!(PreparedPrivateScalarCall::prepare(src),
                 Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
         }
+    }
+
+
+    #[test]
+    fn g18_r01_r02_函式內多筆可寫純值賦值必依原_checker_語句次序() {
+        let source = "fn calculate(n:int)->int{\nvar current:int = n+1\ncurrent = current+2\ncurrent = current+3\nreturn current\n}\nfn main()->int{\nreturn calculate(5)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.root_local_inits.len(), 1);
+        assert_eq!(checked.root_local_steps.len(), 3);
+        let id = checked.root_local_inits[0].declaration;
+        let result = checked.execute().unwrap();
+        assert_eq!(result.result, Ok(11));
+        assert_eq!(result.parameter_slots_after_exit, 0);
+        let changes = result.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(key, value) if *key == id => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(changes, [8, 11]);
+        assert!(result.events.contains(&PrivateScalarCallEvent::LocalInitialized(id, 6)));
+        assert_eq!(result.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalScopeEnded(key) if *key == id)).count(), 1);
+    }
+
+    #[test]
+    fn g18_r01_r02_賦值右值真呼叫先完成後才寫入持有者() {
+        let source = "fn bump(n:int)->int{\nreturn n+1\n}\nfn work(n:int)->int{\nvar value:int = n\nvalue = bump(value)\nreturn value+2\n}\nfn main()->int{\nreturn work(3)\n}\n";
+        let checked = checked(source);
+        let id = checked.root_local_inits[0].declaration;
+        let result = checked.execute().unwrap();
+        assert_eq!(result.result, Ok(6));
+        let returned = result.events.iter().position(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(4))).unwrap();
+        let assigned = result.events.iter().position(|event|
+            matches!(event, PrivateScalarCallEvent::LocalAssigned(key, 4) if *key == id)).unwrap();
+        assert!(returned < assigned);
+    }
+
+    #[test]
+    fn g18_r01_r02_main_具名_copyable_int_多次更新後才進入普通函式() {
+        let source = "fn identity(n:int)->int{\nreturn n\n}\nfn main()->int{\nvar value:int = 2\nvalue = value+3\nreturn identity(value)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.main_dynamic_steps.len(), 2);
+        let id = checked.main_dynamic_inits[0].declaration;
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalAssigned(id, 5)));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(id)));
+    }
+
+    #[test]
+    fn g18_r01_r02_真巢狀函式可寫宣告不能跨動態框架共用() {
+        let source = "fn work(n:int)->int{\nvar current:int = n\ncurrent = current+1\nreturn leaf(current)\n}\nfn leaf(x:int)->int{\nvar tmp:int = x+1\ntmp = tmp+1\nreturn tmp\n}\nfn main()->int{\nreturn work(1)\n}\n";
+        let checked = checked(source);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        let writes = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(id, v) => Some((*id, *v)),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(writes.len(), 2);
+        assert_ne!(writes[0].0, writes[1].0);
+        assert_eq!((writes[0].1, writes[1].1), (2, 4));
+    }
+
+    #[test]
+    fn g18_r01_r02_賦值右值溢位不得補記後續賦值或假返回() {
+        let source = "fn work(n:int)->int{\nvar current:int = n\ncurrent = current+1\ncurrent = current+9223372036854775807\nreturn current\n}\nfn main()->int{\nreturn work(3)\n}\n";
+        let checked = checked(source);
+        let id = checked.root_local_inits[0].declaration;
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalAssigned(actual, 4) if *actual == id)).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::LocalAssigned(..))).count(), 1);
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert!(out.events.contains(&PrivateScalarCallEvent::LocalScopeEnded(id)));
+    }
+
+    #[test]
+    fn g18_r01_r02_const_重賦值與錯型別必由真_checker_先拒絕() {
+        for source in [
+            "fn work(n:int)->int{\nconst current:int = n\ncurrent = current+1\nreturn current\n}\nfn main()->int{\nreturn work(3)\n}\n",
+            "fn work(n:int)->int{\nvar current:int = n\ncurrent = true\nreturn current\n}\nfn main()->int{\nreturn work(3)\n}\n",
+            "fn work(n:int)->int{\nmissing = n+1\nreturn n\n}\nfn main()->int{\nreturn work(3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(source),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{source}");
+        }
+    }
+
+    #[test]
+    fn g18_r01_r02_已編譯賦值的_checker_身分遭竄改在執行前拒絕() {
+        let source = "fn work(n:int)->int{\nvar value:int = n\nvalue = value+2\nreturn value\n}\nfn main()->int{\nreturn work(3)\n}\n";
+        let mut checked = checked(source);
+        assert_eq!(checked.execute().unwrap().result, Ok(5));
+        if let PrivateScalarLocalStep::Assign { value, .. } = &mut checked.root_local_steps[1] {
+            *value = PrivateScalarReturnExpr::Constant(99);
+        } else {
+            panic!("真 Checker 有第二筆可寫賦值");
+        }
+        assert!(matches!(checked.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 }
