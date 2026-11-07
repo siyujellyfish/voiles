@@ -467,6 +467,13 @@ impl PrivateScalarBoolExpr {
     }
 }
 
+/// 只接受原 Lexer 字串常值或原 Parser／Checker 真 .move() 的 str 初始化。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarStrInitializer {
+    Literal(String),
+    Move { source: String, declaration: DeclarationId },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarBranchAction {
     /// 原 Parser 同一 if 葉分支的多筆已核准語句，保留真正執行順序。
@@ -477,7 +484,8 @@ enum PrivateScalarBranchAction {
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     /// 原 Checker 唯一 str 擁有者；由真 OwnedStrRuntime 配置／逆序釋放。
     DeclareStr {
-        declaration: DeclarationId, name: String, mutable: bool, text: String,
+        declaration: DeclarationId, name: String, mutable: bool,
+        initializer: PrivateScalarStrInitializer,
     },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
@@ -566,7 +574,7 @@ enum PrivateScalarLocalStep {
     Declare(PrivateScalarLocalInit),
     Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
-    DeclareStr { declaration: DeclarationId, name: String, mutable: bool, text: String },
+    DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     EarlyReturn(PrivateScalarEarlyIf),
     Control(PrivateScalarBranchAction),
@@ -669,7 +677,7 @@ enum PrivateScalarTask<'a> {
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
-    DeclareStr(&'a str, bool, &'a str),
+    DeclareStr(&'a str, bool, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
@@ -685,6 +693,36 @@ enum PrivateScalarTask<'a> {
 }
 
 impl PreparedPrivateScalarCall {
+    /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
+    /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
+    fn checked_str_initializer(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarStrInitializer, PrivateScalarCallPrepareError> {
+        if let Ok(text) = private_str_literal(term, &verified.tokens) {
+            return Ok(PrivateScalarStrInitializer::Literal(text));
+        }
+        let source = PreparedPrivateMoveCall::checked_move_name(term, verified)
+            .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                "str 局部所有權只接受原 Lexer 常值或真 .move()",
+            ))?;
+        let declaration = *bindings.get(source).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "str .move() 來源不在本 Checker 已核准詞彙作用域",
+            ),
+        )?;
+        if !verified.plan.declarations.typed_declaration(declaration)
+            .is_some_and(|fact| fact.ty == "str") {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str .move() 來源缺少原 Checker str DeclarationId",
+            ));
+        }
+        Ok(PrivateScalarStrInitializer::Move {
+            source: source.to_owned(), declaration,
+        })
+    }
+
     /// 原 Checker 每一條詞彙區塊的單一宣告仍有獨立生命週期。
     fn scoped_single_declaration(action: PrivateScalarBranchAction)
         -> PrivateScalarBranchAction {
@@ -756,17 +794,13 @@ impl PreparedPrivateScalarCall {
                 )?;
                 if let StmtKind::Declare(owner) = &statement.kind {
                     let id = DeclarationId(statement.start);
-                    if owner.ty == "str" {
-                        // str 非 Copyable，不能以 int/bool 來源名稱重新引用。
-                        local_int.remove(&owner.name);
-                        local_bool.remove(&owner.name);
+                    // 同一張 Checker 名稱表只做 DeclarationId 身分查找；
+                    // str 來源不得被當成 int 值求出，Expr 仍由 HIR 型別拒絕。
+                    local_int.insert(owner.name.clone(), id);
+                    if owner.ty == "bool" {
+                        local_bool.insert(owner.name.clone(), id);
                     } else {
-                        local_int.insert(owner.name.clone(), id);
-                        if owner.ty == "bool" {
-                            local_bool.insert(owner.name.clone(), id);
-                        } else {
-                            local_bool.remove(&owner.name);
-                        }
+                        local_bool.remove(&owner.name);
                     }
                     has_direct_local = true;
                 }
@@ -803,14 +837,12 @@ impl PreparedPrivateScalarCall {
                         "區塊 str 擁有者須具原核准初始化式",
                     ),
                 )?;
-                let text = private_str_literal(init, &verified.tokens).map_err(|_|
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "此切片只執行原 Lexer 合法 UTF-8 字串常值所有者",
-                    ),
+                let initializer = Self::checked_str_initializer(
+                    init, int_bindings, verified,
                 )?;
                 Ok(PrivateScalarBranchAction::DeclareStr {
                     declaration: id, name: owner.name.clone(),
-                    mutable: owner.mutable, text,
+                    mutable: owner.mutable, initializer,
                 })
             }
             StmtKind::Declare(owner) if matches!(owner.ty.as_str(), "int" | "bool") => {
@@ -1115,16 +1147,14 @@ impl PreparedPrivateScalarCall {
                         "函式 str 所有者缺少原核准初始化式",
                     ),
                 )?;
-                let text = private_str_literal(initializer, &verified.tokens)
-                    .map_err(|_|
-                        PrivateScalarCallPrepareError::Unsupported(
-                            "函式 str 所有者僅接通原 Lexer 字串常值",
-                        ),
-                    )?;
+                let initializer = Self::checked_str_initializer(
+                    initializer, &bindings, verified,
+                )?;
                 local_steps.push(PrivateScalarLocalStep::DeclareStr {
-                    declaration, name: owner.name.clone(), mutable: owner.mutable, text,
+                    declaration, name: owner.name.clone(),
+                    mutable: owner.mutable, initializer,
                 });
-                bindings.remove(&owner.name);
+                bindings.insert(owner.name.clone(), declaration);
                 bool_bindings.remove(&owner.name);
                 continue;
             }
@@ -1229,8 +1259,8 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
-                PrivateScalarLocalStep::DeclareStr { name, mutable, text, .. } =>
-                    tasks.push(PrivateScalarTask::DeclareStr(name, *mutable, text)),
+                PrivateScalarLocalStep::DeclareStr { name, mutable, initializer, .. } =>
+                    tasks.push(PrivateScalarTask::DeclareStr(name, *mutable, initializer)),
                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
                 PrivateScalarLocalStep::Control(action) =>
@@ -1381,9 +1411,13 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
                     }
-                    PrivateScalarTask::DeclareStr(name, mutable, text) => {
-                        resources.declare(name, mutable, text)
-                            .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                    PrivateScalarTask::DeclareStr(name, mutable, initializer) => {
+                        match initializer {
+                            PrivateScalarStrInitializer::Literal(text) =>
+                                resources.declare(name, mutable, text),
+                            PrivateScalarStrInitializer::Move { source, .. } =>
+                                resources.move_named(source, name),
+                        }.map_err(PrivateScalarCallRuntimeError::Resource)?;
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
                         let frame = frames.last_mut().ok_or(
@@ -1572,8 +1606,12 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarBranchAction::DeclareBool { declaration, value } => {
                             tasks.push(PrivateScalarTask::BindBool(*declaration, value));
                         }
-                        PrivateScalarBranchAction::DeclareStr { name, mutable, text, .. } => {
-                            tasks.push(PrivateScalarTask::DeclareStr(name, *mutable, text));
+                        PrivateScalarBranchAction::DeclareStr {
+                            name, mutable, initializer, ..
+                        } => {
+                            tasks.push(PrivateScalarTask::DeclareStr(
+                                name, *mutable, initializer,
+                            ));
                         }
                         PrivateScalarBranchAction::Sequence(actions) => {
                             // 原 Parser 分支先後次序必須保持；工作堆疊
@@ -1680,8 +1718,11 @@ impl PreparedPrivateScalarCall {
                                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
                                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
-                                PrivateScalarLocalStep::DeclareStr { name, mutable, text, .. } =>
-                                    tasks.push(PrivateScalarTask::DeclareStr(name, *mutable, text)),
+                                PrivateScalarLocalStep::DeclareStr {
+                                    name, mutable, initializer, ..
+                                } => tasks.push(PrivateScalarTask::DeclareStr(
+                                    name, *mutable, initializer,
+                                )),
                                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
                                 PrivateScalarLocalStep::Control(action) =>
