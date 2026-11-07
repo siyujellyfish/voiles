@@ -5166,6 +5166,25 @@ mod g18_private_scalar_call_tests {
         ]);
     }
 
+    /// 不汙染 F00／P16.1 的 frozen owned_str_runtime::tests 清單；
+    /// R04 新可寫性驗證收歸 G18 專用 Gate。
+    #[test]
+    fn g18_r04_const_move_來源所有權轉交後目標不可寫且_resourceid_只釋放一次() {
+        use crate::owned_str_runtime::{OwnedStrRuntime, StrRuntimeError, ResourceEvent};
+        let mut resources = OwnedStrRuntime::new();
+        resources.declare("source", true, "🪼").unwrap();
+        resources.move_named_as("source", "target", false).unwrap();
+        assert_eq!(resources.read("source"), Err(StrRuntimeError::MovedSource));
+        assert_eq!(resources.read("target"), Ok("🪼"));
+        assert_eq!(resources.assign("target", "改寫"),
+            Err(StrRuntimeError::ImmutableBinding));
+        assert_eq!(resources.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Moved(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
 }
 
 
