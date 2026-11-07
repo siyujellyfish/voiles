@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百六十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百六十八項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r02_分支局部_int_由真_checker_初始化並在離域前讀取",
+    "g18_r02_分支同名遮蔽只寫入區塊內宣告_外部值不變",
+    "g18_r02_巢狀條件使用分支局部_bool_真值且離域",
+    "g18_r02_while_逐輪純值局部宣告配合_continue_逆序清除",
+    "g18_r02_for_每輪局部值及_iterator_各自離域後才下一輪",
+    "g18_r02_已離域局部名稱禁止逃逸且作用域計畫篡改拒絕",
     "g18_r01_普通函式_for_迭代器真值逐輪參與累加",
     "g18_r01_普通函式_for_空半開區間不虛構本體或迭代器",
     "g18_r03_普通函式_for_break_只結束最近一輪並先離域",
