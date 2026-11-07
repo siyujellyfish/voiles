@@ -1154,7 +1154,7 @@ impl PreparedPrivateScalarCall {
                     .expect("已收錄的巢狀真函式").local_steps
             };
             for step in steps {
-                step.expression().collect_calls(&mut calls);
+                step.collect_calls(&mut calls);
             }
             if calls.iter().any(|called|
                 !graph.iter().any(|(candidate, _)| candidate == called)) {
