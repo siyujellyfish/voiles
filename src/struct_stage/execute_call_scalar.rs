@@ -4955,4 +4955,140 @@ mod g18_r06_cross_runtime_tests {
         nested.loans_returned = false;
         assert!(!nested.has_balanced_resource_frame_trace());
     }
+    #[test]
+    fn g18_r06_真_while_for_局部_算術與_str_借用雙執行器結果皆須平衡() {
+        let src = "fn calculate(n:int)->int{\nvar result:int = n\nvar active:bool = true\nwhile(active){\nconst step:int = 2\nresult = result+step\nactive = false\n}\nfor i in 1..3{\nconst copied:int = i\nresult = result+copied\n}\nreturn result\n}\nfn main()->int{\nreturn calculate(3)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Ok(8));
+        assert!(pure.has_balanced_frame_trace());
+        assert_eq!(pure.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalScopeEnded(..)
+        )).count(), 8);
+        let borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap()
+            .execute().unwrap();
+        assert_eq!(borrowed.result, Ok(7));
+        assert!(borrowed.has_balanced_borrow_resource_trace());
+        assert_eq!(borrowed.events, [
+            ResourceEvent::Created(1), ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r06_巢狀同名遮蔽與同步_self_不同資源帳簿均有真退出() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nvar value:int = 9\nif(true){\nvalue = value+2\n}\n}\nreturn value\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Ok(4));
+        assert!(pure.has_balanced_frame_trace());
+        let ids = pure.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::LocalInitialized(id, _) => Some(*id),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(ids.len(), 2);
+        assert_ne!(ids[0], ids[1]);
+        let method = PreparedPrivateSelfMethod::prepare(method()).unwrap()
+            .execute().unwrap();
+        assert_eq!(method.result, Ok(7));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert!(method.ticket_returned);
+    }
+
+    #[test]
+    fn g18_r06_迴圈_break_先釋放局部與遞迴資源耗盡各守真出口() {
+        let src = "fn choose(n:int)->int{\nfor i in 1..8{\nconst local:int = i\nbreak\n}\nreturn n\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Ok(4));
+        assert!(pure.has_balanced_frame_trace());
+        assert_eq!(pure.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalScopeEnded(..)
+        )).count(), 2);
+        let recursive = PreparedPrivateRecursiveStr::prepare(recursive()).unwrap()
+            .execute(PrivateRecursiveStrBudget {
+                max_call_frames: 2, max_steps: 90,
+            }).unwrap();
+        assert_eq!(recursive.result, Err(PrivateRecursiveStrRunError::CallBudget));
+        assert!(recursive.has_balanced_resource_frame_trace());
+        assert!(recursive.loans_returned);
+    }
+
+    #[test]
+    fn g18_r06_區塊算術溢位與_str_借用中途故障均禁止虛構返回() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nconst increment:int = 9223372036854775807\nvalue = value+increment\n}\nreturn value\n}\nfn main()->int{\nreturn choose(1)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(pure.has_balanced_frame_trace());
+        assert!(!pure.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::Returned(_))));
+        let borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap()
+            .execute_with_fault(true).unwrap();
+        assert_eq!(borrowed.result, Err(PrivateCallBorrowRuntimeError::InjectedFailure));
+        assert!(borrowed.has_balanced_borrow_resource_trace());
+        assert!(!borrowed.call_exited);
+    }
+
+    #[test]
+    fn g18_r06_純值區塊離域偽造及_move_borrow_資源偽造皆失敗() {
+        let src = "fn choose(n:int)->int{\nif(true){\nconst local:int = 3\n}\nreturn n\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        let mut pure = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute().unwrap();
+        assert_eq!(pure.result, Ok(4));
+        assert!(pure.has_balanced_frame_trace());
+        pure.events.insert(0, PrivateScalarCallEvent::LocalScopeEnded(DeclarationId(0)));
+        assert!(!pure.has_balanced_frame_trace());
+        let mut mixed = PreparedPrivateMixedOwnershipCall::prepare(move_borrow())
+            .unwrap().execute().unwrap();
+        assert!(mixed.has_balanced_mixed_resource_trace());
+        mixed.ticket_returned = false;
+        assert!(!mixed.has_balanced_mixed_resource_trace());
+    }
+
+    #[test]
+    fn g18_r06_合法迴圈中提前返回清理_另一條資源模型仍歸還票據() {
+        let src = "fn choose(n:int)->int{\nfor i in 1..3{\nconst temporary:int = i\nreturn temporary+n\n}\nreturn n\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(pure.result, Ok(5));
+        assert!(pure.has_balanced_frame_trace());
+        assert_eq!(pure.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_)
+        )).count(), 1);
+        let borrowed = PreparedPrivateCallBorrow::prepare(borrow()).unwrap()
+            .execute().unwrap();
+        assert_eq!(borrowed.result, Ok(7));
+        assert!(borrowed.has_balanced_borrow_resource_trace());
+        assert!(borrowed.ticket_returned);
+    }
+
+    #[test]
+    fn g18_r06_巢狀_while_預算耗盡與_self_故障無假成功返回() {
+        let src = "fn choose(n:int)->int{\nwhile(true){\nconst temporary:int = 2\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(src).unwrap()
+            .execute_with_budget(PrivateScalarExecutionBudget {
+                max_call_frames: 5, max_steps: 32,
+            }).unwrap();
+        assert_eq!(pure.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(pure.has_balanced_frame_trace());
+        assert!(!pure.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::Returned(_))));
+        let method = PreparedPrivateSelfMethod::prepare(method()).unwrap()
+            .execute_with_fault(true).unwrap();
+        assert_eq!(method.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert!(!method.method_exited);
+    }
+
+    #[test]
+    fn g18_r06_靜態逃逸拒絕不得取代_true_runtime_安全交叉驗證() {
+        let invalid = "fn choose(n:int)->int{\nfor i in 0..3{\nconst hidden:int = i\n}\nreturn hidden\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let valid = "fn choose(n:int)->int{\nfor i in 0..3{\nconst hidden:int = i\ncontinue\n}\nreturn n\n}\nfn main()->int{\nreturn choose(4)\n}\n";
+        let pure = PreparedPrivateScalarCall::prepare(valid).unwrap()
+            .execute().unwrap();
+        assert_eq!(pure.result, Ok(4));
+        assert!(pure.has_balanced_frame_trace());
+        let mixed = PreparedPrivateMixedOwnershipCall::prepare(move_borrow())
+            .unwrap().execute().unwrap();
+        assert_eq!(mixed.result, Ok(11));
+        assert!(mixed.has_balanced_mixed_resource_trace());
+    }
+
 }
