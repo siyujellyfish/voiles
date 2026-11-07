@@ -3229,4 +3229,116 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r03_具名_bool_true_提前_return_不可再執行未達返回路徑() {
+        let source = "fn choose(n:int)->int{\nvar flag:bool = true\nif(flag){\nreturn n+1\n}\nreturn n+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let plan = checked(source);
+        assert_eq!(plan.root_local_steps.len(), 2);
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(4));
+        assert_eq!(outcome.parameter_slots_after_exit, 0);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ConditionalChecked(true))).count(), 1);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(4))).count(), 1);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(5))));
+    }
+
+    #[test]
+    fn g18_r03_具名_bool_false_不走提前_return_而正常執行後段() {
+        let source = "fn choose(n:int)->int{\nconst flag:bool = false\nif(flag){\nreturn n+1\n}\nreturn n+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let plan = checked(source);
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(5));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ConditionalChecked(false))).count(), 1);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(4))));
+    }
+
+    #[test]
+    fn g18_r03_已核准_var_bool_更新後真_if_重讀而非使用宣告舊值() {
+        let source = "fn choose(n:int)->int{\nvar flag:bool = false\nflag = true\nif(flag){\nreturn n+1\n}\nreturn n+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let plan = checked(source);
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(4));
+        assert!(outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::BoolAssigned(_, true))));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ConditionalChecked(true))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_else_if_依真_checker_條件順序選擇唯一提前返回() {
+        let source = "fn choose(n:int)->int{\nvar first:bool = false\nvar second:bool = true\nif(first){\nreturn n+1\n}else if(second){\nreturn n+2\n}else{\nreturn n+3\n}\nreturn n+4\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let plan = checked(source);
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(5));
+        let checks = outcome.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ConditionalChecked(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [false, true]);
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(6 | 7))));
+    }
+
+    #[test]
+    fn g18_r03_巢狀子函式提前返回只退出該函式不跳過父框架返回() {
+        let source = "fn leaf(n:int)->int{\nvar flag:bool = true\nif(flag){\nreturn n+1\n}\nreturn n+2\n}\nfn outer(n:int)->int{\nconst result:int = leaf(n)\nreturn result+3\n}\nfn main()->int{\nreturn outer(4)\n}\n";
+        let plan = checked(source);
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(8));
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::FunctionEntered(_))).count(), 2);
+        assert_eq!(outcome.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(5 | 8))).count(), 2);
+    }
+
+    #[test]
+    fn g18_r03_提前返回分支溢位只退出真的已初始化作用域() {
+        let source = "fn choose(n:int)->int{\nvar flag:bool = true\nvar temp:int = n+1\nif(flag){\nreturn temp+9223372036854775807\n}\nreturn 0\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let plan = checked(source);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert!(out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::BoolScopeEnded(_))));
+        assert!(out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::LocalScopeEnded(_))));
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(out.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "choose".into(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_r03_未宣告_bool_及_const_bool_重綁由_checker_靜態拒絕() {
+        for source in [
+            "fn choose(n:int)->int{\nconst flag:bool = false\nflag = true\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(3)\n}\n",
+            "fn choose(n:int)->int{\nif(missing){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(3)\n}\n",
+            "fn choose(n:int)->int{\nif(n){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(source),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{source}");
+        }
+    }
+
+    #[test]
+    fn g18_r03_篡改已編譯分支條件前須拒絕任何真框架() {
+        let source = "fn choose(n:int)->int{\nvar flag:bool = true\nif(flag){return n+1}\nreturn n+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let mut plan = checked(source);
+        assert_eq!(plan.execute().unwrap().result, Ok(4));
+        if let PrivateScalarLocalStep::EarlyReturn(branch) = &mut plan.root_local_steps[1] {
+            branch.condition = PrivateScalarBoolExpr::Constant(false);
+        } else {
+            panic!("原 Checker 提供合法 if Return 計畫");
+        }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
