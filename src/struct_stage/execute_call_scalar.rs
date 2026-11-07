@@ -6122,7 +6122,7 @@ mod g18_r06_cross_runtime_tests {
         use crate::owned_str_runtime::ResourceEvent as R;
         let src = "fn observe(item:str,n:int)->int{\nreturn n+1\n}\nfn run(n:int)->int{\nconst source:str = \"呼叫預算\"\nreturn observe(source,n)\n}\nfn main()->int{\nreturn run(2)\n}\n";
         let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute_with_budget(
-            PrivateScalarExecutionBudget {max_call_frames: 2, max_steps: 100}
+            PrivateScalarExecutionBudget {max_call_frames: 1, max_steps: 100}
         ).unwrap();
         assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
         assert!(out.has_balanced_frame_trace());
