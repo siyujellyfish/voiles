@@ -1116,7 +1116,7 @@ impl PreparedPrivateScalarCall {
                                 break;
                             }
                             match current.when_false.as_ref() {
-                                Some(PrivateScalarEarlyElse::Return(value)) => {
+                                Some(PrivateScalarEarlyElse::Branch(value)) => {
                                     selected = Some(value);
                                     break;
                                 }
@@ -1126,16 +1126,28 @@ impl PreparedPrivateScalarCall {
                                 None => break,
                             }
                         }
-                        if let Some(returned) = selected {
-                            // 取消本函式尚未真正執行的預備語句與預設
-                            // 最後 return，保留此真框架的 ExitCall。
-                            // 函式實參內另有巢狀呼叫工作項時，此處
-                            // 不會抹除所屬父函式工作項。
-                            while !tasks.is_empty()
-                                && !matches!(tasks.last(), Some(PrivateScalarTask::ExitCall)) {
-                                tasks.pop();
+                        if let Some(selected) = selected {
+                            match selected {
+                                PrivateScalarBranchAction::Return(returned) => {
+                                    // 只取消此函式後續不可達語句，保留本次
+                                    // ExitCall 與父呼叫者的後續工作。
+                                    while !tasks.is_empty()
+                                        && !matches!(tasks.last(),
+                                            Some(PrivateScalarTask::ExitCall)) {
+                                        tasks.pop();
+                                    }
+                                    tasks.push(PrivateScalarTask::Evaluate(returned, false));
+                                }
+                                PrivateScalarBranchAction::AssignInt { declaration, value } => {
+                                    // 分支更新不構成函式 return；原來源
+                                    // 後續語句仍須真正執行。
+                                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                }
+                                PrivateScalarBranchAction::AssignBool { declaration, value } => {
+                                    tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
+                                }
                             }
-                            tasks.push(PrivateScalarTask::Evaluate(returned, false));
                         }
                     }
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
