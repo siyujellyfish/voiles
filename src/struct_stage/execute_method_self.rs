@@ -26,6 +26,8 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+    /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
+    main_local_slots_after_exit: usize,
 }
 
 impl PrivateSelfMethodOutcome {
@@ -33,6 +35,7 @@ impl PrivateSelfMethodOutcome {
     /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
     fn has_balanced_self_borrow_trace(&self) -> bool {
         self.ticket_returned
+            && self.main_local_slots_after_exit == 0
             && self.events.is_empty()
             && crate::owned_str_runtime::event_trace_balanced(&self.events)
             && (!self.method_exited || self.method_entered)
@@ -80,6 +83,11 @@ struct PreparedPrivateSelfMethod {
     /// 不把相同數值當成相同參數，每個 DeclarationId 各自綁定。
     argument_binding: Option<(DeclarationId, i64)>,
     additional_argument_bindings: Vec<(DeclarationId, i64)>,
+    /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
+    /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
+    main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
+    /// 與方法所有實參原來源順序一一對應；None 是 int 字面值。
+    argument_sources: Vec<Option<DeclarationId>>,
 }
 
 impl PreparedPrivateSelfMethod {
@@ -123,51 +131,154 @@ impl PreparedPrivateSelfMethod {
         let field_value = crate::syntax_shared::integer_i64(raw).map_err(|_|
             PrivateSelfMethodPrepareError::Unsupported("欄位 i64 常值無法安全表示"),
         )?;
-        // S20 的同名方法可以有不同完整參數簽章。這裡只接通
-        // 原 main 真正呼叫的零參數候選；絕不可因宣告在第一個
-        // 位置便執行另一個多載版本或借用錯誤的 self 權限。
+        // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
+        // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
+        // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
         let main = &verified.functions[0];
-        let (called_method, call_arguments) = match main.body.statements.get(1) {
-            Some(statement) => match &statement.kind {
-                StmtKind::Return(returned) => match &returned.expression.kind {
-                    TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice()),
-                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "本期只接通真 return 的同步方法呼叫",
-                    )),
-                },
+        let last_main_statement = main.body.statements.last().ok_or(
+            PrivateSelfMethodPrepareError::Unsupported("main 缺少真同步方法返回"),
+        )?;
+        let (called_method, call_arguments) = match &last_main_statement.kind {
+            StmtKind::Return(returned) => match &returned.expression.kind {
+                TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice()),
                 _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "本期主函式需以真方法呼叫返回",
+                    "main 最後 return 須是真同步方法呼叫",
                 )),
             },
-            None => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "主函式缺少真同步方法呼叫",
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main 最後語句須 return 真同步方法",
             )),
         };
-        // 目前僅真正求值原 Parser／Checker／Lexer 核准的 Copyable int
-        // 常值；全部實參以原來源次序綁定，不假設固定最大參數數量。
-        let mut int_arguments = Vec::<i64>::new();
-        for arg in call_arguments {
-            let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
-                &arg.kind else {
+        if main.body.statements.len() < 2 {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main 需要先建立接收者再 return 真方法",
+            ));
+        }
+        let mut main_int_locals = Vec::<(
+            String, DeclarationId, i64, Option<DeclarationId>,
+        )>::new();
+        for statement in main.body.statements.iter().skip(1)
+            .take(main.body.statements.len() - 2) {
+            let StmtKind::Declare(local) = &statement.kind else {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法實參僅接通原 Checker 的 Copyable int 常值",
+                    "此同步方法子集只接通 main 已驗證 int 局部宣告",
                 ));
             };
-            if verified.plan.scalar_hir.expression(arg.node_span())
-                .is_none_or(|fact| fact.ty != ScalarType::Int)
-                || !verified.tokens.iter().any(|token|
-                    token.start == arg.start && token.end == arg.end
-                        && matches!(&token.kind, TokenKind::Integer(actual) if actual == raw)
-                ) {
+            let id = DeclarationId(statement.start);
+            let initializer = local.initializer.as_ref().ok_or(
+                PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 局部須由原 Checker 證明已初始化",
+                ),
+            )?;
+            if local.ty != "int"
+                || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
+                || verified.plan.scalar_hir.expression(initializer.node_span())
+                    .is_none_or(|fact| fact.ty != ScalarType::Int) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 實參缺少正式 Checker HIR／原 Lexer token",
+                    "main int 局部缺少原 Checker 宣告與 TypedHIR",
                 ));
             }
-            int_arguments.push(crate::syntax_shared::integer_i64(raw).map_err(|_|
-                PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 實參常值無法安全表示",
-                )
-            )?);
+            let (value, source) = match &initializer.kind {
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                    if !verified.tokens.iter().any(|token|
+                        token.start == initializer.start && token.end == initializer.end
+                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部字面值缺少原 Lexer token",
+                        ));
+                    }
+                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部初始值超過 i64",
+                        ),
+                    )?, None)
+                }
+                TermKind::Name(name) => {
+                    let (_, source_id, value, _) = main_int_locals.iter().rev()
+                        .find(|(old, _, _, _)| old == name)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部名稱來源尚未完成合法宣告",
+                        ))?;
+                    if verified.plan.scalar_hir.reference(initializer.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != *source_id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == initializer.start && token.end == initializer.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 局部 Copyable 名稱缺少原 Reference HIR",
+                        ));
+                    }
+                    (*value, Some(*source_id))
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 局部只接通已驗證整數常值及已初始化 Copyable 名稱",
+                )),
+            };
+            if main_int_locals.iter().any(|(old, old_id, _, _)|
+                old == &local.name || old_id == &id) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "同作用域局部來源或 DeclarationId 不可重複",
+                ));
+            }
+            main_int_locals.push((local.name.clone(), id, value, source));
+        }
+        // 每個方法 int 實參可由已驗證的 main 局部讀取，但必須
+        // 使用原 Reference HIR 綁定的真 DeclarationId；非文字猜測。
+        let mut int_arguments = Vec::<i64>::new();
+        let mut argument_sources = Vec::<Option<DeclarationId>>::new();
+        for arg in call_arguments {
+            if verified.plan.scalar_hir.expression(arg.node_span())
+                .is_none_or(|fact| fact.ty != ScalarType::Int) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法 int 實參缺少原 Checker TypedHIR",
+                ));
+            }
+            let (value, source) = match &arg.kind {
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                    if !verified.tokens.iter().any(|token|
+                        token.start == arg.start && token.end == arg.end
+                            && matches!(&token.kind, TokenKind::Integer(found) if found == raw)
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 字面實參缺少原 Lexer token",
+                        ));
+                    }
+                    (crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 實參超出 i64",
+                        ),
+                    )?, None)
+                }
+                TermKind::Name(name) => {
+                    let (_, id, value, _) = main_int_locals.iter().rev()
+                        .find(|(old, _, _, _)| old == name)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 實參不是 main 已驗證的 Copyable 局部",
+                        ))?;
+                    if verified.plan.scalar_hir.reference(arg.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != *id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == arg.start && token.end == arg.end
+                                && matches!(&token.kind, TokenKind::Name(found) if found == name)
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 名稱實參缺少原 Checker Reference HIR",
+                        ));
+                    }
+                    (*value, Some(*id))
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法實參只接通已核准 int 常值或具名 Copyable 局部",
+                )),
+            };
+            int_arguments.push(value);
+            argument_sources.push(source);
         }
         // 只選與原呼叫數量及已驗證 int 型別完全一致的候選。
         let mut matches = definition.methods_named(called_method)
@@ -389,7 +500,7 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         if main.name != "main" || main.result_ty != "int"
-            || !main.params.is_empty() || main.body.statements.len() != 2 {
+            || !main.params.is_empty() || main.body.statements.len() < 2 {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "主函式限先建立真正結構再直接返回方法呼叫",
             ));
@@ -419,7 +530,7 @@ impl PreparedPrivateSelfMethod {
                 "不得用隱含結構複製或未驗證的其它來源當接收者",
             ));
         }
-        let StmtKind::Return(call_return) = &main.body.statements[1].kind else {
+        let StmtKind::Return(call_return) = &last_main_statement.kind else {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "主函式必須直接 return 真方法呼叫",
             ));
@@ -467,6 +578,7 @@ impl PreparedPrivateSelfMethod {
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
+            main_int_locals, argument_sources,
         })
     }
 
@@ -484,6 +596,8 @@ impl PreparedPrivateSelfMethod {
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.argument_binding == fresh.argument_binding
             && self.additional_argument_bindings == fresh.additional_argument_bindings
+            && self.main_int_locals == fresh.main_int_locals
+            && self.argument_sources == fresh.argument_sources
             && self.verified.plan.method_safety == fresh.verified.plan.method_safety
             && self.verified.plan.declarations.call_borrows
                 == fresh.verified.plan.declarations.call_borrows
