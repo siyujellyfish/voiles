@@ -685,6 +685,10 @@ impl PreparedPrivateScalarCall {
                     declaration, value,
                 });
                 bool_bindings.insert(owner.name.clone(), declaration);
+                // 共用原 Checker DeclarationId 名稱表同時供正式函式
+                // bool 實參使用；型別仍由 Reference HIR 唯一核對，
+                // 不會將 bool 當成 int 或重新解析來源。
+                bindings.insert(owner.name.clone(), declaration);
                 continue;
             }
             if owner.ty != "int"
