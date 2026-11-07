@@ -3472,4 +3472,109 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r04_已核准_bool_true_函式實參與_int_返回共用真框架() {
+        let source = "fn choose(flag:bool)->int{\nif(flag){return 4}\nreturn 7\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.callee_parameter_is_bool, [true]);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolArgumentEvaluated(true))).count(), 1);
+        assert!(out.events.contains(&PrivateScalarCallEvent::BoolParameterBound(
+            checked.callee_parameter_ids[0], true,
+        )));
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))));
+    }
+
+    #[test]
+    fn g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n-1\n}\nfn main()->int{\nreturn choose(false,8)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.callee_parameter_is_bool, [true, false]);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        let order = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::BoolArgumentEvaluated(false) => Some("bool"),
+            PrivateScalarCallEvent::ArgumentEvaluated(8) => Some("int"),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(order, ["bool", "int"]);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolParameterBound(..))).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(..))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_巢狀普通函式真_bool_參數不被誤讀成父整數槽() {
+        let source = "fn inner(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n-1\n}\nfn outer(flag:bool,n:int)->int{\nreturn inner(flag,n+2)\n}\nfn main()->int{\nreturn outer(true,4)\n}\n";
+        let plan = checked(source);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolParameterBound(_,true))).count(), 2);
+        let entered = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()), _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["outer", "inner"]);
+    }
+
+    #[test]
+    fn g18_r04_main_變動具名_bool_正值先更新再真正當實參() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+3}\nreturn n+4\n}\nfn main()->int{\nvar switched:bool = false\nswitched = true\nreturn choose(switched,5)\n}\n";
+        let checked = checked(source);
+        assert_eq!(checked.main_dynamic_steps.len(), 2);
+        let out = checked.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::BoolAssigned(_,true))));
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolArgumentEvaluated(true))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_bool_混合參數進入後故障只退出本次真框架() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n+2\n}\nfn main()->int{\nreturn choose(true,5)\n}\n";
+        let checked = checked(source);
+        let out = checked.execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::InjectedFailure));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::BoolParameterBound(_,true))).count(), 1);
+        assert_eq!(out.events.iter().filter(|event|
+            matches!(event, PrivateScalarCallEvent::ParameterBound(_,5))).count(), 1);
+        assert!(!out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert_eq!(out.events.last(), Some(&PrivateScalarCallEvent::FunctionExited {
+            name: "choose".into(), returned: false,
+        }));
+    }
+
+    #[test]
+    fn g18_r04_bool_參數不是_int_隱含轉型_原_checker_型別優先拒絕() {
+        for source in [
+            "fn choose(flag:bool,n:int)->int{\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(1,2)\n}\n",
+            "fn choose(flag:bool,n:int)->int{\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(true,false)\n}\n",
+            "fn choose(flag:bool,n:int)->int{\nif(flag){return n}\nreturn 0\n}\nfn main()->int{\nreturn choose(true)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(source),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{source}");
+        }
+    }
+
+    #[test]
+    fn g18_r04_bool_參數綁定靜態型別被竄改前必拒絕() {
+        let source = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n+2\n}\nfn main()->int{\nreturn choose(true,5)\n}\n";
+        let mut checked = checked(source);
+        assert_eq!(checked.execute().unwrap().result, Ok(6));
+        checked.callee_parameter_is_bool[0] = false;
+        assert!(matches!(checked.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
