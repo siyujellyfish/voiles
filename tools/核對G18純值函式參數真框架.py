@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百零二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百零九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r04_原_checker_str_move_真跨函式_唯一_utf8_交接",
+    "g18_r04_父函式局部_整筆_move_交給子函式同一資源",
+    "g18_r04_同次真_call_獨立_move_及_const_str_借用各守原身分",
+    "g18_r05_跨框架_move_已完成綁定後故障由子框架釋放",
+    "g18_r05_第二實參溢位時_move_仍由原呼叫者唯一釋放",
+    "g18_r04_跨函式_move_真來源被_cherker_禁止重複及隱含複製",
+    "g18_r05_真跨函式移動事件篡改來源或資源編號均拒絕",
     "g18_r04_真函式_str_字面值覆寫只釋放被取代資源一次",
     "g18_r04_真函式_move_覆寫舊目標與來源重新初始化不複製",
     "g18_r04_選中_if_字串覆寫原子提交_未選分支零資源事件",
