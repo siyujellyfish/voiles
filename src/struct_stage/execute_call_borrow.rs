@@ -950,6 +950,43 @@ mod g18_private_call_borrow_tests {
             Err(PrivateCallBorrowPrepareError::Unsupported(_))));
     }
 
+
+    #[test]
+    fn g18_r05_共享與獨占真借用返回或故障皆須資源票據聯合平衡() {
+        for declaration in ["const owner:str", "var owner:str"] {
+            let source = format!(
+                "fn measure(item:str)->int{{\nreturn 7\n}}\nfn main()->int{{\n{} = \"來源🪼\"\nreturn measure(owner)\n}}\n",
+                declaration,
+            );
+            let prepared = checked(&source);
+            for injected in [false, true] {
+                let out = prepared.execute_with_fault(injected).unwrap();
+                assert!(out.has_balanced_borrow_resource_trace());
+                assert!(out.ticket_returned);
+                assert_eq!(out.parameter_slots_after_exit, 0);
+                assert_eq!(out.call_exited, !injected);
+            }
+        }
+    }
+
+    #[test]
+    fn g18_r05_真借用結果偽造已退出未歸票據或遺失資源一律拒絕() {
+        let source = "fn measure(item:str)->int{\nreturn 7\n}\nfn main()->int{\nconst owner:str = \"甲\"\nreturn measure(owner)\n}\n";
+        let mut out = checked(source).execute().unwrap();
+        assert!(out.has_balanced_borrow_resource_trace());
+        out.ticket_returned = false;
+        assert!(!out.has_balanced_borrow_resource_trace());
+        let mut out = checked(source).execute().unwrap();
+        out.call_entered = false;
+        assert!(!out.has_balanced_borrow_resource_trace());
+        let mut out = checked(source).execute().unwrap();
+        out.events.pop();
+        assert!(!out.has_balanced_borrow_resource_trace());
+        let mut out = checked(source).execute().unwrap();
+        out.parameter_slots_after_exit = 1;
+        assert!(!out.has_balanced_borrow_resource_trace());
+    }
+
 }
 
 
@@ -2078,4 +2115,32 @@ mod g18_private_mixed_ownership_call_tests {
         assert!(matches!(plan.execute(),
             Err(PrivateMixedOwnershipPrepareError::SourceChanged)));
     }
+
+    #[test]
+    fn g18_r05_同次真_move_與_borrow_兩資源及票據共同平衡() {
+        for source in [move_first(), borrow_first()] {
+            let plan = checked(source);
+            let out = plan.execute().unwrap();
+            assert!(out.has_balanced_mixed_resource_trace());
+            assert_eq!(out.events.iter().filter(|event|
+                matches!(event, ResourceEvent::Created(_))).count(), 2);
+            assert_eq!(out.events.iter().filter(|event|
+                matches!(event, ResourceEvent::Released(_))).count(), 2);
+        }
+    }
+
+    #[test]
+    fn g18_r05_混合所有權偽造資源數量或借用未歸不能通過聯合稽核() {
+        let plan = checked(move_first());
+        let mut out = plan.execute().unwrap();
+        out.ticket_returned = false;
+        assert!(!out.has_balanced_mixed_resource_trace());
+        let mut out = plan.execute().unwrap();
+        out.events.truncate(0);
+        assert!(!out.has_balanced_mixed_resource_trace());
+        let mut out = plan.execute().unwrap();
+        out.observed_borrowed_bytes = None;
+        assert!(!out.has_balanced_mixed_resource_trace());
+    }
+
 }
