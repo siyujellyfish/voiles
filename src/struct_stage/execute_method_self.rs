@@ -28,6 +28,18 @@ struct PrivateSelfMethodOutcome {
     ticket_returned: bool,
 }
 
+impl PrivateSelfMethodOutcome {
+    /// 只涵蓋目前 Checker 核准的 int 欄位同步 self 方法。
+    /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
+    fn has_balanced_self_borrow_trace(&self) -> bool {
+        self.ticket_returned
+            && self.events.is_empty()
+            && crate::owned_str_runtime::event_trace_balanced(&self.events)
+            && (!self.method_exited || self.method_entered)
+            && self.method_exited == self.result.is_ok()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateSelfIntReturn {
     Field,
@@ -550,12 +562,13 @@ impl PreparedPrivateSelfMethod {
         };
         let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
         let events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
-        if !crate::owned_str_runtime::event_trace_balanced(&events) {
+        let outcome = PrivateSelfMethodOutcome {
+            result, events, method_entered, method_exited, ticket_returned,
+        };
+        if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        Ok(PrivateSelfMethodOutcome {
-            result, events, method_entered, method_exited, ticket_returned,
-        })
+        Ok(outcome)
     }
 }
 
@@ -1002,6 +1015,39 @@ mod g18_private_method_self_tests {
         let invalid = method_param_source("return n+true", "13");
         assert!(matches!(PreparedPrivateSelfMethod::prepare(&invalid),
             Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
+    #[test]
+    fn g18_r05_同步共享與獨占_self_正常及故障均歸還真票據且零假資源() {
+        for source in [
+            normal(),
+            "struct Counter{\nvar count:int = 1\nfn set()->int{\nself.count = 9\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.set()\n}\n",
+        ] {
+            let plan = checked(source);
+            for fail in [false, true] {
+                let out = plan.execute_with_fault(fail).unwrap();
+                assert!(out.has_balanced_self_borrow_trace());
+                assert!(out.ticket_returned);
+                assert_eq!(out.method_exited, !fail);
+                assert!(out.events.is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn g18_r05_同步_self_偽造未歸票據或無來源資源事件必被守門拒絕() {
+        let plan = checked(normal());
+        let mut out = plan.execute().unwrap();
+        out.ticket_returned = false;
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = plan.execute().unwrap();
+        out.method_entered = false;
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = plan.execute().unwrap();
+        out.events.push(crate::owned_str_runtime::ResourceEvent::Created(1));
+        out.events.push(crate::owned_str_runtime::ResourceEvent::Released(1));
+        assert!(!out.has_balanced_self_borrow_trace());
     }
 
 }
