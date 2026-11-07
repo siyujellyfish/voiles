@@ -419,6 +419,15 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_f_同一_int_參數左右加法仍取同一真框架值",
+        "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法真依原多載簽章選取並計算兩個獨立參數",
+        "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法可只返回第二參數而不錯讀第一或_self_",
+        "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法依實參順序正確執行減法",
+        "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法加法溢位仍歸還唯一真_self_票據",
+        "struct_stage::g18_private_method_self_tests::g18_f_多_int_實參方法故障不殘留形參且重新呼叫不受污染",
+        "struct_stage::g18_private_method_self_tests::g18_f_竄改第二方法實參值或宣告身分均於真資源前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_f_三個_int_方法參數按原宣告位置獨立綁定返回第三個",
+        "struct_stage::g18_private_method_self_tests::g18_f_多_int_方法來源錯型別與不存在參數須原_checker_或安全準備拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步共享與獨占_self_正常及故障均歸還真票據且零假資源",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步_self_偽造未歸票據或無來源資源事件必被守門拒絕",
         "struct_stage::g18_private_method_self_tests::g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",

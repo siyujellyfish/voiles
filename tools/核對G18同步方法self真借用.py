@@ -1,14 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 四十項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 四十八項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 案例 = (
+    "g18_f_雙_int_方法真依原多載簽章選取並計算兩個獨立參數",
+    "g18_f_雙_int_方法可只返回第二參數而不錯讀第一或_self_",
+    "g18_f_雙_int_方法依實參順序正確執行減法",
+    "g18_f_雙_int_方法加法溢位仍歸還唯一真_self_票據",
+    "g18_f_多_int_實參方法故障不殘留形參且重新呼叫不受污染",
+    "g18_f_竄改第二方法實參值或宣告身分均於真資源前拒絕",
+    "g18_f_多_int_方法來源錯型別與不存在參數須原_checker_或安全準備拒絕",
+    "g18_f_三個_int_方法參數按原宣告位置獨立綁定返回第三個",
     "g18_r05_同步共享與獨占_self_正常及故障均歸還真票據且零假資源",
     "g18_r05_同步_self_偽造未歸票據或無來源資源事件必被守門拒絕",
     "g18_f_真同步方法_self_使用原_checker_共享票據讀取實際_int_欄位",
@@ -30,7 +39,7 @@ from pathlib import Path
     "g18_f_零參數多載的獨占_self_真的寫入而非調用具參數共享候選",
     "g18_f_零參數多載方法中途故障仍先歸還原_self_票據",
     "g18_f_竄改已選多載的方法來源跨度與借用種類須在配置前拒絕",
-    "g18_f_未接通的雙參數來源加法仍拒絕_不假造動態值",
+    "g18_f_同一_int_參數左右加法仍取同一真框架值",
     "g18_f_共享_self_真欄位加法按原_checker_hir_求值",
     "g18_f_獨占_self_寫入後真欄位減法按最新值計算",
     "g18_f_共享_self_真欄位加法溢位受控錯誤且歸還票據",
@@ -74,8 +83,23 @@ def main() -> int:
     if missing:
         print("G18 self 借用真來源正反缺漏：" + "、".join(missing), file=sys.stderr)
         return 1
-    print(f"G18 真同步方法 self BorrowTicket：{len(required)}/{len(required)}；"
-          "方法多參數／複雜算式與 async 正向執行尚未完成，原 P18.6 不得正式 Passed。")
+    # 僅 --list 並不能證明真正執行；逐項要求同一 Rust binary
+    # 的真 Parser／Checker→self BorrowTicket 正反均實際成功且零忽略。
+    run = subprocess.run(
+        [str(args.test_bin.resolve()), "--test-threads=2",
+         "struct_stage::g18_private_method_self_tests::"],
+        text=True, encoding="utf-8", capture_output=True, check=False,
+    )
+    match = re.search(
+        r"test result: ok\.\s+(\d+) passed;\s+0 failed;\s+0 ignored;",
+        run.stdout + run.stderr,
+    )
+    if run.returncode or not match or int(match.group(1)) != len(required):
+        print("G18 同步方法 self 真執行測試未全數通過："
+              + run.stdout + run.stderr, file=sys.stderr)
+        return 1
+    print(f"G18 真同步方法 self BorrowTicket：{len(required)}/{len(required)} 真執行通過；"
+          "多參數 int 已接通受限子集，複雜型別及 async 尚未完成，原 P18.6 不得正式 Passed。")
     return 0
 
 
