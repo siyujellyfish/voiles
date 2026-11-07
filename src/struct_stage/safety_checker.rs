@@ -829,6 +829,99 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(writes)
     }
 
+    /// 方法內純值局部的最小安全證明：借用 self 始終只讀，
+    /// 不含任何可移動／可借用資源、不設控制分支或巢狀函式，
+    /// 將原參數與合法局部置入**同一 Checker Scopes／SafetyState**
+    /// 後使用 evaluate() 的正式 ScalarHIR 記錄，而非從 AST
+    /// 外形直接賦予方法來源執行權限。
+    fn method_checked_int_locals(
+        &self, method: &Function,
+        returned: &crate::syntax_shared::ParsedReturn<Term>,
+    ) -> Result<(), Diagnostic> {
+        fn pure_int(term: &Term) -> bool {
+            match &term.kind {
+                TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
+                | TermKind::Name(_) => true,
+                TermKind::Group(inner) => pure_int(inner),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                    && pure_int(&binary.left) && pure_int(&binary.right),
+                _ => false,
+            }
+        }
+        let mut vars = vec![Rc::new(HashMap::new())];
+        for parameter in &method.params {
+            if parameter.ty != "int" || parameter.name == "self"
+                || vars[0].contains_key(&parameter.name) {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "方法 int 局部子集需要不重複的原 int 形式參數".into(),
+                    span: Some(self.source.span(method.start, method.end)),
+                });
+            }
+            let id = DeclarationId(parameter.declaration_start);
+            Rc::make_mut(&mut vars[0]).insert(parameter.name.clone(),
+                Binding::new(
+                    id, "int".to_string(), false,
+                    ValueSlot::initialized(CopyPermission::Allowed), None, None,
+                ));
+            self.record_declaration(id, "int", false);
+        }
+        for statement in method.body.iter().take(method.body.len() - 1) {
+            let StmtKind::Declare(local) = &statement.kind else {
+                return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
+                    message: "方法 int 局部子集不能混入未驗證的控制流程或欄位寫入".into(),
+                    span: Some(self.source.span(statement.start, statement.end)),
+                });
+            };
+            if local.ty != "int" || local.name == "self"
+                || vars[0].contains_key(&local.name) {
+                return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
+                    message: "方法局部只接受來源唯一且已初始化的 Copyable int".into(),
+                    span: Some(self.source.span(statement.start, statement.end)),
+                });
+            }
+            let init = local.initializer.as_ref().ok_or(Diagnostic {
+                kind: DiagnosticKind::Static,
+                message: "方法 int 局部必須有已核准的初始化來源".into(),
+                span: Some(self.source.span(statement.start, statement.end)),
+            })?;
+            if !pure_int(init) {
+                return Err(self.error(
+                    "方法 int 局部不得含未驗證的 Borrow／Move／函式呼叫／self 欄位",
+                    init,
+                ));
+            }
+            let (ty, ready) = self.evaluate(init, &mut vars)?;
+            if ty != "int" || !ready {
+                return Err(self.error(
+                    "方法 int 局部的初始化未完成原 Checker int 安全驗證",
+                    init,
+                ));
+            }
+            let id = DeclarationId(statement.start);
+            Rc::make_mut(&mut vars[0]).insert(local.name.clone(),
+                Binding::new(id, "int".to_string(), local.mutable,
+                    ValueSlot::initialized(CopyPermission::Allowed), None, None));
+            self.record_declaration(id, "int", local.mutable);
+        }
+        if !pure_int(&returned.expression) {
+            return Err(self.error(
+                "方法局部返回僅接通原 Checker 的純 int 算術",
+                &returned.expression,
+            ));
+        }
+        let (ty, ready) = self.evaluate(&returned.expression, &mut vars)?;
+        if ty != "int" || !ready || method.result_ty != "int" {
+            return Err(self.error(
+                "方法局部返回未完成 int 型別與來源有效期驗證",
+                &returned.expression,
+            ));
+        }
+        Ok(())
+    }
+
     fn check_method(&self, owner: &str, method: &Function)
         -> Result<BorrowKind, Diagnostic> {
         for parameter in &method.params {
@@ -852,6 +945,32 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             return Err(Diagnostic { kind: DiagnosticKind::Static,
                 message: "目前方法必須以單一明確 return 結束".into(), span: None });
         };
+        // R04：原方法內出現已解析局部宣告時，只採用
+        // 純 Copyable int 線性子集。一般方法仍維持原本更嚴格的
+        // method_writes／method_return_type 與自借用安全界線。
+        if method.body.iter().take(method.body.len() - 1).any(|stmt|
+            matches!(&stmt.kind, StmtKind::Declare(_))) {
+            self.method_checked_int_locals(method, return_value)?;
+            let mut checked_returns = BTreeSet::new();
+            checked_returns.insert(method.body.last().expect(
+                "已驗證方法最後有真 return",
+            ).node_span());
+            let fact = VerifiedMethodSafety {
+                span: crate::common_ir::NodeSpan::new(method.start, method.end),
+                self_borrow: BorrowKind::SharedRead,
+                checked_returns,
+            };
+            let mut evidence = self.recorded_method_safety.borrow_mut();
+            if let Some(previous) = evidence.get(&method.start) {
+                if previous != &fact {
+                    self.recorded_method_safety_conflicts.borrow_mut()
+                        .insert(method.start);
+                }
+            } else {
+                evidence.insert(method.start, fact);
+            }
+            return Ok(BorrowKind::SharedRead);
+        }
         let mut checked_returns = BTreeSet::new();
         let mode = if self.method_writes(owner, method,
             &method.body[..method.body.len() - 1], &mut checked_returns)? {
