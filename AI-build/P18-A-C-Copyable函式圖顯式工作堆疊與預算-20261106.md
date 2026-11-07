@@ -253,3 +253,14 @@
 - 本批新增 `PrivateRecursiveStrOutcome::has_balanced_resource_frame_trace`，同時要求：原真 `OwnedStrRuntime::event_trace_balanced`（ResourceId 每份唯一 Created 與恰一次 Released）、實際 tracker 的 `loans_returned` 空集合及數量核對已通過、原動態 `PrivateRecursiveFrameEvent` 的 main 首次進入、各框架 LIFO 名稱配對與 `returned == result.is_ok()` 一致；零預算真未進入狀況必零資源／零借用／零虛構框架，只有受控錯誤。任何錯誤 `audit_before_return` 保守回報真 `CleanupTicket(SnapshotMismatch)`，不將不可信 Outcome 交給使用者。
 - 新增七項真 Rust 正反：直接與互相遞迴正常、框架預算耗盡及第 N 次 OwnedUtf8 故障、零預算未建立任何實例、竄改退出函式名稱／returned flag、造假未歸還票據或刪除真 ReleaseEvent、同真 ResourceId 表正確但偽造多重 main／漏退出。由原 `execute_recursive_str` 的原 Checker 真來源執行，不採用模擬資源當 Passed 證據。
 - P18.3／P18.5 原六項追溯、原遞迴資源專用 Gate **43→50** 及 CI/AI-build 同步。此批完成 R05 的**遞迴資源子集聯合退出守門**，仍非把 Copyable 與 OwnedStr/Move/self 方法完全收束為一個通用 runtime；不自行擴張語言資源規則、異常或 async。R05/R06/R07 仍有交叉矩陣及共用動態執行模型缺口，G18 原六項維持 0/6 Passed；最新 PR HEAD 三項必要 CI success 才 Squash merge，合併 main 同 SHA 重驗。
+
+
+---
+
+## V1-R03-02：已核准 bool 條件中的可寫 int/bool 分支後續執行（2026-11-07）
+
+- 基線 main `272e7635fcfdac59312d62e9cf1eaf9e1a7ea51b`，#584 已在 PR 最新 HEAD 三必要 CI success 後 Squash merge。原 R03 `PrivateScalarEarlyIf` 僅支援葉分支一筆 `return`；但合法原 Checker `if(flag){value=value+1}; return value` 必須讓 if 分支**更新後繼續執行**後續語句，不能偷當提前返回或在 Prepare 人為拒絕。
+- 不改原 Lexer／Parser／Checker：為既有 `if/else-if/else` 編譯葉分支新增 `PrivateScalarBranchAction::Return／AssignInt／AssignBool`，每個葉仍必是真 Parser 的單筆 `Return` 或對**原有已初始化可寫** int/bool 宣告的單筆 Assign；完整核對 `typed_declaration(mutable)`、`ScalarHIR.assignment` 的原 DeclarationId／型別、Lexer Name Token 以及 RHS Checker TypedHIR。分支新區域宣告、任意深度區塊與資源此批仍未核准此子集。
+- 執行真選中 `Return` 才刪除本函式不可達後續工作項；選中 `AssignInt／AssignBool` 則依現有顯式工作堆疊先真求值 RHS、更新當前 frame slot、產生 LocalAssigned／BoolAssigned，**原程式後續語句必繼續執行**；未選中的分支沒有任何變更、返回或虛構事件。所有必需真位元資料仍由原 Checker 裁決。
+- 補七項原來源 Rust 正反：true 分支更新後返回、false 分支完全不執行 RHS、else-if 原順序選擇唯一更新再呼叫、bool 更新後下一個 if 真重讀、分支內巢狀函式溢位不補寫或假返回、const／錯型別由原 Checker 拒絕、已編譯分支 RHS 被竄改先 SourceChanged。
+- 專項 Gate **131→138**，G18 原 P18.1／P18.3／P18.5 追溯、CI／AI-build 同步。此批降低 V1 R01/R03 真控制流缺口，但尚不表示完整 for／while、局部區塊資源與 R01～R07 已結案。G18 六原項維持 0/6 Passed，必須最新 PR HEAD 三必要 CI completed/success、作者/base/mergeable 後 Squash merge，新 main 同 SHA 再驗。

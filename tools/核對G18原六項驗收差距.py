@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_if_false_未選中分支不得寫入而仍由原值返回",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_具名_bool_分支更新與順序後續函式呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_if_變更_bool_使後續獨立_if_重新讀取真動態值",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_混合布林整數與巢狀提前返回動態事件帳簿必平衡",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_true_函式實參與_int_返回共用真框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
@@ -119,6 +123,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_if_分支呼叫溢位不允許後續真賦值或假返回",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真直接遞迴_utf8_借用與返回框架交付前全數一致",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真互相遞迴多_resourceid_跨四框架逆序退出必一致",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真資源遞迴預算耗盡與局部建立故障均須完整退出",
@@ -249,6 +254,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_if_分支不能更改_const_或偷換型別_原_checker_拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_if_分支原_checker_賦值工作計畫篡改於執行前拒絕",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_動態資源返回後偽造退出名字與成功標記必拒絕",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_真資源釋放或票據空集合遭竄改必拒絕交付",
         "struct_stage::g18_private_recursive_str_frames_tests::g18_r05_動態框架重複進入與漏退出不得因資源表平衡而放行",

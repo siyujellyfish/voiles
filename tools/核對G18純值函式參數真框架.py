@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百三十一項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百三十八項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回",
+    "g18_r03_if_false_未選中分支不得寫入而仍由原值返回",
+    "g18_r03_else_if_具名_bool_分支更新與順序後續函式呼叫",
+    "g18_r03_if_變更_bool_使後續獨立_if_重新讀取真動態值",
+    "g18_r03_if_分支呼叫溢位不允許後續真賦值或假返回",
+    "g18_r03_if_分支不能更改_const_或偷換型別_原_checker_拒絕",
+    "g18_r03_if_分支原_checker_賦值工作計畫篡改於執行前拒絕",
     "g18_r05_混合布林整數與巢狀提前返回動態事件帳簿必平衡",
     "g18_r05_動態整數溢位與真失敗退出仍保留合法平衡事件",
     "g18_r05_遞迴重入相同靜態宣告身分不應誤判為重複清理",

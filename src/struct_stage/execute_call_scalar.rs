@@ -464,32 +464,51 @@ impl PrivateScalarBoolExpr {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarBranchAction {
+    Return(PrivateScalarReturnExpr),
+    AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+    AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+}
+
+impl PrivateScalarBranchAction {
+    fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
+        match self {
+            Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
+                expr.collect_calls(calls),
+            Self::AssignBool { .. } => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarEarlyIf {
     condition: PrivateScalarBoolExpr,
-    when_true: PrivateScalarReturnExpr,
+    when_true: PrivateScalarBranchAction,
     when_false: Option<PrivateScalarEarlyElse>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarEarlyElse {
-    Return(PrivateScalarReturnExpr),
+    Branch(PrivateScalarBranchAction),
     ElseIf(Box<PrivateScalarEarlyIf>),
 }
 
 impl PrivateScalarEarlyIf {
     fn always_returns(&self) -> bool {
-        match &self.when_false {
-            Some(PrivateScalarEarlyElse::Return(_)) => true,
-            Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
-            None => false,
-        }
+        matches!(&self.when_true, PrivateScalarBranchAction::Return(_))
+            && match &self.when_false {
+                Some(PrivateScalarEarlyElse::Branch(
+                    PrivateScalarBranchAction::Return(_))) => true,
+                Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
+                _ => false,
+            }
     }
 
     fn collect_calls<'a>(&'a self, out: &mut Vec<&'a str>) {
         self.when_true.collect_calls(out);
         if let Some(otherwise) = &self.when_false {
             match otherwise {
-                PrivateScalarEarlyElse::Return(value) => value.collect_calls(out),
+                PrivateScalarEarlyElse::Branch(value) => value.collect_calls(out),
                 PrivateScalarEarlyElse::ElseIf(next) => next.collect_calls(out),
             }
         }
@@ -607,24 +626,80 @@ enum PrivateScalarTask<'a> {
 impl PreparedPrivateScalarCall {
     /// 本批先接通單筆直接返回的 if／else-if／else 葉分支；
     /// 分支語句來源及條件均由原 Parser、Checker 審定。
-    fn compile_early_return(
+    /// 僅接通分支內一筆原 Checker 已核准的 return 或
+    /// 對分支外已存在 var int/bool 的賦值；沒有未證明的作用域逃逸。
+    fn compile_early_branch(
         statements: &[Stmt],
         int_bindings: &BTreeMap<String, DeclarationId>,
+        bool_bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
-    ) -> Result<PrivateScalarReturnExpr, PrivateScalarCallPrepareError> {
+    ) -> Result<PrivateScalarBranchAction, PrivateScalarCallPrepareError> {
         let [statement] = statements else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "if 提前返回子集要求此分支恰一筆已核准的 return",
+                "if 此子集只接受單筆真 return 或原 Checker var 純值更新",
             ));
         };
-        let StmtKind::Return(ret) = &statement.kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "if 分支須由原 Parser 真 return 產生",
-            ));
-        };
-        PrivateScalarReturnExpr::from_checked_bindings(
-            &ret.expression, int_bindings, verified,
-        )
+        match &statement.kind {
+            StmtKind::Return(ret) =>
+                Ok(PrivateScalarBranchAction::Return(
+                    PrivateScalarReturnExpr::from_checked_bindings(
+                        &ret.expression, int_bindings, verified,
+                    )?,
+                )),
+            StmtKind::Assign(assign) => {
+                let id = *int_bindings.get(&assign.name).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "if 純值賦值目標缺少原 Checker 已驗證 DeclarationId",
+                    ),
+                )?;
+                let fact = verified.plan.declarations.typed_declaration(id).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "if 賦值缺少原 Checker 變數宣告",
+                    ),
+                )?;
+                if !fact.mutable || (fact.ty != "int" && fact.ty != "bool")
+                    || verified.plan.scalar_hir.assignment(statement.node_span())
+                        .is_none_or(|record|
+                            record.resolved.declaration != id
+                                || record.resolved.ty !=
+                                    (if fact.ty == "bool" {
+                                        crate::common_ir::ScalarType::Bool
+                                    } else {
+                                        crate::common_ir::ScalarType::Int
+                                    }))
+                    || !verified.tokens.iter().any(|token|
+                        token.start == statement.start
+                            && matches!(&token.kind, TokenKind::Name(name)
+                                if name == &assign.name)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "if 更新缺少真可寫 Checker HIR、Lexer 或型別來源",
+                    ));
+                }
+                if fact.ty == "bool" {
+                    if bool_bindings.get(&assign.name) != Some(&id) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "if bool 更新目標不是原 Matcher 同一 bool 宣告",
+                        ));
+                    }
+                    Ok(PrivateScalarBranchAction::AssignBool {
+                        declaration: id,
+                        value: PrivateScalarBoolExpr::from_checked(
+                            &assign.expression, bool_bindings, verified,
+                        )?,
+                    })
+                } else {
+                    Ok(PrivateScalarBranchAction::AssignInt {
+                        declaration: id,
+                        value: PrivateScalarReturnExpr::from_checked_bindings(
+                            &assign.expression, int_bindings, verified,
+                        )?,
+                    })
+                }
+            }
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "if 其餘語句待獨立控制流程與區域資源證據完成",
+            )),
+        }
     }
 
     fn compile_early_if(
@@ -641,15 +716,15 @@ impl PreparedPrivateScalarCall {
         let condition = PrivateScalarBoolExpr::from_checked(
             &branch.branch.condition, bool_bindings, verified,
         )?;
-        let when_true = Self::compile_early_return(
-            &branch.body.statements, int_bindings, verified,
+        let when_true = Self::compile_early_branch(
+            &branch.body.statements, int_bindings, bool_bindings, verified,
         )?;
         let when_false = match no.as_ref() {
             None => None,
             Some(crate::syntax_shared::ParsedElse::Block(block)) =>
-                Some(PrivateScalarEarlyElse::Return(
-                    Self::compile_early_return(
-                        &block.statements, int_bindings, verified,
+                Some(PrivateScalarEarlyElse::Branch(
+                    Self::compile_early_branch(
+                        &block.statements, int_bindings, bool_bindings, verified,
                     )?,
                 )),
             Some(crate::syntax_shared::ParsedElse::ElseIf(next)) =>
@@ -1041,7 +1116,7 @@ impl PreparedPrivateScalarCall {
                                 break;
                             }
                             match current.when_false.as_ref() {
-                                Some(PrivateScalarEarlyElse::Return(value)) => {
+                                Some(PrivateScalarEarlyElse::Branch(value)) => {
                                     selected = Some(value);
                                     break;
                                 }
@@ -1051,16 +1126,28 @@ impl PreparedPrivateScalarCall {
                                 None => break,
                             }
                         }
-                        if let Some(returned) = selected {
-                            // 取消本函式尚未真正執行的預備語句與預設
-                            // 最後 return，保留此真框架的 ExitCall。
-                            // 函式實參內另有巢狀呼叫工作項時，此處
-                            // 不會抹除所屬父函式工作項。
-                            while !tasks.is_empty()
-                                && !matches!(tasks.last(), Some(PrivateScalarTask::ExitCall)) {
-                                tasks.pop();
+                        if let Some(selected) = selected {
+                            match selected {
+                                PrivateScalarBranchAction::Return(returned) => {
+                                    // 只取消此函式後續不可達語句，保留本次
+                                    // ExitCall 與父呼叫者的後續工作。
+                                    while !tasks.is_empty()
+                                        && !matches!(tasks.last(),
+                                            Some(PrivateScalarTask::ExitCall)) {
+                                        tasks.pop();
+                                    }
+                                    tasks.push(PrivateScalarTask::Evaluate(returned, false));
+                                }
+                                PrivateScalarBranchAction::AssignInt { declaration, value } => {
+                                    // 分支更新不構成函式 return；原來源
+                                    // 後續語句仍須真正執行。
+                                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                }
+                                PrivateScalarBranchAction::AssignBool { declaration, value } => {
+                                    tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
+                                }
                             }
-                            tasks.push(PrivateScalarTask::Evaluate(returned, false));
                         }
                     }
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
@@ -3829,6 +3916,94 @@ mod g18_private_scalar_call_tests {
                 events, parameter_slots_after_exit: 0,
             }.has_balanced_frame_trace());
         }
+    }
+
+
+    #[test]
+    fn g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+2\n}\nreturn value+1\n}\nfn main()->int{\nreturn choose(true,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::LocalAssigned(_, 5))).count(), 1);
+        assert_eq!(out.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::Returned(6))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_if_false_未選中分支不得寫入而仍由原值返回() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+2\n}\nreturn value+1\n}\nfn main()->int{\nreturn choose(false,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|ev|
+            matches!(ev, PrivateScalarCallEvent::LocalAssigned(..))));
+    }
+
+    #[test]
+    fn g18_r03_else_if_具名_bool_分支更新與順序後續函式呼叫() {
+        let src = "fn id(n:int)->int{\nreturn n\n}\nfn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+1\n}else if(false){\nvalue = value+100\n}else{\nvalue = value+2\n}\nreturn id(value)\n}\nfn main()->int{\nreturn choose(false,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let checks = out.events.iter().filter_map(|ev| match ev {
+            PrivateScalarCallEvent::ConditionalChecked(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [false, false]);
+        assert_eq!(out.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::LocalAssigned(_, 5))).count(), 1);
+        assert_eq!(out.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::FunctionEntered(name) if name == "id")).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_if_變更_bool_使後續獨立_if_重新讀取真動態值() {
+        let src = "fn choose(n:int)->int{\nvar flag:bool = false\nif(true){\nflag = true\n}\nif(flag){\nreturn n+1\n}\nreturn n+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::BoolAssigned(_, true))).count(), 1);
+        assert_eq!(out.events.iter().filter(|ev|
+            matches!(ev, PrivateScalarCallEvent::ConditionalChecked(true))).count(), 2);
+    }
+
+    #[test]
+    fn g18_r03_if_分支呼叫溢位不允許後續真賦值或假返回() {
+        let src = "fn bump(n:int)->int{\nreturn n+1\n}\nfn choose(n:int)->int{\nvar value:int = n\nif(true){\nvalue = bump(value)\n}\nreturn value+1\n}\nfn main()->int{\nreturn choose(9223372036854775807)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|ev|
+            matches!(ev, PrivateScalarCallEvent::LocalAssigned(..)
+                | PrivateScalarCallEvent::Returned(_))));
+    }
+
+    #[test]
+    fn g18_r03_if_分支不能更改_const_或偷換型別_原_checker_拒絕() {
+        for src in [
+            "fn choose(n:int)->int{\nconst value:int = n\nif(true){value = value+2}\nreturn value\n}\nfn main()->int{\nreturn choose(3)\n}\n",
+            "fn choose(n:int)->int{\nvar value:int = n\nif(true){value = false}\nreturn value\n}\nfn main()->int{\nreturn choose(3)\n}\n",
+        ] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
+    #[test]
+    fn g18_r03_if_分支原_checker_賦值工作計畫篡改於執行前拒絕() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){value = value+2}\nreturn value\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(5));
+        if let PrivateScalarLocalStep::EarlyReturn(if_plan) = &mut plan.root_local_steps[1] {
+            if let PrivateScalarBranchAction::AssignInt { value, .. } = &mut if_plan.when_true {
+                *value = PrivateScalarReturnExpr::Constant(99);
+            } else { panic!("真 Parser int 更新分支遺失"); }
+        } else { panic!("真 Parser if 分支遺失"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 }
