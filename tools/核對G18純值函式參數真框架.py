@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百三十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百四十二項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
+    "g18_r03_main_if_false未選函式零事件且else選中另一真函式",
+    "g18_r03_main_while逐輪重讀條件內的真函式來源",
+    "g18_r01_main_for迭代值在真函式參數中按半開區間逐輪傳入",
+    "g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回",
+    "g18_r02_main巢狀控制真函式源計畫篡改必在執行前拒絕",
     "g18_r01_main_var首次賦值的普通函式來源必真執行",
     "g18_r01_main先返回葉函式後更新局部不得逆序求值",
     "g18_r02_main同一var先以函式初次賦值再由函式重賦值",
