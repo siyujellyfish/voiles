@@ -4156,6 +4156,106 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r03_真巢狀_if_葉提前返回保留雙層條件順序() {
+        let src = "fn choose(n:int)->int{\nvar flag:bool = true\nif(true){\nif(flag){\nreturn n+1\n}else{\nreturn n+2\n}\n}\nreturn n+3\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        let checks = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ConditionalChecked(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [true, true]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(6)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int() {
+        let src = "fn choose(n:int)->int{\nvar flag:bool = false\nvar value:int = n\nif(true){\nflag = true\nif(flag){\nvalue = value+2\n}else{\nvalue = value+99\n}\n}\nreturn value\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let checks = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ConditionalChecked(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [true, true]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::BoolAssigned(_, true)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 5)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+100\n}else{\nif(false){\nvalue = value+20\n}else{\nvalue = value+3\n}\n}\nreturn value\n}\nfn main()->int{\nreturn choose(false,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let changes = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(_, v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(changes, [7]);
+        let checks = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ConditionalChecked(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [false, false]);
+    }
+
+    #[test]
+    fn g18_r03_巢狀提前_return_只退出內函式不截斷父函式算術() {
+        let src = "fn leaf(n:int)->int{\nif(true){\nif(false){\nreturn n+10\n}else{\nreturn n+1\n}\n}\nreturn n+3\n}\nfn outer(n:int)->int{\nreturn leaf(n)+2\n}\nfn main()->int{\nreturn outer(2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let returned = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::Returned(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(returned, [3, 5]);
+    }
+
+    #[test]
+    fn g18_r03_巢狀分支第二次_int_更新溢位真框架不補寫後續結果() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nif(true){\nvalue = value+1\nvalue = value+9223372036854775807\n}\n}\nreturn value\n}\nfn main()->int{\nreturn choose(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 2)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_巢狀條件非法名稱與工作計畫遭竄改必先拒絕() {
+        let invalid = "fn choose(n:int)->int{\nif(true){\nif(missing){\nreturn n\n}\n}\nreturn n\n}\nfn main()->int{\nreturn choose(1)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let valid = "fn choose(n:int)->int{\nif(true){\nif(true){\nreturn n+1\n}\n}\nreturn n+2\n}\nfn main()->int{\nreturn choose(1)\n}\n";
+        let mut prepared = checked(valid);
+        assert_eq!(prepared.execute().unwrap().result, Ok(2));
+        if let PrivateScalarLocalStep::EarlyReturn(plan) = &mut prepared.root_local_steps[0] {
+            if let PrivateScalarBranchAction::NestedIf(inner) = &mut plan.when_true {
+                inner.when_true = PrivateScalarBranchAction::Return(
+                    PrivateScalarReturnExpr::Constant(50),
+                );
+            } else { panic!("真巢狀 If 原來源丟失"); }
+        } else { panic!("原 If 工作計畫丟失"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
