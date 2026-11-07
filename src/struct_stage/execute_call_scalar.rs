@@ -379,6 +379,27 @@ impl PrivateScalarReturnExpr {
                 let mut checked_borrows = Vec::new();
                 for (argument, parameter) in call.arguments.iter().zip(&target.params) {
                     arguments.push(if parameter.ty == "str" {
+                        if let TermKind::Move(_) = &argument.kind {
+                            let owner = PreparedPrivateMoveCall::checked_move_name(
+                                argument, verified,
+                            ).map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                                "str Move 實參缺少原 Parser／Lexer 具名來源",
+                            ))?;
+                            let source = *bindings.get(owner).ok_or(
+                                PrivateScalarCallPrepareError::Unsupported(
+                                    "str Move 實參缺少本詞彙作用域 DeclarationId",
+                                ),
+                            )?;
+                            if !verified.plan.declarations.typed_declaration(source)
+                                .is_some_and(|record| record.ty == "str") {
+                                return Err(PrivateScalarCallPrepareError::Unsupported(
+                                    "str Move 實參缺少原 Checker str 宣告型別",
+                                ));
+                            }
+                            PrivateScalarCallArgument::MoveStr {
+                                owner: owner.to_owned(), source,
+                            }
+                        } else {
                         let TermKind::Name(owner) = &argument.kind else {
                             return Err(PrivateScalarCallPrepareError::Unsupported(
                                 "str 預設借用實參只能是原 Parser 具名來源",
@@ -407,6 +428,7 @@ impl PrivateScalarReturnExpr {
                         checked_borrows.push(fact);
                         PrivateScalarCallArgument::BorrowStr {
                             owner: owner.clone(), fact,
+                        }
                         }
                     } else if parameter.ty == "bool" {
                         PrivateScalarCallArgument::Bool(
@@ -544,6 +566,8 @@ enum PrivateScalarCallArgument {
     Bool(PrivateScalarBoolExpr),
     /// 唯有正式 Checker call_borrows 與原 Lexer 具名 str 才能進入票據流程。
     BorrowStr { owner: String, fact: BorrowFact },
+    /// 真 Parser .move() 以原 Checker 已簽發的 str 身分整筆傳參。
+    MoveStr { owner: String, source: DeclarationId },
 }
 
 impl PrivateScalarCallArgument {
@@ -849,6 +873,7 @@ enum PrivateScalarEvaluatedArgument {
         ticket: crate::borrow_safety::BorrowTicket,
         fact: BorrowFact,
     },
+    Move { source: DeclarationId },
 }
 
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
@@ -860,6 +885,7 @@ enum PrivateScalarTask<'a> {
     EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
     RecordBoolArgument,
     BorrowArgument(&'a str, BorrowFact),
+    MoveArgument(&'a str, DeclarationId),
     Apply(char),
     BindLocal(DeclarationId),
     AssignLocal(DeclarationId),
@@ -1600,6 +1626,9 @@ impl PreparedPrivateScalarCall {
                                     }
                                     PrivateScalarCallArgument::BorrowStr { owner, fact } => {
                                         tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
+                                    }
+                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
+                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
                                     }
                                 }
                             }
