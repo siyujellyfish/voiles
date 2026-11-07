@@ -52,6 +52,11 @@ enum PrivateSelfIntReturn {
     /// 原 Checker 簽章的兩個不同參數，按真正動態框架值運算。
     ParameterPairAdd(DeclarationId, DeclarationId),
     ParameterPairSubtract(DeclarationId, DeclarationId),
+    /// 同一真 self BorrowTicket 下讀取目前欄位及參數動態值。
+    FieldAddParameter(DeclarationId),
+    FieldSubtractParameter(DeclarationId),
+    ParameterAddField(DeclarationId),
+    ParameterSubtractField(DeclarationId),
 }
 
 struct PreparedPrivateSelfMethod {
@@ -272,7 +277,7 @@ impl PreparedPrivateSelfMethod {
                         "方法返回的加減運算子不符合原 Parser 來源位置",
                     ));
                 }
-                let (self_read, param_id) = match &binary.left.kind {
+                let (mut self_read, param_id) = match &binary.left.kind {
                     TermKind::FieldRead(receiver, read_field) =>
                         (Some((receiver.as_str(), read_field.as_str())), None),
                     TermKind::Name(_) => {
@@ -314,27 +319,50 @@ impl PreparedPrivateSelfMethod {
                         }
                     }
                     TermKind::Name(_) => {
-                        let left_id = param_id.ok_or(
-                            PrivateSelfMethodPrepareError::Unsupported(
-                                "雙參數算式左端須為已核准的 int 形式參數",
-                            ),
-                        )?;
                         let right_id = private_self_method_parameter_reference(
                             &verified, method, argument_binding,
                             &additional_argument_bindings, &binary.right,
                         ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                            "雙參數算式右端缺少真 Checker／Lexer 名稱身分",
+                            "右端 int 參數缺少真 Checker／Lexer 名稱身分",
                         ))?;
-                        match binary.operator {
-                            '+' => PrivateSelfIntReturn::ParameterPairAdd(left_id, right_id),
-                            '-' => PrivateSelfIntReturn::ParameterPairSubtract(left_id, right_id),
+                        match (binary.operator, param_id) {
+                            ('+', Some(left_id)) =>
+                                PrivateSelfIntReturn::ParameterPairAdd(left_id, right_id),
+                            ('-', Some(left_id)) =>
+                                PrivateSelfIntReturn::ParameterPairSubtract(left_id, right_id),
+                            ('+', None) if self_read.is_some() =>
+                                PrivateSelfIntReturn::FieldAddParameter(right_id),
+                            ('-', None) if self_read.is_some() =>
+                                PrivateSelfIntReturn::FieldSubtractParameter(right_id),
                             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                "雙參數算式只接受原 Checker 加減運算子",
+                                "欄位與已核准 int 參數的加減來源不一致",
+                            )),
+                        }
+                    }
+                    TermKind::FieldRead(receiver, read_field) => {
+                        // 欄位在右端一樣要以原 Checker 的 self 借用
+                        // 讀取；不能因可在左端辨識參數就跳過欄位權限。
+                        let left_id = param_id.ok_or(
+                            PrivateSelfMethodPrepareError::Unsupported(
+                                "右端 self 欄位只能搭配已驗證的 int 形式參數",
+                            ),
+                        )?;
+                        if self_read.is_some() {
+                            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                "本子集不支援一個算式中多次 self 欄位讀取",
+                            ));
+                        }
+                        self_read = Some((receiver.as_str(), read_field.as_str()));
+                        match binary.operator {
+                            '+' => PrivateSelfIntReturn::ParameterAddField(left_id),
+                            '-' => PrivateSelfIntReturn::ParameterSubtractField(left_id),
+                            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                "參數與 self 欄位只接受原 Checker 加減運算子",
                             )),
                         }
                     }
                     _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法加減右端僅接通真 int 常值或已驗證 int 參數",
+                        "方法加減右端僅接通已驗證 int 常值、參數或 self 欄位",
                     )),
                 };
                 (operation, self_read)
@@ -579,6 +607,30 @@ impl PreparedPrivateSelfMethod {
                     let rhs = *parameter_frame.get(&right).ok_or(
                         PrivateSelfMethodRuntimeError::WrongReceiver)?;
                     lhs.checked_sub(rhs)
+                        .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
+                }
+                PrivateSelfIntReturn::FieldAddParameter(id) => {
+                    let rhs = *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    value.checked_add(rhs)
+                        .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
+                }
+                PrivateSelfIntReturn::FieldSubtractParameter(id) => {
+                    let rhs = *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    value.checked_sub(rhs)
+                        .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
+                }
+                PrivateSelfIntReturn::ParameterAddField(id) => {
+                    let lhs = *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    lhs.checked_add(value)
+                        .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
+                }
+                PrivateSelfIntReturn::ParameterSubtractField(id) => {
+                    let lhs = *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    lhs.checked_sub(value)
                         .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
                 }
             };
@@ -971,10 +1023,11 @@ mod g18_private_method_self_tests {
     }
 
     #[test]
-    fn g18_f_非_int_方法實參與尚未接通的參數欄位混合算式必拒絕() {
+    fn g18_f_已核准_int_參數與_self_欄位可真混算但非_int_實參仍拒絕() {
         let other = "struct Counter{\nvar count:int = 7\nfn get(n:int)->int{\nreturn n+self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(3)\n}\n";
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(other),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        let outcome = checked(other).execute().unwrap();
+        assert_eq!(outcome.result, Ok(10));
+        assert!(outcome.ticket_returned);
         let bool_arg = "struct Counter{\nvar count:int = 7\nfn get(flag:bool)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(true)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(bool_arg),
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
@@ -1172,6 +1225,81 @@ mod g18_private_method_self_tests {
         let mixed = "struct Counter{\nvar count:int = 7\nfn calculate(a:int,b:bool)->int{\nreturn a\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.calculate(11,true)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(mixed),
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+    }
+
+
+    fn mixed_self_param_source(body: &str, argument: &str, mutable: bool) -> String {
+        let owner = if mutable { "var" } else { "const" };
+        format!(
+            "struct Counter{{\nvar count:int = 7\nfn calc(n:int)->int{{\n{body}\n}}\n}}\nfn main()->int{{\n{owner} value:Counter = Counter()\nreturn value.calc({argument})\n}}\n"
+        )
+    }
+
+    #[test]
+    fn g18_f_共享_self_欄位加參數讀取真_runtime_與宣告身分() {
+        let src = mixed_self_param_source("return self.count+n", "4", false);
+        let plan = checked(&src);
+        assert_eq!(plan.loan.kind, BorrowKind::SharedRead);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.method_entered && out.method_exited && out.ticket_returned);
+    }
+
+    #[test]
+    fn g18_f_共享_self_形式參數減欄位維持左減右次序() {
+        let plan = checked(&mixed_self_param_source("return n-self.count", "4", false));
+        assert_eq!(plan.execute().unwrap().result, Ok(-3));
+        let reverse = checked(&mixed_self_param_source("return self.count-n", "4", false));
+        assert_eq!(reverse.execute().unwrap().result, Ok(3));
+    }
+
+    #[test]
+    fn g18_f_獨占_self_真寫入後再同方法與_int_形式參數混算() {
+        let src = mixed_self_param_source("self.count = 11\nreturn self.count+n", "4", true);
+        let plan = checked(&src);
+        assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(15));
+        assert!(out.ticket_returned && out.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_共享_self_欄位加巨大_int_實參溢位仍歸還真借用() {
+        let plan = checked(&mixed_self_param_source(
+            "return self.count+n", "9223372036854775807", false,
+        ));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(out.method_entered && !out.method_exited && out.ticket_returned);
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn g18_f_雙_int_方法只讀第二參數與_self_欄位不混用第一個() {
+        let src = "struct Counter{\nvar count:int = 7\nfn calc(a:int,b:int)->int{\nreturn self.count+b\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.calc(100,4)\n}\n";
+        let plan = checked(src);
+        let id = plan.additional_argument_bindings[0].0;
+        assert_eq!(plan.return_calculation, PrivateSelfIntReturn::FieldAddParameter(id));
+        assert_eq!(plan.execute().unwrap().result, Ok(11));
+    }
+
+    #[test]
+    fn g18_f_篡改_self_混算方向與參數身分須在動態配置前拒絕() {
+        let src = mixed_self_param_source("return self.count+n", "4", false);
+        let mut plan = checked(&src);
+        let id = plan.argument_binding.unwrap().0;
+        plan.return_calculation = PrivateSelfIntReturn::FieldSubtractParameter(id);
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.return_calculation = PrivateSelfIntReturn::FieldAddParameter(DeclarationId(0));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_f_偽造_other_欄位與錯誤接收者不得冒充真正_self_來源() {
+        let src = mixed_self_param_source("return other.count+n", "4", false);
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
 
