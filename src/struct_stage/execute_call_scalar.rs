@@ -2317,11 +2317,11 @@ impl PreparedPrivateScalarCall {
                 } else {
                     PrivateScalarCallRuntimeError::StepBudget
                 }),
-                events: Vec::new(), parameter_slots_after_exit: 0,
+                events: Vec::new(), resource_events: Vec::new(), parameter_slots_after_exit: 0,
             });
         }
-        // 逐個實際 Copyable int 實參依原 Parser 書寫順序求值；
-        // 只有在全部型別與身份準備成功後才建立真正被呼叫者框架。
+        // 已核准純值事件與真 UTF-8 ResourceId 兩張帳簿互不冒充。
+        let mut resource_events = Vec::new();
         let mut events = Vec::new();
         if let Some(dynamic_call) = &self.main_dynamic_call {
             // 純 int 複合返回可能有數個兄弟 Call，沒有可供
@@ -2342,11 +2342,11 @@ impl PreparedPrivateScalarCall {
                 max_steps: budget.max_steps,
             };
             let result = self.evaluate_graph(
-                dynamic_call, &main_frame, &mut events,
+                dynamic_call, &main_frame, &mut events, &mut resource_events,
                 adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
             );
             return Self::audit_outcome(PrivateScalarCallOutcome {
-                result, events, parameter_slots_after_exit: 0,
+                result, events, resource_events, parameter_slots_after_exit: 0,
             });
         }
         if let Some(argument) = self.argument {
@@ -2370,7 +2370,8 @@ impl PreparedPrivateScalarCall {
             if fail_after_binding {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
-                self.evaluate_graph(&self.return_expr, &frame, &mut events, budget, false, &self.root_local_steps)
+                self.evaluate_graph(&self.return_expr, &frame, &mut events,
+                    &mut resource_events, budget, false, &self.root_local_steps)
             }
         });
         if let Ok(value) = result {
@@ -2383,7 +2384,7 @@ impl PreparedPrivateScalarCall {
             name: self.callee_name.clone(), returned: result.is_ok(),
         });
         Self::audit_outcome(PrivateScalarCallOutcome {
-            result, events, parameter_slots_after_exit: frame.len(),
+            result, events, resource_events, parameter_slots_after_exit: frame.len(),
         })
     }
 }
@@ -4301,7 +4302,7 @@ mod g18_private_scalar_call_tests {
             vec![PrivateScalarCallEvent::LocalAssigned(x, 5)],
         ] {
             let outcome = PrivateScalarCallOutcome {
-                result: Ok(1), events, parameter_slots_after_exit: 0,
+                result: Ok(1), events, resource_events: Vec::new(), parameter_slots_after_exit: 0,
             };
             assert!(!outcome.has_balanced_frame_trace());
             assert!(matches!(PreparedPrivateScalarCall::audit_outcome(outcome),
@@ -4340,7 +4341,7 @@ mod g18_private_scalar_call_tests {
         ];
         for events in cases {
             assert!(!PrivateScalarCallOutcome {
-                result: Ok(1), events, parameter_slots_after_exit: 0,
+                result: Ok(1), events, resource_events: Vec::new(), parameter_slots_after_exit: 0,
             }.has_balanced_frame_trace());
         }
     }
@@ -4361,17 +4362,17 @@ mod g18_private_scalar_call_tests {
             },
         ];
         assert!(PrivateScalarCallOutcome {
-            result: Ok(3), events: valid.clone(), parameter_slots_after_exit: 0,
+            result: Ok(3), events: valid.clone(), resource_events: Vec::new(), parameter_slots_after_exit: 0,
         }.has_balanced_frame_trace());
         let mut invalid = valid.clone();
         invalid.swap(4, 5);
         assert!(!PrivateScalarCallOutcome {
-            result: Ok(3), events: invalid, parameter_slots_after_exit: 0,
+            result: Ok(3), events: invalid, resource_events: Vec::new(), parameter_slots_after_exit: 0,
         }.has_balanced_frame_trace());
         let mut missing = valid;
         missing.remove(4);
         assert!(!PrivateScalarCallOutcome {
-            result: Ok(3), events: missing, parameter_slots_after_exit: 0,
+            result: Ok(3), events: missing, resource_events: Vec::new(), parameter_slots_after_exit: 0,
         }.has_balanced_frame_trace());
     }
 
@@ -4388,7 +4389,7 @@ mod g18_private_scalar_call_tests {
         ] {
             assert!(!PrivateScalarCallOutcome {
                 result: Err(PrivateScalarCallRuntimeError::StateMismatch),
-                events, parameter_slots_after_exit: 0,
+                events, resource_events: Vec::new(), parameter_slots_after_exit: 0,
             }.has_balanced_frame_trace());
         }
     }
