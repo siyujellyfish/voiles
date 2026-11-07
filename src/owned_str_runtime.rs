@@ -174,6 +174,16 @@ impl OwnedStrRuntime {
             .map(|v| v.text.as_str()).ok_or(StrRuntimeError::MovedSource)
     }
 
+    /// R05／G18：唯讀取得**現存唯一擁有**的 ResourceId，交由真借用票據
+    /// 與資源退出事件核對。這不是新的資源或 BorrowTicket，也不能以
+    /// 此查詢重新獲取已整筆 move() 失效的來源。
+    pub(crate) fn resource_id(&self, name: &str) -> Result<u64, StrRuntimeError> {
+        let (i, j) = self.location(name)?;
+        self.scopes[i].names[j].owned.as_ref()
+            .map(|resource| resource.id)
+            .ok_or(StrRuntimeError::MovedSource)
+    }
+
     pub(crate) fn enter_scope(&mut self) { self.scopes.push(StrFrame::default()); }
 
     /// 明確 .move()：一個緩衝區只轉交，來源仍存在但已失效。
