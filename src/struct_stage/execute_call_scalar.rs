@@ -5888,6 +5888,86 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r04_真函式_str_字面值覆寫只釋放被取代資源一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"舊\"\nowner = \"新🪼\"\nreturn n\n}\nfn main()->int{\nreturn run(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::ResourceOwnerBound(_, 2)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r04_真函式_move_覆寫舊目標與來源重新初始化不複製() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar source:str = \"甲\"\nvar target:str = \"乙\"\ntarget = source.move()\nsource = \"重建\"\nreturn n\n}\nfn main()->int{\nreturn run(2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Released(2),
+            R::Created(3), R::Released(3), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_選中_if_字串覆寫原子提交_未選分支零資源事件() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"初始\"\nif(true){\nowner = \"選中\"\n}else{\nowner = \"不得建立\"\n}\nreturn n\n}\nfn main()->int{\nreturn run(6)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r02_普通函式_for_逐輪_str_覆寫即時釋放上一個_owner() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"原\"\nfor i in 0..3{\nowner = \"每輪\"\n}\nreturn n\n}\nfn main()->int{\nreturn run(7)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1),
+            R::Created(3), R::Released(2), R::Created(4),
+            R::Released(3), R::Released(4),
+        ]);
+    }
+
+    #[test]
+    fn g18_r03_函式提前返回先完成_str_覆寫再真離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn run(n:int)->int{\nvar owner:str = \"甲\"\nif(true){\nowner = \"乙\"\nreturn n+1\n}\nreturn 0\n}\nfn main()->int{\nreturn run(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_不可寫_str_隱含複製與已移動再次使用均由_checker_拒絕() {
+        let invalid = [
+            "fn run(n:int)->int{\nconst owner:str = \"原\"\nowner = \"新\"\nreturn n\n}\nfn main()->int{\nreturn run(1)\n}\n",
+            "fn run(n:int)->int{\nvar owner:str = \"原\"\nowner = 1\nreturn n\n}\nfn main()->int{\nreturn run(1)\n}\n",
+            "fn run(n:int)->int{\nvar source:str = \"原\"\nvar target:str = \"舊\"\ntarget = source.move()\ntarget = source.move()\nreturn n\n}\nfn main()->int{\nreturn run(1)\n}\n",
+        ];
+        for src in invalid {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))), "{src}");
+        }
+    }
+
 }
 
 
