@@ -1268,11 +1268,18 @@ impl PreparedPrivateScalarCall {
                         "區塊局部宣告缺少原 Checker 可寫性／型別／DeclarationId",
                     ));
                 }
-                let init = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "此純值執行子集的區塊局部宣告必須有已核准初始化式",
-                    ),
-                )?;
+                let Some(init) = owner.initializer.as_ref() else {
+                    if !owner.mutable {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "未初始化宣告只允許原 Checker 核准的 var",
+                        ));
+                    }
+                    return Ok(if owner.ty == "bool" {
+                        PrivateScalarBranchAction::DeclareEmptyBool { declaration: id }
+                    } else {
+                        PrivateScalarBranchAction::DeclareEmptyInt { declaration: id }
+                    });
+                };
                 if owner.ty == "bool" {
                     Ok(PrivateScalarBranchAction::DeclareBool {
                         declaration: id,
@@ -1602,17 +1609,20 @@ impl PreparedPrivateScalarCall {
                         "bool 區域宣告缺少原 Checker 唯一宣告身分",
                     ));
                 }
-                let initializer = owner.initializer.as_ref().ok_or(
-                    PrivateScalarCallPrepareError::Unsupported(
-                        "bool 純值宣告須具真初始化式",
-                    ),
-                )?;
-                let value = PrivateScalarBoolExpr::from_checked(
-                    initializer, &bool_bindings, verified,
-                )?;
-                local_steps.push(PrivateScalarLocalStep::DeclareBool {
-                    declaration, value,
-                });
+                if let Some(initializer) = owner.initializer.as_ref() {
+                    let value = PrivateScalarBoolExpr::from_checked(
+                        initializer, &bool_bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::DeclareBool {
+                        declaration, value,
+                    });
+                } else if owner.mutable {
+                    local_steps.push(PrivateScalarLocalStep::DeclareEmptyBool(declaration));
+                } else {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "原 Checker 未初始化的 const bool 不可交付",
+                    ));
+                }
                 bool_bindings.insert(owner.name.clone(), declaration);
                 // 共用原 Checker DeclarationId 名稱表同時供正式函式
                 // bool 實參使用；型別仍由 Reference HIR 唯一核對，
@@ -1627,17 +1637,20 @@ impl PreparedPrivateScalarCall {
                     "函式內 int 區域宣告缺少 Checker 唯一宣告身分",
                 ));
             }
-            let initializer = owner.initializer.as_ref().ok_or(
-                PrivateScalarCallPrepareError::Unsupported(
-                    "函式內此子集須有真 int 初始化式",
-                ),
-            )?;
-            let value = PrivateScalarReturnExpr::from_checked_bindings(
-                initializer, &bindings, verified,
-            )?;
-            let init = PrivateScalarLocalInit { declaration, value };
-            local_steps.push(PrivateScalarLocalStep::Declare(init.clone()));
-            local_inits.push(init);
+            if let Some(initializer) = owner.initializer.as_ref() {
+                let value = PrivateScalarReturnExpr::from_checked_bindings(
+                    initializer, &bindings, verified,
+                )?;
+                let init = PrivateScalarLocalInit { declaration, value };
+                local_steps.push(PrivateScalarLocalStep::Declare(init.clone()));
+                local_inits.push(init);
+            } else if owner.mutable {
+                local_steps.push(PrivateScalarLocalStep::DeclareEmptyInt(declaration));
+            } else {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "原 Checker 未初始化 const int 不可交付",
+                ));
+            }
             bindings.insert(owner.name.clone(), declaration);
         }
         let return_span = ret.expression.node_span();
@@ -2712,7 +2725,9 @@ impl PreparedPrivateScalarCall {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
-                if owner.ty != "int" { return true; }
+                if owner.ty != "int" || owner.initializer.is_none() {
+                    return true;
+                }
             }
             if let StmtKind::Declare(owner) = &statement.kind {
                 if let Some(initializer) = &owner.initializer {
