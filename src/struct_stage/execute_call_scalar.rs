@@ -5071,6 +5071,89 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::Check(_))));
     }
 
+    #[test]
+    fn g18_r04_真同函式_ownedstr_明確_move_單一_resourceid_不複製() {
+        let src = "fn transfer(n:int)->int{\nvar original:str = \"🪼\"\nvar target:str = original.move()\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [E::Created(1), E::Moved(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_同函式_if_內_move_外層所有者成空_內層只釋放一次() {
+        let src = "fn transfer(n:int)->int{\nvar original:str = \"外\"\nif(true){\nvar target:str = original.move()\n}\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [E::Created(1), E::Moved(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_同函式_for_逐輪真_move_每次是新_resourceid() {
+        let src = "fn transfer(n:int)->int{\nfor i in 0..2{\nvar source:str = \"迭代\"\nvar target:str = source.move()\n}\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Moved(1), E::Released(1),
+            E::Created(2), E::Moved(2), E::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_父函式真_move_與子函式新_ownedstr_依動態順序退出() {
+        let src = "fn child(n:int)->int{\nvar local:str = \"子\"\nreturn n+1\n}\nfn parent(n:int)->int{\nvar outer:str = \"父\"\nvar moved:str = outer.move()\nreturn child(n)\n}\nfn main()->int{\nreturn parent(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [
+            E::Created(1), E::Moved(1), E::Created(2),
+            E::Released(2), E::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_同函式_if_move_提前返回後不得遺失原_ResourceId() {
+        let src = "fn transfer(n:int)->int{\nif(true){\nvar source:str = \"內\"\nvar target:str = source.move()\nreturn n+1\n}\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [E::Created(1), E::Moved(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_不選中分支的_move_不能偽造已轉移事件() {
+        let src = "fn transfer(n:int)->int{\nvar source:str = \"原本\"\nif(false){\nvar unused:str = source.move()\n}\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        use crate::owned_str_runtime::ResourceEvent as E;
+        assert_eq!(out.resource_events, [E::Created(1), E::Released(1)]);
+    }
+
+    #[test]
+    fn g18_r04_已移動來源再次_move_原_checker_拒絕且偽造來源身分先拒絕() {
+        let invalid = "fn transfer(n:int)->int{\nvar source:str = \"內\"\nvar first:str = source.move()\nvar second:str = source.move()\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let valid = "fn transfer(n:int)->int{\nvar source:str = \"內\"\nvar target:str = source.move()\nreturn n\n}\nfn main()->int{\nreturn transfer(3)\n}\n";
+        let mut prepared = checked(valid);
+        assert_eq!(prepared.execute().unwrap().result, Ok(3));
+        if let PrivateScalarLocalStep::DeclareStr {
+            initializer: PrivateScalarStrInitializer::Move { declaration, .. }, ..
+        } = &mut prepared.root_local_steps[1] {
+            *declaration = DeclarationId(0);
+        } else { panic!("原 .move() 已核准來源工作計畫未保留"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
