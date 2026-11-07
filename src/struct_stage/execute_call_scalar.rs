@@ -364,6 +364,9 @@ impl PrivateScalarCallOutcome {
             PrivateScalarCallEvent::LocalInitialized(id, _)
                 | PrivateScalarCallEvent::BoolInitialized(id, _) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
+            PrivateScalarCallEvent::LocalAssigned(id, _)
+                | PrivateScalarCallEvent::BoolAssigned(id, _) =>
+                Some(PrivateSharedCallExitEvent::LocalAssigned(*id)),
             PrivateScalarCallEvent::LocalScopeEnded(id)
                 | PrivateScalarCallEvent::BoolScopeEnded(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
