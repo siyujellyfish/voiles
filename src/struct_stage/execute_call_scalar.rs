@@ -33,6 +33,11 @@ enum PrivateScalarCallEvent {
     BoolParameterBound(DeclarationId, bool),
     /// 每筆經 Checker 核准的純值區域初始化只在真正寫入框架後記錄。
     LocalInitialized(DeclarationId, i64),
+    /// 宣告已達但暫無值槽；不可誤寫成 LocalInitialized。
+    LocalDeclaredEmpty(DeclarationId),
+    LocalScopeEndedEmpty(DeclarationId),
+    BoolDeclaredEmpty(DeclarationId),
+    BoolScopeEndedEmpty(DeclarationId),
     /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
     LocalAssigned(DeclarationId, i64),
     /// 原 Checker 已核准的 bool Copyable 專用局部事件（非資源事件）。
@@ -794,7 +799,9 @@ enum PrivateScalarBranchAction {
     /// 原 Checker 區塊內的每一筆局部宣告，離開本區塊必須依真建立順序逆序離域。
     Scoped(Vec<PrivateScalarBranchAction>),
     DeclareInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+    DeclareEmptyInt { declaration: DeclarationId },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
+    DeclareEmptyBool { declaration: DeclarationId },
     /// 原 Checker 唯一 str 擁有者；由真 OwnedStrRuntime 配置／逆序釋放。
     DeclareStr {
         declaration: DeclarationId, name: String, mutable: bool,
@@ -831,6 +838,7 @@ impl PrivateScalarBranchAction {
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
             Self::AssignBool { .. } | Self::DeclareBool { .. }
+                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::AssignStr { .. }
                 | Self::Break | Self::Continue => {}
         }
@@ -845,6 +853,7 @@ impl PrivateScalarBranchAction {
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
+                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -889,6 +898,8 @@ impl PrivateScalarEarlyIf {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarLocalStep {
     Declare(PrivateScalarLocalInit),
+    DeclareEmptyInt(DeclarationId),
+    DeclareEmptyBool(DeclarationId),
     Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
@@ -906,6 +917,7 @@ impl PrivateScalarLocalStep {
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
+                | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::AssignStr { .. } => {}
         }
     }
@@ -973,6 +985,8 @@ impl Default for PrivateScalarExecutionBudget {
 enum PrivateScalarLocalBinding {
     Int(DeclarationId),
     Bool(DeclarationId),
+    UninitializedInt(DeclarationId),
+    UninitializedBool(DeclarationId),
 }
 
 struct PrivateScalarActiveFrame {
@@ -1013,6 +1027,8 @@ enum PrivateScalarTask<'a> {
     MoveArgument(&'a str, DeclarationId),
     Apply(char),
     BindLocal(DeclarationId),
+    DeclareEmptyInt(DeclarationId),
+    DeclareEmptyBool(DeclarationId),
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
@@ -1127,6 +1143,8 @@ impl PreparedPrivateScalarCall {
         match action {
             PrivateScalarBranchAction::DeclareInt { .. }
                 | PrivateScalarBranchAction::DeclareBool { .. }
+                | PrivateScalarBranchAction::DeclareEmptyInt { .. }
+                | PrivateScalarBranchAction::DeclareEmptyBool { .. }
                 | PrivateScalarBranchAction::DeclareStr { .. } =>
                     PrivateScalarBranchAction::Scoped(vec![action]),
             other => other,
