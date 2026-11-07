@@ -7349,4 +7349,33 @@ mod g18_r06_cross_runtime_tests {
     }
 
 
+    #[test]
+    fn g18_r05_r06_普通函式真借用票據不得早於返回或晚於離域() {
+        let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"因果\"\nreturn observe(source,4)\n}\n";
+        let plan = PreparedPrivateScalarCall::prepare(src).unwrap();
+        let mut early = plan.execute().unwrap();
+        assert!(early.has_balanced_frame_trace());
+        let position = early.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let event = early.events.remove(position);
+        let returned = early.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )).unwrap();
+        early.events.insert(returned, event);
+        assert!(!early.has_balanced_frame_trace());
+
+        let mut late = plan.execute().unwrap();
+        let position = late.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let event = late.events.remove(position);
+        let exit = late.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited { returned: true, .. }
+        )).unwrap();
+        late.events.insert(exit + 1, event);
+        assert!(!late.has_balanced_frame_trace());
+    }
+
+
 }
