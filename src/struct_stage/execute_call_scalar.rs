@@ -706,6 +706,27 @@ impl PrivateScalarReturnExpr {
         }
     }
 
+    /// R01～R03：只遍歷原 Parser 取得的來源 AST，找出在已核准
+    /// 真 CFG 裡可能被選中的第一個具名呼叫。這只是建立函式圖的
+    /// 靜態目錄：不猜測選中的分支、不提前執行呼叫；各控制邊
+    /// 必須仍經原 Checker TypedHIR 和動態工作堆疊守門。
+    fn first_source_call_in_statements(statements: &[Stmt]) -> Option<&str> {
+        statements.iter().find_map(|statement| match &statement.kind {
+            StmtKind::Declare(owner) => owner.initializer.as_ref()
+                .and_then(Self::first_source_call),
+            StmtKind::Assign(assignment) =>
+                Self::first_source_call(&assignment.expression),
+            StmtKind::Return(ret) => Self::first_source_call(&ret.expression),
+            StmtKind::If { branch, no } =>
+                Self::first_source_call_in_statements(&branch.body)
+                    .or_else(|| no.as_ref().and_then(|other|
+                        Self::first_source_call_in_statements(other))),
+            StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } =>
+                Self::first_source_call_in_statements(&body.statements),
+            _ => None,
+        })
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
@@ -2787,20 +2808,9 @@ impl PreparedPrivateScalarCall {
         // 即使最後只是 return 先前取得的 Copyable 結果，仍可由
         // 原 Parser AST 找到同一已核准函式圖，不猜測字串名稱。
         let source_name = PrivateScalarReturnExpr::first_source_call(return_call)
-            .or_else(|| main.body.statements.iter().find_map(|statement| {
-                match &statement.kind {
-                    StmtKind::Declare(owner) => owner.initializer.as_ref()
-                        .and_then(PrivateScalarReturnExpr::first_source_call),
-                    // R01：原 Checker 合法的 var 首賦值／後續更新，
-                    // RHS 一樣可能是真普通函式呼叫。只尋找來源，
-                    // 不提前求值、不把未選中的分支當成已呼叫。
-                    StmtKind::Assign(assignment) =>
-                        PrivateScalarReturnExpr::first_source_call(
-                            &assignment.expression,
-                        ),
-                    _ => None,
-                }
-            }))
+            .or_else(|| PrivateScalarReturnExpr::first_source_call_in_statements(
+                &main.body.statements,
+            ))
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
                 "main 來源缺少原 Parser 真具名函式呼叫",
             ))?;
@@ -2921,7 +2931,9 @@ impl PreparedPrivateScalarCall {
         // 非字面／名稱的合法 main int 初始化可能含算術、真函式
         // 及溢位，不可在 Prepare 階段求值，也不能省略整筆初始化。
         let needs_main_local_runtime = main_prefix.iter().any(|statement| {
-            if matches!(&statement.kind, StmtKind::Assign(_) | StmtKind::If { .. }) {
+            if matches!(&statement.kind,
+                StmtKind::Assign(_) | StmtKind::If { .. }
+                    | StmtKind::While { .. } | StmtKind::ForRange { .. }) {
                 return true;
             }
             if let StmtKind::Declare(owner) = &statement.kind {
