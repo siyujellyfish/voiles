@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百三十八項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百四十二項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r03_真完整_if_else_葉返回不需補造最後_return",
+    "g18_r03_無人工尾端_return_的完整_else_if_照原_checker_條件順序返回",
+    "g18_r03_完整分支葉返回僅退出目前函式不截斷父框架算術",
+    "g18_r03_不完整尾端分支與篡改已核准全返回計畫皆保守拒絕",
     "g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回",
     "g18_r03_if_false_未選中分支不得寫入而仍由原值返回",
     "g18_r03_else_if_具名_bool_分支更新與順序後續函式呼叫",
