@@ -2220,8 +2220,8 @@ mod g18_private_method_self_tests {
         let out = checked(&src).execute().unwrap();
         assert_eq!(out.result, Ok(5));
         assert!(out.has_balanced_self_borrow_trace());
-        let id = match out.method_local_events[0] {
-            PrivateSelfMethodLocalEvent::Initialized(id, 5) => id,
+        let id = match &out.method_local_events[0] {
+            PrivateSelfMethodLocalEvent::Initialized(id, 5) => *id,
             _ => panic!("方法局部須有真來源值"),
         };
         assert!(matches!(out.exit_events.as_slice(), [
