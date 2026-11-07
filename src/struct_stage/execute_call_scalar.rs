@@ -1721,6 +1721,10 @@ impl PreparedPrivateScalarCall {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         frame.resource_scopes -= 1;
+                        if frame.str_owner_scopes.len() <= 1 {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.str_owner_scopes.pop();
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
@@ -1762,6 +1766,10 @@ impl PreparedPrivateScalarCall {
                                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                                         }
                                         frame.resource_scopes -= 1;
+                                        if frame.str_owner_scopes.len() <= 1 {
+                                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                        }
+                                        frame.str_owner_scopes.pop();
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
                                         )?;
@@ -1787,6 +1795,7 @@ impl PreparedPrivateScalarCall {
                             )?;
                             let baseline = frame.initialized_order.len();
                             frame.resource_scopes += 1;
+                            frame.str_owner_scopes.push(Vec::new());
                             resources.enter_scope();
                             tasks.push(PrivateScalarTask::EndScope(baseline));
                             for action in actions.iter().rev() {
@@ -1801,10 +1810,10 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::BindBool(*declaration, value));
                         }
                         PrivateScalarBranchAction::DeclareStr {
-                            name, mutable, initializer, ..
+                            declaration, name, mutable, initializer,
                         } => {
                             tasks.push(PrivateScalarTask::DeclareStr(
-                                name, *mutable, initializer,
+                                *declaration, name, *mutable, initializer,
                             ));
                         }
                         PrivateScalarBranchAction::Sequence(actions) => {
@@ -1832,20 +1841,18 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
                         }
                     },
-                    PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
-                        // 遞迴可呼叫最初被 main 選中的函式；
-                        // 它與其他原 Checker 函式均須使用各自參數宣告身分。
-                        let (parameter_ids, parameter_is_bool, result_expr, local_steps): (
-                            Vec<DeclarationId>,
-                            Vec<bool>,
-                            &PrivateScalarReturnExpr,
-                            &Vec<PrivateScalarLocalStep>,
+                    PrivateScalarTask::EnterCall(name, argument_plans, is_root_call) => {
+                        // 只有原 Checker 完整簽章能決定實參正式型別與借用位置。
+                        let (parameter_ids, parameter_is_bool, parameter_is_str,
+                            result_expr, local_steps): (
+                            Vec<DeclarationId>, Vec<bool>, Vec<bool>,
+                            &PrivateScalarReturnExpr, &Vec<PrivateScalarLocalStep>,
                         ) = if name == self.callee_name {
                             (
                                 self.callee_parameter_ids.clone(),
                                 self.callee_parameter_is_bool.clone(),
-                                &self.return_expr,
-                                &self.root_local_steps,
+                                self.callee_parameter_is_str.clone(),
+                                &self.return_expr, &self.root_local_steps,
                             )
                         } else {
                             let callee = self.nested_callees.iter()
@@ -1853,43 +1860,85 @@ impl PreparedPrivateScalarCall {
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
                             (
                                 callee.parameters.clone(), callee.parameter_is_bool.clone(),
+                                callee.parameter_is_str.clone(),
                                 &callee.result, &callee.local_steps,
                             )
                         };
-                        if parameter_ids.len() != argc || parameter_is_bool.len() != argc
-                            || values.len() < argc {
+                        let argc = argument_plans.len();
+                        if parameter_ids.len() != argc
+                            || parameter_is_bool.len() != argc
+                            || parameter_is_str.len() != argc
+                            || completed_arguments.len() < argc {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
                         }
-                        let evaluated = values.split_off(values.len() - argc);
-                        events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
+                        let evaluated = completed_arguments.split_off(
+                            completed_arguments.len() - argc,
+                        );
                         let mut locals = BTreeMap::new();
                         let mut bool_locals = BTreeMap::new();
-                        for ((id, is_bool), value) in parameter_ids.iter()
-                            .zip(parameter_is_bool).zip(evaluated) {
-                            if is_bool {
-                                if !matches!(value, 0 | 1)
-                                    || bool_locals.insert(*id, value == 1).is_some() {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        let mut incoming_borrows = Vec::new();
+                        let mut bound_events = Vec::new();
+                        for (index, (plan, actual)) in argument_plans.iter()
+                            .zip(evaluated).enumerate() {
+                            let id = parameter_ids[index];
+                            match (parameter_is_str[index], parameter_is_bool[index],
+                                plan, actual) {
+                                (true, false,
+                                    PrivateScalarCallArgument::BorrowStr { fact, .. },
+                                    PrivateScalarEvaluatedArgument::Borrow {
+                                        ticket, fact: observed,
+                                    }) if *fact == observed && ticket.fact() == *fact => {
+                                    incoming_borrows.push((ticket, *fact));
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::BorrowParameterBound(id, *fact),
+                                    );
                                 }
-                                events.push(PrivateScalarCallEvent::BoolParameterBound(
-                                    *id, value == 1,
-                                ));
-                            } else {
-                                if locals.insert(*id, value).is_some() {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                (false, true, PrivateScalarCallArgument::Bool(_),
+                                    PrivateScalarEvaluatedArgument::Bool(value)) => {
+                                    if bool_locals.insert(id, value).is_some() {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::BoolParameterBound(id, value),
+                                    );
                                 }
-                                events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
+                                (false, false, PrivateScalarCallArgument::Int(_),
+                                    PrivateScalarEvaluatedArgument::Int(value)) => {
+                                    if locals.insert(id, value).is_some() {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
+                                    bound_events.push(
+                                        PrivateScalarCallEvent::ParameterBound(id, value),
+                                    );
+                                }
+                                _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
                             }
                         }
+                        // 被呼叫者不擁有來源；真票據仍留在直接呼叫者 tracker。
+                        for (ticket, fact) in &incoming_borrows {
+                            let parent = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if parent.borrow_tracker.check_ticket_access(
+                                *ticket, BorrowKind::SharedRead,
+                            ).map_err(PrivateScalarCallRuntimeError::Borrow)? != fact.source {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                        }
+                        events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
+                        events.extend(bound_events);
                         resources.enter_scope();
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                             bool_values: bool_locals,
                             initialized_order: Vec::new(),
                             resource_scopes: 1,
+                            str_owner_scopes: vec![Vec::new()],
+                            borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
+                            incoming_borrows,
                         });
                         // 只有源自 main return 最外層的真 Call 才允許
                         // 故障注入；先求值的同名子呼叫絕不可誤作根框架。
@@ -1913,9 +1962,9 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
                                     tasks.push(PrivateScalarTask::AssignBool(*declaration, value)),
                                 PrivateScalarLocalStep::DeclareStr {
-                                    name, mutable, initializer, ..
+                                    declaration, name, mutable, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareStr(
-                                    name, *mutable, initializer,
+                                    *declaration, name, *mutable, initializer,
                                 )),
                                 PrivateScalarLocalStep::EarlyReturn(plan) =>
                                     tasks.push(PrivateScalarTask::CheckEarlyReturn(plan)),
