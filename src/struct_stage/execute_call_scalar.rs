@@ -114,6 +114,10 @@ impl PrivateScalarCallOutcome {
         let mut recorded = Vec::new();
         let mut unwinding = false;
         let mut created_ids = std::collections::HashSet::<u64>::new();
+        // 僅實際成功 Returned 的子框架，才可以在正式回滾之前
+        // 歸還其直接呼叫者的票據；尚未入框架的失敗實參須先回滾。
+        let mut returned_imported_loans =
+            Vec::<crate::borrow_safety::BorrowTicket>::new();
         for event in &self.events {
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
@@ -228,11 +232,13 @@ impl PrivateScalarCallOutcome {
                     frame.loan_resources.push((*ticket, *resource_id));
                 }
                 PrivateScalarCallEvent::LoanReturned(ticket) => {
-                    // 成功路徑必須等被呼叫者真正 Returned 才能還入參票據；
-                    // 失敗路徑只有明確進入回滾後才允許提前還票。
-                    if frames.last().is_some_and(|child|
-                        child.imported_loans.contains(ticket) && !child.returned)
-                        && !unwinding { return false; }
+                    // 已成功 Returned 的子函式才可正常還票；若實參
+                    // 尚未能進入子框架便失敗，必須先 UnwindStarted。
+                    // 不能靠當前棧頂沒有 imported_loans 就繞過此限制。
+                    if !unwinding && !returned_imported_loans.contains(ticket) {
+                        return false;
+                    }
+                    returned_imported_loans.retain(|loan| loan != ticket);
                     let Some(frame) = frames.iter_mut().rev()
                         .find(|frame| frame.loans.contains(ticket)) else { return false; };
                     let index = frame.loans.iter().position(|loan| loan == ticket)
@@ -306,6 +312,7 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.name.is_none() || frame.returned { return false; }
                     frame.returned = true;
+                    returned_imported_loans.extend(frame.imported_loans.iter().copied());
                 }
                 PrivateScalarCallEvent::FunctionExited { name, returned } => {
                     // 任何未返回的動態函式只能由正式失敗回滾退出；
@@ -7182,6 +7189,48 @@ mod g18_r06_cross_runtime_tests {
         assert!(!out.has_balanced_frame_trace());
         assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+
+    #[test]
+    fn g18_r05_r06_未進入子框架的借用失敗不能先於回滾起點還票() {
+        let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn run(n:int)->int{\nconst source:str = \"尚未進入\"\nreturn observe(source,n+9223372036854775807)\n}\nfn main()->int{\nreturn run(1)\n}\n";
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let unwind = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        assert!(unwind < returned);
+        // 保留所有資源事件及票據數量，只把還票移到正式失敗起點之前。
+        let forged = out.events.remove(returned);
+        out.events.insert(unwind, forged);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_r06_已成功歸還的前序借用不受後續溢位回滾誤封鎖() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn observe(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:str = \"先成功\"\nreturn observe(source,1)+9223372036854775807\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let success = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(1)
+        )).unwrap();
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        let unwind = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        assert!(success < returned && returned < unwind);
     }
 
 
