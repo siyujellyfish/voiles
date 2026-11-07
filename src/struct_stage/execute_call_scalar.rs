@@ -26,6 +26,8 @@ enum PrivateScalarCallEvent {
     ParameterBound(DeclarationId, i64),
     /// 每筆經 Checker 核准的純值區域初始化只在真正寫入框架後記錄。
     LocalInitialized(DeclarationId, i64),
+    /// 只有原 Checker 確認為 var int 的真賦值才留下寫入事件。
+    LocalAssigned(DeclarationId, i64),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
     LocalScopeEnded(DeclarationId),
     Returned(i64),
@@ -255,6 +257,23 @@ struct PrivateScalarLocalInit {
     value: PrivateScalarReturnExpr,
 }
 
+/// R01／R02：原 Parser 順序不可被「先宣告、後賦值」重排。
+/// 此執行計畫保留每一筆 Checker 核准的實際宣告與可寫更新。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarLocalStep {
+    Declare(PrivateScalarLocalInit),
+    Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+}
+
+impl PrivateScalarLocalStep {
+    fn expression(&self) -> &PrivateScalarReturnExpr {
+        match self {
+            Self::Declare(init) => &init.value,
+            Self::Assign { value, .. } => value,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarNestedCallee {
     name: String,
@@ -263,6 +282,7 @@ struct PrivateScalarNestedCallee {
     result_span: crate::common_ir::NodeSpan,
     result: PrivateScalarReturnExpr,
     local_inits: Vec<PrivateScalarLocalInit>,
+    local_steps: Vec<PrivateScalarLocalStep>,
 }
 
 struct PreparedPrivateScalarCall {
@@ -276,6 +296,7 @@ struct PreparedPrivateScalarCall {
     parameter_return_span: crate::common_ir::NodeSpan,
     return_expr: PrivateScalarReturnExpr,
     root_local_inits: Vec<PrivateScalarLocalInit>,
+    root_local_steps: Vec<PrivateScalarLocalStep>,
     owner_id: Option<DeclarationId>,
     argument: Option<i64>,
     /// 其餘參數從同一原 Checker 函式簽章依宣告順序綁定。
@@ -289,6 +310,7 @@ struct PreparedPrivateScalarCall {
     main_dynamic_call: Option<PrivateScalarReturnExpr>,
     /// main 已核准動態 int 初始化須在執行時逐筆求值，不預算函式結果。
     main_dynamic_inits: Vec<PrivateScalarLocalInit>,
+    main_dynamic_steps: Vec<PrivateScalarLocalStep>,
     /// 被 main 呼叫的完整函式宣告身分，供正常及遞迴路徑使用。
     callee_parameter_ids: Vec<DeclarationId>,
 }
@@ -320,6 +342,7 @@ enum PrivateScalarTask<'a> {
     RecordArgument,
     Apply(char),
     BindLocal(DeclarationId),
+    AssignLocal(DeclarationId),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
@@ -331,8 +354,8 @@ impl PreparedPrivateScalarCall {
     fn prepare_function_locals(
         function: &Function, verified: &VerifiedPrivateSource,
     ) -> Result<(
-        Vec<PrivateScalarLocalInit>, PrivateScalarReturnExpr,
-        crate::common_ir::NodeSpan,
+        Vec<PrivateScalarLocalInit>, Vec<PrivateScalarLocalStep>,
+        PrivateScalarReturnExpr, crate::common_ir::NodeSpan,
     ), PrivateScalarCallPrepareError> {
         let (last, prefix) = function.body.statements.split_last().ok_or(
             PrivateScalarCallPrepareError::Unsupported("普通函式缺少返回"),
@@ -346,10 +369,40 @@ impl PreparedPrivateScalarCall {
             (param.name.clone(), DeclarationId(param.declaration_start))
         ).collect::<BTreeMap<_, _>>();
         let mut local_inits = Vec::new();
+        let mut local_steps = Vec::new();
         for statement in prefix {
+            if let StmtKind::Assign(assign) = &statement.kind {
+                let id = *bindings.get(&assign.name).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "int 賦值目標不是已驗證的本函式宣告或參數",
+                    ),
+                )?;
+                if !verified.plan.declarations.typed_declaration(id)
+                    .is_some_and(|fact| fact.ty == "int" && fact.mutable)
+                    || verified.plan.scalar_hir.assignment(statement.node_span())
+                        .is_none_or(|fact|
+                            fact.resolved.declaration != id
+                                || fact.resolved.ty != crate::common_ir::ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == statement.start
+                            && matches!(&token.kind,
+                                TokenKind::Name(found) if found == &assign.name))
+                {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "原 Checker int var 賦值缺少完整可寫 HIR／Token",
+                    ));
+                }
+                let value = PrivateScalarReturnExpr::from_checked_bindings(
+                    &assign.expression, &bindings, verified,
+                )?;
+                local_steps.push(PrivateScalarLocalStep::Assign {
+                    declaration: id, value,
+                });
+                continue;
+            }
             let StmtKind::Declare(owner) = &statement.kind else {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "函式前置語句只接通已核准 Copyable int 宣告",
+                    "函式前置語句只接通真 Copyable int 宣告與已核准 var 賦值",
                 ));
             };
             let declaration = DeclarationId(statement.start);
@@ -368,14 +421,16 @@ impl PreparedPrivateScalarCall {
             let value = PrivateScalarReturnExpr::from_checked_bindings(
                 initializer, &bindings, verified,
             )?;
-            local_inits.push(PrivateScalarLocalInit { declaration, value });
+            let init = PrivateScalarLocalInit { declaration, value };
+            local_steps.push(PrivateScalarLocalStep::Declare(init.clone()));
+            local_inits.push(init);
             bindings.insert(owner.name.clone(), declaration);
         }
         let return_span = ret.expression.node_span();
         let result = PrivateScalarReturnExpr::from_checked_bindings(
             &ret.expression, &bindings, verified,
         )?;
-        Ok((local_inits, result, return_span))
+        Ok((local_inits, local_steps, result, return_span))
     }
 
     /// 顯式 expression 工作堆疊＋真函式框架。合法遞迴亦走同一路徑，
