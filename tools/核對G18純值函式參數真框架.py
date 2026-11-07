@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百八十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百九十項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_父子真_utf8_資源事件必嵌入函式進退同序序列",
+    "g18_r05_原_checker_真_move_資源編號不跨父子函式錯置",
+    "g18_r05_for_逐輪真_utf8_釋放不得延後至下一輪或函式退出",
+    "g18_r05_步數耗盡與真資源清理必先於失敗函式退出",
+    "g18_r05_偽造另一份平衡_resourceid_不得繞過真事件映射",
+    "g18_r05_偽造提前函式退出再釋放真_resourceid_必被拒絕",
     "g18_r04_const_move_來源所有權轉交後目標不可寫且_resourceid_只釋放一次",
     "g18_r04_原_checker_const_str_move_同函式保留目標不可寫性",
     "g18_r04_真同函式_ownedstr_明確_move_單一_resourceid_不複製",
