@@ -6306,6 +6306,119 @@ mod g18_private_scalar_call_tests {
         assert!(!wrong_id.has_balanced_frame_trace());
     }
 
+
+    #[test]
+    fn g18_r04_原_checker_借用參數再借至子函式_真_resourceid_不複製() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nconst source:str = \"巢狀🪼\"\nreturn bridge(source,2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterResourceLinked {
+                resource_id: 1, ..
+            }
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r04_獨占來源傳入不可寫參數再共享轉借不得提升權限() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nvar source:str = \"獨占\"\nreturn bridge(source,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let facts = out.events.iter().filter_map(|event|
+            if let PrivateScalarCallEvent::LoanAcquired(ticket) = event {
+                Some(ticket.fact().kind)
+            } else { None }
+        ).collect::<Vec<_>>();
+        assert_eq!(facts, [BorrowKind::ExclusiveWrite, BorrowKind::SharedRead]);
+    }
+
+    #[test]
+    fn g18_r04_跨三層真借用參數鏈_只要來源資源仍活躍便可重借() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+1\n}\nfn mid(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn parent(item:str,n:int)->int{\nreturn mid(item,n)\n}\nfn main()->int{\nconst owner:str = \"三層\"\nreturn parent(owner,1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::BorrowParameterResourceLinked {
+                resource_id: 1, ..
+            }
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_r05_轉借已取得真票據但第二實參溢位逐層原子歸還() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n+9223372036854775807)\n}\nfn main()->int{\nconst owner:str = \"中止\"\nreturn bridge(owner,1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 2);
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::FunctionEntered(name) if name == "leaf"
+        )));
+    }
+
+    #[test]
+    fn g18_r05_轉借後子呼叫預算耗盡不得虛構葉框架與遺漏票據() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nconst owner:str = \"預算\"\nreturn bridge(owner,3)\n}\n";
+        let out = checked(src).execute_with_budget(PrivateScalarExecutionBudget {
+            max_call_frames: 1, max_steps: 100,
+        }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r05_轉借參數篡改真上層_ticket_或_resourceid_一律拒絕() {
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n\n}\nfn bridge(item:str,n:int)->int{\nreturn leaf(item,n)\n}\nfn main()->int{\nconst owner:str = \"來源\"\nreturn bridge(owner,2)\n}\n";
+        let baseline = checked(src).execute().unwrap();
+        assert!(baseline.has_balanced_frame_trace());
+        let mut wrong_resource = checked(src).execute().unwrap();
+        let event = wrong_resource.events.iter_mut().find(|event| matches!(
+            event, PrivateScalarCallEvent::BorrowParameterResourceLinked {
+                resource_id: 1, ..
+            }
+        )).unwrap();
+        if let PrivateScalarCallEvent::BorrowParameterResourceLinked { resource_id, .. } = event {
+            *resource_id = 999;
+        }
+        assert!(!wrong_resource.has_balanced_frame_trace());
+        let mut missing_link = checked(src).execute().unwrap();
+        let index = missing_link.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::BorrowParameterResourceLinked { .. }
+        )).unwrap();
+        missing_link.events.remove(index);
+        assert!(!missing_link.has_balanced_frame_trace());
+    }
+
 }
 
 
