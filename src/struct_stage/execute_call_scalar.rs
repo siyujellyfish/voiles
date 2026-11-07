@@ -364,6 +364,9 @@ impl PrivateScalarCallOutcome {
             PrivateScalarCallEvent::LocalInitialized(id, _)
                 | PrivateScalarCallEvent::BoolInitialized(id, _) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
+            PrivateScalarCallEvent::LocalAssigned(id, _)
+                | PrivateScalarCallEvent::BoolAssigned(id, _) =>
+                Some(PrivateSharedCallExitEvent::LocalAssigned(*id)),
             PrivateScalarCallEvent::LocalScopeEnded(id)
                 | PrivateScalarCallEvent::BoolScopeEnded(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
@@ -7472,6 +7475,27 @@ mod g18_r06_cross_runtime_tests {
         // 簽發的方法內局部 DeclarationId 來源。
         method.expected_method_local_ids = vec![DeclarationId(0)];
         assert!(!method.has_balanced_self_borrow_trace());
+    }
+
+
+    #[test]
+    fn g18_r06_普通函式與同步self方法均以真var_int更新通過共用離域帳() {
+        let ordinary = "fn calc(a:int,b:int)->int{\nvar amount:int = a\namount = amount+b\nreturn amount\n}\nfn main()->int{\nreturn calc(3,4)\n}\n";
+        let scalar = PreparedPrivateScalarCall::prepare(ordinary)
+            .unwrap().execute().unwrap();
+        assert_eq!(scalar.result, Ok(7));
+        assert!(scalar.has_balanced_frame_trace());
+        assert!(scalar.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 7)
+        )));
+        let method_src = "struct Sample{\nvar x:int = 1\nfn calc(a:int,b:int)->int{\nvar amount:int = a\namount = amount+b\nreturn amount\n}\n}\nfn main()->int{\nconst value:Sample = Sample()\nreturn value.calc(3,4)\n}\n";
+        let method = PreparedPrivateSelfMethod::prepare(method_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(method.result, Ok(7));
+        assert!(method.has_balanced_self_borrow_trace());
+        assert!(method.exit_events.iter().any(|event| matches!(
+            event, PrivateSharedCallExitEvent::LocalAssigned(_)
+        )));
     }
 
 

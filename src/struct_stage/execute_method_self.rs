@@ -33,6 +33,7 @@ struct PrivateSelfMethodOutcome {
     /// 原 Checker/Parser 封存的方法真 int 局部 DeclarationId
     /// 按來源先後排列；故障執行只容許已走到的合法前綴。
     expected_method_local_ids: Vec<DeclarationId>,
+    expected_method_assignment_ids: Vec<DeclarationId>,
     /// R05：真 BorrowSafety 簽發、方法 Return／Unwind 及歸還後
     /// 逐筆記錄；不再只靠方法布林旗標冒充退出已驗證。
     checked_loan: BorrowFact,
@@ -59,6 +60,7 @@ impl PrivateSelfMethodOutcome {
         ).count();
         let mut local_stack = Vec::<DeclarationId>::new();
         let mut initialized_local_ids = Vec::<DeclarationId>::new();
+        let mut assigned_local_ids = Vec::<DeclarationId>::new();
         for event in &self.method_local_events {
             match event {
                 PrivateSelfMethodLocalEvent::Initialized(id, _) => {
@@ -67,6 +69,16 @@ impl PrivateSelfMethodOutcome {
                     }
                     local_stack.push(*id);
                     initialized_local_ids.push(*id);
+                }
+                PrivateSelfMethodLocalEvent::Assigned(id, _) => {
+                    // 尚未完成所有原 Checker 局部宣告之前，不可能
+                    // 合法進入後續賦值群；只能變更已真初始化的 var int。
+                    if !local_stack.contains(id)
+                        || initialized_local_ids.len()
+                            != self.expected_method_local_ids.len() {
+                        return false;
+                    }
+                    assigned_local_ids.push(*id);
                 }
                 PrivateSelfMethodLocalEvent::ScopeEnded(id) => {
                     if local_stack.pop() != Some(*id) { return false; }
@@ -83,6 +95,11 @@ impl PrivateSelfMethodOutcome {
             && self.expected_method_local_ids.starts_with(&initialized_local_ids)
             && (!self.result.is_ok()
                 || initialized_local_ids.len() == self.expected_method_local_ids.len());
+        let approved_assignments = self.expected_method_assignment_ids
+            .starts_with(&assigned_local_ids)
+            && (!self.result.is_ok()
+                || assigned_local_ids.len()
+                    == self.expected_method_assignment_ids.len());
         // 同步方法只有一個已核准的 self 框架；局部不應被
         // 記錄在真正 FunctionEntered 之前，亦不應在其
         // FunctionExited 之後以 main 的匿名基底框架補造。
@@ -93,6 +110,7 @@ impl PrivateSelfMethodOutcome {
                 PrivateSharedCallExitEvent::FunctionEntered => inside_method = true,
                 PrivateSharedCallExitEvent::FunctionExited { .. } => inside_method = false,
                 PrivateSharedCallExitEvent::LocalInitialized(_)
+                    | PrivateSharedCallExitEvent::LocalAssigned(_)
                     | PrivateSharedCallExitEvent::LocalScopeEnded(_) if !inside_method => {
                     local_events_inside_real_method = false;
                 }
@@ -102,11 +120,14 @@ impl PrivateSelfMethodOutcome {
         let local_projection = self.method_local_events.iter().map(|event| match event {
             PrivateSelfMethodLocalEvent::Initialized(id, _) =>
                 PrivateSharedCallExitEvent::LocalInitialized(*id),
+            PrivateSelfMethodLocalEvent::Assigned(id, _) =>
+                PrivateSharedCallExitEvent::LocalAssigned(*id),
             PrivateSelfMethodLocalEvent::ScopeEnded(id) =>
                 PrivateSharedCallExitEvent::LocalScopeEnded(*id),
         }).collect::<Vec<_>>();
         let exit_projection = self.exit_events.iter().filter(|event| matches!(event,
             PrivateSharedCallExitEvent::LocalInitialized(_)
+                | PrivateSharedCallExitEvent::LocalAssigned(_)
                 | PrivateSharedCallExitEvent::LocalScopeEnded(_)
         )).cloned().collect::<Vec<_>>();
         let failure_unwind_precedes_cleanup = self.result.is_ok()
@@ -120,6 +141,7 @@ impl PrivateSelfMethodOutcome {
             ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
             && approved_local_prefix
+            && approved_assignments
             && local_events_inside_real_method
             && local_projection == exit_projection
             && failure_unwind_precedes_cleanup
@@ -165,6 +187,7 @@ enum PrivateSelfIntReturn {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateSelfMethodLocalEvent {
     Initialized(DeclarationId, i64),
+    Assigned(DeclarationId, i64),
     ScopeEnded(DeclarationId),
 }
 
@@ -184,6 +207,8 @@ struct PreparedPrivateSelfMethod {
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
     method_int_locals: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
+    /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
+    method_int_assignments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     method: String,
     method_span: crate::common_ir::NodeSpan,
     call_span: crate::common_ir::NodeSpan,
@@ -457,43 +482,93 @@ impl PreparedPrivateSelfMethod {
             (param.name.clone(), DeclarationId(param.declaration_start))
         ).collect::<BTreeMap<_, _>>();
         let mut method_int_locals = Vec::<(DeclarationId, PrivateScalarReturnExpr)>::new();
+        let mut method_int_assignments =
+            Vec::<(DeclarationId, PrivateScalarReturnExpr)>::new();
+        let mut local_permissions =
+            BTreeMap::<String, (DeclarationId, bool)>::new();
+        let mut seen_assignment = false;
         for (index, statement) in method.body.statements.iter().enumerate()
             .take(method.body.statements.len() - 1) {
             if write_value.is_some() && index == 0 {
                 continue;
             }
-            let StmtKind::Declare(local) = &statement.kind else {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法內部只接通已核准 int 局部宣告或單一 self 欄位寫入",
-                ));
-            };
-            let id = DeclarationId(statement.start);
-            let initializer = local.initializer.as_ref().ok_or(
-                PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 局部須已由原 Checker 證明初始化",
-                ),
-            )?;
-            if local.ty != "int"
-                || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
-                || method_bindings.contains_key(&local.name) {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法局部缺少真 Checker int 宣告或重複名稱",
-                ));
+            match &statement.kind {
+                StmtKind::Declare(local) => {
+                    if seen_assignment {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法局部須先全部宣告才可在直線路徑進行更新",
+                        ));
+                    }
+                    let id = DeclarationId(statement.start);
+                    let initializer = local.initializer.as_ref().ok_or(
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 局部須已由原 Checker 證明初始化",
+                        ),
+                    )?;
+                    if local.ty != "int"
+                        || !verified.plan.declarations.matches(
+                            id, &local.ty, local.mutable,
+                        )
+                        || method_bindings.contains_key(&local.name) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法局部缺少真 Checker int 宣告或重複名稱",
+                        ));
+                    }
+                    let expr = PrivateScalarReturnExpr::from_checked_bindings(
+                        initializer, &method_bindings, &verified,
+                    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                        "方法局部初始化缺少原 Checker TypedHIR／Reference／Arithmetic",
+                    ))?;
+                    let mut calls = Vec::new();
+                    expr.collect_calls(&mut calls);
+                    if !calls.is_empty()
+                        || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 局部不支援尚未接通的普通函式或不可達來源",
+                        ));
+                    }
+                    method_int_locals.push((id, expr));
+                    method_bindings.insert(local.name.clone(), id);
+                    local_permissions.insert(local.name.clone(), (id, local.mutable));
+                }
+                StmtKind::Assign(assignment) => {
+                    seen_assignment = true;
+                    let (id, writable) = *local_permissions.get(&assignment.name)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 int 重賦值目標不是原 Checker 已初始化局部",
+                        ))?;
+                    if !writable
+                        || verified.plan.scalar_hir.assignment(statement.node_span())
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != id
+                                || fact.resolved.ty != ScalarType::Int)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == statement.start
+                                && matches!(&token.kind, TokenKind::Name(found)
+                                    if found == &assignment.name)) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法局部重賦值缺少原 Checker 可寫授權／TypedHIR／Lexer",
+                        ));
+                    }
+                    let expr = PrivateScalarReturnExpr::from_checked_bindings(
+                        &assignment.expression, &method_bindings, &verified,
+                    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                        "方法 var int 更新算式沒有原 Checker TypedHIR 來源",
+                    ))?;
+                    let mut calls = Vec::new();
+                    expr.collect_calls(&mut calls);
+                    if !calls.is_empty()
+                        || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 var int 更新不能偷渡未核准的普通函式呼叫",
+                        ));
+                    }
+                    method_int_assignments.push((id, expr));
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法僅接通純 int 區域宣告、後續直線更新及返回",
+                )),
             }
-            let expr = PrivateScalarReturnExpr::from_checked_bindings(
-                initializer, &method_bindings, &verified,
-            ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                "方法局部初始化缺少原 Checker TypedHIR／Reference／Arithmetic",
-            ))?;
-            let mut calls = Vec::new();
-            expr.collect_calls(&mut calls);
-            if !calls.is_empty() || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 局部不支援尚未接通的普通函式或不可達來源",
-                ));
-            }
-            method_int_locals.push((id, expr));
-            method_bindings.insert(local.name.clone(), id);
         }
         let last = method.body.statements.last().expect("方法已證明非空");
         let StmtKind::Return(returned) = &last.kind else {
@@ -740,6 +815,7 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method_int_locals,
+            method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -757,6 +833,7 @@ impl PreparedPrivateSelfMethod {
             && self.write_value == fresh.write_value
             && self.return_calculation == fresh.return_calculation
             && self.method_int_locals == fresh.method_int_locals
+            && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.argument_binding == fresh.argument_binding
@@ -893,6 +970,27 @@ impl PreparedPrivateSelfMethod {
                     *id, calculated,
                 ));
                 exit_events.push(PrivateSharedCallExitEvent::LocalInitialized(*id));
+            }
+            // 只有原 Checker 正式核准的 var int 局部允許依序更新；
+            // 先完成 RHS 真值計算再提交目標，故障時保留舊值
+            // 直到原有 ScopeEnded 逆序清理。
+            for (id, expression) in &self.method_int_assignments {
+                if !initialized_method_locals.contains(id) {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                let value = expression.evaluate(&parameter_frame)
+                    .map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?;
+                if parameter_frame.insert(*id, value).is_none() {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                method_local_events.push(PrivateSelfMethodLocalEvent::Assigned(
+                    *id, value,
+                ));
+                exit_events.push(PrivateSharedCallExitEvent::LocalAssigned(*id));
             }
             // 寫入屬已核准之獨占 self：先驗真 BorrowTicket 身分、
             // 來源及權限，再寫真 MixedStructRuntime 的 Copyable int。
@@ -1043,6 +1141,9 @@ impl PreparedPrivateSelfMethod {
             method_local_slots_after_exit: initialized_method_locals.len(),
             method_local_events,
             expected_method_local_ids: self.method_int_locals.iter().map(
+                |(id, _)| *id,
+            ).collect(),
+            expected_method_assignment_ids: self.method_int_assignments.iter().map(
                 |(id, _)| *id,
             ).collect(),
             checked_loan: self.loan, exit_events,
@@ -2401,6 +2502,7 @@ mod g18_private_method_self_tests {
         for event in &mut out.method_local_events {
             match event {
                 PrivateSelfMethodLocalEvent::Initialized(id, _)
+                    | PrivateSelfMethodLocalEvent::Assigned(id, _)
                     | PrivateSelfMethodLocalEvent::ScopeEnded(id) => *id = fake,
             }
         }
@@ -2450,6 +2552,114 @@ mod g18_private_method_self_tests {
             PrivateSelfMethodLocalEvent::ScopeEnded(plan.method_int_locals[0].0),
         ]);
         assert!(out.has_balanced_self_borrow_trace());
+    }
+
+
+    #[test]
+    fn g18_r04_同步self方法var_int_局部可按原checker賦值後真返回() {
+        let src = checked_method_local_source(
+            "var amount:int = a\namount = amount+b\nreturn amount", "3,4",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.method_int_assignments.len(), 1);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_self_borrow_trace() && out.ticket_returned);
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(plan.method_int_locals[0].0, 3),
+            PrivateSelfMethodLocalEvent::Assigned(plan.method_int_locals[0].0, 7),
+            PrivateSelfMethodLocalEvent::ScopeEnded(plan.method_int_locals[0].0),
+        ]);
+    }
+
+    #[test]
+    fn g18_r04_同步self方法連續兩次_var_int_更新沿用最新動態值() {
+        let src = checked_method_local_source(
+            "var amount:int = a\namount = amount+b\namount = (amount-2)\nreturn amount",
+            "11,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(13));
+        assert_eq!(out.expected_method_assignment_ids,
+            [plan.method_int_locals[0].0, plan.method_int_locals[0].0]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r04_同步self方法第二個var局部可讀取第一個已更新值() {
+        let src = checked_method_local_source(
+            "var first:int = a\nvar second:int = b\nfirst = first+3\nsecond = first+second\nreturn second",
+            "4,5",
+        );
+        let out = checked(&src).execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert!(out.has_balanced_self_borrow_trace());
+        assert_eq!(out.method_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r05_同步self第二次更新溢位須保留已提交第一次更新及逆序離域() {
+        let src = checked_method_local_source(
+            "var amount:int = 2\namount = amount+3\namount = amount+9223372036854775807\nreturn amount",
+            "3,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_exited && out.ticket_returned);
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(plan.method_int_locals[0].0, 2),
+            PrivateSelfMethodLocalEvent::Assigned(plan.method_int_locals[0].0, 5),
+            PrivateSelfMethodLocalEvent::ScopeEnded(plan.method_int_locals[0].0),
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r04_方法const_int_重新賦值或參數賦值仍原checker靜態拒絕() {
+        let const_src = checked_method_local_source(
+            "const amount:int = a\namount = b\nreturn amount", "3,4",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&const_src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let param_src = checked_method_local_source(
+            "var amount:int = a\na = b\nreturn amount", "3,4",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&param_src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r04_方法var_int_更新後再宣告尚未證明重排必拒絕() {
+        let src = checked_method_local_source(
+            "var first:int = a\nfirst = first+b\nconst later:int = first\nreturn later",
+            "3,4",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_r05_竄改方法var_int_賦值計畫或兩張帳中的更新身分須拒絕() {
+        let src = checked_method_local_source(
+            "var amount:int = a\namount = amount+b\nreturn amount", "3,4",
+        );
+        let mut plan = checked(&src);
+        plan.method_int_assignments[0].1 = PrivateScalarReturnExpr::Constant(7);
+        assert!(matches!(plan.execute(),
+            Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut out = checked(&src).execute().unwrap();
+        assert!(out.has_balanced_self_borrow_trace());
+        out.expected_method_assignment_ids = vec![DeclarationId(0)];
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(&src).execute().unwrap();
+        for event in &mut out.method_local_events {
+            if let PrivateSelfMethodLocalEvent::Assigned(id, _) = event {
+                *id = DeclarationId(0);
+            }
+        }
+        assert!(!out.has_balanced_self_borrow_trace());
     }
 
 
