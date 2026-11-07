@@ -131,6 +131,8 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::LoanReturned(_)
                     | PrivateScalarCallEvent::LocalScopeEnded(_)
                     | PrivateScalarCallEvent::BoolScopeEnded(_)
+                    | PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
+                    | PrivateScalarCallEvent::BoolScopeEndedEmpty(_)
                     | PrivateScalarCallEvent::OwnedResource(
                         crate::owned_str_runtime::ResourceEvent::Released(_)
                     )
@@ -197,19 +199,51 @@ impl PrivateScalarCallOutcome {
                     };
                     child.imported_loans.push(ticket);
                 }
+                PrivateScalarCallEvent::LocalDeclaredEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry| matches!(entry,
+                        PrivateScalarLocalBinding::Int(old)
+                            | PrivateScalarLocalBinding::UninitializedInt(old)
+                            if old == id
+                    )) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::UninitializedInt(*id));
+                }
+                PrivateScalarCallEvent::BoolDeclaredEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry| matches!(entry,
+                        PrivateScalarLocalBinding::Bool(old)
+                            | PrivateScalarLocalBinding::UninitializedBool(old)
+                            if old == id
+                    )) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::UninitializedBool(*id));
+                }
                 PrivateScalarCallEvent::LocalInitialized(id, _) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || frame.locals.iter().any(|entry|
                         matches!(entry, PrivateScalarLocalBinding::Int(old) if old == id)
                     ) { return false; }
-                    frame.locals.push(PrivateScalarLocalBinding::Int(*id));
+                    if let Some(pending) = frame.locals.iter_mut().find(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::UninitializedInt(old)
+                            if old == id)
+                    ) {
+                        *pending = PrivateScalarLocalBinding::Int(*id);
+                    } else {
+                        frame.locals.push(PrivateScalarLocalBinding::Int(*id));
+                    }
                 }
                 PrivateScalarCallEvent::BoolInitialized(id, _) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || frame.locals.iter().any(|entry|
                         matches!(entry, PrivateScalarLocalBinding::Bool(old) if old == id)
                     ) { return false; }
-                    frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
+                    if let Some(pending) = frame.locals.iter_mut().find(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::UninitializedBool(old)
+                            if old == id)
+                    ) {
+                        *pending = PrivateScalarLocalBinding::Bool(*id);
+                    } else {
+                        frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
+                    }
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -234,6 +268,22 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
                         Some(PrivateScalarLocalBinding::Bool(previous)) if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::LocalScopeEndedEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::UninitializedInt(previous))
+                            if previous == *id) {
+                        return false;
+                    }
+                }
+                PrivateScalarCallEvent::BoolScopeEndedEmpty(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::UninitializedBool(previous))
+                            if previous == *id) {
                         return false;
                     }
                 }
@@ -366,6 +416,9 @@ impl PrivateScalarCallOutcome {
                 Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
             PrivateScalarCallEvent::FunctionEntered(_) =>
                 Some(PrivateSharedCallExitEvent::FunctionEntered),
+            PrivateScalarCallEvent::LocalDeclaredEmpty(id)
+                | PrivateScalarCallEvent::BoolDeclaredEmpty(id) =>
+                Some(PrivateSharedCallExitEvent::LocalDeclaredEmpty(*id)),
             PrivateScalarCallEvent::LocalInitialized(id, _)
                 | PrivateScalarCallEvent::BoolInitialized(id, _) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
@@ -375,6 +428,9 @@ impl PrivateScalarCallOutcome {
             PrivateScalarCallEvent::LocalScopeEnded(id)
                 | PrivateScalarCallEvent::BoolScopeEnded(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
+            PrivateScalarCallEvent::LocalScopeEndedEmpty(id)
+                | PrivateScalarCallEvent::BoolScopeEndedEmpty(id) =>
+                Some(PrivateSharedCallExitEvent::LocalScopeEndedEmpty(*id)),
             PrivateScalarCallEvent::Returned(_) =>
                 Some(PrivateSharedCallExitEvent::Returned),
             PrivateScalarCallEvent::UnwindStarted =>
