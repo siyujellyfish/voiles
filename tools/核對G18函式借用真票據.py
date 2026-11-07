@@ -9,6 +9,8 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_共享與獨占真借用返回或故障皆須資源票據聯合平衡",
+    "g18_r05_真借用結果偽造已退出未歸票據或遺失資源一律拒絕",
     "g18_d_唯一_str_借用與四個_copyable_int_同框架真算術返回",
     "g18_d_參數宣告順序為_int_str_int_int_仍以原_checker_身分真借用",
     "g18_d_同一具名_copyable_int_重複使用不消耗_str_借用持有者",
