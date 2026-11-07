@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內真字串借用隨continue先還票再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_false未選函式零事件且else選中另一真函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while逐輪重讀條件內的真函式來源",
@@ -152,6 +157,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內真字串借用隨continue先還票再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_false未選函式零事件且else選中另一真函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while逐輪重讀條件內的真函式來源",
@@ -192,6 +202,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內真字串借用隨continue先還票再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main巢狀分支函式溢位不得執行後續else或虛構返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main函式賦值右值溢位不能假造成功初始化或第二個呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
@@ -328,6 +341,11 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內真字串借用隨continue先還票再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_無初值str以已核准move首次接收原ResourceId",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_非法未初始化str讀取借用必由原Checker提前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_延遲str真字面賦值後借用參數先還票再釋放資源",
@@ -450,6 +468,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_r03_main選中if內真utf8局部借用給函式後才離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_for外層utf8每輪重借同源須逐次還票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內真字串借用隨continue先還票再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main_if選中分支的真函式呼叫不需出現在尾端return",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_false未選函式零事件且else選中另一真函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while逐輪重讀條件內的真函式來源",
