@@ -6190,7 +6190,9 @@ mod g18_private_scalar_call_tests {
         ]);
         assert!(!out.events.iter().any(|event| matches!(event,
             PrivateScalarCallEvent::ResourceTransferred { .. }
-                | PrivateScalarCallEvent::FunctionEntered(name) if name == "receive"
+        )));
+        assert!(!out.events.iter().any(|event| matches!(event,
+            PrivateScalarCallEvent::FunctionEntered(name) if name == "receive"
         )));
     }
 
