@@ -7167,6 +7167,98 @@ mod g18_private_scalar_call_tests {
     }
 
 
+    // R01～R03：將真 UTF-8 所有權轉移、呼叫借用與 CFG 退出放在同一
+    // 原 Checker 驗證的 main 工作堆疊；不是分別執行模型後拼湊結果。
+    #[test]
+    fn g18_r03_main_while_break前真move借用只建立清理首輪資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nvar active:bool = true\nwhile(active){\nvar source:str = \"首輪🪼\"\nvar target:str\ntarget = source.move()\nresult = inspect(target,2)\nbreak\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_))).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_for_continue每輪真move與借用先還票再走回邊() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar total:int = 0\nfor i in 0..3{\nvar source:str = \"回邊🪼\"\nvar target:str\ntarget = source.move()\ntotal = total+inspect(target,i)\ncontinue\n}\nreturn total\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+            R::Created(2), R::Moved(2), R::Released(2),
+            R::Created(3), R::Moved(3), R::Released(3),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 3);
+        for id in [1, 2, 3] {
+            let released = out.events.iter().position(|e| matches!(
+                e, PrivateScalarCallEvent::OwnedResource(R::Released(actual)) if *actual == id
+            )).unwrap();
+            assert!(out.events[..released].iter().any(|e| matches!(
+                e, PrivateScalarCallEvent::LoanReturned(_)
+            )));
+        }
+    }
+
+    #[test]
+    fn g18_r03_main_if提前return真move借用且跳過後續資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn fallback(n:int)->int{\nreturn n\n}\nfn main()->int{\nif(true){\nvar source:str = \"提前🪼\"\nvar target:str\ntarget = source.move()\nreturn inspect(target,4)\n}\nreturn fallback(0)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "fallback"
+        )));
+    }
+
+    #[test]
+    fn g18_r01_main選中分支真字串借用嵌入第二層函式實參() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn increment(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar result:int = 0\nif(true){\nvar owner:str = \"多層🪼\"\nresult = increment(inspect(owner,3))\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["inspect", "increment"]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main_if_false未選多層函式不造資源真else只借用一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n\n}\nfn increment(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nvar owner:str = \"未選🪼\"\nresult = increment(inspect(owner,99))\n}else{\nvar owner:str = \"選中🪼\"\nresult = increment(inspect(owner,3))\n}\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_))).count(), 1);
+    }
+
+
 }
 
 
