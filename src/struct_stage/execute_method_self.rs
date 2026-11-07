@@ -1451,4 +1451,118 @@ mod g18_private_method_self_tests {
     }
 
 
+    fn main_named_method_source(locals: &str, actuals: &str, body: &str) -> String {
+        format!(
+            "struct Counter{{\nvar count:int = 7\nfn calc(a:int,b:int)->int{{\n{body}\n}}\n}}\nfn main()->int{{\nconst value:Counter = Counter()\n{locals}\nreturn value.calc({actuals})\n}}\n"
+        )
+    }
+
+    #[test]
+    fn g18_r02_r04_同步方法讀取main具名_const_int_真局部框架() {
+        let src = main_named_method_source(
+            "const amount:int = 5", "amount,3", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals.len(), 1);
+        assert_eq!(plan.argument_sources[0], Some(plan.main_int_locals[0].1));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.ticket_returned && out.method_exited);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_雙具名_copyable_int_按main宣告及原方法參數次序做減法() {
+        let src = main_named_method_source(
+            "var left:int = 4\nconst right:int = 11", "right,left", "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals.len(), 2);
+        assert_eq!(plan.argument_sources,
+            [Some(plan.main_int_locals[1].1), Some(plan.main_int_locals[0].1)]);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.main_local_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_r02_r04_main整數局部由前一已初始化名稱複製再傳入self方法() {
+        let src = main_named_method_source(
+            "const first:int = 12\nconst second:int = first",
+            "second,4", "return a-b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.main_int_locals[1].3, Some(plan.main_int_locals[0].1));
+        assert_eq!(plan.execute().unwrap().result, Ok(8));
+    }
+
+    #[test]
+    fn g18_r02_r04_同一具名_copyable_int_可作兩個方法實參不消耗來源() {
+        let src = main_named_method_source(
+            "const both:int = 6", "both,both", "return a+b",
+        );
+        let plan = checked(&src);
+        assert_eq!(plan.argument_sources, [Some(plan.main_int_locals[0].1); 2]);
+        for _ in 0..3 {
+            let out = plan.execute().unwrap();
+            assert_eq!(out.result, Ok(12));
+            assert_eq!(out.main_local_slots_after_exit, 0);
+        }
+    }
+
+    #[test]
+    fn g18_r02_r05_具名main實參與_self_欄位加法溢位仍清除局部及真票據() {
+        let src = "struct Counter{\nvar count:int = 7\nfn calc(n:int)->int{\nreturn self.count+n\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nconst amount:int = 9223372036854775807\nreturn value.calc(amount)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(out.method_entered && !out.method_exited && out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert!(out.events.is_empty());
+    }
+
+    #[test]
+    fn g18_r02_r05_同步方法具名實參故障注入仍先歸還借用後清空main局部() {
+        let src = main_named_method_source(
+            "const amount:int = 11", "amount,4", "return a+b",
+        );
+        let plan = checked(&src);
+        let out = plan.execute_with_fault(true).unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert!(out.method_entered && !out.method_exited && out.ticket_returned);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert_eq!(plan.execute().unwrap().result, Ok(15));
+    }
+
+    #[test]
+    fn g18_r02_r04_篡改具名來源局部值身分或方法實參來源皆須零執行拒絕() {
+        let src = main_named_method_source(
+            "const amount:int = 11", "amount,4", "return a+b",
+        );
+        let mut plan = checked(&src);
+        plan.main_int_locals[0].2 = 99;
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.argument_sources[0] = Some(DeclarationId(0));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+        let mut plan = checked(&src);
+        plan.argument_binding = plan.argument_binding.map(|(id, _)| (id, 100));
+        assert!(matches!(plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r02_r04_尚未宣告或未初始化main實參不得進入同步self方法() {
+        let future = main_named_method_source(
+            "var later:int", "later,4", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&future),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+        let wrong_type = main_named_method_source(
+            "const amount:bool = true", "amount,4", "return a+b",
+        );
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&wrong_type),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+
 }
