@@ -353,6 +353,26 @@ impl PrivateScalarCallOutcome {
                     | PrivateScalarCallEvent::ConditionalChecked(_) => {}
             }
         }
+        // R05 共用守門：普通函式保留原 ResourceId／局部／所有權
+        // 全細帳，再將**同一真事件序列**投影至與同步 self 共享的
+        // 進退、唯一回滾及真 BorrowTicket 單次歸還責任表。
+        let shared_exit_events = self.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) =>
+                Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
+            PrivateScalarCallEvent::FunctionEntered(_) =>
+                Some(PrivateSharedCallExitEvent::FunctionEntered),
+            PrivateScalarCallEvent::Returned(_) =>
+                Some(PrivateSharedCallExitEvent::Returned),
+            PrivateScalarCallEvent::UnwindStarted =>
+                Some(PrivateSharedCallExitEvent::UnwindStarted),
+            PrivateScalarCallEvent::LoanReturned(ticket) =>
+                Some(PrivateSharedCallExitEvent::LoanReturned(*ticket)),
+            PrivateScalarCallEvent::FunctionExited { returned, .. } =>
+                Some(PrivateSharedCallExitEvent::FunctionExited {
+                    returned: *returned,
+                }),
+            _ => None,
+        }).collect::<Vec<_>>();
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
@@ -362,6 +382,9 @@ impl PrivateScalarCallOutcome {
             && self.parameter_slots_after_exit == 0
             // 即使沒有借用票據，失敗仍須留下唯一真 UnwindStarted。
             && unwinding == self.result.is_err()
+            && private_shared_call_exit_balanced(
+                &shared_exit_events, self.result.is_ok(),
+            )
             && recorded == self.resource_events
             && crate::owned_str_runtime::event_trace_balanced(&self.resource_events)
     }
