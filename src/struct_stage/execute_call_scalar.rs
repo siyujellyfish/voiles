@@ -4026,6 +4026,68 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    #[test]
+    fn g18_r03_真完整_if_else_葉返回不需補造最後_return() {
+        for (flag, expected) in [("true", 7), ("false", 9)] {
+            let src = format!(
+                "fn choose(flag:bool)->int{{\nif(flag){{\nreturn 7\n}}else{{\nreturn 9\n}}\n}}\nfn main()->int{{\nreturn choose({})\n}}\n",
+                flag,
+            );
+            let prepared = checked(&src);
+            assert_eq!(prepared.return_expr, PrivateScalarReturnExpr::Unreachable);
+            let out = prepared.execute().unwrap();
+            assert_eq!(out.result, Ok(expected));
+            assert!(out.has_balanced_frame_trace());
+            assert_eq!(out.events.iter().filter(|ev| matches!(
+                ev, PrivateScalarCallEvent::Returned(_)
+            )).count(), 1);
+        }
+    }
+
+    #[test]
+    fn g18_r03_無人工尾端_return_的完整_else_if_照原_checker_條件順序返回() {
+        let src = "fn pick(a:bool,b:bool,n:int)->int{\nif(a){\nreturn n+1\n}else if(b){\nreturn n+2\n}else{\nreturn n+3\n}\n}\nfn main()->int{\nreturn pick(false,true,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let checks = out.events.iter().filter_map(|ev| match ev {
+            PrivateScalarCallEvent::ConditionalChecked(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [false, true]);
+    }
+
+    #[test]
+    fn g18_r03_完整分支葉返回僅退出目前函式不截斷父框架算術() {
+        let src = "fn inner(flag:bool,n:int)->int{\nif(flag){\nreturn n+1\n}else{\nreturn n+2\n}\n}\nfn outer(n:int)->int{\nconst v:int = inner(true,n)\nreturn v+3\n}\nfn main()->int{\nreturn outer(2)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let returned = out.events.iter().filter_map(|ev| match ev {
+            PrivateScalarCallEvent::Returned(v) => Some(*v),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(returned, [3, 6]);
+    }
+
+    #[test]
+    fn g18_r03_不完整尾端分支與篡改已核准全返回計畫皆保守拒絕() {
+        let incomplete = "fn choose(flag:bool)->int{\nif(flag){\nreturn 7\n}\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(incomplete),
+            Err(PrivateScalarCallPrepareError::Check(_))
+                | Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        let complete = "fn choose(flag:bool)->int{\nif(flag){\nreturn 7\n}else{\nreturn 9\n}\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        let mut prepared = checked(complete);
+        if let PrivateScalarLocalStep::EarlyReturn(plan) = &mut prepared.root_local_steps[0] {
+            plan.when_true = PrivateScalarBranchAction::Return(
+                PrivateScalarReturnExpr::Constant(99),
+            );
+        } else { panic!("完整 if 分支工作計畫不見"); }
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
 }
 
 
