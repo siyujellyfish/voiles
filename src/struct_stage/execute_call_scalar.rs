@@ -467,6 +467,10 @@ impl PrivateScalarBoolExpr {
 enum PrivateScalarBranchAction {
     /// 原 Parser 同一 if 葉分支的多筆已核准語句，保留真正執行順序。
     Sequence(Vec<PrivateScalarBranchAction>),
+    /// 原 Checker 區塊內的每一筆局部宣告，離開本區塊必須依真建立順序逆序離域。
+    Scoped(Vec<PrivateScalarBranchAction>),
+    DeclareInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
+    DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -486,25 +490,28 @@ enum PrivateScalarBranchAction {
 impl PrivateScalarBranchAction {
     fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
-            Self::Sequence(steps) => {
+            Self::Sequence(steps) | Self::Scoped(steps) => {
                 for action in steps { action.collect_calls(calls); }
             }
             Self::NestedIf(plan) => plan.collect_calls(calls),
-            Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
+            Self::Return(expr) | Self::AssignInt { value: expr, .. }
+                | Self::DeclareInt { value: expr, .. } =>
                 expr.collect_calls(calls),
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
-            Self::AssignBool { .. } | Self::Break | Self::Continue => {}
+            Self::AssignBool { .. } | Self::DeclareBool { .. }
+                | Self::Break | Self::Continue => {}
         }
     }
 
     fn always_returns(&self) -> bool {
         match self {
             Self::Return(_) => true,
-            Self::Sequence(actions) => actions.last()
-                .is_some_and(Self::always_returns),
+            Self::Sequence(actions) | Self::Scoped(actions) =>
+                actions.last().is_some_and(Self::always_returns),
             Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. }
+                | Self::DeclareInt { .. } | Self::DeclareBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -658,12 +665,53 @@ enum PrivateScalarTask<'a> {
     CheckFor(&'a PrivateScalarBranchAction, DeclarationId, i64, i64),
     EndFor(&'a PrivateScalarBranchAction, DeclarationId, i64, i64),
     UnbindIterator(DeclarationId),
+    EndScope(usize),
     ExecuteBranchAction(&'a PrivateScalarBranchAction),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
 
 impl PreparedPrivateScalarCall {
+    /// 原 Checker 每一條詞彙區塊的單一宣告仍有獨立生命週期。
+    fn scoped_single_declaration(action: PrivateScalarBranchAction)
+        -> PrivateScalarBranchAction {
+        match action {
+            PrivateScalarBranchAction::DeclareInt { .. }
+                | PrivateScalarBranchAction::DeclareBool { .. } =>
+                    PrivateScalarBranchAction::Scoped(vec![action]),
+            other => other,
+        }
+    }
+
+    /// 離域必須清除真 frame 中本層新增的純值，不能僅補記假事件。
+    fn end_scalar_scope(
+        frame: &mut PrivateScalarActiveFrame,
+        baseline: usize,
+        events: &mut Vec<PrivateScalarCallEvent>,
+    ) -> Result<(), PrivateScalarCallRuntimeError> {
+        if baseline > frame.initialized_order.len() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+        while frame.initialized_order.len() > baseline {
+            match frame.initialized_order.pop() {
+                Some(PrivateScalarLocalBinding::Int(id)) => {
+                    if frame.values.remove(&id).is_none() {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    events.push(PrivateScalarCallEvent::LocalScopeEnded(id));
+                }
+                Some(PrivateScalarLocalBinding::Bool(id)) => {
+                    if frame.bool_values.remove(&id).is_none() {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    events.push(PrivateScalarCallEvent::BoolScopeEnded(id));
+                }
+                None => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+            }
+        }
+        Ok(())
+    }
+
     /// 本批先接通單筆直接返回的 if／else-if／else 葉分支；
     /// 分支語句來源及條件均由原 Parser、Checker 審定。
     /// 僅接通分支內一筆原 Checker 已核准的 return 或
@@ -682,11 +730,27 @@ impl PreparedPrivateScalarCall {
                 ));
             }
             let mut actions = Vec::new();
+            // 這張名稱表只在目前的 Parser 區塊內前向更新；
+            // 同名遮蔽不會污染外部函式或兄弟 if／else 分支。
+            let mut local_int = int_bindings.clone();
+            let mut local_bool = bool_bindings.clone();
+            let mut has_direct_local = false;
             for (index, statement) in statements.iter().enumerate() {
                 let action = Self::compile_early_branch(
                     std::slice::from_ref(statement),
-                    int_bindings, bool_bindings, verified, inside_loop,
+                    &local_int, &local_bool, verified, inside_loop,
                 )?;
+                if let StmtKind::Declare(owner) = &statement.kind {
+                    let id = DeclarationId(statement.start);
+                    local_int.insert(owner.name.clone(), id);
+                    if owner.ty == "bool" {
+                        local_bool.insert(owner.name.clone(), id);
+                    } else {
+                        // 相同名稱已重新繫結為 int，舊 bool 身份不得誤讀。
+                        local_bool.remove(&owner.name);
+                    }
+                    has_direct_local = true;
+                }
                 if action.always_returns() && index + 1 != statements.len() {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
                         "if 已返回後仍有其他語句；不得造假可達效果",
@@ -701,9 +765,41 @@ impl PreparedPrivateScalarCall {
                 actions.push(action);
                 if stops_loop_body { break; }
             }
-            return Ok(PrivateScalarBranchAction::Sequence(actions));
+            return Ok(if has_direct_local {
+                PrivateScalarBranchAction::Scoped(actions)
+            } else {
+                PrivateScalarBranchAction::Sequence(actions)
+            });
         };
         match &statement.kind {
+            StmtKind::Declare(owner) if matches!(owner.ty.as_str(), "int" | "bool") => {
+                let id = DeclarationId(statement.start);
+                if !verified.plan.declarations.matches(id, &owner.ty, owner.mutable) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "區塊局部宣告缺少原 Checker 可寫性／型別／DeclarationId",
+                    ));
+                }
+                let init = owner.initializer.as_ref().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "此純值執行子集的區塊局部宣告必須有已核准初始化式",
+                    ),
+                )?;
+                if owner.ty == "bool" {
+                    Ok(PrivateScalarBranchAction::DeclareBool {
+                        declaration: id,
+                        value: PrivateScalarBoolExpr::from_checked(
+                            init, bool_bindings, verified,
+                        )?,
+                    })
+                } else {
+                    Ok(PrivateScalarBranchAction::DeclareInt {
+                        declaration: id,
+                        value: PrivateScalarReturnExpr::from_checked_bindings(
+                            init, int_bindings, verified,
+                        )?,
+                    })
+                }
+            }
             StmtKind::If { .. } =>
                 Ok(PrivateScalarBranchAction::NestedIf(Box::new(
                     Self::compile_early_if(
@@ -723,7 +819,8 @@ impl PreparedPrivateScalarCall {
                     )?
                 };
                 Ok(PrivateScalarBranchAction::While {
-                    condition: guard, body: Box::new(steps),
+                    condition: guard,
+                    body: Box::new(Self::scoped_single_declaration(steps)),
                 })
             }
             StmtKind::ForRange { iterator, iterator_start, lower, upper, body } => {
@@ -755,7 +852,7 @@ impl PreparedPrivateScalarCall {
                 };
                 Ok(PrivateScalarBranchAction::ForRange {
                     iterator: identity, lower: start, upper: end,
-                    body: Box::new(compiled),
+                    body: Box::new(Self::scoped_single_declaration(compiled)),
                 })
             }
             StmtKind::Break if inside_loop => Ok(PrivateScalarBranchAction::Break),
@@ -837,16 +934,18 @@ impl PreparedPrivateScalarCall {
         let condition = PrivateScalarBoolExpr::from_checked(
             &branch.branch.condition, bool_bindings, verified,
         )?;
-        let when_true = Self::compile_early_branch(
-            &branch.body.statements, int_bindings, bool_bindings, verified, inside_loop,
-        )?;
+        let when_true = Self::scoped_single_declaration(
+            Self::compile_early_branch(
+                &branch.body.statements, int_bindings, bool_bindings, verified, inside_loop,
+            )?,
+        );
         let when_false = match no.as_ref() {
             None => None,
             Some(crate::syntax_shared::ParsedElse::Block(block)) =>
                 Some(PrivateScalarEarlyElse::Branch(
-                    Self::compile_early_branch(
+                    Self::scoped_single_declaration(Self::compile_early_branch(
                         &block.statements, int_bindings, bool_bindings, verified, inside_loop,
-                    )?,
+                    )?),
                 )),
             Some(crate::syntax_shared::ParsedElse::ElseIf(next)) =>
                 Some(PrivateScalarEarlyElse::ElseIf(Box::new(
@@ -1314,6 +1413,12 @@ impl PreparedPrivateScalarCall {
                         }
                         events.push(PrivateScalarCallEvent::LocalScopeEnded(id));
                     }
+                    PrivateScalarTask::EndScope(baseline) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        Self::end_scalar_scope(frame, baseline, events)?;
+                    }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
                         PrivateScalarBranchAction::While { condition, body } => {
                             tasks.push(PrivateScalarTask::CheckWhile(condition, body));
@@ -1342,6 +1447,14 @@ impl PreparedPrivateScalarCall {
                                         }
                                         break;
                                     }
+                                    Some(PrivateScalarTask::EndScope(baseline)) => {
+                                        let baseline = *baseline;
+                                        let frame = frames.last_mut().ok_or(
+                                            PrivateScalarCallRuntimeError::StateMismatch,
+                                        )?;
+                                        Self::end_scalar_scope(frame, baseline, events)?;
+                                        tasks.pop();
+                                    }
                                     None | Some(PrivateScalarTask::ExitCall) =>
                                         return Err(PrivateScalarCallRuntimeError::StateMismatch),
                                     _ => { tasks.pop(); }
@@ -1352,6 +1465,23 @@ impl PreparedPrivateScalarCall {
                             // 只執行已選真分支中的內層 if；
                             // bool 條件在前面更新完的真動態框架重新讀取。
                             tasks.push(PrivateScalarTask::CheckEarlyReturn(plan));
+                        }
+                        PrivateScalarBranchAction::Scoped(actions) => {
+                            let frame = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let baseline = frame.initialized_order.len();
+                            tasks.push(PrivateScalarTask::EndScope(baseline));
+                            for action in actions.iter().rev() {
+                                tasks.push(PrivateScalarTask::ExecuteBranchAction(action));
+                            }
+                        }
+                        PrivateScalarBranchAction::DeclareInt { declaration, value } => {
+                            tasks.push(PrivateScalarTask::BindLocal(*declaration));
+                            tasks.push(PrivateScalarTask::Evaluate(value, false));
+                        }
+                        PrivateScalarBranchAction::DeclareBool { declaration, value } => {
+                            tasks.push(PrivateScalarTask::BindBool(*declaration, value));
                         }
                         PrivateScalarBranchAction::Sequence(actions) => {
                             // 原 Parser 分支先後次序必須保持；工作堆疊
