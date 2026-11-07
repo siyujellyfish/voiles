@@ -863,6 +863,8 @@ enum PrivateScalarBranchAction {
         declaration: DeclarationId, name: String, mutable: bool,
         initializer: PrivateScalarStrInitializer,
     },
+    /// str 詞彙持有者存在，但尚無 ResourceId／UTF-8 緩衝區。
+    DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -895,7 +897,8 @@ impl PrivateScalarBranchAction {
                 body.collect_calls(calls),
             Self::AssignBool { .. } | Self::DeclareBool { .. }
                 | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
-                | Self::DeclareStr { .. } | Self::AssignStr { .. }
+                | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
+                | Self::AssignStr { .. }
                 | Self::Break | Self::Continue => {}
         }
     }
@@ -909,7 +912,7 @@ impl PrivateScalarBranchAction {
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
-                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
+                | Self::DeclareEmptyStr { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -959,6 +962,7 @@ enum PrivateScalarLocalStep {
     Assign { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
+    DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
@@ -974,7 +978,8 @@ impl PrivateScalarLocalStep {
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
                 | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
-                | Self::DeclareStr { .. } | Self::AssignStr { .. } => {}
+                | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
+                | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -1088,6 +1093,7 @@ enum PrivateScalarTask<'a> {
     AssignLocal(DeclarationId),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
+    DeclareEmptyStr(DeclarationId, &'a str, bool),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
@@ -1201,7 +1207,8 @@ impl PreparedPrivateScalarCall {
                 | PrivateScalarBranchAction::DeclareBool { .. }
                 | PrivateScalarBranchAction::DeclareEmptyInt { .. }
                 | PrivateScalarBranchAction::DeclareEmptyBool { .. }
-                | PrivateScalarBranchAction::DeclareStr { .. } =>
+                | PrivateScalarBranchAction::DeclareStr { .. }
+                | PrivateScalarBranchAction::DeclareEmptyStr { .. } =>
                     PrivateScalarBranchAction::Scoped(vec![action]),
             other => other,
         }
