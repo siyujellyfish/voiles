@@ -2788,10 +2788,18 @@ impl PreparedPrivateScalarCall {
         // 原 Parser AST 找到同一已核准函式圖，不猜測字串名稱。
         let source_name = PrivateScalarReturnExpr::first_source_call(return_call)
             .or_else(|| main.body.statements.iter().find_map(|statement| {
-                if let StmtKind::Declare(owner) = &statement.kind {
-                    owner.initializer.as_ref()
-                        .and_then(PrivateScalarReturnExpr::first_source_call)
-                } else { None }
+                match &statement.kind {
+                    StmtKind::Declare(owner) => owner.initializer.as_ref()
+                        .and_then(PrivateScalarReturnExpr::first_source_call),
+                    // R01：原 Checker 合法的 var 首賦值／後續更新，
+                    // RHS 一樣可能是真普通函式呼叫。只尋找來源，
+                    // 不提前求值、不把未選中的分支當成已呼叫。
+                    StmtKind::Assign(assignment) =>
+                        PrivateScalarReturnExpr::first_source_call(
+                            &assignment.expression,
+                        ),
+                    _ => None,
+                }
             }))
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
                 "main 來源缺少原 Parser 真具名函式呼叫",
