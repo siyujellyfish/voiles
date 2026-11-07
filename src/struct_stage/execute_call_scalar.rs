@@ -441,12 +441,18 @@ impl Default for PrivateScalarExecutionBudget {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum PrivateScalarLocalBinding {
+    Int(DeclarationId),
+    Bool(DeclarationId),
+}
+
 struct PrivateScalarActiveFrame {
     name: String,
     values: BTreeMap<DeclarationId, i64>,
-    initialized_locals: Vec<DeclarationId>,
     bool_values: BTreeMap<DeclarationId, bool>,
-    initialized_bools: Vec<DeclarationId>,
+    // 按實際寫入順序保留 int／bool，退出按逆序記錄離域。
+    initialized_order: Vec<PrivateScalarLocalBinding>,
 }
 
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
@@ -677,7 +683,8 @@ impl PreparedPrivateScalarCall {
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
-            initialized_locals: Vec::new(),
+            bool_values: BTreeMap::new(),
+            initialized_order: Vec::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
         // 原 Checker 語句順序在 LIFO 上反向推入，執行時保持
@@ -770,7 +777,7 @@ impl PreparedPrivateScalarCall {
                         if frame.values.insert(id, value).is_some() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
-                        frame.initialized_locals.push(id);
+                        frame.initialized_order.push(PrivateScalarLocalBinding::Int(id));
                         events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
                     }
                     PrivateScalarTask::AssignLocal(id) => {
@@ -822,7 +829,8 @@ impl PreparedPrivateScalarCall {
                         }
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
-                            initialized_locals: Vec::new(),
+                            bool_values: BTreeMap::new(),
+                            initialized_order: Vec::new(),
                         });
                         // 只有源自 main return 最外層的真 Call 才允許
                         // 故障注入；先求值的同名子呼叫絕不可誤作根框架。
@@ -853,8 +861,13 @@ impl PreparedPrivateScalarCall {
                         )?;
                         let mut frame = frames.pop().expect("真子框架仍存在");
                         events.push(PrivateScalarCallEvent::Returned(value));
-                        for id in frame.initialized_locals.iter().rev() {
-                            events.push(PrivateScalarCallEvent::LocalScopeEnded(*id));
+                        for entry in frame.initialized_order.iter().rev() {
+                            match entry {
+                                PrivateScalarLocalBinding::Int(id) =>
+                                    events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
+                                PrivateScalarLocalBinding::Bool(id) =>
+                                    events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                            }
                         }
                         frame.values.clear();
                         events.push(PrivateScalarCallEvent::FunctionExited {
@@ -874,8 +887,13 @@ impl PreparedPrivateScalarCall {
             // 逐層清除已真正進入的參數框架，不退出未曾進入的函式。
             while frames.len() > 1 {
                 let mut frame = frames.pop().expect("已進入的子框架");
-                for id in frame.initialized_locals.iter().rev() {
-                    events.push(PrivateScalarCallEvent::LocalScopeEnded(*id));
+                for entry in frame.initialized_order.iter().rev() {
+                    match entry {
+                        PrivateScalarLocalBinding::Int(id) =>
+                            events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
+                        PrivateScalarLocalBinding::Bool(id) =>
+                            events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                    }
                 }
                 frame.values.clear();
                 events.push(PrivateScalarCallEvent::FunctionExited {
@@ -886,10 +904,15 @@ impl PreparedPrivateScalarCall {
         // 直接 main→被呼叫者的真框架保存在最底層，亦必須在
         // 正常返回、注入故障或預算耗盡後按完成順序逆序離域。
         if let Some(root) = frames.first_mut() {
-            for id in root.initialized_locals.iter().rev() {
-                events.push(PrivateScalarCallEvent::LocalScopeEnded(*id));
+            for entry in root.initialized_order.iter().rev() {
+                match entry {
+                    PrivateScalarLocalBinding::Int(id) =>
+                        events.push(PrivateScalarCallEvent::LocalScopeEnded(*id)),
+                    PrivateScalarLocalBinding::Bool(id) =>
+                        events.push(PrivateScalarCallEvent::BoolScopeEnded(*id)),
+                }
             }
-            root.initialized_locals.clear();
+            root.initialized_order.clear();
             root.values.clear();
         }
         result
