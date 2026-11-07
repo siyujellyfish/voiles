@@ -276,3 +276,14 @@
 - 同步方法 `execute_method_self.rs` 原 Checker 已核准的 int 欄位共享／獨占 self 借用，新增 `PrivateSelfMethodOutcome::has_balanced_self_borrow_trace`：真票據必歸還，無 OwnedStr 時任何假 ResourceEvent 均拒絕，方法 entered/exited 必依實際結果；上述三守門全部在真正 Outcome 對外交付前執行，不因測試後才核對而放行無效事件。
 - 新增六項原執行器真來源 Rust 正反：普通共享／獨占 str 成功與注入故障、假歸還／假進入／丟 ReleaseEvent、Move＋Borrow 真兩資源、偽造空表／未歸票據／未實讀、同步共享／獨占 self 成功與失敗、假借用歸還或憑空添加 Created+Released。G18 原 P18.3／18.4／18.5／18.6 稽核與三組專用 Gate 32→34、8→10、38→40，同步更新 CI。
 - 這是各自既有原 Checker／BorrowFact 真執行器的退出結果合約收緊，**仍非單一通用 OwnedStr＋Copyable＋方法＋異步 interpreter**；多擁有者跨不同函式／迴圈與完整 V1 R06/R07 正反交叉尚未封閉，G18 原六項保留 0/6 Passed。只在 PR 最新 HEAD 三必要 CI completed/success、身分／base／mergeable 全核對後 Squash merge，新 main 同 SHA 再驗。
+
+
+---
+
+## V1-R06-01：跨 Copyable、真借用、Move、self、遞迴資源退出整合矩陣（2026-11-07）
+
+- 基線 main `bffbab00602485c4146f12d2a39f3bf5d8ad4ffa`（#586 R05-03 真 BorrowTicket／Move／同步 self 結果聯合守門已最新 PR HEAD 三必要 CI success Squash merge）。
+- 建立 **`struct_stage::g18_r06_cross_runtime_tests`** 五項**同一 Rust 測試內**跨既有原 Lexer／Parser／Checker 真來源執行器的動態結果驗證，而非僅用靜態語法測試替代：一、Copyable bool/int 分支賦值與真普通 str BorrowTicket 同時通過各自守門；二、真整筆 Move＋另一 str 借用兩個 ResourceId 與同步方法 self 無 OwnedStr 正確區分；三、遞迴 str 借用在 D18-01 CallBudget 耗盡下無假返回且釋放所有 Created，普通函式 BorrowTicket 注入錯誤亦歸還；四、int 溢位、同步 self 故障及混合 Move＋Borrow 中途故障都不假返回且守門有效；五、對純值離域、借用歸還、真資源事件與遞迴票據的偽造分別拒絕。
+- 新增獨立工具 `tools/核對G18-R06跨執行器正反矩陣.py`（UTF-8），真 Rust `--list` 精確核對五項後完整執行該測試組，要求正好 5 passed、0 failed、0 ignored；同步新增必要 CI G18 R06 專項步驟和 G18 原 P18.1／18.3／18.4／18.5 追溯與真執行群組。
+- **證據邊界**：這是多執行器跨模型回歸，不是宣稱所有已核准函式與任意 str／Move／Borrow 組合已共用一個通用 runtime。沒有新增語言規格、async、except 或 P22 公開執行入口。R06 全矩陣和 R07 正式 G18 `--check` 仍待封閉，原六項保持 0/6 Passed。
+- 僅最新 PR HEAD 三必要 CI completed/success、作者／main base／mergeable 核對後 Squash merge，新 main 同 SHA 再驗全套 G17/G6/F00 與 G18 `--audit`；不能以 CI 綠燈冒稱正式驗收。

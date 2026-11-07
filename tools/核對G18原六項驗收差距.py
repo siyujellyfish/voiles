@@ -19,6 +19,7 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_混合布林整數與真借用成功返回各守門須同時成立",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_已核准_int_可寫分支後仍執行真正尾端返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_false_未選中分支不得寫入而仍由原值返回",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_else_if_具名_bool_分支更新與順序後續函式呼叫",
@@ -123,6 +124,8 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_不同執行器的正常失敗不得丟失已建資源或複製假返回",
         "struct_stage::g18_private_call_borrow_tests::g18_r05_真借用結果偽造已退出未歸票據或遺失資源一律拒絕",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_r05_混合所有權偽造資源數量或借用未歸不能通過聯合稽核",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_if_分支呼叫溢位不允許後續真賦值或假返回",
@@ -216,6 +219,7 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
         "struct_stage::g18_private_call_borrow_tests::g18_r05_共享與獨占真借用返回或故障皆須資源票據聯合平衡",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_r05_同次真_move_與_borrow_兩資源及票據共同平衡",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_bool_參數不是_int_隱含轉型_原_checker_型別優先拒絕",
@@ -258,6 +262,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_混合布林整數與真借用成功返回各守門須同時成立",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_合法遞迴真資源與普通借用在預算耗盡時皆不得假返回",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_不同執行器的正常失敗不得丟失已建資源或複製假返回",
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_跨模型偽造離域資源票據任一項必在交付稽核失敗",
         "struct_stage::g18_private_call_borrow_tests::g18_r05_真借用結果偽造已退出未歸票據或遺失資源一律拒絕",
         "struct_stage::g18_private_mixed_ownership_call_tests::g18_r05_混合所有權偽造資源數量或借用未歸不能通過聯合稽核",
         "struct_stage::g18_private_method_self_tests::g18_r05_同步_self_偽造未歸票據或無來源資源事件必被守門拒絕",
@@ -358,6 +367,7 @@ from pathlib import Path
     "struct_stage::g18_private_owned_move_call_tests::g18_",
     "struct_stage::g18_private_mixed_ownership_call_tests::g18_",
     "struct_stage::g18_private_scalar_call_tests::g18_",
+    "struct_stage::g18_r06_cross_runtime_tests::g18_",
     "struct_stage::g18_private_recursive_str_frames_tests::g18_",
     "struct_stage::g18_private_method_self_tests::g18_",
 )
