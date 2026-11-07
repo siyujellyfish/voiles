@@ -687,11 +687,18 @@ mod method_safety_tests {
     }
 
     #[test]
-    fn 無違規的合法借用方法仍不可在未驗證安全前誤收() {
-        let code = "struct Sample{\nvar x:int = 1\nfn value()->int{\nvar temp:int = 1\nreturn temp\n}\n}\nfn main()->int{\nreturn 0\n}\n";
-        let error = inspect(code).unwrap_err();
+    fn 方法內僅核准已證明純_int_局部_非_copyable_局部仍保守拒絕() {
+        // R04：原 Checker 已使用同一 Scopes／SafetyState、
+        // TypedHIR 與單一 Copyable int 來源證明，不能再把此
+        // 唯一合法子集當成尚未驗證而無條件拒絕。
+        let approved = "struct Sample{\nvar x:int = 1\nfn value()->int{\nvar temp:int = 1\nreturn temp\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        assert!(inspect(approved).is_ok());
+        // 尚未完成 str 資源生命週期、別名安全及任意 CFG 的方法，
+        // 仍要保留 Checker 靜態拒絕，不能借合法 int 子集放寬。
+        let unsupported = "struct Sample{\nvar x:int = 1\nfn value()->int{\nvar temp:str = \"資源\"\nreturn 1\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let error = inspect(unsupported).unwrap_err();
         assert_eq!(error.kind, DiagnosticKind::Static);
-        assert!(error.message.contains("未驗證"));
+        assert!(error.message.contains("Copyable int"));
     }
 }
 
