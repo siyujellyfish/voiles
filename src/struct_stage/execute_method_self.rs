@@ -30,6 +30,9 @@ struct PrivateSelfMethodOutcome {
     main_local_slots_after_exit: usize,
     method_local_slots_after_exit: usize,
     method_local_events: Vec<PrivateSelfMethodLocalEvent>,
+    /// 原 Checker/Parser 封存的方法真 int 局部 DeclarationId
+    /// 按來源先後排列；故障執行只容許已走到的合法前綴。
+    expected_method_local_ids: Vec<DeclarationId>,
     /// R05：真 BorrowSafety 簽發、方法 Return／Unwind 及歸還後
     /// 逐筆記錄；不再只靠方法布林旗標冒充退出已驗證。
     checked_loan: BorrowFact,
@@ -55,6 +58,7 @@ impl PrivateSelfMethodOutcome {
             matches!(event, PrivateSharedCallExitEvent::LoanAcquired(_))
         ).count();
         let mut local_stack = Vec::<DeclarationId>::new();
+        let mut initialized_local_ids = Vec::<DeclarationId>::new();
         for event in &self.method_local_events {
             match event {
                 PrivateSelfMethodLocalEvent::Initialized(id, _) => {
@@ -62,6 +66,7 @@ impl PrivateSelfMethodOutcome {
                         return false;
                     }
                     local_stack.push(*id);
+                    initialized_local_ids.push(*id);
                 }
                 PrivateSelfMethodLocalEvent::ScopeEnded(id) => {
                     if local_stack.pop() != Some(*id) { return false; }
@@ -70,6 +75,30 @@ impl PrivateSelfMethodOutcome {
         }
         // 兩份結果視圖必須投影到完全相同的實際局部事件，
         // 不能只靠各自末端都平衡而放行跨 Returned/Unwind 的錯序。
+        // 原 Checker 所允許的宣告先後是唯一真來源；執行期
+        // 出錯時只可能初始化其前綴，不能插入其他平衡的幽靈
+        // 局部，成功時則應完整執行所有局部宣告。
+        let approved_local_prefix = initialized_local_ids.len()
+            <= self.expected_method_local_ids.len()
+            && self.expected_method_local_ids.starts_with(&initialized_local_ids)
+            && (!self.result.is_ok()
+                || initialized_local_ids.len() == self.expected_method_local_ids.len());
+        // 同步方法只有一個已核准的 self 框架；局部不應被
+        // 記錄在真正 FunctionEntered 之前，亦不應在其
+        // FunctionExited 之後以 main 的匿名基底框架補造。
+        let mut inside_method = false;
+        let mut local_events_inside_real_method = true;
+        for event in &self.exit_events {
+            match event {
+                PrivateSharedCallExitEvent::FunctionEntered => inside_method = true,
+                PrivateSharedCallExitEvent::FunctionExited { .. } => inside_method = false,
+                PrivateSharedCallExitEvent::LocalInitialized(_)
+                    | PrivateSharedCallExitEvent::LocalScopeEnded(_) if !inside_method => {
+                    local_events_inside_real_method = false;
+                }
+                _ => {}
+            }
+        }
         let local_projection = self.method_local_events.iter().map(|event| match event {
             PrivateSelfMethodLocalEvent::Initialized(id, _) =>
                 PrivateSharedCallExitEvent::LocalInitialized(*id),
@@ -90,6 +119,8 @@ impl PrivateSelfMethodOutcome {
                 PrivateSharedCallExitEvent::LocalScopeEnded(_)
             ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
+            && approved_local_prefix
+            && local_events_inside_real_method
             && local_projection == exit_projection
             && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
@@ -1010,7 +1041,11 @@ impl PreparedPrivateSelfMethod {
             result, events, method_entered, method_exited, ticket_returned,
             main_local_slots_after_exit: main_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
-            method_local_events, checked_loan: self.loan, exit_events,
+            method_local_events,
+            expected_method_local_ids: self.method_int_locals.iter().map(
+                |(id, _)| *id,
+            ).collect(),
+            checked_loan: self.loan, exit_events,
         };
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
@@ -2318,6 +2353,103 @@ mod g18_private_method_self_tests {
         out.exit_events.insert(at + 2,
             PrivateSharedCallExitEvent::LocalScopeEnded(extra));
         assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+
+    #[test]
+    fn g18_r05_合法方法兩個真局部初始化必對應原_checker_宣告順序() {
+        let src = checked_method_local_source(
+            "const first:int = a+1\nconst second:int = first+b\nreturn second",
+            "3,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert_eq!(out.expected_method_local_ids,
+            plan.method_int_locals.iter().map(|(id, _)| *id).collect::<Vec<_>>());
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_偽造成功方法內額外平衡局部即使兩帳一致仍須拒絕() {
+        let src = checked_method_local_source(
+            "const local:int = a+1\nreturn local", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        let fake = DeclarationId(0);
+        let at = out.exit_events.iter().position(|e| matches!(
+            e, PrivateSharedCallExitEvent::Returned
+        )).unwrap();
+        out.exit_events.insert(at,
+            PrivateSharedCallExitEvent::LocalInitialized(fake));
+        out.exit_events.insert(at + 2,
+            PrivateSharedCallExitEvent::LocalScopeEnded(fake));
+        out.method_local_events.insert(1,
+            PrivateSelfMethodLocalEvent::Initialized(fake, 7));
+        out.method_local_events.insert(2,
+            PrivateSelfMethodLocalEvent::ScopeEnded(fake));
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_同步方法即使兩張事件帳同時篡改局部身份也不得冒充checker來源() {
+        let src = checked_method_local_source(
+            "const local:int = a+1\nreturn local", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        let fake = DeclarationId(0);
+        for event in &mut out.method_local_events {
+            match event {
+                PrivateSelfMethodLocalEvent::Initialized(id, _)
+                    | PrivateSelfMethodLocalEvent::ScopeEnded(id) => *id = fake,
+            }
+        }
+        for event in &mut out.exit_events {
+            match event {
+                PrivateSharedCallExitEvent::LocalInitialized(id)
+                    | PrivateSharedCallExitEvent::LocalScopeEnded(id) => *id = fake,
+                _ => {}
+            }
+        }
+        assert!(!out.has_balanced_self_borrow_trace());
+        let mut out = checked(&src).execute().unwrap();
+        out.expected_method_local_ids.clear();
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法框架退出後再追加真值假局部不可由main基底冒充() {
+        let src = checked_method_local_source(
+            "const local:int = a+1\nreturn local", "3,4",
+        );
+        let mut out = checked(&src).execute().unwrap();
+        let fake = DeclarationId(0);
+        out.method_local_events.push(
+            PrivateSelfMethodLocalEvent::Initialized(fake, 7));
+        out.method_local_events.push(
+            PrivateSelfMethodLocalEvent::ScopeEnded(fake));
+        out.exit_events.push(
+            PrivateSharedCallExitEvent::LocalInitialized(fake));
+        out.exit_events.push(
+            PrivateSharedCallExitEvent::LocalScopeEnded(fake));
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn g18_r05_方法故障僅允許已進入局部對應原宣告前綴() {
+        let src = checked_method_local_source(
+            "const first:int = 11\nconst overflow:int = first+9223372036854775807\nreturn overflow",
+            "3,4",
+        );
+        let plan = checked(&src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert_eq!(out.expected_method_local_ids.len(), 2);
+        assert_eq!(out.method_local_events, [
+            PrivateSelfMethodLocalEvent::Initialized(plan.method_int_locals[0].0, 11),
+            PrivateSelfMethodLocalEvent::ScopeEnded(plan.method_int_locals[0].0),
+        ]);
+        assert!(out.has_balanced_self_borrow_trace());
     }
 
 

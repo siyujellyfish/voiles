@@ -7455,4 +7455,24 @@ mod g18_r06_cross_runtime_tests {
     }
 
 
+    #[test]
+    fn g18_r06_同源int普通函式與方法局部只有方法真checker前綴可交付() {
+        let scalar_src = "fn calc(n:int)->int{\nconst local:int = n+1\nreturn local\n}\nfn main()->int{\nreturn calc(3)\n}\n";
+        let scalar = PreparedPrivateScalarCall::prepare(scalar_src)
+            .unwrap().execute().unwrap();
+        assert_eq!(scalar.result, Ok(4));
+        assert!(scalar.has_balanced_frame_trace());
+
+        let self_src = "struct Sample{\nvar x:int = 1\nfn calc(n:int)->int{\nconst local:int = n+1\nreturn local\n}\n}\nfn main()->int{\nconst value:Sample = Sample()\nreturn value.calc(3)\n}\n";
+        let plan = PreparedPrivateSelfMethod::prepare(self_src).unwrap();
+        let mut method = plan.execute().unwrap();
+        assert_eq!(method.result, Ok(4));
+        assert!(method.has_balanced_self_borrow_trace());
+        // 同一成功值與相同事件數量仍不能替換原 Checker
+        // 簽發的方法內局部 DeclarationId 來源。
+        method.expected_method_local_ids = vec![DeclarationId(0)];
+        assert!(!method.has_balanced_self_borrow_trace());
+    }
+
+
 }

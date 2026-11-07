@@ -161,7 +161,7 @@ jobs:
       - name: G18 P18.1／18.3／18.4 真函式／OwnedStr／BorrowTicket 一百九十六項 Gate
         run: python3 tools/核對G18純值函式參數真框架.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 V1 R06 真局部共用退出五十九項正反 Gate
+      - name: G18 V1 R06 真局部來源防偽六十項正反 Gate
         run: python3 tools/核對G18-R06跨執行器正反矩陣.py --test-bin target/p02/p04_source_internal
       - name: G18 P18.3 已核准 AW06 真遞迴與可配置耗盡七項正反 Gate
         run: python3 tools/核對G18遞迴真框架與耗盡.py --test-bin target/p02/p04_source_internal
@@ -169,7 +169,7 @@ jobs:
       - name: G18 P18.3／18.4 真多 str BorrowTicket 與多 int 遞迴與真資源退出五十項 Gate
         run: python3 tools/核對G18遞迴真資源逐框架.py --test-bin target/p02/p04_source_internal
 
-      - name: G18 P18.6 同步 self 真局部時間序九十九項執行 Gate
+      - name: G18 P18.6 同步 self 真局部來源一百零四項 Gate
         run: python3 tools/核對G18同步方法self真借用.py --test-bin target/p02/p04_source_internal
 
       - name: G18 P18.6 S20 同名方法靜態唯一簽章九項來源正反 Gate

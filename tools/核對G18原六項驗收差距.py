@@ -155,6 +155,7 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同源int普通函式與方法局部只有方法真checker前綴可交付",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式bool局部亦納入共用真退出帳的局部來源責任",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法int局部均沿用原_checker_真正求值且離域",
@@ -281,6 +282,11 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_method_self_tests::g18_r05_合法方法兩個真局部初始化必對應原_checker_宣告順序",
+        "struct_stage::g18_private_method_self_tests::g18_r05_偽造成功方法內額外平衡局部即使兩帳一致仍須拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r05_同步方法即使兩張事件帳同時篡改局部身份也不得冒充checker來源",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法框架退出後再追加真值假局部不可由main基底冒充",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法故障僅允許已進入局部對應原宣告前綴",
         "struct_stage::g18_private_method_self_tests::g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序",
         "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法在真正_return_之後才初始化局部必拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法退出之後才清理局部雖總數相等仍拒絕",
@@ -388,6 +394,7 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同源int普通函式與方法局部只有方法真checker前綴可交付",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_真普通函式int局部與同步self共用離域帳阻擋假初始化錯序",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式bool局部亦納入共用真退出帳的局部來源責任",
         "struct_stage::g18_r06_cross_runtime_tests::g18_r06_普通函式與同步self方法int局部均沿用原_checker_真正求值且離域",
@@ -472,6 +479,11 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_r05_合法方法兩個真局部初始化必對應原_checker_宣告順序",
+        "struct_stage::g18_private_method_self_tests::g18_r05_偽造成功方法內額外平衡局部即使兩帳一致仍須拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_r05_同步方法即使兩張事件帳同時篡改局部身份也不得冒充checker來源",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法框架退出後再追加真值假局部不可由main基底冒充",
+        "struct_stage::g18_private_method_self_tests::g18_r05_方法故障僅允許已進入局部對應原宣告前綴",
         "struct_stage::g18_private_method_self_tests::g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序",
         "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法在真正_return_之後才初始化局部必拒絕",
         "struct_stage::g18_private_method_self_tests::g18_r05_偽造同步方法退出之後才清理局部雖總數相等仍拒絕",
