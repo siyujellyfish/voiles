@@ -1710,6 +1710,10 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                 }
+                PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
+                    tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
+                PrivateScalarLocalStep::DeclareEmptyBool(declaration) =>
+                    tasks.push(PrivateScalarTask::DeclareEmptyBool(*declaration)),
                 PrivateScalarLocalStep::DeclareBool { declaration, value } =>
                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
@@ -2188,6 +2192,10 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarBranchAction::DeclareBool { declaration, value } => {
                             tasks.push(PrivateScalarTask::BindBool(*declaration, value));
                         }
+                        PrivateScalarBranchAction::DeclareEmptyInt { declaration } =>
+                            tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
+                        PrivateScalarBranchAction::DeclareEmptyBool { declaration } =>
+                            tasks.push(PrivateScalarTask::DeclareEmptyBool(*declaration)),
                         PrivateScalarBranchAction::DeclareStr {
                             declaration, name, mutable, initializer,
                         } => {
@@ -2396,6 +2404,10 @@ impl PreparedPrivateScalarCall {
                                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                                 }
+                                PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
+                                    tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
+                                PrivateScalarLocalStep::DeclareEmptyBool(declaration) =>
+                                    tasks.push(PrivateScalarTask::DeclareEmptyBool(*declaration)),
                                 PrivateScalarLocalStep::DeclareBool { declaration, value } =>
                                     tasks.push(PrivateScalarTask::BindBool(*declaration, value)),
                                 PrivateScalarLocalStep::AssignBool { declaration, value } =>
