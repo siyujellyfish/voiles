@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 四十八項 Rust 正反 Gate。"""
+"""G18／P18.6：原私有 Checker 同步方法共享／獨占 self 真 BorrowTicket 五十五項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 import argparse
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_f_共享_self_欄位加參數讀取真_runtime_與宣告身分",
+    "g18_f_共享_self_形式參數減欄位維持左減右次序",
+    "g18_f_獨占_self_真寫入後再同方法與_int_形式參數混算",
+    "g18_f_共享_self_欄位加巨大_int_實參溢位仍歸還真借用",
+    "g18_f_雙_int_方法只讀第二參數與_self_欄位不混用第一個",
+    "g18_f_篡改_self_混算方向與參數身分須在動態配置前拒絕",
+    "g18_f_偽造_other_欄位與錯誤接收者不得冒充真正_self_來源",
     "g18_f_雙_int_方法真依原多載簽章選取並計算兩個獨立參數",
     "g18_f_雙_int_方法可只返回第二參數而不錯讀第一或_self_",
     "g18_f_雙_int_方法依實參順序正確執行減法",
@@ -33,7 +40,7 @@ from pathlib import Path
     "g18_f_具_int_實參選中獨占方法_必真更新欄位並歸還票據",
     "g18_f_具_int_實參多載失敗後參數框架與_self_票據均不得存活",
     "g18_f_竄改已驗證_int_方法實參值或宣告身分須在動態執行前拒絕",
-    "g18_f_非_int_方法實參與尚未接通的參數欄位混合算式必拒絕",
+    "g18_f_已核准_int_參數與_self_欄位可真混算但非_int_實參仍拒絕",
     "g18_f_同名方法多載真執行零參數共享_self_不誤選獨占候選",
     "g18_f_同名多載宣告顛倒仍依真呼叫靜態簽章執行",
     "g18_f_零參數多載的獨占_self_真的寫入而非調用具參數共享候選",

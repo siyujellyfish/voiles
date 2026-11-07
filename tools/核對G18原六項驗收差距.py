@@ -419,6 +419,14 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_private_method_self_tests::g18_f_已核准_int_參數與_self_欄位可真混算但非_int_實參仍拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_f_共享_self_欄位加參數讀取真_runtime_與宣告身分",
+        "struct_stage::g18_private_method_self_tests::g18_f_共享_self_形式參數減欄位維持左減右次序",
+        "struct_stage::g18_private_method_self_tests::g18_f_獨占_self_真寫入後再同方法與_int_形式參數混算",
+        "struct_stage::g18_private_method_self_tests::g18_f_共享_self_欄位加巨大_int_實參溢位仍歸還真借用",
+        "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法只讀第二參數與_self_欄位不混用第一個",
+        "struct_stage::g18_private_method_self_tests::g18_f_篡改_self_混算方向與參數身分須在動態配置前拒絕",
+        "struct_stage::g18_private_method_self_tests::g18_f_偽造_other_欄位與錯誤接收者不得冒充真正_self_來源",
         "struct_stage::g18_private_method_self_tests::g18_f_同一_int_參數左右加法仍取同一真框架值",
         "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法真依原多載簽章選取並計算兩個獨立參數",
         "struct_stage::g18_private_method_self_tests::g18_f_雙_int_方法可只返回第二參數而不錯讀第一或_self_",
