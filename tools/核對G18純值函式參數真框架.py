@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百五十項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的一百五十五項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_普通函式_while_false_零迭代仍真正檢查且返回",
+    "g18_r03_普通函式_while_逐輪重讀_bool_並僅更新到達的_int",
+    "g18_r03_普通函式_while_內_break_不執行後續寫入",
+    "g18_r03_普通函式_while_步數預算耗盡不產生假返回",
+    "g18_r03_普通函式_while_真控制計畫篡改須執行前拒絕",
     "g18_r03_真巢狀_if_葉提前返回保留雙層條件順序",
     "g18_r03_外層先更新_bool_後內層_if_須重讀最新值再寫入_int",
     "g18_r03_外層_false_路徑內的_else_巢狀_if_只執行選中的葉",
