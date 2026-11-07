@@ -754,10 +754,15 @@ impl PreparedPrivateScalarCall {
         let (last, prefix) = function.body.statements.split_last().ok_or(
             PrivateScalarCallPrepareError::Unsupported("普通函式缺少返回"),
         )?;
-        let StmtKind::Return(ret) = &last.kind else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "普通函式最後一筆必須是真 Checker 核准的 return",
-            ));
+        // 若原 Checker 核准最後的 if／else-if／else 每條葉分支
+        // 皆 return，函式本體不必虛構額外尾端 return。
+        // 最終是否「全路徑返回」仍由編譯後的真分支計畫確認。
+        let final_return = match &last.kind {
+            StmtKind::Return(ret) => Some(ret),
+            StmtKind::If { .. } => None,
+            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                "普通函式最後須是真 return 或全分支均 return 的 if",
+            )),
         };
         let mut bindings = function.params.iter().map(|param|
             (param.name.clone(), DeclarationId(param.declaration_start))
@@ -768,7 +773,12 @@ impl PreparedPrivateScalarCall {
             .filter(|param| param.ty == "bool")
             .map(|param| (param.name.clone(), DeclarationId(param.declaration_start)))
             .collect::<BTreeMap<_, _>>();
-        for statement in prefix {
+        let executable_prefix = if final_return.is_some() {
+            prefix
+        } else {
+            function.body.statements.as_slice()
+        };
+        for statement in executable_prefix {
             if matches!(&statement.kind, StmtKind::If { .. }) {
                 let branch = Self::compile_early_if(
                     statement, &bindings, &bool_bindings, verified,
@@ -878,7 +888,8 @@ impl PreparedPrivateScalarCall {
             local_inits.push(init);
             bindings.insert(owner.name.clone(), declaration);
         }
-        let return_span = ret.expression.node_span();
+        let return_span = final_return.map(|ret| ret.expression.node_span())
+            .unwrap_or(last.node_span());
         // 原 Checker 在所有 if／else-if／else 葉分支皆 Return 時，
         // 合法不為後續不可達的原始 Return 建立 Expression HIR。
         // 僅這個可由已驗證完整分支證明的情況，保留不可達標記，
@@ -887,12 +898,21 @@ impl PreparedPrivateScalarCall {
             local_steps.last(),
             Some(PrivateScalarLocalStep::EarlyReturn(plan)) if plan.always_returns()
         );
-        let result = if every_branch_returns
+        let result = if final_return.is_none() {
+            if !every_branch_returns {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "函式尾端 if 缺少完整真 return 分支，不得假造隱含返回",
+                ));
+            }
+            // 全部真分支均已 Return，沒有要再執行的虛構尾端 expression。
+            PrivateScalarReturnExpr::Unreachable
+        } else if every_branch_returns
             && verified.plan.scalar_hir.expression(return_span).is_none() {
             PrivateScalarReturnExpr::Unreachable
         } else {
             PrivateScalarReturnExpr::from_checked_bindings(
-                &ret.expression, &bindings, verified,
+                &final_return.expect("已判定具有真正最後 return").expression,
+                &bindings, verified,
             )?
         };
         Ok((local_inits, local_steps, result, return_span))
