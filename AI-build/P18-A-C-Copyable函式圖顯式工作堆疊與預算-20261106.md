@@ -287,3 +287,14 @@
 - 新增獨立工具 `tools/核對G18-R06跨執行器正反矩陣.py`（UTF-8），真 Rust `--list` 精確核對五項後完整執行該測試組，要求正好 5 passed、0 failed、0 ignored；同步新增必要 CI G18 R06 專項步驟和 G18 原 P18.1／18.3／18.4／18.5 追溯與真執行群組。
 - **證據邊界**：這是多執行器跨模型回歸，不是宣稱所有已核准函式與任意 str／Move／Borrow 組合已共用一個通用 runtime。沒有新增語言規格、async、except 或 P22 公開執行入口。R06 全矩陣和 R07 正式 G18 `--check` 仍待封閉，原六項保持 0/6 Passed。
 - 僅最新 PR HEAD 三必要 CI completed/success、作者／main base／mergeable 核對後 Squash merge，新 main 同 SHA 再驗全套 G17/G6/F00 與 G18 `--audit`；不能以 CI 綠燈冒稱正式驗收。
+
+
+---
+
+## V1-R03-03：已核准完整 if／else-if／else 尾端全返回（2026-11-07）
+
+- 基線 main `48aac8e094c7f863b7758c2f82b98fad1b4b6a5c`（#587 R06-01 五項跨執行器真退出矩陣以最新 PR HEAD 三必要 CI completed/success Squash merge）。既有 `prepare_function_locals` 僅接受最後一筆為直接 `StmtKind::Return`；合法且原 Checker 已核准的 `if(flag){return 7}else{return 9}` 直接作為函式最後語句，會被人為 Unsupported。
+- 不改原 Lexer／Parser／Checker／TypedHIR、也不虛構隱式 return：若最後一筆為原 Parser `StmtKind::If`，把它納入同一序列工作計畫；僅當完整 `PrivateScalarEarlyIf::always_returns()` 靜態證明 every true/false/else-if/else 的真 Parser 分支葉**皆 Return**，才允許使用原本受控 `Unreachable` 尾端標記。此標記如果意外執行必 `StateMismatch`，不能偽裝正常返回。
+- 各分支條件仍由原 Checker 真 bool／Reference HIR 與執行時框架值逐一計算；選中 Return 僅退出目前函式，保留父框架算術與先前局部值清理。缺少 else 的非全返回情形必由 Checker 拒絕，或編譯器保守 Unsupported；已編譯分支遭竄改必於 SourceChanged 前置拒絕。
+- 新增四項真 Rust 正反：無尾端虛構 return 的 true／false 正向、完整 else-if 原條件順序、巢狀 inner 早返而 outer 繼續加法並一對一退出，以及非完整分支／竄改來源拒絕。專用 Gate **138→142**，原 G18 P18.1／18.3／18.5 真來源追溯與 CI 同步。
+- R03 仍未涵蓋任意深度分支、巢狀可寫區域與一般迴圈；此是合法同步普通函式控制流的又一子集，不提前宣布 V1 R01～R07 全部結案或 G18 六原項 Passed。最新 PR HEAD 三必要 CI completed/success、作者/base/mergeable 核對後 Squash merge，新 main 同 SHA 再驗。
