@@ -465,6 +465,8 @@ impl PrivateScalarBoolExpr {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarBranchAction {
+    /// 原 Parser 同一 if 葉分支的多筆已核准語句，保留真正執行順序。
+    Sequence(Vec<PrivateScalarBranchAction>),
     Return(PrivateScalarReturnExpr),
     AssignInt { declaration: DeclarationId, value: PrivateScalarReturnExpr },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
@@ -473,9 +475,21 @@ enum PrivateScalarBranchAction {
 impl PrivateScalarBranchAction {
     fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
+            Self::Sequence(steps) => {
+                for action in steps { action.collect_calls(calls); }
+            }
             Self::Return(expr) | Self::AssignInt { value: expr, .. } =>
                 expr.collect_calls(calls),
             Self::AssignBool { .. } => {}
+        }
+    }
+
+    fn always_returns(&self) -> bool {
+        match self {
+            Self::Return(_) => true,
+            Self::Sequence(actions) => actions.last()
+                .is_some_and(Self::always_returns),
+            Self::AssignInt { .. } | Self::AssignBool { .. } => false,
         }
     }
 }
@@ -495,10 +509,10 @@ enum PrivateScalarEarlyElse {
 
 impl PrivateScalarEarlyIf {
     fn always_returns(&self) -> bool {
-        matches!(&self.when_true, PrivateScalarBranchAction::Return(_))
+        self.when_true.always_returns()
             && match &self.when_false {
-                Some(PrivateScalarEarlyElse::Branch(
-                    PrivateScalarBranchAction::Return(_))) => true,
+                Some(PrivateScalarEarlyElse::Branch(action)) =>
+                    action.always_returns(),
                 Some(PrivateScalarEarlyElse::ElseIf(next)) => next.always_returns(),
                 _ => false,
             }
@@ -619,6 +633,7 @@ enum PrivateScalarTask<'a> {
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
+    ExecuteBranchAction(&'a PrivateScalarBranchAction),
     EnterCall(&'a str, usize, bool),
     ExitCall,
 }
@@ -635,9 +650,25 @@ impl PreparedPrivateScalarCall {
         verified: &VerifiedPrivateSource,
     ) -> Result<PrivateScalarBranchAction, PrivateScalarCallPrepareError> {
         let [statement] = statements else {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "if 此子集只接受單筆真 return 或原 Checker var 純值更新",
-            ));
+            if statements.is_empty() {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "if 此子集不接受缺少已核准執行證據的空分支",
+                ));
+            }
+            let mut actions = Vec::new();
+            for (index, statement) in statements.iter().enumerate() {
+                let action = Self::compile_early_branch(
+                    std::slice::from_ref(statement),
+                    int_bindings, bool_bindings, verified,
+                )?;
+                if action.always_returns() && index + 1 != statements.len() {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "if 已返回後仍有其他語句；不得造假可達效果",
+                    ));
+                }
+                actions.push(action);
+            }
+            return Ok(PrivateScalarBranchAction::Sequence(actions));
         };
         match &statement.kind {
             StmtKind::Return(ret) =>
@@ -1127,29 +1158,35 @@ impl PreparedPrivateScalarCall {
                             }
                         }
                         if let Some(selected) = selected {
-                            match selected {
-                                PrivateScalarBranchAction::Return(returned) => {
-                                    // 只取消此函式後續不可達語句，保留本次
-                                    // ExitCall 與父呼叫者的後續工作。
-                                    while !tasks.is_empty()
-                                        && !matches!(tasks.last(),
-                                            Some(PrivateScalarTask::ExitCall)) {
-                                        tasks.pop();
-                                    }
-                                    tasks.push(PrivateScalarTask::Evaluate(returned, false));
-                                }
-                                PrivateScalarBranchAction::AssignInt { declaration, value } => {
-                                    // 分支更新不構成函式 return；原來源
-                                    // 後續語句仍須真正執行。
-                                    tasks.push(PrivateScalarTask::AssignLocal(*declaration));
-                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
-                                }
-                                PrivateScalarBranchAction::AssignBool { declaration, value } => {
-                                    tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
-                                }
-                            }
+                            tasks.push(PrivateScalarTask::ExecuteBranchAction(selected));
                         }
                     }
+                    PrivateScalarTask::ExecuteBranchAction(action) => match action {
+                        PrivateScalarBranchAction::Sequence(actions) => {
+                            // 原 Parser 分支先後次序必須保持；工作堆疊
+                            // LIFO 以反序放入，未選中的分支不排任何工作。
+                            for action in actions.iter().rev() {
+                                tasks.push(PrivateScalarTask::ExecuteBranchAction(action));
+                            }
+                        }
+                        PrivateScalarBranchAction::Return(returned) => {
+                            // 提前 return 只裁掉目前函式尚未執行的語句，
+                            // 保留目前 ExitCall 與呼叫者外層工作。
+                            while !tasks.is_empty()
+                                && !matches!(tasks.last(),
+                                    Some(PrivateScalarTask::ExitCall)) {
+                                tasks.pop();
+                            }
+                            tasks.push(PrivateScalarTask::Evaluate(returned, false));
+                        }
+                        PrivateScalarBranchAction::AssignInt { declaration, value } => {
+                            tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                            tasks.push(PrivateScalarTask::Evaluate(value, false));
+                        }
+                        PrivateScalarBranchAction::AssignBool { declaration, value } => {
+                            tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
+                        }
+                    },
                     PrivateScalarTask::EnterCall(name, argc, is_root_call) => {
                         // 遞迴可呼叫最初被 main 選中的函式；
                         // 它與其他原 Checker 函式均須使用各自參數宣告身分。
@@ -4002,6 +4039,104 @@ mod g18_private_scalar_call_tests {
                 *value = PrivateScalarReturnExpr::Constant(99);
             } else { panic!("真 Parser int 更新分支遺失"); }
         } else { panic!("真 Parser if 分支遺失"); }
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+    #[test]
+    fn g18_r03_同一真_if_分支兩次_var_int_更新須照原_parser_先後返回() {
+        for (flag, expected, updates) in [("true", 9, vec![5, 8]), ("false", 4, vec![])] {
+            let src = format!(
+                "fn choose(flag:bool,n:int)->int{{\nvar value:int = n\nif(flag){{\nvalue = value+2\nvalue = value+3\n}}\nreturn value+1\n}}\nfn main()->int{{\nreturn choose({},3)\n}}\n",
+                flag,
+            );
+            let out = checked(&src).execute().unwrap();
+            assert_eq!(out.result, Ok(expected));
+            assert!(out.has_balanced_frame_trace());
+            let values = out.events.iter().filter_map(|event| match event {
+                PrivateScalarCallEvent::LocalAssigned(_, value) => Some(*value),
+                _ => None,
+            }).collect::<Vec<_>>();
+            assert_eq!(values, updates);
+        }
+    }
+
+    #[test]
+    fn g18_r03_else_if_選中分支多筆更新不可執行其他兄弟分支() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+100\n}else if(true){\nvalue = value+1\nvalue = value+2\n}else{\nvalue = value+50\n}\nreturn value\n}\nfn main()->int{\nreturn choose(false,3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let values = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LocalAssigned(_, value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(values, [4, 6]);
+        let checks = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::ConditionalChecked(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(checks, [false, true]);
+    }
+
+    #[test]
+    fn g18_r03_分支先更新_int_bool_後下個_if_必讀動態最新值() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nvar flag:bool = false\nif(true){\nvalue = value+2\nflag = true\n}\nif(flag){\nreturn value+1\n}\nreturn value+2\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::BoolAssigned(_, true)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 5)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_分支內先變更再提前_return_不得執行不可達尾端() {
+        let src = "fn choose(flag:bool,n:int)->int{\nvar value:int = n\nif(flag){\nvalue = value+1\nreturn value+2\n}\nreturn value+10\n}\nfn main()->int{\nreturn choose(true,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(7)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(15)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_同分支第二更新溢位只保存第一個真更新並失敗退出() {
+        let src = "fn choose(n:int)->int{\nvar value:int = n\nif(true){\nvalue = value+1\nvalue = value+9223372036854775807\n}\nreturn value\n}\nfn main()->int{\nreturn choose(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LocalAssigned(_, 2)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_分支內常值錯誤賦值與真工作計畫竄改均須零額外執行() {
+        let invalid = "fn choose(n:int)->int{\nconst x:int = n\nif(true){\nx = x+1\nx = x+2\n}\nreturn x\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let source = "fn choose(n:int)->int{\nvar x:int = n\nif(true){\nx = x+1\nx = x+2\n}\nreturn x\n}\nfn main()->int{\nreturn choose(3)\n}\n";
+        let mut plan = checked(source);
+        assert_eq!(plan.execute().unwrap().result, Ok(6));
+        if let PrivateScalarLocalStep::EarlyReturn(conditional) = &mut plan.root_local_steps[1] {
+            if let PrivateScalarBranchAction::Sequence(actions) = &mut conditional.when_true {
+                actions[1] = PrivateScalarBranchAction::Return(
+                    PrivateScalarReturnExpr::Constant(999),
+                );
+            } else { panic!("原 Parser 多筆分支序列未收錄"); }
+        } else { panic!("原 Parser if 節點未收錄"); }
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }

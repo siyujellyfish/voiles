@@ -287,3 +287,14 @@
 - 新增獨立工具 `tools/核對G18-R06跨執行器正反矩陣.py`（UTF-8），真 Rust `--list` 精確核對五項後完整執行該測試組，要求正好 5 passed、0 failed、0 ignored；同步新增必要 CI G18 R06 專項步驟和 G18 原 P18.1／18.3／18.4／18.5 追溯與真執行群組。
 - **證據邊界**：這是多執行器跨模型回歸，不是宣稱所有已核准函式與任意 str／Move／Borrow 組合已共用一個通用 runtime。沒有新增語言規格、async、except 或 P22 公開執行入口。R06 全矩陣和 R07 正式 G18 `--check` 仍待封閉，原六項保持 0/6 Passed。
 - 僅最新 PR HEAD 三必要 CI completed/success、作者／main base／mergeable 核對後 Squash merge，新 main 同 SHA 再驗全套 G17/G6/F00 與 G18 `--audit`；不能以 CI 綠燈冒稱正式驗收。
+
+
+---
+
+## V1-R03-04：已核准 if／else-if／else 同葉多筆 int/bool 更新真執行（2026-11-07）
+
+- 基線 main `48aac8e094c7f863b7758c2f82b98fad1b4b6a5c`；#587 已新增 R06 五項跨各真執行器聯合矩陣並合併。#588 的不同方案已在 CI 遭原 Checker 明確拒絕：**函式最外層最後必須是明確 return**，因此 #588 關閉未合併，禁止擅改 Parser／Checker 或用不合法程式虛增 V1 覆蓋。
+- 改以真正已核准來源 `if(flag){ value=value+2; value=value+3 }; return value` 施工：原 `compile_early_branch` 只接受單筆 `Return／AssignInt／AssignBool`，將同一真 Parser 分支的多筆合法純值賦值依原序編譯為 `PrivateScalarBranchAction::Sequence`，每筆仍必有原 Checker Assignment HIR、DeclarationId／可寫權限、Lexer Token 與相符 int/bool RHS TypedHIR。序列中已 Return 的位置不得再接假可達語句。
+- 原顯式工作堆疊新增 `ExecuteBranchAction` 任務，以 LIFO 反序排入、實際原序求值；選中 Return 才截斷本函式不可達工作，其餘 Assign 必依真值更新現有 frame，再執行後段；未選中任何分支不建立任務、沒有假事件。完整葉返回的 `always_returns` 也遵循 sequence 最後真 Return，但仍要求函式語法有已核准**明確最後 return**。
+- 六項真 Rust 正反：兩次 int 更新與 false 零更新、else-if 只選一個真葉並按次序執行、同分支先 int 後 bool 更新而下一 if 重讀、先更新後提前 return 不執行不可達語句、第二更新溢位只保留首筆完成與真失敗退出、const 錯誤賦值及已編譯 action 序列遭竄改必先拒絕。函式專項 Gate **138→144**，G18 原 P18.1／18.3／18.5、必要 CI 與 AI-build 同步。
+- 這批不包含分支內新區域變數、完整巢狀分支／一般 for/while，也不完成 OwnedStr/Move/Borrow 統一 runtime；保持 R01～R07 未封閉清單與 G18 0/6 Passed。只在最新 PR HEAD 三必要 CI completed/success、作者/main base/mergeable 確認後 Squash merge，再核對新 main 同 SHA。
