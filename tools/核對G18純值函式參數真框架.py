@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百六十一項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百六十七項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_無關int結構宣告不應阻斷main純函式執行",
+    "g18_r01_未使用結構的合法self方法不可冒充真函式進入",
+    "g18_r01_無關結構的utf8預設欄位不得於main執行時建立資源",
+    "g18_r02_旁觀結構宣告不影響真main分支字串借用與清理",
+    "g18_r01_非法重複結構欄位仍由原checker拒絕",
+    "g18_r01_來源已驗證的結構清單遭竄改必在執行前拒絕",
     "g18_r01_未使用的合法bool輔助函式不得阻斷真int主呼叫",
     "g18_r01_主函式到二層真葉函式仍收錄且跳過不相干bool宣告",
     "g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",

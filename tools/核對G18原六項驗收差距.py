@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_無關int結構宣告不應阻斷main純函式執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_未使用結構的合法self方法不可冒充真函式進入",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_無關結構的utf8預設欄位不得於main執行時建立資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_非法重複結構欄位仍由原checker拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_來源已驗證的結構清單遭竄改必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_未使用的合法bool輔助函式不得阻斷真int主呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_主函式到二層真葉函式仍收錄且跳過不相干bool宣告",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",
@@ -164,6 +169,7 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_旁觀結構宣告不影響真main分支字串借用與清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_主函式兄弟分支只執行選中函式而收錄兩者並略過無關bool",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while_break前真move借用只建立清理首輪資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for_continue每輪真move與借用先還票再走回邊",
@@ -367,6 +373,8 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_無關結構的utf8預設欄位不得於main執行時建立資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_旁觀結構宣告不影響真main分支字串借用與清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_主函式到二層真葉函式仍收錄且跳過不相干bool宣告",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while_break前真move借用只建立清理首輪資源",
@@ -505,6 +513,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_旁觀結構宣告不影響真main分支字串借用與清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_來源已驗證的結構清單遭竄改必在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_主函式兄弟分支只執行選中函式而收錄兩者並略過無關bool",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_可達圖身分遭竄改及bool誤用int回傳都須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while_break前真move借用只建立清理首輪資源",
