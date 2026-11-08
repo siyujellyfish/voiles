@@ -8783,6 +8783,99 @@ mod g18_private_scalar_call_tests {
 
     // V1／F3：所有 int 欄位寫入均由真正 Checker 允許的
     // var 實例／var 欄位與 TypedHIR RHS 簽發，P16 真值更新後才留下事件。
+    // V1／F3：原 Checker 已核准 bool 欄位，P16 真持有者僅在動態路徑到達時更新。
+    #[test]
+    fn g18_v1_f3_bool欄位真更新後讀回控制條件() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn step()->int{\nvar f:Flag = Flag()\nf.ready = true\nif(f.ready){\nreturn 7\n}\nreturn 2\n}\nfn main()->int{\nreturn step()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(_, field, true)
+                if field == "ready"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫() {
+        let src = "struct Flags{\nvar left:bool = false\nvar right:bool = true\n}\nfn route()->int{\nvar f:Flags = Flags()\nf.left = f.right\nf.right = false\nif(f.left){\nreturn 9\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位只寫所選if葉而且可傳實參() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn choose(value:bool)->int{\nif(value){\nreturn 5\n}\nreturn 2\n}\nfn route(flag:bool)->int{\nvar f:Flag = Flag()\nif(flag){\nf.ready = true\n}else{\nf.ready = false\n}\nreturn choose(f.ready)\n}\nfn main()->int{\nreturn route(false)+route(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位for_continue與while_break真回邊() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nfor i in 0..2{\nf.ready = true\ncontinue\n}\nwhile(f.ready){\nf.ready = false\nbreak\n}\nif(f.ready){\nreturn 99\n}\nreturn 4\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位更新後溢位須原框架清理() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nf.ready = true\nreturn 9223372036854775807+1\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位非法const及錯型別必原Checker拒絕() {
+        let const_owner = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nconst f:Flag = Flag()\nf.ready = true\nreturn 0\n}\nfn main()->int{return route()}\n";
+        let const_field = "struct Flag{\nconst ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nf.ready = true\nreturn 0\n}\nfn main()->int{return route()}\n";
+        let wrong_type = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nf.ready = 1\nreturn 0\n}\nfn main()->int{return route()}\n";
+        for src in [const_owner, const_field, wrong_type] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))));
+        }
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位來源帳遭偽造必拒絕() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn step()->int{\nvar f:Flag = Flag()\nf.ready = true\nif(f.ready){\nreturn 7\n}\nreturn 2\n}\nfn main()->int{\nreturn step()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let event = out.events.iter_mut().find(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).expect("真 bool 欄位更新事件");
+        if let PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, _, _) = event {
+            *id = DeclarationId(0);
+        }
+        assert!(!out.has_balanced_frame_trace());
+    }
+
     #[test]
     fn g18_v1_f3_真struct_int欄位寫入後讀回更新值() {
         let src = "struct Meter{\nvar count:int = 3\n}\nfn step()->int{\nvar note:Meter = Meter()\nnote.count = note.count+4\nreturn note.count\n}\nfn main()->int{\nreturn step()\n}\n";
