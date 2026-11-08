@@ -1236,18 +1236,22 @@ enum PrivateScalarCopyStructSeed {
     Static(ApprovedSeed),
     IntBound(DeclarationId),
     BoolBound(DeclarationId),
+    IntField { declaration: DeclarationId, owner: String, field: String },
+    BoolField { declaration: DeclarationId, owner: String, field: String },
 }
 impl PrivateScalarCopyStructSeed {
     fn kind(&self) -> crate::mixed_struct_runtime::ScalarKind {
         use crate::mixed_struct_runtime::ScalarKind;
         match self {
             Self::Static(value) => value.kind(),
-            Self::IntBound(_) => ScalarKind::Int,
-            Self::BoolBound(_) => ScalarKind::Bool,
+            Self::IntBound(_) | Self::IntField { .. } => ScalarKind::Int,
+            Self::BoolBound(_) | Self::BoolField { .. } => ScalarKind::Bool,
         }
     }
-    fn evaluate(&self, frame: &PrivateScalarActiveFrame)
-        -> Result<ApprovedSeed, PrivateScalarCallRuntimeError> {
+    fn evaluate(
+        &self, frame: &PrivateScalarActiveFrame,
+        structs: &crate::mixed_struct_runtime::MixedStructRuntime,
+    ) -> Result<ApprovedSeed, PrivateScalarCallRuntimeError> {
         match self {
             Self::Static(value) => Ok(value.clone()),
             Self::IntBound(id) => frame.values.get(id).copied()
@@ -1256,6 +1260,32 @@ impl PrivateScalarCopyStructSeed {
             Self::BoolBound(id) => frame.bool_values.get(id).copied()
                 .map(ApprovedSeed::Bool)
                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::IntField { declaration, owner, field } => {
+                if !frame.copy_struct_scopes.iter().rev().flatten()
+                    .any(|(id, known)| id == declaration && known == owner) {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
+                match structs.field(owner, field).map_err(|_|
+                    PrivateScalarCallRuntimeError::StateMismatch,
+                )? {
+                    crate::mixed_struct_runtime::Observed::Int(value) =>
+                        Ok(ApprovedSeed::Int(value)),
+                    _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                }
+            }
+            Self::BoolField { declaration, owner, field } => {
+                if !frame.copy_struct_scopes.iter().rev().flatten()
+                    .any(|(id, known)| id == declaration && known == owner) {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
+                match structs.field(owner, field).map_err(|_|
+                    PrivateScalarCallRuntimeError::StateMismatch,
+                )? {
+                    crate::mixed_struct_runtime::Observed::Bool(value) =>
+                        Ok(ApprovedSeed::Bool(value)),
+                    _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                }
+            }
         }
     }
 }
@@ -1620,6 +1650,36 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarCopyStructSeed::IntBound(declaration)
                     } else {
                         PrivateScalarCopyStructSeed::BoolBound(declaration)
+                    }
+                }
+                TermKind::FieldRead(_, _) if *kind == ScalarKind::Int => {
+                    let result = PrivateScalarReturnExpr::from_checked_bindings(
+                        term, bindings, verified,
+                    )?;
+                    let PrivateScalarReturnExpr::CopyStructIntField {
+                        declaration, owner, field,
+                    } = result else {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名 int 欄位缺少原 Checker 唯一純值投影",
+                        ));
+                    };
+                    PrivateScalarCopyStructSeed::IntField {
+                        declaration, owner, field,
+                    }
+                }
+                TermKind::FieldRead(_, _) if *kind == ScalarKind::Bool => {
+                    let result = PrivateScalarBoolExpr::from_checked(
+                        term, bindings, verified,
+                    )?;
+                    let PrivateScalarBoolExpr::CopyStructBoolField {
+                        declaration, owner, field,
+                    } = result else {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名 bool 欄位缺少原 Checker 唯一純值投影",
+                        ));
+                    };
+                    PrivateScalarCopyStructSeed::BoolField {
+                        declaration, owner, field,
                     }
                 }
                 _ => PrivateScalarCopyStructSeed::Static(
@@ -2830,7 +2890,8 @@ impl PreparedPrivateScalarCall {
                         // 皆為無副作用 int/bool 讀取，P16 仍控制後續
                         // 具名書寫順序及覆蓋預設、溢位等原安全語意。
                         let named_values = plan.named.iter().map(|(field, source)|
-                            source.evaluate(frame).map(|value| (field.as_str(), value))
+                            source.evaluate(frame, &copy_structs)
+                                .map(|value| (field.as_str(), value))
                         ).collect::<Result<Vec<_>, _>>()?;
                         let named = named_values.iter().map(|(field, value)|
                             crate::mixed_struct_runtime::NamedMixed {
