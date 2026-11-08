@@ -11704,6 +11704,64 @@ mod g18_private_scalar_call_tests {
         assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
     }
 
+    // V1/F4：可寫預設 str 與具名欄位共用唯一 P16 Shared Ledger；
+    // 明確驗證原 Checker 全欄位依序求值、唯一 ResourceId 與故障退回。
+    #[test]
+    fn g18_v1_f4_兩個未覆蓋varstr預設依宣告次序建立並逆序釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Parcel{\nvar first:str = \"甲🪼\"\nvar second:str = \"乙🪼\"\nvar count:int = 12\n}\nfn read()->int{\nvar item:Parcel = Parcel()\nreturn item.count\n}\nfn main()->int{\nreturn read()\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f4_具名str覆蓋預設與另一varstr預設只建立兩筆真資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Parcel{\nvar first:str = \"舊預設不能執行\"\nvar second:str = \"合法預設\"\nvar count:int = 5\n}\nfn read()->int{\nvar item:Parcel = Parcel(first=\"具名替代🪼\")\nreturn item.count\n}\nfn main()->int{\nreturn read()\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f4_建立預設varstr後真整數溢位必回滾唯一資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Parcel{\nvar first:str = \"回滾🪼\"\nvar count:int = 1\n}\nfn fail()->int{\nvar item:Parcel = Parcel()\nreturn item.count+9223372036854775807\n}\nfn main()->int{\nreturn fail()\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_),
+        )));
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f4_真預設str建構函式編譯計畫被刪除須零執行拒絕() {
+        let src = "struct Parcel{\nvar first:str = \"合法🪼\"\nvar count:int = 3\n}\nfn read()->int{\nvar item:Parcel = Parcel()\nreturn item.count\n}\nfn main()->int{\nreturn read()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(3));
+        plan.root_local_steps.clear();
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f4_未具名varstr預設由p16真建立與釋放() {
         // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
