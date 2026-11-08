@@ -1229,12 +1229,43 @@ impl PrivateScalarEarlyIf {
     }
 }
 
+/// V1／F4：原 Checker 已驗證的具名純值來源，在真動態
+/// 函式工作到達建構點時才由 DeclarationId 讀取最新值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarCopyStructSeed {
+    Static(ApprovedSeed),
+    IntBound(DeclarationId),
+    BoolBound(DeclarationId),
+}
+impl PrivateScalarCopyStructSeed {
+    fn kind(&self) -> crate::mixed_struct_runtime::ScalarKind {
+        use crate::mixed_struct_runtime::ScalarKind;
+        match self {
+            Self::Static(value) => value.kind(),
+            Self::IntBound(_) => ScalarKind::Int,
+            Self::BoolBound(_) => ScalarKind::Bool,
+        }
+    }
+    fn evaluate(&self, frame: &PrivateScalarActiveFrame)
+        -> Result<ApprovedSeed, PrivateScalarCallRuntimeError> {
+        match self {
+            Self::Static(value) => Ok(value.clone()),
+            Self::IntBound(id) => frame.values.get(id).copied()
+                .map(ApprovedSeed::Int)
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::BoolBound(id) => frame.bool_values.get(id).copied()
+                .map(ApprovedSeed::Bool)
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+        }
+    }
+}
+
 /// V1／F4：原 Checker 唯一結構型別及 P16 VB16 預設／具名欄位
 /// 來源工作計畫；只接通無 str 資源的 int／bool 欄位。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarCopyStructPlan {
     fields: Vec<(String, crate::mixed_struct_runtime::ScalarKind, Option<ApprovedSeed>, bool)>,
-    named: Vec<(String, ApprovedSeed)>,
+    named: Vec<(String, PrivateScalarCopyStructSeed)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1507,7 +1538,9 @@ impl PreparedPrivateScalarCall {
     /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
     /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
     fn checked_copy_struct(
-        name: &str, ty: &str, term: &Term, verified: &VerifiedPrivateSource,
+        name: &str, ty: &str, term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
     ) -> Result<PrivateScalarCopyStructPlan, PrivateScalarCallPrepareError> {
         use crate::mixed_struct_runtime::ScalarKind;
         let definition = verified.structs.get(ty).ok_or(
@@ -1551,11 +1584,52 @@ impl PreparedPrivateScalarCall {
                 .ok_or(PrivateScalarCallPrepareError::Unsupported(
                     "結構局部具名欄位不在原 Checker 型別中",
                 ))?;
-            let seed = approved_seed(term, verified).map_err(|_|
-                PrivateScalarCallPrepareError::Unsupported(
-                    "結構局部具名值缺少原 P16 Checker 核准來源",
+            let seed = match &term.kind {
+                TermKind::Name(source_name) => {
+                    let declaration = *bindings.get(source_name).ok_or(
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名來源不在原 Checker 已編譯詞彙作用域",
+                        ),
+                    )?;
+                    let span = term.node_span();
+                    let expected = match kind {
+                        ScalarKind::Int => crate::common_ir::ScalarType::Int,
+                        ScalarKind::Bool => crate::common_ir::ScalarType::Bool,
+                        _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "非 Copyable 資源欄位不屬此子集",
+                        )),
+                    };
+                    let ty_text = if *kind == ScalarKind::Int { "int" } else { "bool" };
+                    if !verified.plan.declarations.typed_declaration(declaration)
+                        .is_some_and(|fact| fact.ty == ty_text)
+                        || verified.plan.scalar_hir.expression(span)
+                            .is_none_or(|fact| fact.ty != expected)
+                        || verified.plan.scalar_hir.reference(span)
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != declaration
+                                    || fact.resolved.ty != expected)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == term.start && token.end == term.end
+                                && matches!(&token.kind, TokenKind::Name(found)
+                                    if found == source_name)) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名來源缺少 Checker TypedHIR／DeclarationId／Lexer",
+                        ));
+                    }
+                    if *kind == ScalarKind::Int {
+                        PrivateScalarCopyStructSeed::IntBound(declaration)
+                    } else {
+                        PrivateScalarCopyStructSeed::BoolBound(declaration)
+                    }
+                }
+                _ => PrivateScalarCopyStructSeed::Static(
+                    approved_seed(term, verified).map_err(|_|
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名值缺少原 P16 Checker 純值來源",
+                        ),
+                    )?,
                 ),
-            )?;
+            };
             if seed.kind() != *kind || supplied.iter().any(|(key, _)| key == field_name) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "結構局部具名型別不一致或重複",
@@ -1853,7 +1927,9 @@ impl PreparedPrivateScalarCall {
                         "分支 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                let plan = Self::checked_copy_struct(
+                    &owner.name, &owner.ty, term, int_bindings, verified,
+                )?;
                 Ok(PrivateScalarBranchAction::DeclareCopyStruct {
                     declaration: id, name: owner.name.clone(), plan,
                 })
@@ -2246,7 +2322,9 @@ impl PreparedPrivateScalarCall {
                         "函式 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                let plan = Self::checked_copy_struct(
+                    &owner.name, &owner.ty, term, &bindings, verified,
+                )?;
                 local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
                     declaration, name: owner.name.clone(), plan,
                 });
@@ -2747,7 +2825,14 @@ impl PreparedPrivateScalarCall {
                                 immutable: *immutable,
                             }
                         ).collect::<Vec<_>>();
-                        let named = plan.named.iter().map(|(field, value)|
+                        // 僅在動態執行真正抵達宣告時讀本 frame 純值。
+                        // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
+                        // 皆為無副作用 int/bool 讀取，P16 仍控制後續
+                        // 具名書寫順序及覆蓋預設、溢位等原安全語意。
+                        let named_values = plan.named.iter().map(|(field, source)|
+                            source.evaluate(frame).map(|value| (field.as_str(), value))
+                        ).collect::<Result<Vec<_>, _>>()?;
+                        let named = named_values.iter().map(|(field, value)|
                             crate::mixed_struct_runtime::NamedMixed {
                                 field, value: value.runtime(),
                             }
@@ -9051,6 +9136,66 @@ mod g18_private_scalar_call_tests {
         assert_eq!(out.events.iter().filter(|e| matches!(
             e, PrivateScalarCallEvent::UnwindStarted
         )).count(), 1);
+    }
+
+    // V1／F4：原 Checker 的具名純值來源必須按 DeclarationId
+    // 真正讀取動態 frame，而不是以初始字面值假造欄位。
+    #[test]
+    fn g18_v1_f4_具名int取最後動態局部值不重播宣告值() {
+        let source = "struct Meter{\nvar count:int = 1\n}\nfn route()->int{\nvar n:int = 5\nn = 9\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool來源由真函式參數動態分支決定() {
+        let source = "struct Meter{\nvar count:int = 3\nvar ready:bool = false\n}\nfn route(flag:bool)->int{\nvar note:Meter = Meter(ready=flag)\nif(note.ready){\nreturn note.count+5\n}\nreturn note.count\n}\nfn main()->int{\nreturn route(true)+route(false)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名原局部遮蔽後使用本層Checker身分值() {
+        let source = "struct Meter{\nvar count:int = 2\n}\nfn route()->int{\nvar n:int = 3\nif(true){\nvar n:int = 11\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nreturn n\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_v1_f4_具名int_bool錯型別與未初始化原Checker先拒絕() {
+        let wrong_type = "struct Meter{\nvar count:int = 2\n}\nfn route()->int{\nvar n:bool = true\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{return route()}\n";
+        let uninitialized = "struct Meter{\nvar count:int = 2\n}\nfn route()->int{\nvar n:int\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{return route()}\n";
+        for src in [wrong_type, uninitialized] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))));
+        }
+    }
+
+    #[test]
+    fn g18_v1_f4_具名局部來源DeclarationId篡改執行前拒絕() {
+        let src = "struct Meter{\nvar count:int = 1\n}\nfn route()->int{\nvar n:int = 5\nn = 9\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+        let Some(PrivateScalarLocalStep::DeclareCopyStruct { plan: named, .. }) =
+            plan.root_local_steps.iter_mut().find(|step|
+                matches!(step, PrivateScalarLocalStep::DeclareCopyStruct { .. })) else {
+            panic!("原 Checker 真具名 struct 工作不存在");
+        };
+        named.named[0].1 = PrivateScalarCopyStructSeed::IntBound(DeclarationId(0));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
     #[test]
