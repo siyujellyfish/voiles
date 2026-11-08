@@ -8135,8 +8135,9 @@ mod g18_private_scalar_call_tests {
         assert_eq!(entered, ["leaf", "parent"]);
     }
 
-    // G18 R05：覆蓋 BorrowSafety 的獨立子集原子交易，\n    // 不擴增 F00 已凍結的 borrow_safety::tests:: 原 24 項來源。
-        #[test]
+    // G18 R05：覆蓋 BorrowSafety 的獨立子集原子交易，
+    // 不擴增 F00 已凍結的 borrow_safety::tests:: 原 24 項來源。
+    #[test]
     fn g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據() {
         let mut tracker = BorrowSafety::new();
         let outer = DeclarationId(8041);
