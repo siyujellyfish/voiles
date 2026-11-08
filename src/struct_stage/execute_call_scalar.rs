@@ -1127,7 +1127,7 @@ enum PrivateScalarBranchAction {
     /// str 詞彙持有者存在，但尚無 ResourceId／UTF-8 緩衝區。
     DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
     DeclareCopyStruct {
-        declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
+        declaration: DeclarationId, name: String, initializer: PrivateScalarCopyStructInitializer,
     },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
@@ -1235,6 +1235,14 @@ impl PrivateScalarEarlyIf {
 struct PrivateScalarCopyStructPlan {
     fields: Vec<(String, crate::mixed_struct_runtime::ScalarKind, Option<ApprovedSeed>, bool)>,
     named: Vec<(String, ApprovedSeed)>,
+}
+
+/// V1／F4：P16 同一持有者上的實際建構，或原 Checker 簽發
+/// 的整筆 .move()；本批只接通 int／bool 純值結構，不跨 UTF-8 帳。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarCopyStructInitializer {
+    Construct(PrivateScalarCopyStructPlan),
+    Move { source: String, declaration: DeclarationId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1394,7 +1402,7 @@ enum PrivateScalarTask<'a> {
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
-    DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
+    DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructInitializer),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
@@ -1507,17 +1515,47 @@ impl PreparedPrivateScalarCall {
     /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
     /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
     fn checked_copy_struct(
-        name: &str, ty: &str, term: &Term, verified: &VerifiedPrivateSource,
-    ) -> Result<PrivateScalarCopyStructPlan, PrivateScalarCallPrepareError> {
+        name: &str, ty: &str, term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarCopyStructInitializer, PrivateScalarCallPrepareError> {
         use crate::mixed_struct_runtime::ScalarKind;
         let definition = verified.structs.get(ty).ok_or(
             PrivateScalarCallPrepareError::Unsupported("結構局部缺少原 Checker 型別"),
         )?;
+        if !definition.fields.iter().all(|field|
+            matches!(field.ty.as_str(), "int" | "bool")) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "含 str 或巢狀資源的結構轉交尚缺唯一 ResourceId 共同退出帳",
+            ));
+        }
+        // 只有原 Lexer/Parser 明確 .move() 且本 Checker 的
+        // DeclarationId 對應同一結構型別，才能轉交 P16 真持有者。
+        if matches!(&term.kind, TermKind::Move(_)) {
+            let source = PreparedPrivateMoveCall::checked_move_name(term, verified)
+                .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                    "結構整筆 move 缺少原 Lexer 已核准 .move() 來源",
+                ))?;
+            let declaration = *bindings.get(source).ok_or(
+                PrivateScalarCallPrepareError::Unsupported(
+                    "結構整筆 move 缺少目前詞彙來源 DeclarationId",
+                ),
+            )?;
+            if !verified.plan.declarations.typed_declaration(declaration)
+                .is_some_and(|fact| fact.ty == ty) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構整筆 move 來源與目標的 Checker 型別不相同",
+                ));
+            }
+            return Ok(PrivateScalarCopyStructInitializer::Move {
+                source: source.to_owned(), declaration,
+            });
+        }
         let named: &[(String, Term)] = match &term.kind {
             TermKind::Construct(found, supplied) if found == ty => supplied,
             TermKind::UnresolvedZeroArgs(found) if found == ty => &[],
             _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                "結構局部必須是原 Parser／Checker 真建立式",
+                "結構局部只接受原 Checker 真建立式或明確 .move()",
             )),
         };
         let mut fields = Vec::new();
@@ -1566,7 +1604,9 @@ impl PreparedPrivateScalarCall {
         // 不以字面相同的使用者變數取代原 Checker DeclarationId；
         // caller 另在真正 Declare 節點核對 id、型別與可變性。
         let _ = name;
-        Ok(PrivateScalarCopyStructPlan { fields, named: supplied })
+        Ok(PrivateScalarCopyStructInitializer::Construct(
+            PrivateScalarCopyStructPlan { fields, named: supplied },
+        ))
     }
 
     /// V1／F3：只接受原 Checker 完整驗證後的 int 欄位可寫實例。
@@ -1853,9 +1893,11 @@ impl PreparedPrivateScalarCall {
                         "分支 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                let initializer = Self::checked_copy_struct(
+                    &owner.name, &owner.ty, term, int_bindings, verified,
+                )?;
                 Ok(PrivateScalarBranchAction::DeclareCopyStruct {
-                    declaration: id, name: owner.name.clone(), plan,
+                    declaration: id, name: owner.name.clone(), initializer,
                 })
             }
             StmtKind::Declare(owner) if matches!(owner.ty.as_str(), "int" | "bool") => {
@@ -2246,9 +2288,11 @@ impl PreparedPrivateScalarCall {
                         "函式 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                let initializer = Self::checked_copy_struct(
+                    &owner.name, &owner.ty, term, &bindings, verified,
+                )?;
                 local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
-                    declaration, name: owner.name.clone(), plan,
+                    declaration, name: owner.name.clone(), initializer,
                 });
                 bindings.insert(owner.name.clone(), declaration);
                 // 保留 struct 來源於 bool 詞彙索引，只有原 Checker
@@ -2426,10 +2470,9 @@ impl PreparedPrivateScalarCall {
                     *declaration, name, *mutable,
                 )),
                 PrivateScalarLocalStep::DeclareCopyStruct {
-                    declaration, name, plan,
+                    declaration, name, initializer,
                 } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
-                    *declaration, name, plan,
-                )),
+                    *declaration, name, initializer
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
                 } => tasks.push(PrivateScalarTask::AssignStr(*declaration, name, initializer)),
@@ -3066,10 +3109,9 @@ impl PreparedPrivateScalarCall {
                             *declaration, name, *mutable,
                         )),
                         PrivateScalarBranchAction::DeclareCopyStruct {
-                            declaration, name, plan,
+                            declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
-                            *declaration, name, plan,
-                        )),
+                            *declaration, name, initializer
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::AssignStr(
@@ -3318,10 +3360,9 @@ impl PreparedPrivateScalarCall {
                                     *declaration, name, *mutable,
                                 )),
                                 PrivateScalarLocalStep::DeclareCopyStruct {
-                                    declaration, name, plan,
+                                    declaration, name, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
-                                    *declaration, name, plan,
-                                )),
+                                    *declaration, name, initializer
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
                                 } => tasks.push(PrivateScalarTask::AssignStr(
