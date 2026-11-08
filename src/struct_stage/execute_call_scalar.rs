@@ -1949,8 +1949,9 @@ impl PreparedPrivateScalarCall {
 
     /// V1／F4：交付原 Checker 已接受、P16 可真建構的 int／bool
     /// 與受限 str 結構局部；原 VB16 具名覆蓋及預設來源各自核對。
-    /// 僅已證共用 OwnedStrRuntime 的資源字面欄位可執行，
-    /// 未覆蓋 var str／巢狀資源／非 Copyable Move 仍保守拒絕。
+    /// 已經有原 Checker 核准之真字面預設的 var str，
+    /// 與已核准具名覆蓋及 const str 都在 P16 共用帳上執行；
+    /// 缺少預設的 var str／巢狀未知資源仍維持原保守拒絕。
     fn checked_copy_struct(
         name: &str, ty: &str, term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -1973,13 +1974,15 @@ impl PreparedPrivateScalarCall {
             let kind = match field.ty.as_str() {
                 "int" => ScalarKind::Int,
                 "bool" => ScalarKind::Bool,
-                // 唯有原 Checker 已接受、且本次真正提供具名字面來源
-                // 的可寫 str 欄位，才交給 P16 真 UTF-8 資源計畫。
-                // 未覆蓋的 var str 預設與欄位後續替換仍缺少專項共帳
-                // 證據，維持原 V0 保守拒絕，不能讓舊負例提前轉正。
-                "str" if field.immutable || overridden => ScalarKind::Str,
+                // V1／F4：原 P16 VB16 已能在同一 OwnedStrRuntime
+                // 依具名先、未覆蓋預設後的順序建立真正 UTF-8。
+                // var str 的存在且已核准預設和 const str 使用完全
+                // 相同的 Shared Ledger；不以 mutable 與否猜資源身分。
+                // 無預設又未具名初始化的可寫欄位仍待部分初始化驗收。
+                "str" if field.immutable || overridden || field.default.is_some() =>
+                    ScalarKind::Str,
                 "str" => return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "結構 var str 尚未提供具名來源，預設資源欄位仍未驗收",
+                    "結構 var str 缺少已核准預設／具名來源，部分初始化資源待驗收",
                 )),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀資源尚未接入原 Checker／P16 共同退出帳",
