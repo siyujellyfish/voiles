@@ -10549,6 +10549,74 @@ mod g18_private_scalar_call_tests {
 
     // V1-F4：原 Checker 准許的具名 var str 字面值，與不可寫
     // str 欄位使用 P16 同一真 OwnedUtf8 資源帳，不放行預設 var str。
+    // V1-F4：所有替換只能在原 Checker 合法的 var str 欄位上，
+    // 真共享帳先建新 OwnedUtf8 再釋放舊 ResourceId。
+    #[test]
+    fn g18_v1_f4_具名varstr欄位真字面覆寫建立新id釋放舊id() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 7\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"舊🪼\")\nitem.body = \"新🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(_, field, 2)
+                if field == "body"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_同一varstr欄位雙次更新每id只真釋放一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 3\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"初始\")\nitem.body = \"第一次\"\nitem.body = \"第二次🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1),
+            R::Created(3), R::Released(2), R::Released(3),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_if真分支更新varstr假分支零新資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 5\n}\nfn run(flag:bool)->int{\nvar item:Archive = Archive(body=\"原值\")\nif(flag){\nitem.body = \"選中🪼\"\n}\nreturn item.count\n}\nfn main()->int{\nreturn run(false)+run(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Released(1),
+            R::Created(2), R::Created(3), R::Released(2), R::Released(3),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr欄位寫入由原Checker拒絕不得產生資源() {
+        let src = "struct Archive{\nconst label:str = \"不可寫\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive()\nitem.label = \"非法\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(PreparedPrivateScalarCall::prepare(src).is_err());
+    }
+
+    #[test]
+    fn g18_v1_f4_竄改str欄位寫入後resourceid不得通過退出稽核() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        let id = out.events.iter_mut().find_map(|event| match event {
+            PrivateScalarCallEvent::CopyStructStrFieldAssigned(_, _, resource_id) =>
+                Some(resource_id),
+            _ => None,
+        }).expect("原 Checker 真 str 欄位寫入身分");
+        *id = 999;
+        assert!(!out.has_balanced_frame_trace());
+    }
+
     #[test]
     fn g18_v1_f4_具名varstr欄位以真utf8覆蓋未執行預設() {
         use crate::owned_str_runtime::ResourceEvent as R;
