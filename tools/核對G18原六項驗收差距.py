@@ -19,6 +19,13 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main前置函式溢位不可被最後return常值掩蓋",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置兩函式依序執行後才允許返回無關常值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置呼叫尾端常值計畫遭竄改必先拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_不含真函式呼叫的main常值仍不得偽造函式證據",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內for_break只清理內層move借用且外層仍繼續",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for內提前return完成真move借用且不進後續迭代",
@@ -172,6 +179,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置兩函式依序執行後才允許返回無關常值",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內for_break只清理內層move借用且外層仍繼續",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for內提前return完成真move借用且不進後續迭代",
@@ -231,6 +242,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main前置函式溢位不可被最後return常值掩蓋",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置兩函式依序執行後才允許返回無關常值",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內for_break只清理內層move借用且外層仍繼續",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for內提前return完成真move借用且不進後續迭代",
@@ -386,6 +401,8 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main前置函式溢位不可被最後return常值掩蓋",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內for_break只清理內層move借用且外層仍繼續",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for內提前return完成真move借用且不進後續迭代",
@@ -531,6 +548,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main前置函式溢位不可被最後return常值掩蓋",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置兩函式依序執行後才允許返回無關常值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置呼叫尾端常值計畫遭竄改必先拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_while內for_break只清理內層move借用且外層仍繼續",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for內提前return完成真move借用且不進後續迭代",
