@@ -2951,9 +2951,32 @@ impl PreparedPrivateScalarCall {
         while let Some(name) = pending.pop() {
             if let Some(function) = verified.functions.iter()
                 .find(|fun| fun.name == name) {
+                // R01／R03：main 以外的普通函式，同樣可能由原 Checker
+                // 證明 if／else 所有葉子均提前 return。不可達的最後
+                // Return 不應把未執行的函式拉入必要可達閉包。
+                // 只有「無末端 int HIR」且既有函式編譯器已確證
+                // Unreachable 時才排除；失敗或證據不足時保守保留。
+                let statements = if function.name == "main" {
+                    reachable_main_statements
+                } else {
+                    let unreachable_tail = function.result_ty == "int"
+                        && function.body.statements.last().is_some_and(|statement|
+                            matches!(&statement.kind, StmtKind::Return(ret)
+                                if verified.plan.scalar_hir
+                                    .expression(ret.expression.node_span()).is_none()))
+                        && matches!(
+                            Self::prepare_function_locals(function, &verified),
+                            Ok((_, _, PrivateScalarReturnExpr::Unreachable, _))
+                        );
+                    if unreachable_tail {
+                        &function.body.statements[..function.body.statements.len() - 1]
+                    } else {
+                        &function.body.statements
+                    }
+                };
                 let mut nested_names = Vec::new();
                 PrivateScalarReturnExpr::collect_source_calls_in_statements(
-                    &function.body.statements, &mut nested_names,
+                    statements, &mut nested_names,
                 );
                 for nested in nested_names {
                     if reachable.insert(nested.to_owned()) {
@@ -7925,6 +7948,73 @@ mod g18_private_scalar_call_tests {
         plan.callee_name = "idle".to_owned();
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+
+    // R01：已核准的普通函式亦可能在所有葉分支已返回後
+    // 保留不可達尾端呼叫；不能把它當成必要動態子圖。
+    #[test]
+    fn g18_r01_普通函式兩葉return後不可達結構函式不污染圖() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 4\n}\nfn right()->int{\nreturn 5\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn left()\n}else{\nreturn right()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let prepared = checked(src);
+        assert_eq!(prepared.callee_name, "route");
+        assert!(!prepared.nested_callees.iter().any(|c| c.name == "idle"));
+        assert!(matches!(prepared.return_expr, PrivateScalarReturnExpr::Unreachable));
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_r03_多層普通函式選false真返回不能進不可達tail() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn first()->int{\nreturn 3\n}\nfn second()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn first()\n}else{\nreturn second()\n}\nreturn idle()\n}\nfn bridge(flag:bool)->int{\nreturn route(flag)\n}\nfn main()->int{\nreturn bridge(false)\n}\n";
+        let plan = checked(src);
+        assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["bridge", "route", "second"]);
+    }
+
+    #[test]
+    fn g18_r04_普通函式提前return真str借用不可達結構零資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn fallback()->int{\nreturn 8\n}\nfn route()->int{\nif(true){\nvar owner:str = \"內🪼\"\nreturn inspect(owner,5)\n}else{\nreturn fallback()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let plan = checked(src);
+        assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_r01_真正可達的結構局部函式仍須保守拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_r01_普通函式不可達閉包計畫被增添目標須在執行前拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 4\n}\nfn right()->int{\nreturn 5\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn left()\n}else{\nreturn right()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(4));
+        plan.nested_callees.clear();
+        assert!(matches!(plan.execute(), Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 
