@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_三層真工作計畫只收錄動態可能呼叫的函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_普通函式工作計畫須保留兩個動態可能的分支呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_工作計畫閉包竄改巢狀被呼叫者不得通過來源稽核",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_正迭代for可達結構函式仍須保守拒絕",
@@ -277,6 +280,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_三層真工作計畫只收錄動態可能呼叫的函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_普通函式工作計畫須保留兩個動態可能的分支呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_工作計畫閉包竄改巢狀被呼叫者不得通過來源稽核",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
@@ -622,6 +628,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_三層真工作計畫只收錄動態可能呼叫的函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_普通函式工作計畫須保留兩個動態可能的分支呼叫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_工作計畫閉包竄改巢狀被呼叫者不得通過來源稽核",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_正迭代for可達結構函式仍須保守拒絕",
