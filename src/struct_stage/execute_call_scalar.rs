@@ -493,6 +493,8 @@ enum PrivateScalarReturnExpr {
     /// 不可達 expression。只有遭執行到才回報狀態錯誤，絕不造假 int。
     Unreachable,
     Parameter(DeclarationId),
+    /// 原 Checker 合法 Copyable int 欄位，執行時只能讀真 P16 結構持有者。
+    CopyStructIntField { declaration: DeclarationId, owner: String, field: String },
     Constant(i64),
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
@@ -545,6 +547,39 @@ impl PrivateScalarReturnExpr {
                     ));
                 }
                 Ok(Self::Parameter(id))
+            }
+            TermKind::FieldRead(owner, field) => {
+                let declaration = *bindings.get(owner).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "結構欄位讀取缺少本函式原 Checker DeclarationId",
+                    ),
+                )?;
+                let fact = verified.plan.declarations.typed_declaration(declaration)
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                        "結構欄位讀取缺少原 Checker 具型別宣告",
+                    ))?;
+                let definition = verified.structs.get(&fact.ty).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "結構欄位讀取持有者非原 Checker 結構型別",
+                    ),
+                )?;
+                if !definition.fields.iter().any(|candidate|
+                    candidate.name == *field && candidate.ty == "int")
+                    || !definition.fields.iter().all(|candidate|
+                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(&token.kind, TokenKind::Name(found) if found == owner))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "結構 int 欄位缺少同源 Copyable 型別／Lexer 欄位身分",
+                    ));
+                }
+                Ok(Self::CopyStructIntField {
+                    declaration, owner: owner.clone(), field: field.clone(),
+                })
             }
             TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
                 if !verified.tokens.iter().any(|token|
@@ -867,7 +902,8 @@ impl PrivateScalarReturnExpr {
             Self::Subtraction(left, right) => left.evaluate(frame)?
                 .checked_sub(right.evaluate(frame)?)
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
-            Self::Call { .. } | Self::Unreachable =>
+            // 不准從只有 int slot 的舊純值捷徑假造結構欄位常數。
+            Self::CopyStructIntField { .. } | Self::Call { .. } | Self::Unreachable =>
                 Err(PrivateScalarCallRuntimeError::StateMismatch),
         }
     }
@@ -882,7 +918,8 @@ impl PrivateScalarReturnExpr {
                 left.collect_calls(calls);
                 right.collect_calls(calls);
             }
-            Self::Parameter(_) | Self::Constant(_) | Self::Unreachable => {}
+            Self::Parameter(_) | Self::CopyStructIntField { .. }
+                | Self::Constant(_) | Self::Unreachable => {}
         }
     }
 }
@@ -2172,6 +2209,25 @@ impl PreparedPrivateScalarCall {
                             values.push(value);
                         }
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
+                        PrivateScalarReturnExpr::CopyStructIntField {
+                            declaration, owner, field,
+                        } => {
+                            let frame = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if !frame.copy_struct_scopes.iter().rev().flatten()
+                                .any(|(id, known)| id == declaration && known == owner) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            let observed = copy_structs.field(owner, field).map_err(|_|
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let crate::mixed_struct_runtime::Observed::Int(number) = observed
+                            else {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            };
+                            values.push(number);
+                        }
                         PrivateScalarReturnExpr::Unreachable =>
                             return Err(PrivateScalarCallRuntimeError::StateMismatch),
                         PrivateScalarReturnExpr::Addition(left, right) => {
