@@ -374,6 +374,20 @@ impl MixedStructRuntime {
     }
     /// 僅供 V1-F4 保守拒絕「同一詞彙層純字串持有者與
     /// 含字串結構交錯」；不同層的 LIFO 仍由真 scope 處理。
+    /// G18／V1-F4：僅列出原 P16 真正完成建構的 str
+    /// 欄位及所擁有的 OwnedUtf8 真 ResourceId；不造假任何建立／移動事件。
+    pub(crate) fn field_resource_ids(&self,owner:&str)
+        ->Result<Vec<(String,u64)>,MixedError> {
+        let (i,j)=self.locate(owner)?;
+        let value=self.scopes[i][j].owned.as_ref()
+            .ok_or(MixedError::MovedBinding)?;
+        Ok(value.fields.iter().filter_map(|field| match &field.value {
+            StoredValue::Str(resource) =>
+                Some((field.name.clone(),resource.resource_id())),
+            _=>None,
+        }).collect())
+    }
+
     pub(crate) fn has_str_resource(&self,owner:&str)->Result<bool,MixedError> {
         let (i,j)=self.locate(owner)?;
         let owned=self.scopes[i][j].owned.as_ref().ok_or(MixedError::MovedBinding)?;
