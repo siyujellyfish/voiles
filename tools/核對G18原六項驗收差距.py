@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式兩葉return後不可達結構函式不污染圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_多層普通函式選false真返回不能進不可達tail",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_普通函式提前return真str借用不可達結構零資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_真正可達的結構局部函式仍須保守拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式不可達閉包計畫被增添目標須在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main可達不支援的結構函式仍不可偷略過",
@@ -264,6 +269,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式兩葉return後不可達結構函式不污染圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_多層普通函式選false真返回不能進不可達tail",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_普通函式提前return真str借用不可達結構零資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main不可達來源圖被手工加入未支援函式須拒絕",
@@ -434,6 +442,7 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_普通函式提前return真str借用不可達結構零資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_借用str參數不得因子函式可見同名文字擅自move",
@@ -586,6 +595,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式兩葉return後不可達結構函式不污染圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_多層普通函式選false真返回不能進不可達tail",
+        "struct_stage::g18_private_scalar_call_tests::g18_r04_普通函式提前return真str借用不可達結構零資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_真正可達的結構局部函式仍須保守拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式不可達閉包計畫被增添目標須在執行前拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main可達不支援的結構函式仍不可偷略過",
