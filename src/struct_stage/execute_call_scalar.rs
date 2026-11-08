@@ -10587,6 +10587,61 @@ mod g18_private_scalar_call_tests {
     // V1-F4：所有替換只能在原 Checker 合法的 var str 欄位上，
     // 真共享帳先建新 OwnedUtf8 再釋放舊 ResourceId。
     #[test]
+    fn g18_v1_f4_str欄位寫入事件重複插入不得假裝二次提交() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let i = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).expect("真欄位寫入事件");
+        let duplicate = out.events[i].clone();
+        out.events.insert(i, duplicate);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_str欄位寫入確認遺失不許冒充正常退出() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        out.events.retain(|event| !matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        ));
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_str欄位寫入確認早於新resource綁定必拒絕() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let i = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).expect("真寫入確認");
+        let j = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructResourceOwnerBound { resource_id: 2, .. }
+        )).expect("新資源真綁定");
+        out.events.swap(i, j);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_for兩輪重用原DeclarationId仍逐輪驗真str欄位() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar total:int = 0\nfor i in 0..2{\nvar item:Archive = Archive(body=\"初值\")\nitem.body = \"覆寫🪼\"\ntotal = total+item.count\n}\nreturn total\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+            R::Created(3), R::Created(4), R::Released(3), R::Released(4),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).count(), 2);
+    }
+
+    #[test]
     fn g18_v1_f4_具名varstr欄位真字面覆寫建立新id釋放舊id() {
         use crate::owned_str_runtime::ResourceEvent as R;
         let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 7\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"舊🪼\")\nitem.body = \"新🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
