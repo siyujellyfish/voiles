@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四百七十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四百七十九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -50,6 +50,13 @@ from pathlib import Path
     "g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕",
     "g18_v1_f4_具名varstr結構整筆move原resourceid唯一轉交",
     "g18_v1_f4_具名varstr移動前後兩次真覆寫各id只釋放一次",
+    "g18_v7_e5_直接await確實留下與真async框架相鄰的安全點",
+    "g18_v7_e5_偽造刪除async等待事件不得冒充同步進框架",
+    "g18_v7_e5_等待點改綁別的函式或重播都必須拒絕",
+    "g18_v7_e5_原同步普通函式不得假造await安全點",
+    "g18_v7_e5_跨函式借用來源由原Checker拒絕且真票據守門同樣拒絕",
+    "g18_v7_e5_真正str_move直接await不冒充借用且資源唯一清理",
+    "g18_v7_e5_尚未能進入async函式的框架預算錯誤不可虛構安全點",
     "g18_v7_a1_原私有async直接await真int參數進框架返回",
     "g18_v7_a1_真正零參數async直接await不能走舊同步快路",
     "g18_v7_a1_兩個直接await按原運算式順序串行執行",
