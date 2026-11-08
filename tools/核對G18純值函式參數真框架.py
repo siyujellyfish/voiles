@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百七十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百七十九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,13 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
+    "g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
+    "g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
+    "g18_r03_main前置函式溢位不可被最後return常值掩蓋",
+    "g18_r01_main前置兩函式依序執行後才允許返回無關常值",
+    "g18_r01_main前置呼叫尾端常值計畫遭竄改必先拒絕",
+    "g18_r01_不含真函式呼叫的main常值仍不得偽造函式證據",
     "g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
     "g18_r03_main_while內for_break只清理內層move借用且外層仍繼續",
     "g18_r03_main_for內提前return完成真move借用且不進後續迭代",
