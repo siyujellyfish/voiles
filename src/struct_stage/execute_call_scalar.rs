@@ -3059,12 +3059,16 @@ impl PreparedPrivateScalarCall {
                 // main 是既有 root，普通函式簽章不得以 main 假造。
                 continue;
             }
-            let mut nested_names = Vec::new();
-            if function.name == callee.name {
-                return_expr.collect_calls(&mut nested_names);
+            // 「暫時編譯的 callee 來源」僅在本區塊借用，
+            // 立即保存為自有名稱後才擴張圖；不可保留落在
+            // 已離開作用域的 ReturnExpr／LocalStep 上的 &str。
+            let nested_names: Vec<String> = if function.name == callee.name {
+                let mut calls = Vec::new();
+                return_expr.collect_calls(&mut calls);
                 for step in &root_local_steps {
-                    step.collect_calls(&mut nested_names);
+                    step.collect_calls(&mut calls);
                 }
+                calls.into_iter().map(str::to_owned).collect()
             } else {
                 // 只讓原 Checker/TypedHIR 通過的返回和語句出現在
                 // 工作計畫；任何未接通的真正可達合法形狀仍在此
@@ -3079,14 +3083,16 @@ impl PreparedPrivateScalarCall {
                 }
                 let (_, steps, result, _) =
                     Self::prepare_function_locals(function, &verified)?;
-                result.collect_calls(&mut nested_names);
+                let mut calls = Vec::new();
+                result.collect_calls(&mut calls);
                 for step in &steps {
-                    step.collect_calls(&mut nested_names);
+                    step.collect_calls(&mut calls);
                 }
-            }
+                calls.into_iter().map(str::to_owned).collect()
+            };
             for nested in nested_names {
-                if reachable.insert(nested.to_owned()) {
-                    pending.push(nested.to_owned());
+                if reachable.insert(nested.clone()) {
+                    pending.push(nested);
                 }
             }
         }
