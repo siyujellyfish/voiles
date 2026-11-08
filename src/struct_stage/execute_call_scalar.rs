@@ -4985,6 +4985,45 @@ impl PreparedPrivateScalarCall {
         }
     }
 
+    /// V1／F1：最外層 main 直接返回普通函式呼叫時，最外層真正
+    /// Returned 值必須等於完成原 Checker 工作圖後的結果。
+    /// 一般「main 返回 f()+g()」或另有算術運算的複合返回不適用：
+    /// 子函式各自 Returned 的值本來就不等於 main 的算術結果。
+    fn audit_graph_outcome(
+        &self, outcome: PrivateScalarCallOutcome,
+    ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        let outcome = Self::audit_outcome(outcome)?;
+        if !matches!(&self.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Call { .. })) {
+            return Ok(outcome);
+        }
+        let Ok(expected) = outcome.result else { return Ok(outcome); };
+        let mut depth = 0usize;
+        let mut last_direct_return = None;
+        for event in &outcome.events {
+            match event {
+                PrivateScalarCallEvent::FunctionEntered(_) => {
+                    depth += 1;
+                }
+                PrivateScalarCallEvent::Returned(value) if depth == 1 => {
+                    // main 前置工作可先有其他頂層呼叫；最後一個
+                    // 才是原 Checker 已簽發的「直接返回 Call」。
+                    last_direct_return = Some(*value);
+                }
+                PrivateScalarCallEvent::FunctionExited { .. } => {
+                    depth = depth.checked_sub(1).ok_or(
+                        PrivateScalarCallPrepareError::RuntimeTraceMismatch,
+                    )?;
+                }
+                _ => {}
+            }
+        }
+        if depth != 0 || last_direct_return != Some(expected) {
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        Ok(outcome)
+    }
+
     fn execute_with_budget_and_fault(
         &self, budget: PrivateScalarExecutionBudget, fail_after_binding: bool,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
@@ -5033,7 +5072,7 @@ impl PreparedPrivateScalarCall {
                 dynamic_call, &main_frame, &mut events, &mut resource_events,
                 adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
             );
-            return Self::audit_outcome(PrivateScalarCallOutcome {
+            return self.audit_graph_outcome(PrivateScalarCallOutcome {
                 result, events, resource_events, parameter_slots_after_exit: 0,
             });
         }
@@ -5200,6 +5239,68 @@ mod g18_private_scalar_call_tests {
         assert!(!out.has_balanced_frame_trace());
         assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
             Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    // V1／F1：原 Checker 直接 Call、子呼叫及 main 的真正
+    // int 返回值必須與最外層 Returned 事件相符，複合式不能誤判。
+    #[test]
+    fn g18_v1_f1_main直接呼叫的真返回值與最外層事件一致() {
+        let src = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+2}\nreturn n\n}\nfn main()->int{\nreturn choose(true,5)\n}\n";
+        let prepared = checked(src);
+        assert!(matches!(&prepared.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Call { .. })));
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(prepared.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f1_偽造最外層Returned數值即使框架平衡也拒絕() {
+        let src = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+2}\nreturn n\n}\nfn main()->int{\nreturn choose(true,5)\n}\n";
+        let prepared = checked(src);
+        let mut out = prepared.execute().unwrap();
+        let event = out.events.iter_mut().rfind(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )).expect("原 Checker 的直接返回事件");
+        if let PrivateScalarCallEvent::Returned(value) = event {
+            *value += 100;
+        }
+        // 原退出帳只核對有無返回，未曾交叉核對真正 main 結果。
+        assert!(out.has_balanced_frame_trace());
+        assert!(matches!(prepared.audit_graph_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v1_f1_多層返回只核對最外層不得誤用內層值() {
+        let src = "fn leaf(n:int)->int{\nreturn n+1\n}\nfn wrap(n:int,flag:bool)->int{\nif(flag){return leaf(n)+2}\nreturn n\n}\nfn main()->int{\nreturn wrap(3,true)\n}\n";
+        let prepared = checked(src);
+        let baseline = prepared.execute().unwrap();
+        assert_eq!(baseline.result, Ok(6));
+        assert!(prepared.audit_graph_outcome(baseline).is_ok());
+        let mut forged = prepared.execute().unwrap();
+        let last = forged.events.iter_mut().rfind(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )).expect("外層 wrap 的真返回");
+        if let PrivateScalarCallEvent::Returned(value) = last {
+            *value += 1;
+        }
+        assert!(forged.has_balanced_frame_trace());
+        assert!(matches!(prepared.audit_graph_outcome(forged),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v1_f1_main兄弟呼叫複合算術不得誤把子返回當主返回() {
+        let src = "fn choose(flag:bool,n:int)->int{\nif(flag){return n+2}\nreturn n\n}\nfn main()->int{\nreturn choose(true,5)+choose(false,3)\n}\n";
+        let prepared = checked(src);
+        assert!(matches!(&prepared.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Addition(_, _))));
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert!(prepared.audit_graph_outcome(out).is_ok());
     }
 
     #[test]
