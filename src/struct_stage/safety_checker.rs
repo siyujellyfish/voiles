@@ -641,6 +641,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // Copyable 的獨立引數交給它，且回傳也須已核准 Copyable。
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("方法呼叫不存在的一般函式", term))?;
+                if function.is_async {
+                    return Err(self.error("V7：async 普通函式不可當作同步方法值", term));
+                }
                 if function.params.len() != args.len() {
                     return Err(self.error("方法內函式引數數量不符", term));
                 }
@@ -670,6 +673,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     ZeroArgResolution::Missing => return Err(self.error(
                         "方法內零參數函式不存在", term)),
                 };
+                if function.is_async {
+                    return Err(self.error("V7：未經 await 的 async 零參數函式不可求值", term));
+                }
                 if !function.params.is_empty() {
                     return Err(self.error("方法內零參數函式實際需傳入引數", term));
                 }
@@ -746,6 +752,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         };
         if let Some((name, args)) = ordinary_call {
             if let Some(function) = self.find_function(name) {
+                if function.is_async {
+                    return Err(self.error("V7：async 函式不可作同步方法資源回傳", term));
+                }
                 if function.result_ty == "str" {
                     if function.params.len() != args.len() {
                         return Err(self.error("方法資源回傳的函式引數數量不符", term));
@@ -1494,6 +1503,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         self.evaluate_struct_constructor(name, &[], term, vars),
                     ZeroArgResolution::Function(function) if !function.params.is_empty() =>
                         Err(self.error("P13：函式引數數量不符", term)),
+                    ZeroArgResolution::Function(function) if function.is_async =>
+                        Err(self.error("V7：async 零參數函式須由直接 await 驅動", term)),
                     ZeroArgResolution::Function(function) =>
                         Ok((function.result_ty.clone(), true)),
                     ZeroArgResolution::Missing =>
