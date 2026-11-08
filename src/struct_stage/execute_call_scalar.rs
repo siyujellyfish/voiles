@@ -2394,6 +2394,45 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
                     }
+                    PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.initialized_order.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(found) if *found == id
+                        )) || frame.copy_struct_scopes.last().is_none_or(|scope|
+                            scope.iter().any(|(_, known)| known == name)) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
+                        let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
+                            crate::mixed_struct_runtime::MixedFieldSpec {
+                                name: field, kind: *kind,
+                                default: default.as_ref().map(ApprovedSeed::runtime),
+                                immutable: *immutable,
+                            }
+                        ).collect::<Vec<_>>();
+                        let named = plan.named.iter().map(|(field, value)|
+                            crate::mixed_struct_runtime::NamedMixed {
+                                field, value: value.runtime(),
+                            }
+                        ).collect::<Vec<_>>();
+                        copy_structs.construct(name, &fields, &named, None).map_err(|error|
+                            match error {
+                                crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                    PrivateScalarCallRuntimeError::IntegerOverflow,
+                                _ => PrivateScalarCallRuntimeError::StateMismatch,
+                            },
+                        )?;
+                        if !copy_structs.events().is_empty() {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.copy_struct_scopes.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((id, name.to_owned()));
+                        frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
+                        events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
+                    }
                     PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -2592,7 +2631,14 @@ impl PreparedPrivateScalarCall {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         frame.str_owner_scopes.pop();
+                        if frame.copy_struct_scopes.len() <= 1 {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.copy_struct_scopes.pop();
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        copy_structs.leave_scope().map_err(|_|
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
@@ -2637,8 +2683,15 @@ impl PreparedPrivateScalarCall {
                                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                                         }
                                         frame.str_owner_scopes.pop();
+                                        if frame.copy_struct_scopes.len() <= 1 {
+                                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                        }
+                                        frame.copy_struct_scopes.pop();
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
+                                        )?;
+                                        copy_structs.leave_scope().map_err(|_|
+                                            PrivateScalarCallRuntimeError::StateMismatch,
                                         )?;
                                         Self::record_owned_resources(
                                             &resources, &mut resource_cursor, events,
@@ -2663,7 +2716,9 @@ impl PreparedPrivateScalarCall {
                             let baseline = frame.initialized_order.len();
                             frame.resource_scopes += 1;
                             frame.str_owner_scopes.push(Vec::new());
+                            frame.copy_struct_scopes.push(Vec::new());
                             resources.enter_scope();
+                            copy_structs.enter_scope();
                             tasks.push(PrivateScalarTask::EndScope(baseline));
                             for action in actions.iter().rev() {
                                 tasks.push(PrivateScalarTask::ExecuteBranchAction(action));
@@ -2691,6 +2746,11 @@ impl PreparedPrivateScalarCall {
                             declaration, name, mutable,
                         } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
                             *declaration, name, *mutable,
+                        )),
+                        PrivateScalarBranchAction::DeclareCopyStruct {
+                            declaration, name, plan,
+                        } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
+                            *declaration, name, plan,
                         )),
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
