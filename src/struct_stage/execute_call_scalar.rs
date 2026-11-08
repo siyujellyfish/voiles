@@ -1589,6 +1589,10 @@ enum PrivateScalarTask<'a> {
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
+    /// 具名欄位來源逐項在當前動態 frame 求值；含 Call 使用與 return
+    /// 相同的 EnterCall／ExitCall 堆疊，無隱藏宿主遞迴。
+    CaptureCopyStructSeed(&'a str, &'a PrivateScalarCopyStructSeed),
+    FinishCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
     MoveCopyStruct(DeclarationId, &'a str, DeclarationId, &'a str),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
@@ -2794,6 +2798,10 @@ impl PreparedPrivateScalarCall {
         }
         let mut values = Vec::<i64>::new();
         let mut completed_arguments = Vec::<PrivateScalarEvaluatedArgument>::new();
+        // 只有 Copyable 欄位的暫存具名快照；不持有 UTF-8 ResourceId，
+        // 函式失敗時丟棄快照不會產生已建構結構或需釋放的資源。
+        // 內層呼叫又建構結構時以同一 LIFO 棧保證順序。
+        let mut pending_copy_structs = Vec::<Vec<(String, ApprovedSeed)>>::new();
         let mut steps = 0usize;
         let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
             while let Some(task) = tasks.pop() {
@@ -3111,6 +3119,43 @@ impl PreparedPrivateScalarCall {
                         });
                     }
                     PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.initialized_order.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(found) if *found == id
+                        )) || frame.copy_struct_scopes.last().is_none_or(|scope|
+                            scope.iter().any(|(_, known)| known == name)) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        // 真來源具名欄位依原 Parser 書寫順序求值；
+                        // 若某欄含普通函式呼叫，就在同一顯式任務棧
+                        // 上實際 Enter/Exit，所有成功後才允許 P16 建構。
+                        pending_copy_structs.push(Vec::new());
+                        tasks.push(PrivateScalarTask::FinishCopyStruct(id, name, plan));
+                        for (field, seed) in plan.named.iter().rev() {
+                            tasks.push(PrivateScalarTask::CaptureCopyStructSeed(field, seed));
+                            if let PrivateScalarCopyStructSeed::IntCall(expr) = seed {
+                                tasks.push(PrivateScalarTask::Evaluate(expr, false));
+                            }
+                        }
+                    }
+                    PrivateScalarTask::CaptureCopyStructSeed(field, seed) => {
+                        let value = if matches!(seed, PrivateScalarCopyStructSeed::IntCall(_)) {
+                            ApprovedSeed::Int(values.pop().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?)
+                        } else {
+                            let frame = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            seed.evaluate(frame, &copy_structs, &mut steps, budget.max_steps)?
+                        };
+                        pending_copy_structs.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((field.to_owned(), value));
+                    }
+                    PrivateScalarTask::FinishCopyStruct(id, name, plan) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -3120,7 +3165,17 @@ impl PreparedPrivateScalarCall {
                             scope.iter().any(|(_, known)| known == name)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
-                        // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
+                        let named_values = pending_copy_structs.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if named_values.len() != plan.named.len()
+                            || !named_values.iter().zip(&plan.named)
+                                .all(|((actual, value), (expected, seed))|
+                                    actual == expected && value.kind() == seed.kind()) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        // 不另造評估模型：原 P16 VB16 名稱覆蓋及預設
+                        // 仍由同一個正式 construct 按已核准次序執行。
                         let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
                             crate::mixed_struct_runtime::MixedFieldSpec {
                                 name: field, kind: *kind,
@@ -3128,15 +3183,6 @@ impl PreparedPrivateScalarCall {
                                 immutable: *immutable,
                             }
                         ).collect::<Vec<_>>();
-                        // 僅在動態執行真正抵達宣告時讀本 frame 純值。
-                        // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
-                        // 皆為無副作用 int/bool 讀取，P16 仍控制後續
-                        // 具名書寫順序及覆蓋預設、溢位等原安全語意。
-                        let named_values = plan.named.iter().map(|(field, source)|
-                            source.evaluate(
-                                frame, &copy_structs, &mut steps, budget.max_steps,
-                            ).map(|value| (field.as_str(), value))
-                        ).collect::<Result<Vec<_>, _>>()?;
                         let named = named_values.iter().map(|(field, value)|
                             crate::mixed_struct_runtime::NamedMixed {
                                 field, value: value.runtime(),
@@ -3786,7 +3832,8 @@ impl PreparedPrivateScalarCall {
                 }
             }
             if frames.len() != 1 || values.len() != 1
-                || !completed_arguments.is_empty() {
+                || !completed_arguments.is_empty()
+                || !pending_copy_structs.is_empty() {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
             }
             Ok(values[0])
