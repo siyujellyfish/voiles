@@ -47,6 +47,8 @@ enum PrivateScalarCallEvent {
     /// V1／F4：原 Checker 合法、P16 MixedStructRuntime 真建構
     /// 的純 Copyable int／bool 結構局部；不偽造 UTF-8 ResourceId。
     CopyStructConstructed(DeclarationId),
+    /// P16 真 move_whole，原值只轉交新持有者，不複製也不建立資源。
+    CopyStructMovedBound { source: DeclarationId, target: DeclarationId },
     CopyStructScopeEnded(DeclarationId),
     /// 原 Checker 已核准的可寫結構 int 欄位，真 P16 持有者更新後才記錄。
     CopyStructIntFieldAssigned(DeclarationId, String, i64),
@@ -105,6 +107,7 @@ impl PrivateScalarCallOutcome {
         struct TraceFrame {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
+            moved_copy_struct_sources: std::collections::HashSet<DeclarationId>,
             resource_ids: std::collections::HashSet<u64>,
             owner_resources: BTreeMap<DeclarationId, u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
@@ -118,6 +121,7 @@ impl PrivateScalarCallOutcome {
         }
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
+            moved_copy_struct_sources: std::collections::HashSet::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
@@ -156,6 +160,7 @@ impl PrivateScalarCallOutcome {
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
+                        moved_copy_struct_sources: std::collections::HashSet::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
@@ -261,16 +266,33 @@ impl PrivateScalarCallOutcome {
                     ) { return false; }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*id));
                 }
+                PrivateScalarCallEvent::CopyStructMovedBound { source, target } => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || source == target
+                        || !frame.locals.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(id) if id == source
+                        ))
+                        || frame.locals.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(id) if id == target
+                        ))
+                        || !frame.moved_copy_struct_sources.insert(*source) {
+                        return false;
+                    }
+                    frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*target));
+                }
                 PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
                         Some(PrivateScalarLocalBinding::CopyStruct(previous))
                             if previous == *id) { return false; }
+                    frame.moved_copy_struct_sources.remove(id);
                 }
                 PrivateScalarCallEvent::CopyStructIntFieldAssigned(id, field, _)
                     | PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, field, _) => {
                     let Some(frame) = frames.last() else { return false; };
-                    if field.is_empty() || frame.returned || !frame.locals.iter().any(|entry|
+                    if field.is_empty() || frame.returned
+                        || frame.moved_copy_struct_sources.contains(id)
+                        || !frame.locals.iter().any(|entry|
                         matches!(entry, PrivateScalarLocalBinding::CopyStruct(old) if old == id)
                     ) { return false; }
                 }
@@ -430,6 +452,7 @@ impl PrivateScalarCallOutcome {
                         || (unwinding && *returned)
                         || frame.returned != *returned || !frame.locals.is_empty()
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
+                        || !frame.moved_copy_struct_sources.is_empty()
                         || !frame.owner_resources.is_empty()
                         || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
@@ -457,7 +480,8 @@ impl PrivateScalarCallOutcome {
                 Some(PrivateSharedCallExitEvent::LocalDeclaredEmpty(*id)),
             PrivateScalarCallEvent::LocalInitialized(id, _)
                 | PrivateScalarCallEvent::BoolInitialized(id, _)
-                | PrivateScalarCallEvent::CopyStructConstructed(id) =>
+                | PrivateScalarCallEvent::CopyStructConstructed(id)
+                | PrivateScalarCallEvent::CopyStructMovedBound { target: id, .. } =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
             PrivateScalarCallEvent::LocalAssigned(id, _)
                 | PrivateScalarCallEvent::CopyStructIntFieldAssigned(id, _, _)
@@ -486,6 +510,7 @@ impl PrivateScalarCallOutcome {
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
+            && frames[0].moved_copy_struct_sources.is_empty()
             && frames[0].pending_transfers.is_empty()
             && frames[0].loans.is_empty()
             && frames[0].loan_resources.is_empty()
@@ -1129,6 +1154,10 @@ enum PrivateScalarBranchAction {
     DeclareCopyStruct {
         declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
     },
+    MoveCopyStruct {
+        declaration: DeclarationId, name: String,
+        source: DeclarationId, source_name: String,
+    },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -1171,8 +1200,8 @@ impl PrivateScalarBranchAction {
             Self::AssignBool { .. } | Self::AssignCopyStructBool { .. }
                 | Self::DeclareBool { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::DeclareCopyStruct { .. } | Self::AssignStr { .. }
-                | Self::Break | Self::Continue => {}
+                | Self::DeclareCopyStruct { .. } | Self::MoveCopyStruct { .. }
+                | Self::AssignStr { .. } | Self::Break | Self::Continue => {}
         }
     }
 
@@ -1187,7 +1216,7 @@ impl PrivateScalarBranchAction {
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
                 | Self::DeclareEmptyStr { .. } | Self::DeclareCopyStruct { .. }
-                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
+                | Self::MoveCopyStruct { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -1310,6 +1339,10 @@ enum PrivateScalarLocalStep {
     DeclareCopyStruct {
         declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
     },
+    MoveCopyStruct {
+        declaration: DeclarationId, name: String,
+        source: DeclarationId, source_name: String,
+    },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     AssignCopyStructInt {
@@ -1335,7 +1368,8 @@ impl PrivateScalarLocalStep {
             Self::DeclareBool { .. } | Self::AssignBool { .. }
                 | Self::AssignCopyStructBool { .. } | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::DeclareCopyStruct { .. } | Self::AssignStr { .. } => {}
+                | Self::DeclareCopyStruct { .. } | Self::MoveCopyStruct { .. }
+                | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -1456,6 +1490,7 @@ enum PrivateScalarTask<'a> {
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
+    MoveCopyStruct(DeclarationId, &'a str, DeclarationId, &'a str),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
@@ -1701,6 +1736,41 @@ impl PreparedPrivateScalarCall {
         // caller 另在真正 Declare 節點核對 id、型別與可變性。
         let _ = name;
         Ok(PrivateScalarCopyStructPlan { fields, named: supplied })
+    }
+
+    /// V1／F4：僅對原 Checker 已簽發的同型別 direct_move，
+    /// 使用 P16 的真 Move，而不複製整個結構或提前分配資源。
+    fn checked_copy_struct_move(
+        target_name: &str, ty: &str, mutable: bool, target: DeclarationId,
+        term: &Term, bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<(DeclarationId, String), PrivateScalarCallPrepareError> {
+        let source_name = PreparedPrivateMoveCall::checked_move_name(term, verified)
+            .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                "結構整筆移動缺少原 Parser/Lexer 真 .move() 來源",
+            ))?;
+        let source = *bindings.get(source_name).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "結構整筆移動來源不在原 Checker 詞彙作用域",
+            ),
+        )?;
+        let definition = verified.structs.get(ty).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "整筆移動目標缺少原 Checker 結構型別",
+            ),
+        )?;
+        if !definition.fields.iter().all(|field|
+                matches!(field.ty.as_str(), "int" | "bool"))
+            || source == target || source_name == target_name
+            || !verified.plan.declarations.matches(target, ty, mutable)
+            || !verified.plan.declarations.typed_declaration(source)
+                .is_some_and(|fact| fact.ty == ty)
+            || !verified.plan.declarations.direct_moves.contains(&(source, target)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "純值結構整筆移動缺少 Checker 同型別來源／目標轉移配對",
+            ));
+        }
+        Ok((source, source_name.to_owned()))
     }
 
     /// V1／F3：只接受原 Checker 完整驗證後的 int 欄位可寫實例。
@@ -1987,12 +2057,22 @@ impl PreparedPrivateScalarCall {
                         "分支 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(
-                    &owner.name, &owner.ty, term, int_bindings, verified,
-                )?;
-                Ok(PrivateScalarBranchAction::DeclareCopyStruct {
-                    declaration: id, name: owner.name.clone(), plan,
-                })
+                if matches!(&term.kind, TermKind::Move(_)) {
+                    let (source, source_name) = Self::checked_copy_struct_move(
+                        &owner.name, &owner.ty, owner.mutable, id,
+                        term, int_bindings, verified,
+                    )?;
+                    Ok(PrivateScalarBranchAction::MoveCopyStruct {
+                        declaration: id, name: owner.name.clone(), source, source_name,
+                    })
+                } else {
+                    let plan = Self::checked_copy_struct(
+                        &owner.name, &owner.ty, term, int_bindings, verified,
+                    )?;
+                    Ok(PrivateScalarBranchAction::DeclareCopyStruct {
+                        declaration: id, name: owner.name.clone(), plan,
+                    })
+                }
             }
             StmtKind::Declare(owner) if matches!(owner.ty.as_str(), "int" | "bool") => {
                 let id = DeclarationId(statement.start);
@@ -2382,12 +2462,22 @@ impl PreparedPrivateScalarCall {
                         "函式 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(
-                    &owner.name, &owner.ty, term, &bindings, verified,
-                )?;
-                local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
-                    declaration, name: owner.name.clone(), plan,
-                });
+                if matches!(&term.kind, TermKind::Move(_)) {
+                    let (source, source_name) = Self::checked_copy_struct_move(
+                        &owner.name, &owner.ty, owner.mutable, declaration,
+                        term, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::MoveCopyStruct {
+                        declaration, name: owner.name.clone(), source, source_name,
+                    });
+                } else {
+                    let plan = Self::checked_copy_struct(
+                        &owner.name, &owner.ty, term, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
+                        declaration, name: owner.name.clone(), plan,
+                    });
+                }
                 bindings.insert(owner.name.clone(), declaration);
                 // 保留 struct 來源於 bool 詞彙索引，只有原 Checker
                 // 已核准 bool FieldRead 才能從它取得布林值。
@@ -2567,6 +2657,11 @@ impl PreparedPrivateScalarCall {
                     declaration, name, plan,
                 } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
                     *declaration, name, plan,
+                )),
+                PrivateScalarLocalStep::MoveCopyStruct {
+                    declaration, name, source, source_name,
+                } => tasks.push(PrivateScalarTask::MoveCopyStruct(
+                    *declaration, name, *source, source_name,
                 )),
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
@@ -2866,6 +2961,34 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                    }
+                    PrivateScalarTask::MoveCopyStruct(id, name, source, source_name) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if source == id || !frame.copy_struct_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == source && active == source_name)
+                            || frame.copy_struct_scopes.last().is_none_or(|scope|
+                                scope.iter().any(|(known, active)| *known == id || active == name)) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(source)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        // P16 對真持有的完整實例移動；舊 Slot 原位失效，
+                        // 目標接管唯一值，不重建欄位、不生成假 ResourceId。
+                        copy_structs.move_whole(source_name, name).map_err(|_|
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !copy_structs.events().is_empty() {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.copy_struct_scopes.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((id, name.to_owned()));
+                        frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
+                        events.push(PrivateScalarCallEvent::CopyStructMovedBound {
+                            source, target: id,
+                        });
                     }
                     PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
                         let frame = frames.last_mut().ok_or(
@@ -3216,6 +3339,11 @@ impl PreparedPrivateScalarCall {
                         } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
                             *declaration, name, plan,
                         )),
+                        PrivateScalarBranchAction::MoveCopyStruct {
+                            declaration, name, source, source_name,
+                        } => tasks.push(PrivateScalarTask::MoveCopyStruct(
+                            *declaration, name, *source, source_name,
+                        )),
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::AssignStr(
@@ -3467,6 +3595,11 @@ impl PreparedPrivateScalarCall {
                                     declaration, name, plan,
                                 } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
                                     *declaration, name, plan,
+                                )),
+                                PrivateScalarLocalStep::MoveCopyStruct {
+                                    declaration, name, source, source_name,
+                                } => tasks.push(PrivateScalarTask::MoveCopyStruct(
+                                    *declaration, name, *source, source_name,
                                 )),
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
@@ -8990,6 +9123,82 @@ mod g18_private_scalar_call_tests {
             assert!(matches!(PreparedPrivateScalarCall::prepare(src),
                 Err(PrivateScalarCallPrepareError::Check(_))));
         }
+    }
+
+    // V1／F4：使用原 Checker direct_moves 的唯一轉移配對，
+    // 真 P16 整筆 move 後目標才可以讀，原來源已不可讀。
+    #[test]
+    fn g18_v1_f4_純結構整筆move真值唯一轉交而無第二建構() {
+        let src = "struct Marker{\nvar count:int = 6\nvar enabled:bool = true\n}\nfn route()->int{\nvar source:Marker = Marker()\nvar target:Marker = source.move()\nreturn target.count+1\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_純結構兩次move鏈只交付最後唯一持有者() {
+        let src = "struct Marker{\nvar count:int = 6\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nvar third:Marker = second.move()\nreturn third.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_v1_f4_純結構真分支整筆move早返且完成雙局部離域() {
+        let src = "struct Marker{\nvar count:int = 8\n}\nfn route(flag:bool)->int{\nvar source:Marker = Marker()\nif(flag){\nvar target:Marker = source.move()\nreturn target.count\n}\nreturn 2\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_move後再次移動相同原結構原Checker必拒絕() {
+        let src = "struct Marker{\nvar count:int = 6\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nvar illegal:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕() {
+        let src = "struct Marker{\nvar count:int = 6\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(6));
+        let Some(PrivateScalarLocalStep::MoveCopyStruct { source, .. }) =
+            plan.root_local_steps.iter_mut().find(|step|
+                matches!(step, PrivateScalarLocalStep::MoveCopyStruct { .. })) else {
+            panic!("原 Checker 真 move 工作應存在");
+        };
+        *source = DeclarationId(0);
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕() {
+        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
     #[test]
