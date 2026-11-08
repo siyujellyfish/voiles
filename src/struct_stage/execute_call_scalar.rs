@@ -121,10 +121,12 @@ impl PrivateScalarCallOutcome {
             /// 曾完成建構的欄位身分，即使舊 ResourceId 已釋放，
             /// 重新綁定仍須對應下一筆唯一真替換確認。
             observed_struct_fields: std::collections::BTreeSet<(DeclarationId, String)>,
+            /// 依 P16 來源欄位實際建構順序記錄，不以欄位名稱字典序排序。
+            struct_field_order: Vec<(DeclarationId, String)>,
             pending_str_field_write: Option<(DeclarationId, String, u64)>,
-            /// 共帳整筆結構移動，逐欄驗證真 Moved(ResourceId)，
-            /// 禁止事件少記、錯置或重播造成幽靈持有者。
-            pending_struct_moves: std::collections::BTreeSet<u64>,
+            /// 共帳整筆結構移動：依 P16 欄位定義次序逐一對帳，
+            /// 不接受兩筆都有效但顛倒先後的 Moved(ResourceId)。
+            pending_struct_moves: Vec<u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
             pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
@@ -141,8 +143,9 @@ impl PrivateScalarCallOutcome {
             owner_resources: BTreeMap::new(),
             struct_owner_resources: BTreeMap::new(),
             observed_struct_fields: std::collections::BTreeSet::new(),
+            struct_field_order: Vec::new(),
             pending_str_field_write: None,
-            pending_struct_moves: std::collections::BTreeSet::new(),
+            pending_struct_moves: Vec::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -162,7 +165,7 @@ impl PrivateScalarCallOutcome {
                     && !matches!(event,
                         PrivateScalarCallEvent::OwnedResource(
                             crate::owned_str_runtime::ResourceEvent::Moved(id)
-                        ) if frame.pending_struct_moves.contains(id))
+                        ) if frame.pending_struct_moves.first() == Some(id))
             ) { return false; }
             // 一旦真執行期失敗並開始回滾，後續只能歸還借用、
             // 撤除純值局部、釋放 OwnedStr 與失敗函式離域；
@@ -200,8 +203,9 @@ impl PrivateScalarCallOutcome {
             owner_resources: BTreeMap::new(),
             struct_owner_resources: BTreeMap::new(),
             observed_struct_fields: std::collections::BTreeSet::new(),
+            struct_field_order: Vec::new(),
             pending_str_field_write: None,
-            pending_struct_moves: std::collections::BTreeSet::new(),
+            pending_struct_moves: Vec::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -320,11 +324,14 @@ impl PrivateScalarCallOutcome {
                     // 不新建資源：原 Checker DeclarationId 的各 str
                     // 欄位身分全部原子轉交給新 struct 綁定，並沿用
                     // #686 的 observed_struct_fields 事件防重播清冊。
-                    let transferred = frame.struct_owner_resources.iter()
-                        .filter_map(|((owner, field), id)|
-                            (owner == source).then_some((field.clone(), *id))
-                        ).collect::<Vec<_>>();
-                    if transferred.iter().any(|(field, id)|
+                    let transferred = frame.struct_field_order.iter()
+                        .filter(|(owner, _)| owner == source)
+                        .map(|(_, field)| (field.clone(),
+                            frame.struct_owner_resources
+                                .get(&(*source, field.clone())).copied()))
+                        .collect::<Vec<_>>();
+                    if transferred.iter().any(|(field, maybe_id)| {
+                        let Some(id) = maybe_id else { return true; };
                         !frame.resource_ids.contains(id)
                             || frame.pending_struct_moves.contains(id)
                             || frame.struct_owner_resources
@@ -332,19 +339,24 @@ impl PrivateScalarCallOutcome {
                             || !frame.observed_struct_fields
                                 .contains(&(*source, field.clone()))
                             || frame.observed_struct_fields
-                                .contains(&(*target, field.clone()))) {
+                                .contains(&(*target, field.clone()))
+                    }) {
                         return false;
                     }
-                    for (field, id) in transferred {
+                    for (field, maybe_id) in transferred {
+                        let Some(id) = maybe_id else { return false; };
                         let from = (*source, field.clone());
                         let to = (*target, field);
                         if frame.struct_owner_resources.remove(&from) != Some(id)
                             || frame.struct_owner_resources.insert(to.clone(), id).is_some()
                             || !frame.observed_struct_fields.remove(&from)
-                            || !frame.observed_struct_fields.insert(to)
-                            || !frame.pending_struct_moves.insert(id) {
+                            || !frame.observed_struct_fields.insert(to) {
                             return false;
                         }
+                        frame.pending_struct_moves.push(id);
+                    }
+                    for (owner, _) in &mut frame.struct_field_order {
+                        if *owner == *source { *owner = *target; }
                     }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*target));
                 }
@@ -372,6 +384,7 @@ impl PrivateScalarCallOutcome {
                             Some((*declaration, field.clone(), *resource_id));
                     } else {
                         frame.observed_struct_fields.insert(key.clone());
+                        frame.struct_field_order.push(key.clone());
                     }
                     frame.struct_owner_resources.insert(key, *resource_id);
                 }
@@ -385,6 +398,7 @@ impl PrivateScalarCallOutcome {
                     // 同一 DeclarationId 可在真 for/while 下一輪再建構，
                     // 不可用上輪舊欄位的歷史誤判成一次覆寫。
                     frame.observed_struct_fields.retain(|(owner, _)| owner != id);
+                    frame.struct_field_order.retain(|(owner, _)| owner != id);
                 }
                 PrivateScalarCallEvent::CopyStructIntFieldAssigned(id, field, _)
                     | PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, field, _) => {
@@ -514,9 +528,9 @@ impl PrivateScalarCallOutcome {
                             if !frame.returned && frame.resource_ids.contains(id) {
                                 if matches!(resource,
                                     crate::owned_str_runtime::ResourceEvent::Moved(_))
-                                    && frame.pending_struct_moves.remove(id) {
-                                    // str 結構真資源已在前一筆 Move 綁定事件
-                                    // 交給新持有者；此為唯一真 Moved 對帳。
+                                    && frame.pending_struct_moves.first() == Some(id) {
+                                    // 同一結構多欄位 Move 必須遵守 P16 真欄位順序。
+                                    frame.pending_struct_moves.remove(0);
                                     true
                                 } else if let Some((_, observed)) =
                                     frame.pending_transfers.get_mut(id) {
@@ -584,6 +598,7 @@ impl PrivateScalarCallOutcome {
                         || !frame.owner_resources.is_empty()
                         || !frame.struct_owner_resources.is_empty()
                         || !frame.observed_struct_fields.is_empty()
+                        || !frame.struct_field_order.is_empty()
                         || frame.pending_str_field_write.is_some()
                         || !frame.pending_struct_moves.is_empty()
                         || !frame.pending_transfers.is_empty()
@@ -642,6 +657,7 @@ impl PrivateScalarCallOutcome {
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
+            && frames[0].struct_field_order.is_empty()
             && frames[0].pending_struct_moves.is_empty()
             && frames[0].moved_copy_struct_sources.is_empty()
             && frames[0].pending_transfers.is_empty()
@@ -9749,6 +9765,57 @@ mod g18_private_scalar_call_tests {
         assert_eq!(out.events.iter().filter(|event| matches!(
             event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
         )).count(), 2);
+    }
+
+
+    // V1-F4／R07：P16 真資源欄位次序是結構定義順序，不是名稱字典序；
+    // 欄位原子換值後仍必以最新 ResourceId 逐欄 Move。
+    #[test]
+    fn g18_v1_f4_倒序欄名替換後整筆move仍依P16欄位順序() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar zeta:str = \"預設甲\"\nvar alpha:str = \"預設乙\"\nvar count:int = 8\n}\nfn route()->int{\nvar old:Marker = Marker(zeta=\"甲\",alpha=\"乙\")\nold.zeta = \"新甲🪼\"\nvar next:Marker = old.move()\nreturn next.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Created(3), R::Released(1),
+            R::Moved(3), R::Moved(2), R::Released(2), R::Released(3),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_雙欄move事件即使雙帳同步調序仍須拒絕() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar zeta:str = \"甲\"\nvar alpha:str = \"乙\"\nvar count:int = 5\n}\nfn route()->int{\nvar old:Marker = Marker(zeta=\"真甲\",alpha=\"真乙\")\nvar next:Marker = old.move()\nreturn next.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let inline: Vec<_> = out.events.iter().enumerate().filter_map(|(index, event)|
+            matches!(event, PrivateScalarCallEvent::OwnedResource(R::Moved(_)))
+                .then_some(index)).collect();
+        let ledger: Vec<_> = out.resource_events.iter().enumerate()
+            .filter_map(|(index, event)|
+                matches!(event, R::Moved(_)).then_some(index)).collect();
+        assert_eq!(inline.len(), 2);
+        assert_eq!(ledger.len(), 2);
+        out.events.swap(inline[0], inline[1]);
+        out.resource_events.swap(ledger[0], ledger[1]);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v1_f4_雙欄連續兩次整筆move仍保持欄位原次序() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar zeta:str = \"甲\"\nvar alpha:str = \"乙\"\nvar count:int = 6\n}\nfn route()->int{\nvar old:Marker = Marker(zeta=\"真甲\",alpha=\"真乙\")\nvar middle:Marker = old.move()\nvar next:Marker = middle.move()\nreturn next.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Moved(2),
+            R::Moved(1), R::Moved(2), R::Released(2), R::Released(1),
+        ]);
     }
 
     #[test]
