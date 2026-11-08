@@ -2344,13 +2344,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match expr {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(id) =>
-                                *frame.bool_values.get(id).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         // 0/1 僅為同一顯式工作堆疊中的暫態 bool 編碼；
                         // 正式型別來自原 Checker 參數簽章，不能轉成 int slot。
                         values.push(i64::from(value));
@@ -2503,13 +2497,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match expr {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(source) =>
-                                *frame.bool_values.get(source).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         if frame.bool_values.insert(id, value).is_some() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -2631,13 +2619,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match expr {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(source) =>
-                                *frame.bool_values.get(source).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         if let Some(slot) = frame.bool_values.get_mut(&id) {
                             *slot = value;
                             events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
@@ -2661,13 +2643,8 @@ impl PreparedPrivateScalarCall {
                         let mut selected = None;
                         let mut current = branch;
                         loop {
-                            let condition = match &current.condition {
-                                PrivateScalarBoolExpr::Constant(value) => *value,
-                                PrivateScalarBoolExpr::Bound(id) =>
-                                    *frame.bool_values.get(id).ok_or(
-                                        PrivateScalarCallRuntimeError::StateMismatch,
-                                    )?,
-                            };
+                            let condition =
+                                current.condition.evaluate_runtime(frame, &copy_structs)?;
                             events.push(PrivateScalarCallEvent::ConditionalChecked(condition));
                             if condition {
                                 selected = Some(&current.when_true);
@@ -2692,13 +2669,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match condition {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(id) =>
-                                *frame.bool_values.get(id).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = condition.evaluate_runtime(frame, &copy_structs)?;
                         events.push(PrivateScalarCallEvent::ConditionalChecked(value));
                         if value {
                             // 本輪真動作在反向邊之前，逐輪重新讀取框架 bool 值。
