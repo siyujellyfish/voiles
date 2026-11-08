@@ -2451,6 +2451,17 @@ impl PreparedPrivateScalarCall {
                     Ok(PrivateScalarBranchAction::AssignCopyStructBool {
                         declaration, owner: receiver.clone(), field: field.clone(), value,
                     })
+                } else if verified.plan.declarations.typed_declaration(
+                    *int_bindings.get(receiver).expect("原 Checker 已驗證 receiver"),
+                ).and_then(|fact| verified.structs.get(fact.ty))
+                    .and_then(|definition| definition.field(field))
+                    .is_some_and(|member| member.ty == "str") {
+                    let (declaration, value) = Self::checked_copy_struct_str_write(
+                        statement, receiver, field, value, int_bindings, verified,
+                    )?;
+                    Ok(PrivateScalarBranchAction::AssignCopyStructStr {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    })
                 } else {
                     let (declaration, value) = Self::checked_copy_struct_int_write(
                         statement, receiver, field, value, int_bindings, verified,
@@ -2631,6 +2642,17 @@ impl PreparedPrivateScalarCall {
                         statement, receiver, field, value, &bool_bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::AssignCopyStructBool {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    });
+                } else if verified.plan.declarations.typed_declaration(
+                    *bindings.get(receiver).expect("原 Checker 已驗證 receiver"),
+                ).and_then(|fact| verified.structs.get(fact.ty))
+                    .and_then(|definition| definition.field(field))
+                    .is_some_and(|member| member.ty == "str") {
+                    let (declaration, value) = Self::checked_copy_struct_str_write(
+                        statement, receiver, field, value, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::AssignCopyStructStr {
                         declaration, owner: receiver.clone(), field: field.clone(), value,
                     });
                 } else {
@@ -2896,6 +2918,11 @@ impl PreparedPrivateScalarCall {
                 PrivateScalarLocalStep::AssignCopyStructBool {
                     declaration, owner, field, value,
                 } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                    *declaration, owner, field, value,
+                )),
+                PrivateScalarLocalStep::AssignCopyStructStr {
+                    declaration, owner, field, value,
+                } => tasks.push(PrivateScalarTask::WriteCopyStructStr(
                     *declaration, owner, field, value,
                 )),
                 PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
@@ -3729,6 +3756,11 @@ impl PreparedPrivateScalarCall {
                         } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
                             *declaration, owner, field, value,
                         )),
+                        PrivateScalarBranchAction::AssignCopyStructStr {
+                            declaration, owner, field, value,
+                        } => tasks.push(PrivateScalarTask::WriteCopyStructStr(
+                            *declaration, owner, field, value,
+                        )),
                         PrivateScalarBranchAction::AssignBool { declaration, value } => {
                             tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
                         }
@@ -3917,6 +3949,11 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarLocalStep::AssignCopyStructBool {
                                     declaration, owner, field, value,
                                 } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                                    *declaration, owner, field, value,
+                                )),
+                                PrivateScalarLocalStep::AssignCopyStructStr {
+                                    declaration, owner, field, value,
+                                } => tasks.push(PrivateScalarTask::WriteCopyStructStr(
                                     *declaration, owner, field, value,
                                 )),
                                 PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
