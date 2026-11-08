@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百八十二項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百八十七項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -54,6 +54,11 @@ from pathlib import Path
     "g18_v1_f4_具名雙欄位由另一真結構讀int_bool混合參數",
     "g18_v1_f4_具名欄位來源型別不合由原Checker先拒絕",
     "g18_v1_f4_具名真欄位來源身分竄改執行前拒絕",
+    "g18_v1_f4_具名int多層算式讀更新後局部而非宣告時常值",
+    "g18_v1_f4_具名int算式跨真正可寫結構欄位加減",
+    "g18_v1_f4_具名bool與動態int算式一併交付真P16快照",
+    "g18_v1_f4_具名動態int溢位不得建立半個結構或遺留資源",
+    "g18_v1_f4_具名int算式原Checker拒絕錯型別且動態計畫防偽",
     "g18_v1_f4_具名int取最後動態局部值不重播宣告值",
     "g18_v1_f4_具名bool來源由真函式參數動態分支決定",
     "g18_v1_f4_具名原局部遮蔽後使用本層Checker身分值",
