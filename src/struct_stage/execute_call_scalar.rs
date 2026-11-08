@@ -2825,7 +2825,14 @@ impl PreparedPrivateScalarCall {
                                 immutable: *immutable,
                             }
                         ).collect::<Vec<_>>();
-                        let named = plan.named.iter().map(|(field, value)|
+                        // 僅在動態執行真正抵達宣告時讀本 frame 純值。
+                        // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
+                        // 皆為無副作用 int/bool 讀取，P16 仍控制後續
+                        // 具名書寫順序及覆蓋預設、溢位等原安全語意。
+                        let named_values = plan.named.iter().map(|(field, source)|
+                            source.evaluate(frame).map(|value| (field.as_str(), value))
+                        ).collect::<Result<Vec<_>, _>>()?;
+                        let named = named_values.iter().map(|(field, value)|
                             crate::mixed_struct_runtime::NamedMixed {
                                 field, value: value.runtime(),
                             }
