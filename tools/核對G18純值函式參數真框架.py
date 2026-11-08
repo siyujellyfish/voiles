@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百三十一項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百三十六項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -13,6 +13,11 @@ from pathlib import Path
     "g18_v1_頂層普通函式全葉返回後局部不可達不再錯編",
     "g18_v1_main全葉返回後局部不可達不再污染首入口",
     "g18_v1_頂層非全葉返回仍不得忽略可達結構局部",
+    "g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
+    "g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
+    "g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
+    "g18_v1_f4_欄位錯誤型別或不存在原Checker即拒絕",
+    "g18_v1_f4_真欄位編譯身分遭篡改執行前必拒絕",
     "g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
     "g18_v1_f4_未選分支純結構與資源均零建構",
     "g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
