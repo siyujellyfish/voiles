@@ -3,7 +3,7 @@
 // 原私有 async fn 方法 Parser／Checker 與跨 await 真暫停尚未接通。
 // 不把本模組的內部驗證冒稱 P18.6 A1/A2 或 G18 全項 Passed。
 use std::collections::BTreeMap;
-use super::{ExecutionBudget, ExecutionOutcome, PreparationFailure, PreparedProgram};
+use super::{ExecutionBudget, ExecutionOutcome, PreparationFailure, PreparedProgram, RuntimeFailure};
 use crate::borrow_safety::BorrowSafety;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -231,6 +231,7 @@ enum AsyncSafePointState {
     Running,
     Suspended,
     Cancelled,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -264,6 +265,14 @@ struct AsyncSafePointEvidence {
     resource_events: Vec<ResourceEvent>,
     exit_events: Vec<AsyncSafeExitEvent>,
     unwound_frames: usize,
+}
+
+/// E4-A：沿用真正 P17 執行器的原 RuntimeFailure；
+/// 資源及票據的清理證據獨立保存，不以正常返回偽裝異常。
+#[derive(Debug)]
+struct AsyncSafePointFailure {
+    error: RuntimeFailure,
+    evidence: AsyncSafePointEvidence,
 }
 
 /// 暫停狀態保留原 P16 OwnedStrRuntime 和原 HC14 BorrowSafety；
@@ -359,22 +368,31 @@ impl AsyncSafePointFrames {
         Ok(())
     }
 
-    /// E3-A：只能在真安全暫停點取消；先內層後外層離域。
-    /// 每次 ResourceReleased 均來自 OwnedStrRuntime 剛剛真產生的事件。
-    /// 若狀態不符，完整持有者仍留在 self，可依法稍後退出。
-    fn cancel_suspended(&mut self) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
-        if self.state != AsyncSafePointState::Suspended {
-            return Err(AsyncSafePointError::WrongState);
-        }
-        if self.frames.iter().any(|frame| !frame.is_empty())
-            || self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
-            return Err(AsyncSafePointError::ActiveBorrowAcrossAwait);
-        }
+    /// E3／E4 同一個真 P16／HC14 退出核心：
+    /// - 安全點取消時，跨 await 的有效票據早已被 VB15-01-A 禁止；
+    /// - 執行中真 RuntimeFailure 則逐框架先還仍有效的 HC14 票據，
+    ///   才釋放同一作用域的 OwnedUtf8，並向外層繼續。
+    /// 所有 Returned／ResourceReleased 只能從實際追蹤器操作後記錄。
+    fn unwind_frames(
+        &mut self, target: AsyncSafePointState, release_live_loans: bool,
+    ) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
         let count = self.frames.len();
         while !self.frames.is_empty() {
             let depth = self.frames.len();
+            if release_live_loans {
+                while let Some((ticket, fact)) =
+                    self.frames.last().and_then(|frame| frame.last()).copied() {
+                    self.loans.finish_selected_verified(&[ticket], &[fact])?;
+                    self.frames.last_mut().expect("已確認存在動態框架").pop();
+                    self.exit_events.push(AsyncSafeExitEvent::LoanReturned(ticket));
+                }
+            } else if self.frames.last().is_some_and(|frame| !frame.is_empty()) {
+                return Err(AsyncSafePointError::ActiveBorrowAcrossAwait);
+            }
             let before = self.resources.events().len();
             self.resources.leave_scope()?;
+            // 真 P16 每個 Released(ID) 都必須是剛完成的動態離域，
+            // 不接受由清理器自創或按數量補齊的假的資源釋放。
             let released = self.resources.events()[before..].iter().filter_map(|event| {
                 if let ResourceEvent::Released(id) = event { Some(*id) } else { None }
             }).collect::<Vec<_>>();
@@ -384,19 +402,46 @@ impl AsyncSafePointFrames {
             self.frames.pop();
             self.exit_events.push(AsyncSafeExitEvent::FrameUnwound(depth));
         }
-        // 所有真正建立的資源已依相同 OwnedStrRuntime 退出，
-        // finish 的完整性檢查不可用合成的事件向量替代。
+        if self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
+            return Err(AsyncSafePointError::ActiveBorrowAcrossAwait);
+        }
         let resources = std::mem::replace(&mut self.resources, OwnedStrRuntime::new());
         let resource_events = resources.finish()?;
         if !owned_str_runtime::event_trace_balanced(&resource_events) {
             return Err(AsyncSafePointError::Resource(StrRuntimeError::OutstandingResource));
         }
-        self.state = AsyncSafePointState::Cancelled;
+        self.state = target;
         Ok(AsyncSafePointEvidence {
             resource_events,
             exit_events: self.exit_events.clone(),
             unwound_frames: count,
         })
+    }
+
+    /// E3-A：取消只能在合法 suspend 後，不能強制中止 Running。
+    /// 有效票據或不符狀態時保持原有真資源不變。
+    fn cancel_suspended(&mut self) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
+        if self.state != AsyncSafePointState::Suspended {
+            return Err(AsyncSafePointError::WrongState);
+        }
+        if self.frames.iter().any(|frame| !frame.is_empty())
+            || self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
+            return Err(AsyncSafePointError::ActiveBorrowAcrossAwait);
+        }
+        self.unwind_frames(AsyncSafePointState::Cancelled, false)
+    }
+
+    /// E4-A：工作在 Running 階段真正失敗，不等待可取消安全點；
+    /// 原 RuntimeFailure 逐字保留給等待者，清理後狀態為 Failed
+    /// 而非 Cancelled／Succeeded，並不虛構任何成功返回事件。
+    fn fail_running(
+        &mut self, error: RuntimeFailure,
+    ) -> Result<AsyncSafePointFailure, AsyncSafePointError> {
+        if self.state != AsyncSafePointState::Running || self.frames.is_empty() {
+            return Err(AsyncSafePointError::WrongState);
+        }
+        let evidence = self.unwind_frames(AsyncSafePointState::Failed, true)?;
+        Ok(AsyncSafePointFailure { error, evidence })
     }
 }
 
@@ -405,6 +450,122 @@ mod v7_a2_safe_point_tests {
     use super::*;
     use crate::borrow_safety::BorrowKind;
     use crate::ownership_ledger::DeclarationId;
+
+    #[test]
+    fn v7_a2_e4_真執行中錯誤跨兩框架先還票再逆序釋放資源() {
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let parent = frames.declare_owned("外", "父層🪼").unwrap();
+        let outer_ticket = frames.acquire_for_frame(BorrowFact::new(
+            DeclarationId(74), BorrowKind::SharedRead,
+        )).unwrap();
+        frames.enter_frame().unwrap();
+        let child_first = frames.declare_owned("內一", "子一").unwrap();
+        let child_second = frames.declare_owned("內二", "子二").unwrap();
+        let inner_ticket = frames.acquire_for_frame(BorrowFact::new(
+            DeclarationId(75), BorrowKind::ExclusiveWrite,
+        )).unwrap();
+        let original = RuntimeFailure {
+            span: None, reason: "既有 P17 執行期失敗",
+        };
+        let failed = frames.fail_running(original.clone()).unwrap();
+        assert_eq!(failed.error, original);
+        assert_eq!(failed.evidence.unwound_frames, 2);
+        assert_eq!(failed.evidence.resource_events, [
+            ResourceEvent::Created(parent),
+            ResourceEvent::Created(child_first),
+            ResourceEvent::Created(child_second),
+            ResourceEvent::Released(child_second),
+            ResourceEvent::Released(child_first),
+            ResourceEvent::Released(parent),
+        ]);
+        assert_eq!(failed.evidence.exit_events, [
+            AsyncSafeExitEvent::LoanReturned(inner_ticket),
+            AsyncSafeExitEvent::ResourceReleased(child_second),
+            AsyncSafeExitEvent::ResourceReleased(child_first),
+            AsyncSafeExitEvent::FrameUnwound(2),
+            AsyncSafeExitEvent::LoanReturned(outer_ticket),
+            AsyncSafeExitEvent::ResourceReleased(parent),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+        assert_eq!(frames.state, AsyncSafePointState::Failed);
+        assert!(frames.loans.verify_static_snapshot(std::iter::empty()).is_ok());
+        assert_eq!(frames.resume(), Err(AsyncSafePointError::WrongState));
+        assert!(matches!(frames.cancel_suspended(), Err(AsyncSafePointError::WrongState)));
+    }
+
+    #[test]
+    fn v7_a2_e4_原P17真步數錯誤傳到等待者並清理仍持有的UTF8() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 11 }".to_vec(),
+            ExecutionBudget { max_call_frames: 8, max_steps: 0 },
+        ).unwrap();
+        let outcome = session.await_direct(id).unwrap();
+        let error = outcome.result.as_ref().unwrap_err().clone();
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Failed));
+        assert!(outcome.events.is_empty());
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("來源", "異常仍須清理🪼").unwrap();
+        let failure = frames.fail_running(error.clone()).unwrap();
+        assert_eq!(failure.error, error);
+        assert_eq!(failure.evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(failure.evidence.exit_events, [
+            AsyncSafeExitEvent::ResourceReleased(resource),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+        assert_eq!(frames.state, AsyncSafePointState::Failed);
+    }
+
+    #[test]
+    fn v7_a2_e4_尚未真正進框架與安全暫停時不可冒充執行錯誤() {
+        let mut frames = AsyncSafePointFrames::new();
+        let error = RuntimeFailure { span: None, reason: "測試錯誤" };
+        assert!(matches!(frames.fail_running(error.clone()),
+            Err(AsyncSafePointError::WrongState)));
+        frames.enter_frame().unwrap();
+        let original = frames.declare_owned("原本", "仍存活").unwrap();
+        frames.suspend().unwrap();
+        assert!(matches!(frames.fail_running(error.clone()),
+            Err(AsyncSafePointError::WrongState)));
+        assert_eq!(frames.resources.resource_id("原本"), Ok(original));
+        frames.resume().unwrap();
+        let failed = frames.fail_running(error).unwrap();
+        assert_eq!(failed.evidence.resource_events, [
+            ResourceEvent::Created(original), ResourceEvent::Released(original),
+        ]);
+        assert!(matches!(frames.fail_running(RuntimeFailure {
+            span: None, reason: "不得重播",
+        }), Err(AsyncSafePointError::WrongState)));
+    }
+
+    #[test]
+    fn v7_a2_e4_同框架雙真借用在錯誤邊逆序歸還後才釋放() {
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("同層", "UTF-8").unwrap();
+        let first = frames.acquire_for_frame(BorrowFact::new(
+            DeclarationId(101), BorrowKind::SharedRead,
+        )).unwrap();
+        let second = frames.acquire_for_frame(BorrowFact::new(
+            DeclarationId(102), BorrowKind::SharedRead,
+        )).unwrap();
+        let failure = frames.fail_running(RuntimeFailure {
+            span: None, reason: "已核准執行期故障",
+        }).unwrap();
+        assert_eq!(failure.evidence.exit_events, [
+            AsyncSafeExitEvent::LoanReturned(second),
+            AsyncSafeExitEvent::LoanReturned(first),
+            AsyncSafeExitEvent::ResourceReleased(resource),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+        assert_eq!(failure.evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+    }
 
     #[test]
     fn v7_a2_父子真resourceid於暫停取消時按內外逆序唯一釋放() {
