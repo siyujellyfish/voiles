@@ -118,6 +118,10 @@ impl PrivateScalarCallOutcome {
             /// 結構的各個原 Checker str 欄位各持有唯一真資源，
             /// 不把同一結構的多欄位塞進單純 DeclarationId 帳。
             struct_owner_resources: BTreeMap<(DeclarationId, String), u64>,
+            /// 曾完成建構的欄位身分，即使舊 ResourceId 已釋放，
+            /// 重新綁定仍須對應下一筆唯一真替換確認。
+            observed_struct_fields: std::collections::BTreeSet<(DeclarationId, String)>,
+            pending_str_field_write: Option<(DeclarationId, String, u64)>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
             pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
@@ -133,6 +137,8 @@ impl PrivateScalarCallOutcome {
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             struct_owner_resources: BTreeMap::new(),
+            observed_struct_fields: std::collections::BTreeSet::new(),
+            pending_str_field_write: None,
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -164,6 +170,13 @@ impl PrivateScalarCallOutcome {
             ) {
                 return false;
             }
+            if frames.last().is_some_and(|frame|
+                frame.pending_str_field_write.is_some())
+                && !matches!(event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)) {
+                // 新資源身分剛完成覆寫綁定時，下一個事件必須是
+                // 同一欄位、同一 ResourceId 的唯一寫入確認。
+                return false;
+            }
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
@@ -173,6 +186,8 @@ impl PrivateScalarCallOutcome {
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             struct_owner_resources: BTreeMap::new(),
+            observed_struct_fields: std::collections::BTreeSet::new(),
+            pending_str_field_write: None,
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -305,16 +320,28 @@ impl PrivateScalarCallOutcome {
                         || frame.struct_owner_resources.contains_key(&(*declaration, field.clone())) {
                         return false;
                     }
-                    frame.struct_owner_resources.insert(
-                        (*declaration, field.clone()), *resource_id,
-                    );
+                    let key = (*declaration, field.clone());
+                    if frame.observed_struct_fields.contains(&key) {
+                        // 原欄位先前曾持有真 UTF-8：再綁定只能代表
+                        // 一次已驗證的原子替換，下一事件須唯一確認。
+                        if frame.pending_str_field_write.is_some() { return false; }
+                        frame.pending_str_field_write =
+                            Some((*declaration, field.clone(), *resource_id));
+                    } else {
+                        frame.observed_struct_fields.insert(key.clone());
+                    }
+                    frame.struct_owner_resources.insert(key, *resource_id);
                 }
                 PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
                         Some(PrivateScalarLocalBinding::CopyStruct(previous))
                             if previous == *id) { return false; }
+                    if frame.pending_str_field_write.is_some() { return false; }
                     frame.moved_copy_struct_sources.remove(id);
+                    // 同一 DeclarationId 可在真 for/while 下一輪再建構，
+                    // 不可用上輪舊欄位的歷史誤判成一次覆寫。
+                    frame.observed_struct_fields.retain(|(owner, _)| owner != id);
                 }
                 PrivateScalarCallEvent::CopyStructIntFieldAssigned(id, field, _)
                     | PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, field, _) => {
@@ -326,10 +353,16 @@ impl PrivateScalarCallOutcome {
                     ) { return false; }
                 }
                 PrivateScalarCallEvent::CopyStructStrFieldAssigned(id, field, resource_id) => {
-                    let Some(frame) = frames.last() else { return false; };
+                    let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || frame.moved_copy_struct_sources.contains(id)
                         || frame.struct_owner_resources.get(&(*id, field.clone()))
-                            != Some(resource_id) { return false; }
+                            != Some(resource_id)
+                        || frame.pending_str_field_write.as_ref()
+                            != Some(&(*id, field.clone(), *resource_id)) {
+                        return false;
+                    }
+                    // 已交付唯一真相符的寫入確認；重播同一事件必拒。
+                    frame.pending_str_field_write = None;
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -500,6 +533,8 @@ impl PrivateScalarCallOutcome {
                         || !frame.moved_copy_struct_sources.is_empty()
                         || !frame.owner_resources.is_empty()
                         || !frame.struct_owner_resources.is_empty()
+                        || !frame.observed_struct_fields.is_empty()
+                        || frame.pending_str_field_write.is_some()
                         || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
                         || frames.last().is_none_or(|parent|
@@ -10551,6 +10586,61 @@ mod g18_private_scalar_call_tests {
     // str 欄位使用 P16 同一真 OwnedUtf8 資源帳，不放行預設 var str。
     // V1-F4：所有替換只能在原 Checker 合法的 var str 欄位上，
     // 真共享帳先建新 OwnedUtf8 再釋放舊 ResourceId。
+    #[test]
+    fn g18_v1_f4_str欄位寫入事件重複插入不得假裝二次提交() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let i = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).expect("真欄位寫入事件");
+        let duplicate = out.events[i].clone();
+        out.events.insert(i, duplicate);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_str欄位寫入確認遺失不許冒充正常退出() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        out.events.retain(|event| !matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        ));
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_str欄位寫入確認早於新resource綁定必拒絕() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let i = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).expect("真寫入確認");
+        let j = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructResourceOwnerBound { resource_id: 2, .. }
+        )).expect("新資源真綁定");
+        out.events.swap(i, j);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_for兩輪重用原DeclarationId仍逐輪驗真str欄位() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar total:int = 0\nfor i in 0..2{\nvar item:Archive = Archive(body=\"初值\")\nitem.body = \"覆寫🪼\"\ntotal = total+item.count\n}\nreturn total\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+            R::Created(3), R::Created(4), R::Released(3), R::Released(4),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).count(), 2);
+    }
+
     #[test]
     fn g18_v1_f4_具名varstr欄位真字面覆寫建立新id釋放舊id() {
         use crate::owned_str_runtime::ResourceEvent as R;
