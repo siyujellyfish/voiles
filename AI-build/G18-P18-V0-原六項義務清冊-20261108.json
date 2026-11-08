@@ -1,0 +1,282 @@
+{
+  "schema": "G18-P18-V0/1",
+  "baseline_main_sha": "ea23b56dbc1f13da94cc37f738087af734b6cb22",
+  "original_status": {
+    "P18.1": "SubsetVerified",
+    "P18.2": "SubsetVerified",
+    "P18.3": "Incomplete",
+    "P18.4": "SubsetVerified",
+    "P18.5": "SubsetVerified",
+    "P18.6": "BlockedByDecision"
+  },
+  "rule": "每筆 primary_case 為不同義務的唯一主要可重現 Rust 真來源入口，不表示整條義務 Closed。非同步 A1/A2 待決不能以空正例充當 Passed。",
+  "proven_gap": {
+    "id": "F4",
+    "category": "CheckerAcceptedRuntimeUnsupported",
+    "case": "struct_stage::g18_private_scalar_call_tests::g18_r01_真正可達的結構局部函式仍須保守拒絕",
+    "meaning": "PreparedPrivateScalarCall::prepare(src) 返回 Unsupported 而非 Check，表示原 Checker 已接受、標量 evaluator 尚未連接本合法結構局部函式",
+    "work_file": "src/struct_stage/execute_call_scalar.rs"
+  },
+  "obligations": [
+    {
+      "id": "F1",
+      "phase": "P18.1",
+      "batch": "V1",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_a_前向兩層帶參數呼叫每層建立獨立框架並按返回順序退出",
+      "remaining": "前向／互相／多層呼叫與合法返回及局部退出全範圍",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "F2",
+      "phase": "P18.1",
+      "batch": "V1",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
+      "remaining": "所有已核准 int/bool/str 混合參數及返回形狀的完整次序",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "F3",
+      "phase": "P18.1",
+      "batch": "V1",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",
+      "remaining": "return／宣告／賦值／條件／迴圈內的合法函式調用位置",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "F4",
+      "phase": "P18.1",
+      "batch": "V1",
+      "status": "OpenEngineering",
+      "evidence_kind": "TraceRejection",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式不可達閉包計畫被增添目標須在執行前拒絕",
+      "remaining": "消除有 Checker 證據卻被標量來源閉包 Unsupported 的合法函式圖",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "C1",
+      "phase": "P18.2",
+      "batch": "V2",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
+      "remaining": "已核准 if／else-if／else 選中與未選中同資源 CFG",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "C2",
+      "phase": "P18.2",
+      "batch": "V2",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_source_loop_tests::g18_b_超過六十四輪的合法_for_依真實步數預算成功或受控耗盡",
+      "remaining": "半開 for／動態 while 零多輪與可配置預算回邊",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "C3",
+      "phase": "P18.2",
+      "batch": "V2",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for_continue每輪真move與借用先還票再走回邊",
+      "remaining": "巢狀 break/continue/return 逐幀離域與未執行零事件",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "C4",
+      "phase": "P18.2",
+      "batch": "V2",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
+      "remaining": "同名遮蔽及未初始化/首次賦值/覆寫的 int/bool/str CFG 交叉",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "R1",
+      "phase": "P18.3",
+      "batch": "V5",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
+      "remaining": "直接／互相遞迴與合法多資源及終止的真動態回傳",
+      "work_file": "src/struct_stage/execute_recursive_str.rs"
+    },
+    {
+      "id": "R2",
+      "phase": "P18.3",
+      "batch": "V5",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeFailure",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
+      "remaining": "獨立每次執行預算／深層受控耗盡／清理",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "R3",
+      "phase": "P18.3",
+      "batch": "V5",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_owned_move_call_tests::g18_c_多函式逐層_move_同一_resourceid_末端真正釋放且返回逐框架退出",
+      "remaining": "多個 ResourceId、同名 DeclarationId 與多層 Move/Borrow 同步清理",
+      "work_file": "src/struct_stage/execute_recursive_str.rs"
+    },
+    {
+      "id": "R4",
+      "phase": "P18.3",
+      "batch": "V4",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeFailure",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
+      "remaining": "正常／提前 return／溢位／耗盡／故障完整共通退出",
+      "work_file": "src/struct_stage/shared_call_exit.rs"
+    },
+    {
+      "id": "B1",
+      "phase": "P18.4",
+      "batch": "V3",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_具名_var_str_獨占借用與_copyable_int_真返回",
+      "remaining": "Copyable 值重複讀取、混合參數順序不消耗來源",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "B2",
+      "phase": "P18.4",
+      "batch": "V3",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
+      "remaining": "多 Move＋Borrow、跨幀實參失敗與唯一資源交付",
+      "work_file": "src/struct_stage/execute_call_scalar.rs"
+    },
+    {
+      "id": "B3",
+      "phase": "P18.4",
+      "batch": "V3",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參真借用必反序歸還且不提前釋放資源",
+      "remaining": "同源與異源 BorrowTicket、BorrowFact、ResourceId 一一對應",
+      "work_file": "src/borrow_safety.rs"
+    },
+    {
+      "id": "B4",
+      "phase": "P18.4",
+      "batch": "V6",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_method_self_tests::g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序",
+      "remaining": "同步 self 與普通函式同一 CFG 中的已核准參數及退出契約",
+      "work_file": "src/struct_stage/execute_method_self.rs"
+    },
+    {
+      "id": "B5",
+      "phase": "P18.4",
+      "batch": "V3",
+      "status": "OpenEngineering",
+      "evidence_kind": "CheckerRejection",
+      "primary_case": "struct_stage::g18_r06_cross_runtime_tests::g18_r06_原_checker_VB14_借用別名缺乏重借證明不得進真子呼叫",
+      "remaining": "VB14 既有合法借用生命期與無證再借／逃逸安全反例",
+      "work_file": "src/borrow_safety.rs"
+    },
+    {
+      "id": "T1",
+      "phase": "P18.5",
+      "batch": "V8",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeFailure",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
+      "remaining": "原六項均需成功、靜態拒絕、動態故障、真清理四欄",
+      "work_file": "tools/核對G18原六項驗收差距.py"
+    },
+    {
+      "id": "T2",
+      "phase": "P18.5",
+      "batch": "V8",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
+      "remaining": "函式×CFG／Borrow×Move／遞迴×失敗／self×票據／async×取消高風險交叉",
+      "work_file": "tools/核對G18-R06跨執行器正反矩陣.py"
+    },
+    {
+      "id": "T3",
+      "phase": "P18.5",
+      "batch": "V8",
+      "status": "OpenEngineering",
+      "evidence_kind": "TraceRejection",
+      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
+      "remaining": "來源變造與動態事件雙帳錯序均應拒絕",
+      "work_file": "src/struct_stage/shared_call_exit.rs"
+    },
+    {
+      "id": "T4",
+      "phase": "P18.5",
+      "batch": "V8",
+      "status": "OpenEngineering",
+      "evidence_kind": "TraceRejection",
+      "primary_case": "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式與同步self錯誤均須真回滾且拒絕偽造退出",
+      "remaining": "F00/G6/G17 同 SHA、R07 零漏項零空測與獨立全量回歸",
+      "work_file": "tools/核對G18-R07正式狀態一致性.py"
+    },
+    {
+      "id": "M1",
+      "phase": "P18.6",
+      "batch": "V6",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_method_self_tests::g18_f_同名方法單_int_實參依原_checker_型別選真共享多載",
+      "remaining": "S20 唯一方法簽章與零／多參數及歧義反例",
+      "work_file": "src/struct_stage/execute_method_self.rs"
+    },
+    {
+      "id": "M2",
+      "phase": "P18.6",
+      "batch": "V6",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_method_self_tests::g18_f_獨占_self_真寫入_var_int_並以同張票據返回更新後值",
+      "remaining": "共享／獨占 self 參數、欄位、分支、異常還票",
+      "work_file": "src/struct_stage/execute_method_self.rs"
+    },
+    {
+      "id": "M3",
+      "phase": "P18.6",
+      "batch": "V6",
+      "status": "OpenEngineering",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_private_method_self_tests::g18_r05_同步self真共享借用及成功返回逐筆由共用進退帳驗證",
+      "remaining": "同步方法與普通函式的同一控制工作圖和共通資源退出",
+      "work_file": "src/struct_stage/execute_method_self.rs"
+    },
+    {
+      "id": "A1",
+      "phase": "P18.6",
+      "batch": "V7",
+      "status": "BlockedDecision",
+      "evidence_kind": "DecisionBlocked",
+      "primary_case": null,
+      "remaining": "D18-02-E1/E2 async 工作啟動、await 暫停恢復與喚醒調度規格及真正正例",
+      "work_file": "src/struct_stage/execute_method_self.rs"
+    },
+    {
+      "id": "A2",
+      "phase": "P18.6",
+      "batch": "V7",
+      "status": "BlockedDecision",
+      "evidence_kind": "DecisionBlocked",
+      "primary_case": null,
+      "remaining": "D18-02-E3/E4/E5 取消點、錯誤傳遞、跨 await 借用及清理安全",
+      "work_file": "src/struct_stage/shared_call_exit.rs"
+    }
+  ]
+}
