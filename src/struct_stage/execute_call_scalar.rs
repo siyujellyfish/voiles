@@ -1229,12 +1229,43 @@ impl PrivateScalarEarlyIf {
     }
 }
 
+/// V1／F4：原 Checker 已驗證的具名純值來源，在真動態
+/// 函式工作到達建構點時才由 DeclarationId 讀取最新值。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarCopyStructSeed {
+    Static(ApprovedSeed),
+    IntBound(DeclarationId),
+    BoolBound(DeclarationId),
+}
+impl PrivateScalarCopyStructSeed {
+    fn kind(&self) -> crate::mixed_struct_runtime::ScalarKind {
+        use crate::mixed_struct_runtime::ScalarKind;
+        match self {
+            Self::Static(value) => value.kind(),
+            Self::IntBound(_) => ScalarKind::Int,
+            Self::BoolBound(_) => ScalarKind::Bool,
+        }
+    }
+    fn evaluate(&self, frame: &PrivateScalarActiveFrame)
+        -> Result<ApprovedSeed, PrivateScalarCallRuntimeError> {
+        match self {
+            Self::Static(value) => Ok(value.clone()),
+            Self::IntBound(id) => frame.values.get(id).copied()
+                .map(ApprovedSeed::Int)
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::BoolBound(id) => frame.bool_values.get(id).copied()
+                .map(ApprovedSeed::Bool)
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+        }
+    }
+}
+
 /// V1／F4：原 Checker 唯一結構型別及 P16 VB16 預設／具名欄位
 /// 來源工作計畫；只接通無 str 資源的 int／bool 欄位。
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarCopyStructPlan {
     fields: Vec<(String, crate::mixed_struct_runtime::ScalarKind, Option<ApprovedSeed>, bool)>,
-    named: Vec<(String, ApprovedSeed)>,
+    named: Vec<(String, PrivateScalarCopyStructSeed)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
