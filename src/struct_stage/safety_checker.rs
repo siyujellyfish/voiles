@@ -641,6 +641,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // Copyable 的獨立引數交給它，且回傳也須已核准 Copyable。
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("方法呼叫不存在的一般函式", term))?;
+                if call.awaited {
+                    return Err(self.error(
+                        "V7：同步 self 方法本體的 await 尚無完整借用／工作框架證據", term,
+                    ));
+                }
                 if function.is_async {
                     return Err(self.error("V7：async 普通函式不可當作同步方法值", term));
                 }
@@ -1408,9 +1413,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let args = &call.arguments;
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
-                if function.is_async {
+                if function.is_async && !call.awaited {
                     return Err(self.error(
                         "V7：async 函式不得以同步呼叫冒稱已執行，須有直接 await", term,
+                    ));
+                }
+                if call.awaited && !function.is_async {
+                    return Err(self.error(
+                        "V7：只有原 Checker 已核准的 async fn 可被直接 await", term,
                     ));
                 }
                 if function.params.len() != args.len() {
