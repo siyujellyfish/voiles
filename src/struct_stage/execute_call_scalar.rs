@@ -3162,13 +3162,19 @@ impl PreparedPrivateScalarCall {
             ));
         }
         let call_span = return_call.node_span();
+        // R03：原 Checker 對所有 if／else 葉分支都已返回的
+        // 末端不可達 return，合法不簽發 Expression HIR。
+        // 先只禁止「已有但型別非 int」的 HIR；對完全缺少
+        // HIR 的情況延後到編好 main 真控制圖後，必須精確
+        // 證明計畫為 Unreachable，不能將缺失默認成合法。
+        let trailing_hir_absent = verified.plan.scalar_hir.expression(call_span).is_none();
         if verified.plan.scalar_hir.expression(call_span)
-            .is_none_or(|fact| fact.ty != ScalarType::Int)
+            .is_some_and(|fact| fact.ty != ScalarType::Int)
             || (!callee.params.iter().any(|param| param.ty == "str")
                 && verified.plan.declarations.call_borrows_at(call_span)
                     .is_some_and(|facts| !facts.is_empty())) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "呼叫缺少 int TypedHIR 或 Copyable 實參遭誤記為借用",
+                "呼叫的 int TypedHIR 型別不符或 Copyable 實參遭誤記為借用",
             ));
         }
         // 已核准的 main 動態 int 表達式與巢狀具名函式呼叫不能在
@@ -3227,6 +3233,14 @@ impl PreparedPrivateScalarCall {
         } else {
             None
         };
+        // 沒有 Expression HIR 只可能是原 Checker 全分支已提前
+        // return 的真正不可達結尾；任何其他缺證來源仍立即拒絕。
+        if trailing_hir_absent
+            && !matches!(&main_dynamic_call, Some(PrivateScalarReturnExpr::Unreachable)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "main 可達返回式缺少原 Checker int TypedHIR",
+            ));
+        }
         let mut all_arguments = Vec::new();
         if main_dynamic_call.is_none() {
         for (arg, parameter) in call_arguments.iter().zip(&callee.params) {
@@ -7661,6 +7675,84 @@ mod g18_private_scalar_call_tests {
         let src = "fn unused(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn 9\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+
+    // R03：原 Checker 不會為所有分支已返回的不可達末端 return
+    // 簽發 int Expression HIR；不准因此執行假的末端返回。
+    #[test]
+    fn g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir() {
+        let src = "fn left()->int{\nreturn 2\n}\nfn right()->int{\nreturn 3\n}\nfn main()->int{\nif(true){\nreturn left()\n}else{\nreturn right()\n}\nreturn 99\n}\n";
+        let plan = checked(src);
+        assert!(plan.verified.plan.scalar_hir.expression(plan.call_span).is_none());
+        assert!(matches!(&plan.main_dynamic_call, Some(PrivateScalarReturnExpr::Unreachable)));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "left"
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "right"
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(99)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main_if_else假分支不進且不可達末端return零事件() {
+        let src = "fn left()->int{\nreturn 5\n}\nfn right()->int{\nreturn 7\n}\nfn main()->int{\nvar use_left:bool = false\nif(use_left){\nreturn left()\n}else{\nreturn right()\n}\nreturn 99\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let calls: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(calls, ["right"]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(99)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main全分支返回時選中str借用完成還票與資源清理() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn right()->int{\nreturn 999\n}\nfn main()->int{\nif(true){\nvar owner:str = \"提前🪼\"\nreturn inspect(owner,3)\n}else{\nreturn right()\n}\nreturn 99\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "right"
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main全分支提前返回溢位不可退回不可達常值() {
+        let src = "fn crash(n:int)->int{\nreturn n+1\n}\nfn safe()->int{\nreturn 3\n}\nfn main()->int{\nif(true){\nreturn crash(9223372036854775807)\n}else{\nreturn safe()\n}\nreturn 99\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(99)
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "safe"
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main不可達尾端計畫遭改為可執行常值須拒絕() {
+        let src = "fn calc()->int{\nreturn 3\n}\nfn other()->int{\nreturn 4\n}\nfn main()->int{\nif(true){\nreturn calc()\n}else{\nreturn other()\n}\nreturn 99\n}\n";
+        let mut plan = checked(src);
+        assert!(matches!(plan.main_dynamic_call, Some(PrivateScalarReturnExpr::Unreachable)));
+        plan.main_dynamic_call = Some(PrivateScalarReturnExpr::Constant(99));
+        assert!(matches!(plan.execute(), Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 
