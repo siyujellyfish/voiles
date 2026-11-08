@@ -2398,6 +2398,11 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                 }
+                PrivateScalarLocalStep::AssignCopyStructBool {
+                    declaration, owner, field, value,
+                } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                    *declaration, owner, field, value,
+                )),
                 PrivateScalarLocalStep::AssignCopyStructInt {
                     declaration, owner, field, value,
                 } => {
@@ -2655,6 +2660,25 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.initialized_order.push(PrivateScalarLocalBinding::Int(id));
                         events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
+                    }
+                    PrivateScalarTask::WriteCopyStructBool(id, owner, field, rhs) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.copy_struct_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == owner) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(id)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        // 真 RHS 到達此工作項時才求值；若 RHS 失敗不留下寫入事件。
+                        let value = rhs.evaluate_runtime(frame, &copy_structs)?;
+                        copy_structs.write_bool_field(owner, field, value, true).map_err(|_|
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        events.push(PrivateScalarCallEvent::CopyStructBoolFieldAssigned(
+                            id, field.to_owned(), value,
+                        ));
                     }
                     PrivateScalarTask::WriteCopyStructInt(id, owner, field) => {
                         let value = values.pop().ok_or(
@@ -3077,6 +3101,11 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                             tasks.push(PrivateScalarTask::Evaluate(value, false));
                         }
+                        PrivateScalarBranchAction::AssignCopyStructBool {
+                            declaration, owner, field, value,
+                        } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                            *declaration, owner, field, value,
+                        )),
                         PrivateScalarBranchAction::AssignCopyStructInt {
                             declaration, owner, field, value,
                         } => {
@@ -3262,6 +3291,11 @@ impl PreparedPrivateScalarCall {
                                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                                 }
+                                PrivateScalarLocalStep::AssignCopyStructBool {
+                                    declaration, owner, field, value,
+                                } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                                    *declaration, owner, field, value,
+                                )),
                                 PrivateScalarLocalStep::AssignCopyStructInt {
                                     declaration, owner, field, value,
                                 } => {
