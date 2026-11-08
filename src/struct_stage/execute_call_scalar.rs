@@ -1266,6 +1266,8 @@ enum PrivateScalarCopyStructSeed {
     Static(ApprovedSeed),
     IntBound(DeclarationId),
     BoolBound(DeclarationId),
+    /// 原 Checker 已核准的 bool 括號工作，仍於真正建構點讀取動態值。
+    BoolGrouped(PrivateScalarBoolExpr),
     /// 具名純 int 欄位支援原 Checker TypedHIR 的動態加減／括號，
     /// 僅限無 Call 的純值表達式，不能於建構前重播靜態字面值。
     IntArithmetic(Box<PrivateScalarReturnExpr>),
@@ -1282,7 +1284,8 @@ impl PrivateScalarCopyStructSeed {
             Self::Static(value) => value.kind(),
             Self::IntBound(_) | Self::IntArithmetic(_) | Self::IntCall(_)
                 | Self::IntField { .. } => ScalarKind::Int,
-            Self::BoolBound(_) | Self::BoolField { .. } => ScalarKind::Bool,
+            Self::BoolBound(_) | Self::BoolGrouped(_) | Self::BoolField { .. } =>
+                ScalarKind::Bool,
         }
     }
     fn evaluate(
@@ -1299,6 +1302,8 @@ impl PrivateScalarCopyStructSeed {
             Self::BoolBound(id) => frame.bool_values.get(id).copied()
                 .map(ApprovedSeed::Bool)
                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::BoolGrouped(expr) => expr.evaluate_runtime(frame, structs)
+                .map(ApprovedSeed::Bool),
             Self::IntCall(_) => Err(PrivateScalarCallRuntimeError::StateMismatch),
             Self::IntArithmetic(expr) => {
                 // 此局部純值 evaluator 不另建普通函式呼叫框架。
@@ -1819,6 +1824,14 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarCopyStructSeed::BoolField {
                         declaration, owner, field,
                     }
+                }
+                // bool Group 的原 Checker TypedHIR、原 Lexer 括號及
+                // 內層 DeclarationId 已由同一 bool 編譯器逐層驗證；
+                // 真值直到建構點才求，不能轉成編譯時常數。
+                TermKind::Group(_) if *kind == ScalarKind::Bool => {
+                    PrivateScalarCopyStructSeed::BoolGrouped(
+                        PrivateScalarBoolExpr::from_checked(term, bindings, verified)?,
+                    )
                 }
                 // 具名 int 算式與原 Checker 具名函式皆使用已簽發的
                 // TypedHIR。含 Call 只能經同一動態函式堆疊實際執行，
@@ -9937,6 +9950,54 @@ mod g18_private_scalar_call_tests {
         }).expect("真具名函式來源計畫");
         assert!(matches!(seed, PrivateScalarCopyStructSeed::IntCall(_)));
         *seed = PrivateScalarCopyStructSeed::Static(ApprovedSeed::Int(9));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool括號讀取更新後局部真值() {
+        let src = "struct Meter{\nvar enabled:bool = false\n}\nfn run()->int{\nvar flag:bool = false\nflag = true\nvar note:Meter = Meter(enabled=(flag))\nif(note.enabled){\nreturn 9\n}\nreturn 1\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool雙括號跨結構讀取即時值() {
+        let src = "struct Meter{\nvar enabled:bool = false\n}\nfn run()->int{\nvar seed:Meter = Meter(enabled=false)\nseed.enabled = true\nvar note:Meter = Meter(enabled=((seed.enabled)))\nif(note.enabled){\nreturn 5\n}\nreturn 2\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool括號非法型別原Checker先拒絕() {
+        let src = "struct Meter{\nvar enabled:bool = false\n}\nfn run()->int{\nvar note:Meter = Meter(enabled=(1))\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool括號來源計畫變造執行前拒絕() {
+        let src = "struct Meter{\nvar enabled:bool = false\n}\nfn run()->int{\nvar flag:bool = true\nvar note:Meter = Meter(enabled=(flag))\nif(note.enabled){\nreturn 3\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(3));
+        let seed = plan.root_local_steps.iter_mut().find_map(|step| match step {
+            PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
+                plan.named.iter_mut().find(|(name, _)| name == "enabled")
+                    .map(|(_, seed)| seed),
+            _ => None,
+        }).expect("原 Checker 真具名 bool Group");
+        assert!(matches!(seed, PrivateScalarCopyStructSeed::BoolGrouped(_)));
+        *seed = PrivateScalarCopyStructSeed::Static(ApprovedSeed::Bool(true));
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
