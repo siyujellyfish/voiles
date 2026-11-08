@@ -10331,6 +10331,53 @@ mod g18_private_scalar_call_tests {
     // V1-F4：原 Checker 核准 const str 結構的真正 UTF-8 所有權，
     // 同一 OwnedStrRuntime 帳中按建構先後配置 ResourceId。
     #[test]
+    fn g18_v1_f4_conststr具名int函式真返回後才建立資源結構() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 0\nconst label:str = \"真資源🪼\"\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nvar item:Archive = Archive(count=plus(6))\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let inner_return = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(7)
+        )).expect("真 plus 返回");
+        let constructed = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).expect("真 P16 結構建立");
+        assert!(inner_return < constructed);
+    }
+
+    #[test]
+    fn g18_v1_f4_單一結構兩個conststr欄位唯一id各自逆序釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nconst first:str = \"甲\"\nconst second:str = \"乙🪼\"\nvar count:int = 2\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructResourceOwnerBound { .. }
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_結構欄位resourceid竄改不能通過同一退出稽核() {
+        let src = "struct Archive{\nvar count:int = 3\nconst label:str = \"真身分\"\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let link = out.events.iter_mut().find_map(|event| match event {
+            PrivateScalarCallEvent::CopyStructResourceOwnerBound { resource_id, .. } =>
+                Some(resource_id),
+            _ => None,
+        }).expect("真結構字串 ResourceId 連結");
+        *link = 999;
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
     fn g18_v1_f4_conststr結構共用唯一真resourceid與逆序退出() {
         let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"繁體🪼\"\n}\nfn idle()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn idle()\n}\n";
         let out = checked(src).execute().unwrap();
