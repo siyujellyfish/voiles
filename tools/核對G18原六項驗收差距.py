@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_頂層普通函式全葉返回後局部不可達不再錯編",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_main全葉返回後局部不可達不再污染首入口",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_頂層非全葉返回仍不得忽略可達結構局部",
@@ -214,6 +218,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_頂層普通函式全葉返回後局部不可達不再錯編",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_main全葉返回後局部不可達不再污染首入口",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_頂層非全葉返回仍不得忽略可達結構局部",
@@ -481,6 +489,10 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
@@ -646,6 +658,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_頂層普通函式全葉返回後局部不可達不再錯編",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_main全葉返回後局部不可達不再污染首入口",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_頂層非全葉返回仍不得忽略可達結構局部",
@@ -946,7 +962,7 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
 狀態 = {
-    "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、if/while/for、區塊局部、OwnedStr 常值／覆寫、str.move 跨函式雙 ResourceId 及 BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；self／借用別名安全證明與任意合法型別混合函式圖仍需完整驗收"),
+    "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、可達 Copyable 結構局部 P16 真建構／離域、if/while/for、區塊局部、OwnedStr 常值／覆寫、str.move 跨函式雙 ResourceId 及 BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；self／借用別名安全證明與任意合法型別混合函式圖仍需完整驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
     "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG，借用別名再借用仍缺 VB14 安全證明與完整退出矩陣"),
