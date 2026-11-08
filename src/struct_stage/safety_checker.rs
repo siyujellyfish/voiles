@@ -362,6 +362,28 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// V7／E5：直接 await 的相依表達式必須由原 AST 遞迴取得，
+    /// 不以文字搜尋「await」猜測來源。用於防止同一同步呼叫
+    /// 較早引數的借用跨越較後引數真正執行的等待安全點。
+    fn term_contains_direct_await(term: &Term) -> bool {
+        match &term.kind {
+            TermKind::Call(call) => call.awaited
+                || call.arguments.iter().any(Self::term_contains_direct_await),
+            TermKind::Group(inner) => Self::term_contains_direct_await(inner),
+            TermKind::BinaryInt(binary) =>
+                Self::term_contains_direct_await(&binary.left)
+                    || Self::term_contains_direct_await(&binary.right),
+            TermKind::Construct(_, fields) => fields.iter()
+                .any(|(_, value)| Self::term_contains_direct_await(value)),
+            TermKind::MethodCall(_, _, args) =>
+                args.iter().any(Self::term_contains_direct_await),
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
+            | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
+            | TermKind::FieldRead(_, _) => false,
+        }
+    }
+
     /// 真正 Lexer/Parser 提供 AST 節點，唯讀詞彙入口提供已驗證
     /// DeclarationId；兩種用途都必須用這份共同 use-def 掃描器。
     /// All 保留後繼活性，WholeMove 只認列整筆所有權消耗。
@@ -1425,6 +1447,46 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 if function.params.len() != args.len() {
                     return Err(self.error("P13：函式引數數量不符", term));
+                }
+                // VB15-01-A／V7 E5：以原 Checker 詞彙 SafetyState
+                // 的活躍 BorrowFact 為唯一權威。已於最後使用點
+                // 正式失效的別名不在快照內，不能阻止合法 await。
+                // 若仍有任何有效借用，或快照本身不一致，等待前
+                // 必須保守拒絕，不讓真執行器跨越此安全邊界。
+                if call.awaited {
+                    let live = Self::active_loan_snapshot(vars);
+                    if live.validate().is_err() || !live.facts().is_empty() {
+                        return Err(self.error(
+                            "VB15-01-A：有效借用不得跨直接 await 安全邊界", term,
+                        ));
+                    }
+                }
+                // 原非 Copyable 具名實參按 P15.6 建立預設借用：
+                // 此票據在子函式退出前始終活躍，不可於直接 await
+                // 啟動時借出，亦不可先借給同步函式較早的實參、
+                // 再在後續實參的表達式中進入任一直接 await。
+                // 檢查在所有引數求值／移動之前完成，拒絕不造成
+                // 任何部分已提交的來源移動或票據變更。
+                let borrowed_argument = |index: usize| {
+                    let arg = &args[index];
+                    let parameter = &function.params[index];
+                    self.permission(&parameter.ty) != CopyPermission::Allowed
+                        && matches!(&arg.kind, TermKind::Name(_))
+                        && !Self::parameter_is_consumed(function, &parameter.name)
+                };
+                if call.awaited && (0..args.len()).any(borrowed_argument) {
+                    return Err(self.error(
+                        "VB15-01-A：直接 await 不能持有預設借用的非 Copyable 參數",
+                        term,
+                    ));
+                }
+                if (0..args.len()).any(|i| borrowed_argument(i)
+                    && args[i + 1..].iter()
+                        .any(Self::term_contains_direct_await)) {
+                    return Err(self.error(
+                        "VB15-01-A：前序函式參數借用未歸還，不得在後續實參 await",
+                        term,
+                    ));
                 }
                 // P15.6：函式參數預設借用。若被呼叫端確實包含
                 // 該參數的整筆 .move()，則呼叫端必須明確移交來源；
