@@ -8135,6 +8135,84 @@ mod g18_private_scalar_call_tests {
         assert_eq!(entered, ["leaf", "parent"]);
     }
 
+    // G18 R05：覆蓋 BorrowSafety 的獨立子集原子交易，\n    // 不擴增 F00 已凍結的 borrow_safety::tests:: 原 24 項來源。
+        #[test]
+    fn g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據() {
+        let mut tracker = BorrowSafety::new();
+        let outer = DeclarationId(8041);
+        let inner = DeclarationId(8042);
+        let first = tracker.acquire(outer, BorrowKind::SharedRead).unwrap();
+        let second = tracker.acquire(inner, BorrowKind::SharedRead).unwrap();
+        tracker.finish_selected_verified(&[second], &[second.fact()]).unwrap();
+        assert_eq!(
+            tracker.check_direct_access(outer),
+            Err(crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed),
+        );
+        assert_eq!(tracker.check_direct_access(inner), Ok(()));
+        assert_eq!(
+            tracker.check_ticket_access(first, BorrowKind::SharedRead), Ok(outer),
+        );
+        tracker.finish_scope_verified(&[first], &[first.fact()]).unwrap();
+        assert_eq!(tracker.check_direct_access(outer), Ok(()));
+    }
+
+    #[test]
+    fn g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據() {
+        let mut tracker = BorrowSafety::new();
+        let first = tracker.acquire(
+            DeclarationId(8061), BorrowKind::SharedRead,
+        ).unwrap();
+        let second = tracker.acquire(
+            DeclarationId(8062), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(
+            tracker.finish_selected_verified(&[second], &[first.fact()]),
+            Err(crate::borrow_safety::BorrowSafetyError::SnapshotMismatch),
+        );
+        assert_eq!(
+            tracker.finish_selected_verified(&[second], &[]),
+            Err(crate::borrow_safety::BorrowSafetyError::SnapshotMismatch),
+        );
+        for ticket in [first, second] {
+            assert_eq!(
+                tracker.check_ticket_access(ticket, BorrowKind::SharedRead),
+                Ok(ticket.fact().source),
+            );
+        }
+        tracker.finish_scope_verified(
+            &[first, second], &[first.fact(), second.fact()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn g18_r05_子集重複票據不得部分歸還其餘合法借用() {
+        let mut tracker = BorrowSafety::new();
+        let original = tracker.acquire(
+            DeclarationId(8081), BorrowKind::SharedRead,
+        ).unwrap();
+        let remaining = tracker.acquire(
+            DeclarationId(8082), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(
+            tracker.finish_selected_verified(
+                &[original, original], &[original.fact(), original.fact()],
+            ),
+            Err(crate::borrow_safety::BorrowSafetyError::InvalidRelease),
+        );
+        assert_eq!(
+            tracker.check_ticket_access(original, BorrowKind::SharedRead),
+            Ok(original.fact().source),
+        );
+        assert_eq!(
+            tracker.check_ticket_access(remaining, BorrowKind::SharedRead),
+            Ok(remaining.fact().source),
+        );
+        tracker.finish_scope_verified(
+            &[original, remaining], &[original.fact(), remaining.fact()],
+        ).unwrap();
+    }
+
+
 
 }
 
