@@ -8246,7 +8246,7 @@ mod g18_private_scalar_call_tests {
     fn g18_v1_頂層普通函式全葉返回後局部不可達不再錯編() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 4\n}\nfn right()->int{\nreturn 8\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn left()\n}else{\nreturn right()\n}\nconst skipped:int = idle()\nreturn 0\n}\nfn main()->int{\nreturn route(true)\n}\n";
         let plan = checked(src);
-        assert!(matches!(plan.return_expr, PrivateScalarReturnExpr::Unreachable));
+        assert!(matches!(&plan.return_expr, PrivateScalarReturnExpr::Unreachable));
         assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
         let outcome = plan.execute().unwrap();
         assert_eq!(outcome.result, Ok(4));
@@ -8262,7 +8262,7 @@ mod g18_private_scalar_call_tests {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 4\n}\nfn right()->int{\nreturn 8\n}\nfn main()->int{\nif(false){\nreturn left()\n}else{\nreturn right()\n}\nconst skipped:int = idle()\nreturn 0\n}\n";
         let plan = checked(src);
         assert_eq!(plan.callee_name, "left");
-        assert!(matches!(plan.main_dynamic_call,
+        assert!(matches!(&plan.main_dynamic_call,
             Some(PrivateScalarReturnExpr::Unreachable)));
         assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
         let outcome = plan.execute().unwrap();
