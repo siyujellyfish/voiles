@@ -2799,7 +2799,7 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
                     }
-                    PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
+                    PrivateScalarTask::DeclareCopyStruct(id, name, initializer) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -2809,26 +2809,50 @@ impl PreparedPrivateScalarCall {
                             scope.iter().any(|(_, known)| known == name)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
-                        // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
-                        let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
-                            crate::mixed_struct_runtime::MixedFieldSpec {
-                                name: field, kind: *kind,
-                                default: default.as_ref().map(ApprovedSeed::runtime),
-                                immutable: *immutable,
+                        match initializer {
+                            PrivateScalarCopyStructInitializer::Construct(plan) => {
+                                // 原 P16 VB16 真求值：只有動態到達才建構，未覆寫預設不執行。
+                                let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
+                                    crate::mixed_struct_runtime::MixedFieldSpec {
+                                        name: field, kind: *kind,
+                                        default: default.as_ref().map(ApprovedSeed::runtime),
+                                        immutable: *immutable,
+                                    }
+                                ).collect::<Vec<_>>();
+                                let named = plan.named.iter().map(|(field, value)|
+                                    crate::mixed_struct_runtime::NamedMixed {
+                                        field, value: value.runtime(),
+                                    }
+                                ).collect::<Vec<_>>();
+                                copy_structs.construct(name, &fields, &named, None).map_err(|error|
+                                    match error {
+                                        crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                            PrivateScalarCallRuntimeError::IntegerOverflow,
+                                        _ => PrivateScalarCallRuntimeError::StateMismatch,
+                                    },
+                                )?;
+                                events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
                             }
-                        ).collect::<Vec<_>>();
-                        let named = plan.named.iter().map(|(field, value)|
-                            crate::mixed_struct_runtime::NamedMixed {
-                                field, value: value.runtime(),
+                            PrivateScalarCopyStructInitializer::Move { source, declaration } => {
+                                if !frame.copy_struct_scopes.iter().rev().flatten()
+                                    .any(|(known, active)| known == declaration && active == source)
+                                    || !frame.initialized_order.iter().any(|entry|
+                                        matches!(entry, PrivateScalarLocalBinding::CopyStruct(known)
+                                            if known == declaration)) {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                frame.borrow_tracker.check_direct_access(*declaration)
+                                    .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                                // 真 P16 同一結構值整筆搬到新詞彙持有者，原位置留 moved。
+                                // 此批只接受全部 int／bool 欄位，不產生另一個 ResourceId。
+                                copy_structs.move_whole(source, name).map_err(|_|
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?;
+                                events.push(PrivateScalarCallEvent::CopyStructRelocated {
+                                    source: *declaration, target: id,
+                                });
                             }
-                        ).collect::<Vec<_>>();
-                        copy_structs.construct(name, &fields, &named, None).map_err(|error|
-                            match error {
-                                crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
-                                    PrivateScalarCallRuntimeError::IntegerOverflow,
-                                _ => PrivateScalarCallRuntimeError::StateMismatch,
-                            },
-                        )?;
+                        }
                         if !copy_structs.events().is_empty() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -2836,7 +2860,6 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?.push((id, name.to_owned()));
                         frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
-                        events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
                     }
                     PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
                         let frame = frames.last_mut().ok_or(
