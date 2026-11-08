@@ -9201,6 +9201,71 @@ mod g18_private_scalar_call_tests {
 
     // V1／F4：原 Checker 的具名純值來源必須按 DeclarationId
     // 真正讀取動態 frame，而不是以初始字面值假造欄位。
+    // V1／F4：只有原 Checker 接受的 Copyable int/bool 真欄位才能
+    // 作另一結構的具名值；建構完成後不可偷偷保留來源別名。
+    #[test]
+    fn g18_v1_f4_具名int欄位真值快照不受來源後續更新污染() {
+        let source = "struct Source{\nvar count:int = 3\n}\nstruct Target{\nvar count:int = 0\n}\nfn route()->int{\nvar a:Source = Source()\na.count = 7\nvar b:Target = Target(count=a.count)\na.count = 9\nreturn b.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool來源欄位真快照決定後續分支() {
+        let source = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar a:Flag = Flag()\na.ready = true\nvar b:Flag = Flag(ready=a.ready)\na.ready = false\nif(b.ready){\nreturn 5\n}\nreturn 2\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名雙欄位由另一真結構讀int_bool混合參數() {
+        let source = "struct Source{\nvar count:int = 3\nvar ready:bool = true\n}\nstruct Target{\nvar count:int = 0\nvar ready:bool = false\n}\nfn route(flag:bool)->int{\nvar a:Source = Source()\na.count = 9\na.ready = flag\nvar b:Target = Target(count=a.count,ready=a.ready)\nif(b.ready){\nreturn b.count\n}\nreturn 1\n}\nfn main()->int{\nreturn route(true)+route(false)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 4);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名欄位來源型別不合由原Checker先拒絕() {
+        let source = "struct Source{\nvar ready:bool = true\n}\nstruct Target{\nvar count:int = 0\n}\nfn route()->int{\nvar a:Source = Source()\nvar b:Target = Target(count=a.ready)\nreturn b.count\n}\nfn main()->int{return route()}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(source),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_具名真欄位來源身分竄改執行前拒絕() {
+        let source = "struct Source{\nvar count:int = 3\n}\nstruct Target{\nvar count:int = 0\n}\nfn route()->int{\nvar a:Source = Source()\na.count = 7\nvar b:Target = Target(count=a.count)\na.count = 9\nreturn b.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut plan = checked(source);
+        assert_eq!(plan.execute().unwrap().result, Ok(7));
+        let Some(PrivateScalarLocalStep::DeclareCopyStruct { plan: named, .. }) =
+            plan.root_local_steps.iter_mut().find(|step| match step {
+                PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
+                    plan.named.iter().any(|(name, _)| name == "count"),
+                _ => false,
+            }) else { panic!("已驗證真欄位來源工作應存在"); };
+        named.named[0].1 = PrivateScalarCopyStructSeed::IntField {
+            declaration: DeclarationId(0),
+            owner: "a".to_owned(),
+            field: "count".to_owned(),
+        };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f4_具名int取最後動態局部值不重播宣告值() {
         let source = "struct Meter{\nvar count:int = 1\n}\nfn route()->int{\nvar n:int = 5\nn = 9\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{\nreturn route()\n}\n";
