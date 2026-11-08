@@ -316,6 +316,27 @@ impl BorrowSafety {
         Ok(())
     }
 
+    /// G18／R05：巢狀實參求值中，父呼叫的票據與內層函式的
+    /// 票據可能同時存活於同一呼叫者 tracker；內層先結束時
+    /// 只可原子歸還「此內層呼叫」的已核准票據子集。
+    /// 與 finish_scope_verified 的「整個活躍快照」契約不同，
+    /// 不能藉此提早解鎖仍屬外層的票據。
+    /// 每張原 Checker BorrowFact 必與動態 Ticket 完全對應，
+    /// 之後交由既有 finish_scope 對整批來源／序號／tracker
+    /// 唯讀預檢，再一起提交；任何失配不應部分釋放。
+    pub(crate) fn finish_selected_verified(
+        &mut self, tickets: &[BorrowTicket], checked: &[BorrowFact],
+    ) -> Result<(), BorrowSafetyError> {
+        // 子集重數預檢保留獨立來源；完整快照的既有
+        // G3 權威比對條件仍只存在 finish_scope_verified 一處。
+        if checked.len() != tickets.len()
+            || tickets.iter().zip(checked).any(|(ticket, fact)|
+                ticket.fact() != *fact) {
+            return Err(BorrowSafetyError::SnapshotMismatch);
+        }
+        self.finish_scope(tickets)
+    }
+
     /// F06／F09：正式 Checker 先依已解析詞彙 DeclarationId 建立靜態
     /// 借用事實，與本次呼叫真正簽出的票據逐筆核對後才整批歸還。
     /// 此處不從 BorrowTicket.fact() 倒推靜態證據；任何快照差異都

@@ -312,12 +312,19 @@ impl PrivateScalarCallOutcome {
                     returned_imported_loans.retain(|loan| loan != ticket);
                     let Some(frame) = frames.iter_mut().rev()
                         .find(|frame| frame.loans.contains(ticket)) else { return false; };
-                    let index = frame.loans.iter().position(|loan| loan == ticket)
-                        .expect("已確認同一真 BorrowTicket");
-                    frame.loans.remove(index);
-                    let Some(link) = frame.loan_resources.iter()
-                        .position(|(loan, _)| loan == ticket) else { return false; };
-                    frame.loan_resources.remove(link);
+                    // R05：同一呼叫者取得多張真票據時，既有
+                    // OwnedStr／BorrowSafety 退出工作堆疊一律逆序歸還。
+                    // 先前只要最後數量清零就接受任意還票順序，可能把
+                    // 篡改的多參數／失敗回滾軌跡誤判為可信。
+                    // 每張票據必須同時是目前 tracker 及資源連結帳
+                    // 的最近一張；不更動語言借用權限或真正歸還流程。
+                    if frame.loans.last() != Some(ticket)
+                        || frame.loan_resources.last()
+                            .is_none_or(|(linked, _)| linked != ticket) {
+                        return false;
+                    }
+                    frame.loans.pop();
+                    frame.loan_resources.pop();
                 }
                 PrivateScalarCallEvent::UnwindStarted => {
                     if unwinding || self.result.is_ok() { return false; }
@@ -1198,7 +1205,10 @@ impl PreparedPrivateScalarCall {
         if incoming.is_empty() { return Ok(()); }
         let tickets = incoming.iter().map(|(ticket, _)| *ticket).collect::<Vec<_>>();
         let facts = incoming.iter().map(|(_, fact)| *fact).collect::<Vec<_>>();
-        parent.borrow_tracker.finish_scope_verified(&tickets, &facts)
+        // 巢狀實參中外層 BorrowTicket 仍屬呼叫者的活躍責任；
+        // 內層提前 Returned 時只能釋放它自己的 incoming 子集。
+        // 由獨立的原 Checker BorrowFact／真 Ticket 一一核對後原子提交。
+        parent.borrow_tracker.finish_selected_verified(&tickets, &facts)
             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
         for ticket in tickets.into_iter().rev() {
             events.push(PrivateScalarCallEvent::LoanReturned(ticket));
@@ -8016,6 +8026,193 @@ mod g18_private_scalar_call_tests {
         plan.nested_callees.clear();
         assert!(matches!(plan.execute(), Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
+
+
+    // R05：真回傳與故障退出均按原顯式工作堆疊反向還票。
+    // 平衡但錯序的事件不能被當成 Checker 已核准執行證據。
+    #[test]
+    fn g18_r05_雙str實參真借用必反序歸還且不提前釋放資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nconst left:str = \"甲🪼\"\nconst right:str = \"乙🪼\"\nreturn inspect(left,right,4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let acquired: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(*ticket),
+            _ => None,
+        }).collect();
+        let returned: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanReturned(ticket) => Some(*ticket),
+            _ => None,
+        }).collect();
+        assert_eq!(acquired.len(), 2);
+        assert_eq!(returned, acquired.into_iter().rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn g18_r05_雙str正常返回交換兩張票據歸還次序必拒絕() {
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst left:str = \"甲\"\nconst right:str = \"乙\"\nreturn inspect(left,right,5)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let returns: Vec<_> = out.events.iter().enumerate()
+            .filter_map(|(index, event)| matches!(
+                event, PrivateScalarCallEvent::LoanReturned(_)
+            ).then_some(index)).collect();
+        assert_eq!(returns.len(), 2);
+        out.events.swap(returns[0], returns[1]);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_雙str實參後第三引數溢位反序歸還再釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst first:str = \"第一\"\nconst second:str = \"第二\"\nreturn inspect(first,second,1+9223372036854775807)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert!(out.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::UnwindStarted)));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )));
+        let acquired: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(*ticket),
+            _ => None,
+        }).collect();
+        let returned: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanReturned(ticket) => Some(*ticket),
+            _ => None,
+        }).collect();
+        assert_eq!(returned, acquired.into_iter().rev().collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn g18_r05_失敗回滾雙str平衡但錯序還票仍必拒絕() {
+        let src = "fn inspect(a:str,b:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst first:str = \"第一\"\nconst second:str = \"第二\"\nreturn inspect(first,second,1+9223372036854775807)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let returns: Vec<_> = out.events.iter().enumerate()
+            .filter_map(|(index, event)| matches!(
+                event, PrivateScalarCallEvent::LoanReturned(_)
+            ).then_some(index)).collect();
+        assert_eq!(returns.len(), 2);
+        out.events.swap(returns[0], returns[1]);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_跨子呼叫前後的兩張借用票據各按真返回逆序歸還() {
+        let src = "fn leaf(s:str,n:int)->int{\nreturn n+1\n}\nfn parent(s:str,n:int)->int{\nreturn n+2\n}\nfn main()->int{\nconst outer:str = \"外\"\nconst inner:str = \"內\"\nreturn parent(outer,leaf(inner,3))\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        let acquired: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(*ticket),
+            _ => None,
+        }).collect();
+        let returned: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanReturned(ticket) => Some(*ticket),
+            _ => None,
+        }).collect();
+        assert_eq!(acquired.len(), 2);
+        assert_eq!(returned, acquired.into_iter().rev().collect::<Vec<_>>());
+        let entered: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(entered, ["leaf", "parent"]);
+    }
+
+    // G18 R05：覆蓋 BorrowSafety 的獨立子集原子交易，
+    // 不擴增 F00 已凍結的 borrow_safety::tests:: 原 24 項來源。
+    #[test]
+    fn g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據() {
+        let mut tracker = BorrowSafety::new();
+        let outer = DeclarationId(8041);
+        let inner = DeclarationId(8042);
+        let first = tracker.acquire(outer, BorrowKind::SharedRead).unwrap();
+        let second = tracker.acquire(inner, BorrowKind::SharedRead).unwrap();
+        tracker.finish_selected_verified(&[second], &[second.fact()]).unwrap();
+        assert_eq!(
+            tracker.check_direct_access(outer),
+            Err(crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed),
+        );
+        assert_eq!(tracker.check_direct_access(inner), Ok(()));
+        assert_eq!(
+            tracker.check_ticket_access(first, BorrowKind::SharedRead), Ok(outer),
+        );
+        tracker.finish_scope_verified(&[first], &[first.fact()]).unwrap();
+        assert_eq!(tracker.check_direct_access(outer), Ok(()));
+    }
+
+    #[test]
+    fn g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據() {
+        let mut tracker = BorrowSafety::new();
+        let first = tracker.acquire(
+            DeclarationId(8061), BorrowKind::SharedRead,
+        ).unwrap();
+        let second = tracker.acquire(
+            DeclarationId(8062), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(
+            tracker.finish_selected_verified(&[second], &[first.fact()]),
+            Err(crate::borrow_safety::BorrowSafetyError::SnapshotMismatch),
+        );
+        assert_eq!(
+            tracker.finish_selected_verified(&[second], &[]),
+            Err(crate::borrow_safety::BorrowSafetyError::SnapshotMismatch),
+        );
+        for ticket in [first, second] {
+            assert_eq!(
+                tracker.check_ticket_access(ticket, BorrowKind::SharedRead),
+                Ok(ticket.fact().source),
+            );
+        }
+        tracker.finish_scope_verified(
+            &[first, second], &[first.fact(), second.fact()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn g18_r05_子集重複票據不得部分歸還其餘合法借用() {
+        let mut tracker = BorrowSafety::new();
+        let original = tracker.acquire(
+            DeclarationId(8081), BorrowKind::SharedRead,
+        ).unwrap();
+        let remaining = tracker.acquire(
+            DeclarationId(8082), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(
+            tracker.finish_selected_verified(
+                &[original, original], &[original.fact(), original.fact()],
+            ),
+            Err(crate::borrow_safety::BorrowSafetyError::InvalidRelease),
+        );
+        assert_eq!(
+            tracker.check_ticket_access(original, BorrowKind::SharedRead),
+            Ok(original.fact().source),
+        );
+        assert_eq!(
+            tracker.check_ticket_access(remaining, BorrowKind::SharedRead),
+            Ok(remaining.fact().source),
+        );
+        tracker.finish_scope_verified(
+            &[original, remaining], &[original.fact(), remaining.fact()],
+        ).unwrap();
+    }
+
 
 
 }
