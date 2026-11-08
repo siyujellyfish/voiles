@@ -1265,6 +1265,9 @@ enum PrivateScalarCopyStructSeed {
     Static(ApprovedSeed),
     IntBound(DeclarationId),
     BoolBound(DeclarationId),
+    /// 具名純 int 欄位支援原 Checker TypedHIR 的動態加減／括號，
+    /// 僅限無 Call 的純值表達式，不能於建構前重播靜態字面值。
+    IntArithmetic(Box<PrivateScalarReturnExpr>),
     IntField { declaration: DeclarationId, owner: String, field: String },
     BoolField { declaration: DeclarationId, owner: String, field: String },
 }
@@ -1273,13 +1276,16 @@ impl PrivateScalarCopyStructSeed {
         use crate::mixed_struct_runtime::ScalarKind;
         match self {
             Self::Static(value) => value.kind(),
-            Self::IntBound(_) | Self::IntField { .. } => ScalarKind::Int,
+            Self::IntBound(_) | Self::IntArithmetic(_) | Self::IntField { .. } =>
+                ScalarKind::Int,
             Self::BoolBound(_) | Self::BoolField { .. } => ScalarKind::Bool,
         }
     }
     fn evaluate(
         &self, frame: &PrivateScalarActiveFrame,
         structs: &crate::mixed_struct_runtime::MixedStructRuntime,
+        steps: &mut usize,
+        max_steps: usize,
     ) -> Result<ApprovedSeed, PrivateScalarCallRuntimeError> {
         match self {
             Self::Static(value) => Ok(value.clone()),
@@ -1289,6 +1295,80 @@ impl PrivateScalarCopyStructSeed {
             Self::BoolBound(id) => frame.bool_values.get(id).copied()
                 .map(ApprovedSeed::Bool)
                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::IntArithmetic(expr) => {
+                // 此局部純值 evaluator 不另建普通函式呼叫框架。
+                // 函式 Call 已在 compile 階段保守拒絕；依原 Checker
+                // 編譯的算術樹以顯式工作清單求值，避免 Rust 遞迴
+                // 並對每一個動態算式節點計入原 D18 StepBudget。
+                enum Work<'a> {
+                    Read(&'a PrivateScalarReturnExpr),
+                    Apply(char),
+                }
+                let mut work = vec![Work::Read(expr.as_ref())];
+                let mut values = Vec::<i64>::new();
+                while let Some(item) = work.pop() {
+                    if *steps >= max_steps {
+                        return Err(PrivateScalarCallRuntimeError::StepBudget);
+                    }
+                    *steps += 1;
+                    match item {
+                        Work::Read(PrivateScalarReturnExpr::Parameter(id)) => {
+                            values.push(frame.values.get(id).copied().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?);
+                        }
+                        Work::Read(PrivateScalarReturnExpr::Constant(value)) =>
+                            values.push(*value),
+                        Work::Read(PrivateScalarReturnExpr::CopyStructIntField {
+                            declaration, owner, field,
+                        }) => {
+                            if !frame.copy_struct_scopes.iter().rev().flatten()
+                                .any(|(id, known)| id == declaration && known == owner) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            let observed = structs.field(owner, field).map_err(|_|
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let crate::mixed_struct_runtime::Observed::Int(value) = observed
+                            else {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            };
+                            values.push(value);
+                        }
+                        Work::Read(PrivateScalarReturnExpr::Addition(left, right)) => {
+                            work.push(Work::Apply('+'));
+                            work.push(Work::Read(right));
+                            work.push(Work::Read(left));
+                        }
+                        Work::Read(PrivateScalarReturnExpr::Subtraction(left, right)) => {
+                            work.push(Work::Apply('-'));
+                            work.push(Work::Read(right));
+                            work.push(Work::Read(left));
+                        }
+                        Work::Apply(operator) => {
+                            let right = values.pop().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let left = values.pop().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let result = match operator {
+                                '+' => left.checked_add(right),
+                                '-' => left.checked_sub(right),
+                                _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                            }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
+                            values.push(result);
+                        }
+                        Work::Read(PrivateScalarReturnExpr::Call { .. }
+                            | PrivateScalarReturnExpr::Unreachable) =>
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                    }
+                }
+                let [value] = values.as_slice() else {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                };
+                Ok(ApprovedSeed::Int(*value))
+            }
             Self::IntField { declaration, owner, field } => {
                 if !frame.copy_struct_scopes.iter().rev().flatten()
                     .any(|(id, known)| id == declaration && known == owner) {
@@ -1716,6 +1796,23 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarCopyStructSeed::BoolField {
                         declaration, owner, field,
                     }
+                }
+                // 來源包括帶括號的原 Checker int 名稱／欄位及
+                // 多層有序加減；以與函式返回相同的 TypedHIR 編譯，
+                // 但不准在 P16 建構器中自行呼叫其他函式。
+                TermKind::BinaryInt(_) | TermKind::Group(_)
+                    if *kind == ScalarKind::Int => {
+                    let expression = PrivateScalarReturnExpr::from_checked_bindings(
+                        term, bindings, verified,
+                    )?;
+                    let mut calls = Vec::new();
+                    expression.collect_calls(&mut calls);
+                    if !calls.is_empty() {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "具名 int 算式內函式呼叫尚未接入同一建構工作圖",
+                        ));
+                    }
+                    PrivateScalarCopyStructSeed::IntArithmetic(Box::new(expression))
                 }
                 _ => PrivateScalarCopyStructSeed::Static(
                     approved_seed(term, verified).map_err(|_|
@@ -3017,8 +3114,9 @@ impl PreparedPrivateScalarCall {
                         // 皆為無副作用 int/bool 讀取，P16 仍控制後續
                         // 具名書寫順序及覆蓋預設、溢位等原安全語意。
                         let named_values = plan.named.iter().map(|(field, source)|
-                            source.evaluate(frame, &copy_structs)
-                                .map(|value| (field.as_str(), value))
+                            source.evaluate(
+                                frame, &copy_structs, &mut steps, budget.max_steps,
+                            ).map(|value| (field.as_str(), value))
                         ).collect::<Result<Vec<_>, _>>()?;
                         let named = named_values.iter().map(|(field, value)|
                             crate::mixed_struct_runtime::NamedMixed {
@@ -9488,6 +9586,82 @@ mod g18_private_scalar_call_tests {
             owner: "a".to_owned(),
             field: "count".to_owned(),
         };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    // V1／F4：原 Checker 的具名 int 加減保留當下真局部與真結構欄位，
+    // 交由已驗證 P16 建構求值；動態溢位不得留下半個資源結構。
+    #[test]
+    fn g18_v1_f4_具名int多層算式讀更新後局部而非宣告時常值() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar source:int = 4\nsource = source+3\nvar note:Meter = Meter(count=(source+2))\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名int算式跨真正可寫結構欄位加減() {
+        let source = "struct Meter{\nvar count:int = 1\n}\nfn compute()->int{\nvar left:Meter = Meter(count=6)\nleft.count = 9\nvar right:Meter = Meter(count=(left.count-2)+5)\nreturn right.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool與動態int算式一併交付真P16快照() {
+        let source = "struct Meter{\nvar count:int = 0\nvar enabled:bool = false\n}\nfn choose(flag:bool)->int{\nvar source:int = 3\nvar note:Meter = Meter(count=source+4,enabled=flag)\nsource = 99\nif(note.enabled){\nreturn note.count\n}\nreturn 0\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名動態int溢位不得建立半個結構或遺留資源() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar maximum:int = 9223372036854775807\nvar note:Meter = Meter(count=maximum+1)\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名int算式原Checker拒絕錯型別且動態計畫防偽() {
+        let invalid = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar ready:bool = true\nvar note:Meter = Meter(count=ready+1)\nreturn note.count\n}\nfn main()->int{return compute()}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let src = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar source:int = 4\nsource = source+3\nvar note:Meter = Meter(count=(source+2))\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+        let seed = plan.root_local_steps.iter_mut().find_map(|step| match step {
+            PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
+                plan.named.iter_mut().find(|(name, _)| name == "count")
+                    .map(|(_, seed)| seed),
+            _ => None,
+        }).expect("應找到原 Checker 具名動態算式");
+        assert!(matches!(seed, PrivateScalarCopyStructSeed::IntArithmetic(_)));
+        *seed = PrivateScalarCopyStructSeed::Static(ApprovedSeed::Int(7));
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
