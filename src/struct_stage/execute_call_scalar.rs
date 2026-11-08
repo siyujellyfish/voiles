@@ -954,6 +954,8 @@ impl PrivateScalarCallArgument {
 enum PrivateScalarBoolExpr {
     Constant(bool),
     Bound(DeclarationId),
+    /// 原 Checker 唯一 Copyable bool 欄位，從目前 P16 真結構執行期讀值。
+    CopyStructBoolField { declaration: DeclarationId, owner: String, field: String },
 }
 
 impl PrivateScalarBoolExpr {
@@ -1007,6 +1009,39 @@ impl PrivateScalarBoolExpr {
                 }
                 Ok(Self::Bound(id))
             }
+            TermKind::FieldRead(owner, field) => {
+                let declaration = *bindings.get(owner).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位讀取缺少本詞彙作用域 Checker 宣告",
+                    ),
+                )?;
+                let typed = verified.plan.declarations.typed_declaration(declaration)
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位讀取缺少 Checker 型別與 DeclarationId",
+                    ))?;
+                let definition = verified.structs.get(typed.ty).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位來源不是原 Checker 結構宣告",
+                    ),
+                )?;
+                if !definition.fields.iter().any(|candidate|
+                        candidate.name == *field && candidate.ty == "bool")
+                    || !definition.fields.iter().all(|candidate|
+                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(&token.kind, TokenKind::Name(found) if found == owner))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位缺少真 Lexer／Checker 純 Copyable 身分",
+                    ));
+                }
+                Ok(Self::CopyStructBoolField {
+                    declaration, owner: owner.clone(), field: field.clone(),
+                })
+            }
             TermKind::Group(inner) => {
                 if !verified.tokens.iter().any(|token|
                     token.start == span.start
@@ -1021,8 +1056,35 @@ impl PrivateScalarBoolExpr {
                 Self::from_checked(inner, bindings, verified)
             }
             _ => Err(PrivateScalarCallPrepareError::Unsupported(
-                "此子集僅執行原 Checker 已核准 bool 常值或已初始化名稱條件",
+                "此子集只執行原 Checker 核准 bool 常值／具名宣告／純結構欄位",
             )),
+        }
+    }
+
+    /// 所有 bool 取值共用同一種真執行權威，不能在條件與實參各自
+    /// 推定欄位初始常值；唯一 P16 持有者與本框架 DeclarationId
+    /// 必須同時存在，未到達宣告則零讀取／零資源事件。
+    fn evaluate_runtime(
+        &self,
+        frame: &PrivateScalarActiveFrame,
+        structs: &crate::mixed_struct_runtime::MixedStructRuntime,
+    ) -> Result<bool, PrivateScalarCallRuntimeError> {
+        match self {
+            Self::Constant(value) => Ok(*value),
+            Self::Bound(id) => frame.bool_values.get(id).copied()
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::CopyStructBoolField { declaration, owner, field } => {
+                if !frame.copy_struct_scopes.iter().rev().flatten()
+                    .any(|(id, name)| id == declaration && name == owner) {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
+                match structs.field(owner, field).map_err(|_|
+                    PrivateScalarCallRuntimeError::StateMismatch,
+                )? {
+                    crate::mixed_struct_runtime::Observed::Bool(value) => Ok(value),
+                    _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                }
+            }
         }
     }
 }
@@ -1600,7 +1662,9 @@ impl PreparedPrivateScalarCall {
                     // 同一張 Checker 名稱表只做 DeclarationId 身分查找；
                     // str 來源不得被當成 int 值求出，Expr 仍由 HIR 型別拒絕。
                     local_int.insert(owner.name.clone(), id);
-                    if owner.ty == "bool" {
+                    if owner.ty == "bool" || verified.structs.contains_key(&owner.ty) {
+                        // bool 值或 Copyable 結構 bool 欄位共用
+                        // Checker DeclarationId；Name(bool) 仍須 HIR 驗證。
                         local_bool.insert(owner.name.clone(), id);
                     } else {
                         local_bool.remove(&owner.name);
@@ -2013,7 +2077,9 @@ impl PreparedPrivateScalarCall {
                     declaration, name: owner.name.clone(), plan,
                 });
                 bindings.insert(owner.name.clone(), declaration);
-                bool_bindings.remove(&owner.name);
+                // 保留 struct 來源於 bool 詞彙索引，只有原 Checker
+                // 已核准 bool FieldRead 才能從它取得布林值。
+                bool_bindings.insert(owner.name.clone(), declaration);
                 continue;
             }
             if owner.ty == "str" {
@@ -2278,13 +2344,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match expr {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(id) =>
-                                *frame.bool_values.get(id).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         // 0/1 僅為同一顯式工作堆疊中的暫態 bool 編碼；
                         // 正式型別來自原 Checker 參數簽章，不能轉成 int slot。
                         values.push(i64::from(value));
@@ -2437,13 +2497,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match expr {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(source) =>
-                                *frame.bool_values.get(source).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         if frame.bool_values.insert(id, value).is_some() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -2565,13 +2619,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match expr {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(source) =>
-                                *frame.bool_values.get(source).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         if let Some(slot) = frame.bool_values.get_mut(&id) {
                             *slot = value;
                             events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
@@ -2595,13 +2643,8 @@ impl PreparedPrivateScalarCall {
                         let mut selected = None;
                         let mut current = branch;
                         loop {
-                            let condition = match &current.condition {
-                                PrivateScalarBoolExpr::Constant(value) => *value,
-                                PrivateScalarBoolExpr::Bound(id) =>
-                                    *frame.bool_values.get(id).ok_or(
-                                        PrivateScalarCallRuntimeError::StateMismatch,
-                                    )?,
-                            };
+                            let condition =
+                                current.condition.evaluate_runtime(frame, &copy_structs)?;
                             events.push(PrivateScalarCallEvent::ConditionalChecked(condition));
                             if condition {
                                 selected = Some(&current.when_true);
@@ -2626,13 +2669,7 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = match condition {
-                            PrivateScalarBoolExpr::Constant(value) => *value,
-                            PrivateScalarBoolExpr::Bound(id) =>
-                                *frame.bool_values.get(id).ok_or(
-                                    PrivateScalarCallRuntimeError::StateMismatch,
-                                )?,
-                        };
+                        let value = condition.evaluate_runtime(frame, &copy_structs)?;
                         events.push(PrivateScalarCallEvent::ConditionalChecked(value));
                         if value {
                             // 本輪真動作在反向邊之前，逐輪重新讀取框架 bool 值。
@@ -8360,6 +8397,84 @@ mod g18_private_scalar_call_tests {
     // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
     // V1／R01：用與原 Checker 同源的真正 main→函式工作圖驗證
     // Copyable 結構欄位在呼叫實參、賦值、跨框架與故障退出的順序。
+    // V1-F3：來源為原 Checker TypedHIR 認可的 bool 欄位；
+    // 在真正的 if／while 和普通函式 bool 實參位置動態讀取 P16 持有值。
+    #[test]
+    fn g18_v1_f3_結構bool真欄位控制if選中及未選中不造假框架() {
+        let src = "struct Meter{\nvar enabled:bool = true\nvar count:int = 5\n}\nfn yes()->int{\nreturn 7\n}\nfn no()->int{\nreturn 3\n}\nfn route()->int{\nvar note:Meter = Meter(enabled=false)\nif(note.enabled){\nreturn yes()\n}else{\nreturn no()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "yes"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool欄位真實參在子函式if判定() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn yes()->int{\nreturn 10\n}\nfn no()->int{\nreturn 2\n}\nfn choose(flag:bool)->int{\nif(flag){\nreturn yes()\n}\nreturn no()\n}\nfn route()->int{\nvar meter:Meter = Meter(enabled=false)\nreturn choose(meter.enabled)\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::BoolArgumentEvaluated(false)
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool真欄位while每輪判定且break有序離域() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn one(x:int)->int{\nreturn x\n}\nfn route()->int{\nvar meter:Meter = Meter()\nvar total:int = 0\nwhile(meter.enabled){\ntotal = total+1\nbreak\n}\nreturn one(total)\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ConditionalChecked(true)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool_false_while零迭代且保留真函式圖() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn one(x:int)->int{\nreturn x\n}\nfn route()->int{\nvar meter:Meter = Meter(enabled=false)\nvar total:int = 8\nwhile(meter.enabled){\ntotal = total+1\n}\nreturn one(total)\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::ConditionalChecked(false)
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool欄位型別不符原Checker直接拒絕() {
+        let src = "struct Meter{\nvar count:int = 9\n}\nfn yes()->int{\nreturn 7\n}\nfn route()->int{\nvar meter:Meter = Meter()\nif(meter.count){\nreturn yes()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool欄位編譯身分竄改必須零執行拒絕() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn one()->int{\nreturn 1\n}\nfn route()->int{\nvar meter:Meter = Meter()\nif(meter.enabled){\nreturn one()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(1));
+        let Some(PrivateScalarLocalStep::EarlyReturn(branch)) =
+            plan.root_local_steps.iter_mut().find(|step|
+                matches!(step, PrivateScalarLocalStep::EarlyReturn(_))) else {
+            panic!("原 Checker 真 if 工作圖必須存在");
+        };
+        branch.condition = PrivateScalarBoolExpr::CopyStructBoolField {
+            declaration: DeclarationId(0),
+            owner: "meter".to_owned(), field: "enabled".to_owned(),
+        };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f1_f3_main結構欄位作為真函式實參依動態值求出() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn main()->int{\nvar note:Archive = Archive(count=8)\nreturn plus(note.count)\n}\n";
