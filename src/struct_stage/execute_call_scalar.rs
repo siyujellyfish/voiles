@@ -9332,10 +9332,13 @@ mod g18_private_scalar_call_tests {
         let source = "struct Source{\nvar count:int = 3\n}\nstruct Target{\nvar count:int = 0\n}\nfn route()->int{\nvar a:Source = Source()\na.count = 7\nvar b:Target = Target(count=a.count)\na.count = 9\nreturn b.count\n}\nfn main()->int{\nreturn route()\n}\n";
         let mut plan = checked(source);
         assert_eq!(plan.execute().unwrap().result, Ok(7));
-        let Some(PrivateScalarLocalStep::DeclareCopyStruct { plan: named, .. }) =
+        let Some(PrivateScalarLocalStep::DeclareCopyStruct {
+            initializer: PrivateScalarCopyStructInitializer::Construct(named), ..
+        }) =
             plan.root_local_steps.iter_mut().find(|step| match step {
-                PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
-                    plan.named.iter().any(|(name, _)| name == "count"),
+                PrivateScalarLocalStep::DeclareCopyStruct {
+                    initializer: PrivateScalarCopyStructInitializer::Construct(plan), ..
+                } => plan.named.iter().any(|(name, _)| name == "count"),
                 _ => false,
             }) else { panic!("已驗證真欄位來源工作應存在"); };
         named.named[0].1 = PrivateScalarCopyStructSeed::IntField {
@@ -9395,7 +9398,9 @@ mod g18_private_scalar_call_tests {
         let src = "struct Meter{\nvar count:int = 1\n}\nfn route()->int{\nvar n:int = 5\nn = 9\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{\nreturn route()\n}\n";
         let mut plan = checked(src);
         assert_eq!(plan.execute().unwrap().result, Ok(9));
-        let Some(PrivateScalarLocalStep::DeclareCopyStruct { plan: named, .. }) =
+        let Some(PrivateScalarLocalStep::DeclareCopyStruct {
+            initializer: PrivateScalarCopyStructInitializer::Construct(named), ..
+        }) =
             plan.root_local_steps.iter_mut().find(|step|
                 matches!(step, PrivateScalarLocalStep::DeclareCopyStruct { .. })) else {
             panic!("原 Checker 真具名 struct 工作不存在");
