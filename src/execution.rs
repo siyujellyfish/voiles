@@ -9,6 +9,7 @@ mod file;
 mod registry;
 mod trace;
 mod source_audit;
+mod async_task;
 
 use crate::common_ir::{
     self, FrontendMode, NodeSpan, ResolvedNames, ScalarType, VerifiedScalarHir,
