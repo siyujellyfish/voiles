@@ -10344,6 +10344,75 @@ mod g18_private_scalar_call_tests {
     // V1-F4：原 Checker 核准 const str 結構的真正 UTF-8 所有權，
     // 同一 OwnedStrRuntime 帳中按建構先後配置 ResourceId。
     #[test]
+    fn g18_v1_f4_同層先conststr結構後字面str按真建立反序離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"結構\"\n}\nfn run()->int{\nvar item:Archive = Archive()\nvar tail:str = \"晚建🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層雙str結構先於普通str三資源真反序() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nconst first:str = \"甲\"\nconst second:str = \"乙\"\nvar count:int = 5\n}\nfn run()->int{\nvar item:Archive = Archive()\nconst tail:str = \"丙\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Created(3),
+            R::Released(3), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層後建varstr兩次字面覆寫仍先於結構離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 9\nconst label:str = \"先建\"\n}\nfn run()->int{\nvar item:Archive = Archive()\nvar tail:str = \"舊\"\ntail = \"新🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Created(3),
+            R::Released(2), R::Released(3), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層後建str借用先還票再釋放字串與結構() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 4\nconst label:str = \"較早\"\n}\nfn receive(s:str)->int{\nreturn 6\n}\nfn run()->int{\nvar item:Archive = Archive()\nconst tail:str = \"借用者\"\nreturn receive(tail)+item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).expect("BorrowTicket 真歸還");
+        let released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(_))
+        )).expect("真資源退出");
+        assert!(returned < released);
+    }
+
+    #[test]
+    fn g18_v1_f4_真if局部先結構後str兩資源按所選葉釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 3\nconst label:str = \"分支\"\n}\nfn run()->int{\nif(true){\nvar item:Archive = Archive()\nvar tail:str = \"內層🪼\"\n}\nreturn 8\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
     fn g18_v1_f4_conststr具名int函式真返回後才建立資源結構() {
         use crate::owned_str_runtime::ResourceEvent as R;
         let src = "struct Archive{\nvar count:int = 0\nconst label:str = \"真資源🪼\"\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nvar item:Archive = Archive(count=plus(6))\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
