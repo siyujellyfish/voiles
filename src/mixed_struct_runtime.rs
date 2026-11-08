@@ -321,19 +321,41 @@ impl MixedStructRuntime {
         if !value.missing.is_empty() {return Err(MixedError::IncompleteStruct);}
         Ok((i,j))
     }
+    /// 既有 P16 內部帳與 V1 普通函式共享帳沿用完全相同的
+    /// 完整結構轉交核心；來源 Slot 失效、目標取得原 OwnedUtf8，
+    /// 不另配置 ResourceId，也不複製 String。
+    fn move_into(
+        scopes:&mut Vec<Vec<OwnedSlot>>, ledger:&mut OwnedStrRuntime,
+        source:(usize,usize),target:&str,
+    ) {
+        let value=scopes[source.0][source.1].owned.take()
+            .expect("已預檢唯一有效結構持有者");
+        for field in &value.fields {
+            if let StoredValue::Str(resource)=&field.value {
+                ledger.mark_detached_move(resource);
+            }
+        }
+        scopes.last_mut().expect("根作用域存在").push(OwnedSlot {
+            name:target.to_owned(),owned:Some(value),
+        });
+    }
     pub(crate) fn move_whole(&mut self,source:&str,target:&str)
         ->Result<(),MixedError> {
         self.current_free(target)?;
-        let (i,j)=self.valid_whole(source)?;
-        let value=self.scopes[i][j].owned.take().expect("已預檢持有者");
-        for field in &value.fields {
-            if let StoredValue::Str(resource)=&field.value {
-                self.ledger.mark_detached_move(resource);
-            }
-        }
-        self.scopes.last_mut().expect("根作用域存在").push(OwnedSlot {
-            name:target.to_owned(),owned:Some(value),
-        });
+        let location=self.valid_whole(source)?;
+        Self::move_into(&mut self.scopes,&mut self.ledger,location,target);
+        Ok(())
+    }
+    /// G18／V1-F4：原 Checker 真完整結構 .move() 由普通函式
+    /// 唯一 OwnedStrRuntime 直接簽發 Moved(原 ResourceId)。
+    /// 任一前置檢查失敗不得先取走來源或發出資源事件。
+    pub(crate) fn move_whole_with_shared_ledger(
+        &mut self,ledger:&mut OwnedStrRuntime,
+        source:&str,target:&str,
+    )->Result<(),MixedError> {
+        self.current_free(target)?;
+        let location=self.valid_whole(source)?;
+        Self::move_into(&mut self.scopes,ledger,location,target);
         Ok(())
     }
     /// 只允許已完成的全純值結構獨立複本；
