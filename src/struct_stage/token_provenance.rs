@@ -14,6 +14,67 @@ fn verified_private_token_roles(
 ) -> Option<std::collections::BTreeSet<crate::common_ir::ModeNodeIdentity>> {
     use crate::common_ir::{FrontendMode, NodeRole, NodeSpan, SourceIdentityAudit};
 
+    /// V7：原 Lexer 的 await 前綴必須與真正 Call AST 明確綁定。
+    /// 只稽核 Parser 已建立的 expression，不掃描文字重建第二份 AST；
+    /// 既有非 await 子表達式仍由同一遞迴走訪，以防來源巢狀偽裝。
+    fn term(
+        value: &Term, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
+    ) -> bool {
+        match &value.kind {
+            TermKind::Call(call) => {
+                if call.awaited {
+                    let Some(index) = tokens.binary_search_by_key(
+                        &value.start, |token| token.start,
+                    ).ok() else { return false; };
+                    let Some(prefix) = tokens.get(index) else { return false; };
+                    let Some(name) = tokens.get(index + 1) else { return false; };
+                    let Some(left) = tokens.get(index + 2) else { return false; };
+                    let close_valid = tokens.iter().any(|token|
+                        token.end == value.end
+                            && matches!(token.kind, TokenKind::Symbol(')')));
+                    if !matches!(&prefix.kind, TokenKind::Name(text) if text == "await")
+                        || !matches!(&name.kind, TokenKind::Name(text)
+                            if text == &call.name)
+                        || !matches!(left.kind, TokenKind::Symbol('('))
+                        || prefix.start != value.start || prefix.end > name.start
+                        || name.end > left.start || !close_valid
+                        || audit.source.get(prefix.start..prefix.end) != Some("await")
+                        || audit.source.get(name.start..name.end) != Some(call.name.as_str())
+                    {
+                        return false;
+                    }
+                    if !audit.record(NodeRole::Name,
+                        NodeSpan::new(prefix.start, prefix.end),
+                        Some(value.node_span())) {
+                        return false;
+                    }
+                } else if tokens.binary_search_by_key(
+                    &value.start, |token| token.start,
+                ).ok().and_then(|index| tokens.get(index).zip(tokens.get(index + 1)))
+                    .is_some_and(|(prefix, next)|
+                        matches!(&prefix.kind, TokenKind::Name(word) if word == "await")
+                            && matches!(next.kind, TokenKind::Name(_))) {
+                    // 即使有人將已解析 await Call 的 awaited 身分篡改為 false，
+                    // 原相鄰 token 仍足以證明前綴不得冒充同步呼叫。
+                    return false;
+                }
+                call.arguments.iter().all(|arg| term(arg, tokens, audit))
+            }
+            TermKind::Group(inner) => term(inner, tokens, audit),
+            TermKind::BinaryInt(binary) =>
+                term(&binary.left, tokens, audit)
+                    && term(&binary.right, tokens, audit),
+            TermKind::Construct(_, fields) => fields.iter().all(|(_, arg)|
+                term(arg, tokens, audit)),
+            TermKind::MethodCall(_, _, args) => args.iter().all(|arg|
+                term(arg, tokens, audit)),
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
+            | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
+            | TermKind::FieldRead(_, _) => true,
+        }
+    }
+
     fn block(
         body: &crate::syntax_shared::ParsedBlock<Stmt>,
         tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
@@ -27,9 +88,11 @@ fn verified_private_token_roles(
             StmtKind::Declare(decl) =>
                 crate::syntax_shared::checked_declaration_tokens(
                     decl, &decl.ty, tokens, audit,
-                ),
+                ) && decl.initializer.as_ref().is_none_or(|value|
+                    term(value, tokens, audit)),
             StmtKind::If { branch, no } => {
-                block(&branch.body, tokens, audit)
+                term(&branch.condition, tokens, audit)
+                    && block(&branch.body, tokens, audit)
                     && no.as_ref().is_none_or(|otherwise| match otherwise {
                         crate::syntax_shared::ParsedElse::Block(body) =>
                             block(body, tokens, audit),
@@ -40,10 +103,13 @@ fn verified_private_token_roles(
                             stmts.iter().all(|stmt| statement(stmt, tokens, audit)),
                     })
             }
-            StmtKind::ForRange { body, .. } | StmtKind::While { body, .. } =>
-                block(body, tokens, audit),
-            StmtKind::Assign(_) | StmtKind::FieldAssign { .. }
-            | StmtKind::Return(_) | StmtKind::Break | StmtKind::Continue => true,
+            StmtKind::While { condition, body } =>
+                term(condition, tokens, audit) && block(body, tokens, audit),
+            StmtKind::ForRange { body, .. } => block(body, tokens, audit),
+            StmtKind::Assign(assign) => term(&assign.expression, tokens, audit),
+            StmtKind::FieldAssign { value, .. } => term(value, tokens, audit),
+            StmtKind::Return(value) => term(&value.expression, tokens, audit),
+            StmtKind::Break | StmtKind::Continue => true,
         }
     }
     fn function(

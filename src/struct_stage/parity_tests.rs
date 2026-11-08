@@ -1837,3 +1837,120 @@ mod r02_f03_真正公私_return_直接保存共同_parsedreturn {
             "公開正式 P09→P10→P11→P12 不得因 return AST 轉換回歸");
     }
 }
+
+
+// V7／A1：直接 await 的真 Lexer／Parser／Checker 與原 byte-span 身分。
+// 僅核對已核准的延遲啟動直接等待來源，不宣稱使用者程式已能
+// 在所有執行器支援協作式 suspend／wakeup。
+#[cfg(test)]
+mod v7_direct_await_source_tests {
+    use super::*;
+    use crate::DiagnosticKind;
+
+    fn inspected(source: &str) -> Result<(), crate::Diagnostic> {
+        verify_source_with_ability(
+            source, crate::ownership_policy::approved_leaf_copy_permission,
+        ).map(|_| ())
+    }
+
+    #[test]
+    fn v7_a1_原私有async普通函式必由真正直接await才能通過checker() {
+        let code = "async fn increase(value:int)->int{\nreturn value+1\n}\nfn main()->int{\nreturn await increase(4)\n}\n";
+        let checked = verify_source_with_ability(
+            code, crate::ownership_policy::approved_leaf_copy_permission,
+        ).expect("真原 Parser／Checker 應接受直接 await");
+        let worker = checked.functions.iter().find(|f| f.name == "increase").unwrap();
+        assert!(worker.is_async);
+        let main = checked.functions.iter().find(|f| f.name == "main").unwrap();
+        let StmtKind::Return(ret) = &main.body.statements[0].kind else {
+            panic!("原 Parser 應保留真返回語句");
+        };
+        let TermKind::Call(call) = &ret.expression.kind else {
+            panic!("直接 await 必有獨立 Call 身分");
+        };
+        assert!(call.awaited);
+        assert_eq!(call.name, "increase");
+        assert_eq!(call.arguments.len(), 1);
+        assert_eq!(&code[ret.expression.start..ret.expression.end], "await increase(4)");
+        let source = Source::new(code.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        assert!(verified_private_source_tokens(
+            code, &tokens.tokens, &checked.structs, &checked.functions,
+        ));
+    }
+
+    #[test]
+    fn v7_a1_零參數async函式直接await不是未決結構建立式() {
+        let code = "async fn ready()->int{\nreturn 8\n}\nfn main()->int{\nreturn await ready()\n}\n";
+        let checked = verify_source_with_ability(
+            code, crate::ownership_policy::approved_leaf_copy_permission,
+        ).unwrap();
+        let main = checked.functions.iter().find(|f| f.name == "main").unwrap();
+        let StmtKind::Return(ret) = &main.body.statements[0].kind else { unreachable!() };
+        let TermKind::Call(call) = &ret.expression.kind else {
+            panic!("await ready() 不得錯解析為 UnresolvedZeroArgs 或 Construct");
+        };
+        assert_eq!(call.name, "ready");
+        assert!(call.awaited);
+        assert!(call.arguments.is_empty());
+    }
+
+    #[test]
+    fn v7_a1_未等待async與等待同步函式都由原checker拒絕() {
+        for code in [
+            "async fn worker()->int{\nreturn 3\n}\nfn main()->int{\nreturn worker()\n}\n",
+            "fn worker()->int{\nreturn 3\n}\nfn main()->int{\nreturn await worker()\n}\n",
+            "async fn worker(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn await worker(true)\n}\n",
+        ] {
+            let diagnostic = inspected(code).unwrap_err();
+            assert_eq!(diagnostic.kind, DiagnosticKind::Static);
+        }
+    }
+
+    #[test]
+    fn v7_a1_直接await只接受已命名函式與合法具位置參數() {
+        for code in [
+            "fn main()->int{\nreturn await missing()\n}\n",
+            "async fn worker(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn await worker()\n}\n",
+            "async fn worker()->int{\nreturn 1\n}\nfn main()->int{\nreturn await worker(1)\n}\n",
+        ] {
+            let diagnostic = inspected(code).unwrap_err();
+            assert_eq!(diagnostic.kind, DiagnosticKind::Static);
+        }
+        let malformed = "async fn worker()->int{\nreturn 1\n}\nfn main()->int{\nreturn await worker.borrow()\n}\n";
+        assert_eq!(inspected(malformed).unwrap_err().kind, DiagnosticKind::Syntax);
+    }
+
+    #[test]
+    fn v7_a1_篡改await呼叫身分不得越過原Lexer來源認證() {
+        let text = "async fn worker(n:int)->int{\nreturn n\n}\nfn main()->int{\nreturn await worker(7)\n}\n";
+        let source = Source::new(text.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        assert!(scan.diagnostics.is_empty());
+        let (structs, mut funcs) = Parser {
+            source: &source, tokens: &scan.tokens, cursor: 0,
+        }.file().unwrap();
+        assert!(verified_private_source_tokens(text, &scan.tokens, &structs, &funcs));
+        let main = funcs.iter_mut().find(|f| f.name == "main").unwrap();
+        let StmtKind::Return(ret) = &mut main.body.statements[0].kind else {
+            unreachable!()
+        };
+        let TermKind::Call(call) = &mut ret.expression.kind else { unreachable!() };
+        assert!(call.awaited);
+        call.awaited = false;
+        assert!(!verified_private_source_tokens(
+            text, &scan.tokens, &structs, &funcs,
+        ));
+    }
+
+    #[test]
+    fn v7_a1_公開MVP不得藉私有await擴張同步介面() {
+        let text = "async fn compute()->int{\nreturn 2\n}\nfn main()->int{\nreturn await compute()\n}\n";
+        let source = Source::new(text.as_bytes().to_vec());
+        let tokens = lexer::scan(&source);
+        assert!(tokens.diagnostics.is_empty());
+        assert!(crate::parser::parse(&source, &tokens.tokens).is_err());
+        assert!(inspected(text).is_ok());
+    }
+}

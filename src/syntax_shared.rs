@@ -579,6 +579,9 @@ pub(crate) fn parse_assignment<P: AssignmentSyntax>(
 pub(crate) struct ParsedNamedCall<A> {
     pub(crate) name: String,
     pub(crate) arguments: A,
+    /// V7：只有原私有 Parser 直接消耗 await token 後才會為 true；
+    /// 公開 MVP-A 函式呼叫及所有既有同步呼叫一律為 false。
+    pub(crate) awaited: bool,
 }
 
 pub(crate) trait CallSyntax {
@@ -600,7 +603,7 @@ pub(crate) fn parse_named_call<P: CallSyntax>(
     parser: &mut P, name: String,
 ) -> Result<(ParsedNamedCall<P::Arguments>, usize), crate::Diagnostic> {
     let (arguments, end) = parse_call(parser)?;
-    Ok((ParsedNamedCall { name, arguments }, end))
+    Ok((ParsedNamedCall { name, arguments, awaited: false }, end))
 }
 
 pub(crate) fn newline(tokens: &[Token], cursor: usize) -> bool {

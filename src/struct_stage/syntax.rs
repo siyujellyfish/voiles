@@ -104,6 +104,24 @@ impl Parser<'_> {
     }
 
     fn atom(&mut self) -> Result<Term, Diagnostic> {
+        // V7／E1-A：await 先只接通「直接等待已宣告函式」形式。
+        // 原 Lexer 目前將 await 標為 Name；此處以相鄰原 token
+        // 的精確文字識別前綴，不改共用 Lexer／公開 P01 的名稱集合。
+        // 建立的是既有真 Call AST 上的 awaited 身分，而不是
+        // 把 async 呼叫偽裝成同步求值或新增第二套 Parser。
+        if matches!(&self.tok().kind, TokenKind::Name(word) if word == "await")
+            && self.tokens.get(self.cursor + 1).is_some_and(|next|
+                matches!(next.kind, TokenKind::Name(_))) {
+            let start = self.tok().start;
+            self.cursor += 1;
+            let name = self.name()?;
+            self.take('(', "V7：await 目前只接受直接函式呼叫，必須有左括號")?;
+            let (mut call, end) = crate::syntax_shared::parse_named_call(self, name)?;
+            call.awaited = true;
+            return Ok(Term {
+                kind: TermKind::Call(call), start, end,
+            });
+        }
         // 無函式／方法／索引後綴時由公私共同核心直接建構裸名
         // AST；不能讓公開入口藉此接受私有 .move／.borrow 語法。
         if let Some(name) = crate::syntax_shared::parse_bare_name(
