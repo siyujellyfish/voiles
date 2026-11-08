@@ -185,3 +185,6 @@ jobs:
         run: python3 tools/核對G18原六項驗收差距.py --test-bin target/p02/p04_source_internal --audit
       - name: G18 V1 R07 原六項正式 --check 結果／阻塞狀態一致性 Gate
         run: python3 tools/核對G18-R07正式狀態一致性.py --test-bin target/p02/p04_source_internal
+
+      - name: G18 V0 原六項二十六義務與二十五筆不重複真來源盤點 Gate
+        run: python3 tools/核對G18-V0原六項義務來源.py --test-bin target/p02/p04_source_internal --report target/p02/g18_v0_obligations.json
