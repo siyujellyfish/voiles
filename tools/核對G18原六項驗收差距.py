@@ -445,6 +445,9 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_子集重複票據不得部分歸還其餘合法借用",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參真借用必反序歸還且不提前釋放資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str正常返回交換兩張票據歸還次序必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參後第三引數溢位反序歸還再釋放",
@@ -603,6 +606,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_子集重複票據不得部分歸還其餘合法借用",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參真借用必反序歸還且不提前釋放資源",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str正常返回交換兩張票據歸還次序必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參後第三引數溢位反序歸還再釋放",
