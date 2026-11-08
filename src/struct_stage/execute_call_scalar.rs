@@ -48,6 +48,9 @@ enum PrivateScalarCallEvent {
     /// 的純 Copyable int／bool 結構局部；不偽造 UTF-8 ResourceId。
     CopyStructConstructed(DeclarationId),
     CopyStructScopeEnded(DeclarationId),
+    /// 原 P16 真 OwnedUtf8 欄位的來源宣告、欄位與 ResourceId
+    /// 三重身分；只有實際完成建構後才能發出，不新造資源事件。
+    CopyStructResourceOwnerBound { declaration: DeclarationId, field: String, resource_id: u64 },
     /// 原 Checker 已核准的可寫結構 int 欄位，真 P16 持有者更新後才記錄。
     CopyStructIntFieldAssigned(DeclarationId, String, i64),
     /// 唯有 P16 真 bool 欄位更新後才發出的原 Checker 同源事件。
@@ -107,6 +110,9 @@ impl PrivateScalarCallOutcome {
             locals: Vec<PrivateScalarLocalBinding>,
             resource_ids: std::collections::HashSet<u64>,
             owner_resources: BTreeMap<DeclarationId, u64>,
+            /// 結構的各個原 Checker str 欄位各持有唯一真資源，
+            /// 不把同一結構的多欄位塞進單純 DeclarationId 帳。
+            struct_owner_resources: BTreeMap<(DeclarationId, String), u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
             pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
@@ -120,6 +126,7 @@ impl PrivateScalarCallOutcome {
             name: None, locals: Vec::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
+            struct_owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -158,6 +165,7 @@ impl PrivateScalarCallOutcome {
                         name: Some(name.clone()), locals: Vec::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
+            struct_owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
