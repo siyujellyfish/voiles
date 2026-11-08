@@ -1738,12 +1738,15 @@ impl PreparedPrivateScalarCall {
         Ok(PrivateScalarCopyStructPlan { fields, named: supplied })
     }
 
-    /// V1／F4：僅對原 Checker 已簽發的同型別 direct_move，
-    /// 使用 P16 的真 Move，而不複製整個結構或提前分配資源。
+    /// V1／F4：直線宣告必須有原 Checker direct_moves 的完整配對。
+    /// 原 Checker 故意不把 if/for/while 的可選路徑 Move 記成已執行；
+    /// 對原 Checker 完整接受的控制路徑，僅以當前區塊原 Parser Move、
+    /// 同型別 DeclarationId 與動態 P16 借用／存活守門按實際路徑轉交，
+    /// 不得偽造直線的 direct_moves，亦不得提前 Move 未選分支。
     fn checked_copy_struct_move(
         target_name: &str, ty: &str, mutable: bool, target: DeclarationId,
         term: &Term, bindings: &BTreeMap<String, DeclarationId>,
-        verified: &VerifiedPrivateSource,
+        verified: &VerifiedPrivateSource, control_path: bool,
     ) -> Result<(DeclarationId, String), PrivateScalarCallPrepareError> {
         let source_name = PreparedPrivateMoveCall::checked_move_name(term, verified)
             .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
@@ -1765,7 +1768,8 @@ impl PreparedPrivateScalarCall {
             || !verified.plan.declarations.matches(target, ty, mutable)
             || !verified.plan.declarations.typed_declaration(source)
                 .is_some_and(|fact| fact.ty == ty)
-            || !verified.plan.declarations.direct_moves.contains(&(source, target)) {
+            || (!control_path
+                && !verified.plan.declarations.direct_moves.contains(&(source, target))) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "純值結構整筆移動缺少 Checker 同型別來源／目標轉移配對",
             ));
@@ -2060,7 +2064,7 @@ impl PreparedPrivateScalarCall {
                 if matches!(&term.kind, TermKind::Move(_)) {
                     let (source, source_name) = Self::checked_copy_struct_move(
                         &owner.name, &owner.ty, owner.mutable, id,
-                        term, int_bindings, verified,
+                        term, int_bindings, verified, true,
                     )?;
                     Ok(PrivateScalarBranchAction::MoveCopyStruct {
                         declaration: id, name: owner.name.clone(), source, source_name,
@@ -2465,7 +2469,7 @@ impl PreparedPrivateScalarCall {
                 if matches!(&term.kind, TermKind::Move(_)) {
                     let (source, source_name) = Self::checked_copy_struct_move(
                         &owner.name, &owner.ty, owner.mutable, declaration,
-                        term, &bindings, verified,
+                        term, &bindings, verified, false,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::MoveCopyStruct {
                         declaration, name: owner.name.clone(), source, source_name,
