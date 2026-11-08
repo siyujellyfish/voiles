@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百九十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百九十九項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,11 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r01_普通函式兩葉return後不可達結構函式不污染圖",
+    "g18_r03_多層普通函式選false真返回不能進不可達tail",
+    "g18_r04_普通函式提前return真str借用不可達結構零資源",
+    "g18_r01_真正可達的結構局部函式仍須保守拒絕",
+    "g18_r01_普通函式不可達閉包計畫被增添目標須在執行前拒絕",
     "g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
     "g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
     "g18_r01_main可達不支援的結構函式仍不可偷略過",
