@@ -28,6 +28,9 @@ enum PrivateScalarCallEvent {
     ArgumentEvaluated(i64),
     /// bool 實參獨立標記，不把 Copyable bool 當成 int 隱含轉型。
     BoolArgumentEvaluated(bool),
+    /// V7 E5：直接 await 真到達可啟動安全點後，才由同一
+    /// Checker Call 工作圖簽發。下筆必須進入同名 async 函式框架。
+    AwaitSafePoint(String),
     FunctionEntered(String),
     ParameterBound(DeclarationId, i64),
     BoolParameterBound(DeclarationId, bool),
@@ -156,12 +159,21 @@ impl PrivateScalarCallOutcome {
         }];
         let mut recorded = Vec::new();
         let mut unwinding = false;
+        // 一筆已證直接等待安全點須立刻接入其目標函式，
+        // 不能重播安全點、插入其它事件或改綁另一個框架。
+        let mut awaited_entry: Option<&str> = None;
         let mut created_ids = std::collections::HashSet::<u64>::new();
         // 僅實際成功 Returned 的子框架，才可以在正式回滾之前
         // 歸還其直接呼叫者的票據；尚未入框架的失敗實參須先回滾。
         let mut returned_imported_loans =
             Vec::<crate::borrow_safety::BorrowTicket>::new();
         for event in &self.events {
+            if let Some(target) = awaited_entry {
+                if !matches!(event,
+                    PrivateScalarCallEvent::FunctionEntered(name) if name == target) {
+                    return false;
+                }
+            }
             // P16 整筆結構已真正交付目標後，必須立即收到真共帳
             // 對每一個 str 欄位發出的 Moved(id)，不得穿插其他事件。
             if frames.last().is_some_and(|frame|
@@ -198,7 +210,18 @@ impl PrivateScalarCallOutcome {
                 return false;
             }
             match event {
+                PrivateScalarCallEvent::AwaitSafePoint(name) => {
+                    let Some(frame) = frames.last() else { return false; };
+                    if unwinding || frame.returned
+                        || !frame.loans.is_empty() || !frame.imported_loans.is_empty()
+                        || frame.pending_str_field_write.is_some()
+                        || !frame.pending_struct_moves.is_empty() {
+                        return false;
+                    }
+                    awaited_entry = Some(name);
+                }
                 PrivateScalarCallEvent::FunctionEntered(name) => {
+                    awaited_entry = None;
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()),
@@ -670,7 +693,8 @@ impl PrivateScalarCallOutcome {
                 }),
             _ => None,
         }).collect::<Vec<_>>();
-        frames.len() == 1 && frames[0].locals.is_empty()
+        frames.len() == 1 && awaited_entry.is_none()
+            && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
             && frames[0].struct_field_order.is_empty()
@@ -1795,7 +1819,8 @@ enum PrivateScalarTask<'a> {
     UnbindIterator(DeclarationId),
     EndScope(usize),
     ExecuteBranchAction(&'a PrivateScalarBranchAction),
-    EnterCall(&'a str, &'a [PrivateScalarCallArgument], bool),
+    /// 第三欄是原 main 根返回、第四欄是已核准 async await 身分。
+    EnterCall(&'a str, &'a [PrivateScalarCallArgument], bool, bool),
     ExitCall,
 }
 
@@ -3153,12 +3178,14 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::Evaluate(right, false));
                             tasks.push(PrivateScalarTask::Evaluate(left, false));
                         }
-                        PrivateScalarReturnExpr::Call { name, arguments, .. } => {
+                        PrivateScalarReturnExpr::Call {
+                            name, arguments, awaited,
+                        } => {
                             // 所有子呼叫實參在父框架從左到右求值；
                             // 其中任何一項錯誤時，尚未 Enter 的函式
                             // 不得產生假的進入或返回事件。
                             tasks.push(PrivateScalarTask::EnterCall(
-                                name, arguments, is_root_expression,
+                                name, arguments, is_root_expression, *awaited,
                             ));
                             for argument in arguments.iter().rev() {
                                 match argument {
@@ -3935,7 +3962,17 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
                         }
                     },
-                    PrivateScalarTask::EnterCall(name, argument_plans, is_root_call) => {
+                    PrivateScalarTask::EnterCall(
+                        name, argument_plans, is_root_call, awaited,
+                    ) => {
+                        // 執行期仍以原 Checker 的唯一函式宣告核對
+                        // async 身分；不能靠工作計畫的一個布林值
+                        // 自行把同步函式變成可等待工作。
+                        if self.verified.functions.iter()
+                            .find(|fun| fun.name == name)
+                            .is_none_or(|fun| fun.is_async != awaited) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         // 只有原 Checker 完整簽章能決定實參正式型別與借用位置。
                         let (parameter_ids, parameter_is_bool, parameter_is_str,
                             result_expr, local_steps): (
@@ -4056,7 +4093,28 @@ impl PreparedPrivateScalarCall {
                             resources.read(owner)
                                 .map_err(PrivateScalarCallRuntimeError::Resource)?;
                         }
+                        if awaited {
+                            // 真安全點：普通框架上的原 BorrowSafety
+                            // 票據、及上一層傳入但尚未歸還的有效借用，
+                            // 任一仍活躍即不得開始 async 函式。
+                            // 先拒絕再消耗 completed_arguments，保留
+                            // 正式 R05 錯誤退出可歸還的票據來源。
+                            let parent = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if !parent.incoming_borrows.is_empty()
+                                || parent.borrow_tracker.verify_static_snapshot(
+                                    std::iter::empty(),
+                                ).is_err() {
+                                return Err(PrivateScalarCallRuntimeError::Borrow(
+                                    crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
+                                ));
+                            }
+                        }
                         completed_arguments.truncate(completed_arguments.len() - argc);
+                        if awaited {
+                            events.push(PrivateScalarCallEvent::AwaitSafePoint(name.to_owned()));
+                        }
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         events.extend(bound_events);
                         resources.enter_scope();
@@ -5009,6 +5067,38 @@ impl PreparedPrivateScalarCall {
         &self, outcome: PrivateScalarCallOutcome,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
         let outcome = Self::audit_outcome(outcome)?;
+        // V7：把真正動態安全點與同一個原 Checker 函式簽章
+        // 交叉核對；任何 async Enter 沒有等待點、普通同步 Enter
+        // 冒出等待點，或等待點與下一函式身分不相符都拒絕。
+        let mut pending_await: Option<&str> = None;
+        for event in &outcome.events {
+            match event {
+                PrivateScalarCallEvent::AwaitSafePoint(name) => {
+                    if pending_await.is_some()
+                        || !self.verified.functions.iter()
+                            .any(|fun| fun.name == *name && fun.is_async) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                    pending_await = Some(name);
+                }
+                PrivateScalarCallEvent::FunctionEntered(name) => {
+                    let Some(target) = self.verified.functions.iter()
+                        .find(|fun| fun.name == *name) else {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    };
+                    if target.is_async != (pending_await == Some(name.as_str())) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                    pending_await = None;
+                }
+                _ if pending_await.is_some() =>
+                    return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch),
+                _ => {}
+            }
+        }
+        if pending_await.is_some() {
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
         // None 是先前已核准「直接 main 呼叫、純 int 實參」的
         // 獨立快路；其成功時也由相同的原 Checker 根 Call 決定結果。
         // Some(Addition/Subtraction/Unreachable/Parameter) 則不能直接
