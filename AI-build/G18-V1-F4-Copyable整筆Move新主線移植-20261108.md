@@ -24,6 +24,13 @@
 
 普通函式專項 Gate **376→382**，P18.1／P18.2／P18.4／P18.5 真來源追溯同批。最新 PR HEAD 及合併 main 同 SHA 三必要 CI 成功才認定此**子批**驗證完成。F1～F4 等價類、非 Copyable 結構真資源交接與原 P18 六項正式 0/6 Passed 均不因此改判。
 
+## CI 真修復及原 Checker 控制路徑界線
+
+- 首次 HEAD Rust E0599：原 `DeclarationId` 只有 `Ord` 而未實作 `Hash`，本批改用 `BTreeSet<DeclarationId>` 保存已移動來源，不修改任何 P13 全域宣告身分型別。
+- 第二次 HEAD 內建 1974 項測試只失敗一項：分支內 `source.move()` 的來源被原 Checker 接受，但其 `direct_moves` 依設計只記錄**直線已證配對**，不記錄控制路徑的可能轉移。因此不能把未記錄直線證據等同「原 Checker 不接受」，也絕不能偽造 `direct_moves`。
+- 修正：直線來源仍強制 `direct_moves(source,target)`；原 Checker 已核准的 `compile_early_branch` 唯一分支路徑，須重查原 Lexer/Parser 真 `.move()`、雙方來源 `DeclarationId` 與同型別、所有欄位純 int/bool，並在**實際抵達動態 Move 工作**後由 `BorrowSafety` 與 P16 `move_whole` 檢查活性、借用衝突及唯一持有者，未選分支不轉交。
+- 補同一 Rust 案例 true／false 正反路徑：選中時一筆 `CopyStructMovedBound`、未選中時零筆且來源只離域一次。原 P18 正式狀態與未核准 `str` 交接仍不變。
+
 ## 最新主線整合說明
 
 本分支不是將 PR #664 直接合併：舊 PR 以更早來源圖為基準，與已合併 #668／#670 的 `checked_copy_struct` 入口與 `PrivateScalarCopyStructSeed` 擴張不同。重新移植時 22 個原 Rust patch hunk 中 20 個可由實際上下文一一核對保留，另兩處合法結構宣告改採**先判原 Parser 真 `.move()`**，其餘仍交給新主線 `checked_copy_struct(...,bindings,verified)` 處理，避免退回無真局部/欄位來源能力。六項 Rust 真來源測試、P18.1/2/4/5 追溯及 Gate 重新對齊新主線 376→382。
