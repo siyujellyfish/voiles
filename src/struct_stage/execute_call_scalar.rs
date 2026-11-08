@@ -8304,7 +8304,7 @@ mod g18_private_scalar_call_tests {
     // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
     #[test]
     fn g18_v1_f4_原v0可達純int結構局部真建構並反序離域() {
-        let src = "struct Archive{\\nvar count:int = 7\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 99\\n}\\nfn good()->int{\\nreturn 7\\n}\\nfn route(flag:bool)->int{\\nif(flag){\\nreturn good()\\n}\\nreturn idle()\\n}\\nfn main()->int{\\nreturn route(false)\\n}\\n";
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
         let out = checked(src).execute().unwrap();
         assert_eq!(out.result, Ok(99));
         assert!(out.has_balanced_frame_trace());
@@ -8324,7 +8324,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_f4_未選分支純結構與資源均零建構() {
-        let src = "struct Archive{\\nvar count:int = 7\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 99\\n}\\nfn good()->int{\\nreturn 7\\n}\\nfn route(flag:bool)->int{\\nif(flag){\\nreturn good()\\n}\\nreturn idle()\\n}\\nfn main()->int{\\nreturn route(true)\\n}\\n";
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(true)\n}\n";
         let out = checked(src).execute().unwrap();
         assert_eq!(out.result, Ok(7));
         assert!(out.has_balanced_frame_trace());
@@ -8339,7 +8339,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_f4_純結構建構後int溢位逐框架離域不留資源() {
-        let src = "struct Archive{\\nvar count:int = 7\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 9223372036854775807+1\\n}\\nfn main()->int{\\nreturn idle()\\n}\\n";
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 9223372036854775807+1\n}\nfn main()->int{\nreturn idle()\n}\n";
         let out = checked(src).execute().unwrap();
         assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
         assert!(out.has_balanced_frame_trace());
@@ -8357,7 +8357,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充() {
-        let src = "struct Archive{\\nvar count:int = 7\\nvar resource:str = \\"保留🪼\\"\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 99\\n}\\nfn main()->int{\\nreturn idle()\\n}\\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"保留🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn main()->int{\nreturn idle()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
