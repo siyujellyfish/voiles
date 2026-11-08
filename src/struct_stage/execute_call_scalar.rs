@@ -702,7 +702,12 @@ enum PrivateScalarReturnExpr {
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
     /// 原 Checker 唯一具名函式與已驗證 int 實參；真正呼叫會進入新框架。
-    Call { name: String, arguments: Vec<PrivateScalarCallArgument> },
+    Call {
+        name: String, arguments: Vec<PrivateScalarCallArgument>,
+        /// V7：原 Checker 已核准直接 await，不能與同步函式呼叫共用
+        /// 遺失來源模式的工作圖。只有實際到達此節點才 EnterCall。
+        awaited: bool,
+    },
 }
 
 impl PrivateScalarReturnExpr {
@@ -819,6 +824,7 @@ impl PrivateScalarReturnExpr {
                         "巢狀呼叫沒有原 Checker 具名宣告",
                     ))?;
                 if target.name == "main" || target.result_ty != "int"
+                    || target.is_async != call.awaited
                     || target.params.len() != call.arguments.len()
                     || target.params.iter().any(|param|
                         !matches!(param.ty.as_str(), "int" | "bool" | "str")) {
@@ -897,7 +903,9 @@ impl PrivateScalarReturnExpr {
                         "str 借用 DeclarationId、權限或數量不符 Checker call_borrows",
                     ));
                 }
-                Ok(Self::Call { name: call.name.clone(), arguments })
+                Ok(Self::Call {
+                    name: call.name.clone(), arguments, awaited: call.awaited,
+                })
             }
             TermKind::UnresolvedZeroArgs(name) => {
                 // A2/F02：裸 name() 在 Parser 無法先判斷是建構式或零參數函式；
@@ -923,7 +931,9 @@ impl PrivateScalarReturnExpr {
                         "零參數呼叫缺少原 Parser／Checker 完整簽章或詞彙來源",
                     ));
                 }
-                Ok(Self::Call { name: name.clone(), arguments: Vec::new() })
+                Ok(Self::Call {
+                    name: name.clone(), arguments: Vec::new(), awaited: false,
+                })
             }
             TermKind::BinaryInt(binary) => {
                 let left = binary.left.node_span();
@@ -1113,7 +1123,7 @@ impl PrivateScalarReturnExpr {
 
     fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
-            Self::Call { name, arguments } => {
+            Self::Call { name, arguments, .. } => {
                 calls.push(name);
                 for argument in arguments { argument.collect_calls(calls); }
             }
@@ -3143,7 +3153,7 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::Evaluate(right, false));
                             tasks.push(PrivateScalarTask::Evaluate(left, false));
                         }
-                        PrivateScalarReturnExpr::Call { name, arguments } => {
+                        PrivateScalarReturnExpr::Call { name, arguments, .. } => {
                             // 所有子呼叫實參在父框架從左到右求值；
                             // 其中任何一項錯誤時，尚未 Enter 的函式
                             // 不得產生假的進入或返回事件。
@@ -4764,6 +4774,10 @@ impl PreparedPrivateScalarCall {
         // Prepare 階段預先求值。完整原 Checker HIR 先建立唯一
         // 表達式工作計畫，執行時才在 main 的真 int 持有者框架求值。
         let needs_dynamic = needs_main_local_runtime || !direct_call
+            // V7 已由原 Checker 證明直接 await 的單一 Call
+            // 也必須走同一動態 main 工作圖；不得偷用舊式同步
+            // 字面 int 快路而遺失原 await 來源與延遲啟動身分。
+            || matches!(&return_call.kind, TermKind::Call(call) if call.awaited)
             || callee.params.iter().any(|param|
                 matches!(param.ty.as_str(), "bool" | "str"))
             || call_arguments.iter().any(|argument| {
@@ -4807,6 +4821,8 @@ impl PreparedPrivateScalarCall {
                 ).collect::<Result<Vec<_>, PrivateScalarCallPrepareError>>()?;
                 Some(PrivateScalarReturnExpr::Call {
                     name: callee.name.clone(), arguments,
+                    awaited: matches!(&return_call.kind,
+                        TermKind::Call(call) if call.awaited),
                 })
             } else {
                 Some(PrivateScalarReturnExpr::from_checked_bindings(
@@ -5141,6 +5157,91 @@ mod g18_private_scalar_call_tests {
 
     fn literal_src() -> &'static str {
         "fn main()->int{\nreturn forward(7)\n}\nfn forward(value:int)->int{\nreturn value\n}\n"
+    }
+
+    // V7／A1：原 Checker 已接受的直接 await，不在準備時執行；
+    // 只在原 int 工作圖真正走到 await Call 才逐幀進入並退出。
+    #[test]
+    fn g18_v7_a1_原私有async直接await真int參數進框架返回() {
+        let src = "async fn increase(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await increase(4)\n}\n";
+        let plan = checked(src);
+        assert!(matches!(&plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Call { awaited: true, .. })));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(4)
+        )));
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "increase"
+        )));
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(5)
+        )));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_v7_a1_真正零參數async直接await不能走舊同步快路() {
+        let src = "async fn ready()->int{\nreturn 8\n}\nfn main()->int{\nreturn await ready()\n}\n";
+        let plan = checked(src);
+        assert!(matches!(&plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Call { awaited: true, .. })));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "ready"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v7_a1_兩個直接await按原運算式順序串行執行() {
+        let src = "async fn left(n:int)->int{\nreturn n+1\n}\nasync fn right(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nreturn await left(2)+await right(3)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["left", "right"]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v7_a1_直接await內層溢位必受控回滾不偽造正常返回() {
+        let src = "async fn increase(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await increase(9223372036854775807)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited { name, returned: false }
+            if name == "increase"
+        )));
+    }
+
+    #[test]
+    fn g18_v7_a1_竄改已編譯await身分即使來源相同仍拒絕執行() {
+        let src = "async fn increase(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await increase(4)\n}\n";
+        let mut plan = checked(src);
+        let Some(PrivateScalarReturnExpr::Call { awaited, .. }) = &mut plan.main_dynamic_call
+            else { panic!("必須是已核准的直接等待工作計畫") };
+        assert!(*awaited);
+        *awaited = false;
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
     // V1-F2／R07：不變更 Checker 型別決策，只要求同框架
