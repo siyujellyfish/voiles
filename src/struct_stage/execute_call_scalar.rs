@@ -1454,19 +1454,19 @@ impl PreparedPrivateScalarCall {
                     }
                     has_direct_local = true;
                 }
-                if action.always_returns() && index + 1 != statements.len() {
-                    return Err(PrivateScalarCallPrepareError::Unsupported(
-                        "if 已返回後仍有其他語句；不得造假可達效果",
-                    ));
-                }
-                // Checker 對 break／continue 後的不可達語句可不簽發 HIR；
-                // 這些來源不能被再編譯成假執行，也不能當作下一輪效果。
-                let stops_loop_body = matches!(
-                    action, PrivateScalarBranchAction::Break
-                        | PrivateScalarBranchAction::Continue
-                );
+                // V1／F3：原 Checker 已證明整個分支 Return，
+                // 或 break／continue 已中止本層控制邊時，後續來源不再有
+                // 可執行 TypedHIR。不能把它編成額外 Call／ResourceId，
+                // 也不能因存在合法但不可達的語句錯拒本來可執行的函式。
+                // 未完整返回的 if 分支不符合 always_returns，仍會逐項
+                // 編譯剩餘語句；不把未知條件的可達來源偷略過。
+                let terminates_branch = action.always_returns()
+                    || matches!(
+                        action, PrivateScalarBranchAction::Break
+                            | PrivateScalarBranchAction::Continue
+                    );
                 actions.push(action);
-                if stops_loop_body { break; }
+                if terminates_branch { break; }
             }
             return Ok(if has_direct_local {
                 PrivateScalarBranchAction::Scoped(actions)
@@ -8199,6 +8199,58 @@ mod g18_private_scalar_call_tests {
         prepared.nested_callees.clear();
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    // V1／F3：同一原 Parser／Checker 已證的 Return 須切斷後續工作圖。
+    // 不可達函式不得占用 frame／OwnedStr ResourceId，也不可把合法
+    // 但未接通的結構執行路徑誤判成此選中分支的必要功能。
+
+    #[test]
+    fn g18_v1_區塊已返回後結構函式不得進入工作圖() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\nvar skipped:int = idle()\n}\nreturn 2\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let plan = checked(src);
+        let names = plan.nested_callees.iter()
+            .map(|callee| callee.name.as_str()).collect::<Vec<_>>();
+        for target in ["good"] {
+            assert!(names.contains(&target), "已核准的可達呼叫不能遺失：{target}");
+        }
+        assert!(!names.contains(&"idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_巢狀全分支返回後不可達建構不得污染兄弟返回() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 5\n}\nfn right()->int{\nreturn 8\n}\nfn fallback()->int{\nreturn 12\n}\nfn route(flag:bool)->int{\nif(flag){\nif(false){\nreturn left()\n}else{\nreturn right()\n}\nvar skipped:int = idle()\n}\nreturn fallback()\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let plan = checked(src);
+        let names = plan.nested_callees.iter()
+            .map(|callee| callee.name.as_str()).collect::<Vec<_>>();
+        for target in ["left","right","fallback"] {
+            assert!(names.contains(&target), "已核准的可達呼叫不能遺失：{target}");
+        }
+        assert!(!names.contains(&"idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        // route(false) 並不能靜態推得所有可能的動態路徑；
+        // 未經本標量 evaluator 支援、但仍可由 flag=true 走到的
+        // 結構建構必須保持 Unsupported，不可靠傳入常值預測執行分支。
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
     #[test]
