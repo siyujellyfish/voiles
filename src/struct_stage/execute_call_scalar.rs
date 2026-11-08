@@ -9590,6 +9590,82 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+    // V1／F4：原 Checker 的具名 int 加減保留當下真局部與真結構欄位，
+    // 交由已驗證 P16 建構求值；動態溢位不得留下半個資源結構。
+    #[test]
+    fn g18_v1_f4_具名int多層算式讀更新後局部而非宣告時常值() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar source:int = 4\nsource = source+3\nvar note:Meter = Meter(count=(source+2))\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名int算式跨真正可寫結構欄位加減() {
+        let source = "struct Meter{\nvar count:int = 1\n}\nfn compute()->int{\nvar left:Meter = Meter(count=6)\nleft.count = 9\nvar right:Meter = Meter(count=(left.count-2)+5)\nreturn right.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(12));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名bool與動態int算式一併交付真P16快照() {
+        let source = "struct Meter{\nvar count:int = 0\nvar enabled:bool = false\n}\nfn choose(flag:bool)->int{\nvar source:int = 3\nvar note:Meter = Meter(count=source+4,enabled=flag)\nsource = 99\nif(note.enabled){\nreturn note.count\n}\nreturn 0\n}\nfn main()->int{\nreturn choose(true)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名動態int溢位不得建立半個結構或遺留資源() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar maximum:int = 9223372036854775807\nvar note:Meter = Meter(count=maximum+1)\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名int算式原Checker拒絕錯型別且動態計畫防偽() {
+        let invalid = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar ready:bool = true\nvar note:Meter = Meter(count=ready+1)\nreturn note.count\n}\nfn main()->int{return compute()}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let src = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar source:int = 4\nsource = source+3\nvar note:Meter = Meter(count=(source+2))\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+        let seed = plan.root_local_steps.iter_mut().find_map(|step| match step {
+            PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
+                plan.named.iter_mut().find(|(name, _)| name == "count")
+                    .map(|(_, seed)| seed),
+            _ => None,
+        }).expect("應找到原 Checker 具名動態算式");
+        assert!(matches!(seed, PrivateScalarCopyStructSeed::IntArithmetic(_)));
+        *seed = PrivateScalarCopyStructSeed::Static(ApprovedSeed::Int(7));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f4_具名int取最後動態局部值不重播宣告值() {
         let source = "struct Meter{\nvar count:int = 1\n}\nfn route()->int{\nvar n:int = 5\nn = 9\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{\nreturn route()\n}\n";
