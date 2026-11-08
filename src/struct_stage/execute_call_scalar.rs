@@ -9137,6 +9137,99 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+    // V1-F4：原 Checker 核准 const str 結構的真正 UTF-8 所有權，
+    // 同一 OwnedStrRuntime 帳中按建構先後配置 ResourceId。
+    #[test]
+    fn g18_v1_f4_conststr結構共用唯一真resourceid與逆序退出() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"繁體🪼\"\n}\nfn idle()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_兩個conststr結構唯一id按完成反序清理() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"預設\"\n}\nfn idle()->int{\nvar first:Archive = Archive(label=\"甲🪼\")\nvar second:Archive = Archive(label=\"乙🪼\")\nreturn first.count+second.count\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(14));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Created(2),
+            crate::owned_str_runtime::ResourceEvent::Released(2),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr結構建立後整數溢位應釋放真資源() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"錯誤清理🪼\"\n}\nfn idle()->int{\nvar item:Archive = Archive()\nreturn item.count+9223372036854775807\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_未選分支conststr結構零建立零清理() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"不可達🪼\"\n}\nfn chosen()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn chosen()\n}\nreturn 4\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "chosen"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f4_跨兩函式conststr結構各用獨立resourceid() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"重入🪼\"\n}\nfn first()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn second()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn first()+second()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(14));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+            crate::owned_str_runtime::ResourceEvent::Created(2),
+            crate::owned_str_runtime::ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層普通str與含str結構交錯安全拒絕且資源回收() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"安全限制\"\n}\nfn idle()->int{\nvar title:str = \"先建立🪼\"\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StateMismatch));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+    }
+
     #[test]
     fn g18_v1_f4_原v0可達純int結構局部真建構並反序離域() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
