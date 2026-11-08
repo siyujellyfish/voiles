@@ -9658,6 +9658,101 @@ mod g18_private_scalar_call_tests {
 
     // V1／F4：原 Checker 的具名 int 加減保留當下真局部與真結構欄位，
     // 交由已驗證 P16 建構求值；動態溢位不得留下半個資源結構。
+    // V1／F1/F3/F4：具名 Copyable int 的真函式 Call 必須經
+    // 同一顯式工作堆疊執行，所有 RHS 完成後 P16 才能原子建構。
+    #[test]
+    fn g18_v1_f4_具名int真呼叫先返回後才建構P16唯一值() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn add(x:int)->int{\nreturn x+1\n}\nfn build()->int{\nvar base:int = 8\nvar note:Meter = Meter(count=add(base))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        let entered = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["build", "add"]);
+    }
+
+    #[test]
+    fn g18_v1_f4_兩個具名int函式RHS依原書寫順序進出() {
+        let source = "struct Pair{\nvar first:int = 0\nvar second:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn double(x:int)->int{\nreturn x+x\n}\nfn build()->int{\nvar pair:Pair = Pair(first=plus(2),second=double(4))\nreturn pair.first+pair.second\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        let entered = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["build", "plus", "double"]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名加減內兩層函式真工作圖與結果() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn build()->int{\nvar note:Meter = Meter(count=plus(plus(3))+2)\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "plus"
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名函式發生溢位時零結構提交且真逐幀回滾() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn build()->int{\nvar max:int = 9223372036854775807\nvar note:Meter = Meter(count=plus(max))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_未選控制葉具名函式零執行零結構() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn build(flag:bool)->int{\nif(flag){\nvar note:Meter = Meter(count=plus(7))\nreturn note.count\n}\nreturn 4\n}\nfn main()->int{\nreturn build(false)\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "plus"
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f4_具名函式來源計畫遭竄改不得偷偷替換回傳() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn add(x:int)->int{\nreturn x+1\n}\nfn build()->int{\nvar base:int = 8\nvar note:Meter = Meter(count=add(base))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let mut plan = checked(source);
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+        let seed = plan.root_local_steps.iter_mut().find_map(|step| match step {
+            PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
+                plan.named.iter_mut().find(|(name, _)| name == "count")
+                    .map(|(_, seed)| seed),
+            _ => None,
+        }).expect("真具名函式來源計畫");
+        assert!(matches!(seed, PrivateScalarCopyStructSeed::IntCall(_)));
+        *seed = PrivateScalarCopyStructSeed::Static(ApprovedSeed::Int(9));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f4_具名int多層算式讀更新後局部而非宣告時常值() {
         let source = "struct Meter{\nvar count:int = 0\n}\nfn compute()->int{\nvar source:int = 4\nsource = source+3\nvar note:Meter = Meter(count=(source+2))\nreturn note.count\n}\nfn main()->int{\nreturn compute()\n}\n";
