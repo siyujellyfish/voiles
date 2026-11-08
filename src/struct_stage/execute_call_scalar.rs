@@ -1473,6 +1473,19 @@ impl PreparedPrivateScalarCall {
         *cursor = current.len();
     }
 
+    /// 在單一詞彙層同時讓 scalar str 與含 str 的 struct
+    /// 交錯完成初始化，現有兩種局部離域序列尚不能證明
+    /// 跨類別的全域逆序；第一批僅接通不交錯的可證子集。
+    fn current_scope_has_str_struct(
+        frame: &PrivateScalarActiveFrame,
+        structs: &crate::mixed_struct_runtime::MixedStructRuntime,
+    ) -> bool {
+        frame.copy_struct_scopes.last().is_some_and(|scope| {
+            scope.iter().any(|(_, name)|
+                structs.has_str_resource(name).unwrap_or(true))
+        })
+    }
+
     /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
     /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
     fn checked_str_initializer(
@@ -2742,6 +2755,14 @@ impl PreparedPrivateScalarCall {
                             scope.iter().any(|(_, known)| known == name)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
+                        if plan.fields.iter().any(|(_, kind, _, _)|
+                            *kind == crate::mixed_struct_runtime::ScalarKind::Str)
+                            && frame.str_owner_scopes.last().is_none_or(|scope|
+                                !scope.is_empty()) {
+                            // 尚未整合同一 scope 內 str／結構的交錯逆序
+                            // 釋放，不得建立任何新 ResourceId 後才拒絕。
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
                         let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
                             crate::mixed_struct_runtime::MixedFieldSpec {
@@ -2755,13 +2776,17 @@ impl PreparedPrivateScalarCall {
                                 field, value: value.runtime(),
                             }
                         ).collect::<Vec<_>>();
-                        copy_structs.construct(name, &fields, &named, None).map_err(|error|
-                            match error {
-                                crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
-                                    PrivateScalarCallRuntimeError::IntegerOverflow,
-                                _ => PrivateScalarCallRuntimeError::StateMismatch,
-                            },
-                        )?;
+                        let built = copy_structs.construct_with_shared_ledger(
+                            &mut resources, name, &fields, &named, None,
+                        );
+                        // 即使原 P16 真具名／預設求值中途溢位，
+                        // Created→Released 也要從同一資源帳真實留下。
+                        Self::record_owned_resources(&resources, &mut resource_cursor, events);
+                        built.map_err(|error| match error {
+                            crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                PrivateScalarCallRuntimeError::IntegerOverflow,
+                            _ => PrivateScalarCallRuntimeError::StateMismatch,
+                        })?;
                         if !copy_structs.events().is_empty() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -2775,6 +2800,9 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         // 詞彙持有者可先存在，但沒有 UTF-8 資源。
                         // 真值只會在後續原 Checker 授權的 assign 建立。
                         resources.declare_empty(name, mutable).map_err(
@@ -2788,6 +2816,9 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if let PrivateScalarStrInitializer::Move {
                             source, declaration,
                         } = initializer {
@@ -2957,7 +2988,7 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.copy_struct_scopes.pop();
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
-                        copy_structs.leave_scope().map_err(|_|
+                        copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
@@ -3011,7 +3042,7 @@ impl PreparedPrivateScalarCall {
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
                                         )?;
-                                        copy_structs.leave_scope().map_err(|_|
+                                        copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                                             PrivateScalarCallRuntimeError::StateMismatch,
                                         )?;
                                         Self::record_owned_resources(
@@ -3374,7 +3405,7 @@ impl PreparedPrivateScalarCall {
                             resources.leave_scope().map_err(
                                 PrivateScalarCallRuntimeError::Resource,
                             )?;
-                            copy_structs.leave_scope().map_err(|_|
+                            copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                                 PrivateScalarCallRuntimeError::StateMismatch,
                             )?;
                         }
@@ -3444,7 +3475,7 @@ impl PreparedPrivateScalarCall {
                     resources.leave_scope().map_err(
                         PrivateScalarCallRuntimeError::Resource,
                     )?;
-                    copy_structs.leave_scope().map_err(|_|
+                    copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                         PrivateScalarCallRuntimeError::StateMismatch,
                     )?;
                 }
@@ -3496,7 +3527,7 @@ impl PreparedPrivateScalarCall {
                 resources.leave_scope().map_err(
                     PrivateScalarCallRuntimeError::Resource,
                 )?;
-                copy_structs.leave_scope().map_err(|_|
+                copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                     PrivateScalarCallRuntimeError::StateMismatch,
                 )?;
             }
