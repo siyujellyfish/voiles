@@ -1474,7 +1474,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         && matches!(&arg.kind, TermKind::Name(_))
                         && !Self::parameter_is_consumed(function, &parameter.name)
                 };
-                if call.awaited && (0..args.len()).any(borrowed_argument) {
+                if call.awaited && (0..args.len()).any(|i| borrowed_argument(i)) {
                     return Err(self.error(
                         "VB15-01-A：直接 await 不能持有預設借用的非 Copyable 參數",
                         term,
