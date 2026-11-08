@@ -3318,7 +3318,13 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                        // 一個詞彙層中，先建含 const str 的 P16 結構，
+                        // 再以真 Lexer 字面值建立普通 str，必由同一帳本
+                        // 先釋放後建立的 str，再逆序釋放較早的結構。
+                        // 此窄化安全子集不包含從外層取得既存 ResourceId
+                        // 的 Move；它的建立先後不等於本層綁定先後。
+                        if Self::current_scope_has_str_struct(frame, &copy_structs)
+                            && !matches!(initializer, PrivateScalarStrInitializer::Literal(_)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if let PrivateScalarStrInitializer::Move {
@@ -3351,6 +3357,13 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        // 若本層已有較早完成的結構字串，只能從真正
+                        // 新建立的 UTF-8 字面值替換；移入外層舊資源
+                        // 尚無跨資源種類全域退出次序證明，維持拒絕。
+                        if Self::current_scope_has_str_struct(frame, &copy_structs)
+                            && matches!(initializer, PrivateScalarStrInitializer::Move { .. }) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if !frame.str_owner_scopes.iter().rev().flatten()
                             .any(|(known, active)| *known == id && active == name) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
