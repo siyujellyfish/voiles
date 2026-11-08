@@ -2907,12 +2907,14 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         events.extend(bound_events);
                         resources.enter_scope();
+                        copy_structs.enter_scope();
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                             bool_values: bool_locals,
                             initialized_order: Vec::new(),
                             resource_scopes: 1,
                             str_owner_scopes: vec![Vec::new()],
+                            copy_struct_scopes: vec![Vec::new()],
                             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
                             incoming_borrows,
                         });
@@ -2971,6 +2973,11 @@ impl PreparedPrivateScalarCall {
                                 } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
                                     *declaration, name, *mutable,
                                 )),
+                                PrivateScalarLocalStep::DeclareCopyStruct {
+                                    declaration, name, plan,
+                                } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
+                                    *declaration, name, plan,
+                                )),
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
                                 } => tasks.push(PrivateScalarTask::AssignStr(
@@ -3008,12 +3015,20 @@ impl PreparedPrivateScalarCall {
                                     events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
                                 PrivateScalarLocalBinding::UninitializedBool(id) =>
                                     events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
+                                PrivateScalarLocalBinding::CopyStruct(id) =>
+                                    events.push(PrivateScalarCallEvent::CopyStructScopeEnded(*id)),
                             }
                         }
                         frame.values.clear();
+                        if frame.copy_struct_scopes.len() != frame.resource_scopes {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         for _ in 0..frame.resource_scopes {
                             resources.leave_scope().map_err(
                                 PrivateScalarCallRuntimeError::Resource,
+                            )?;
+                            copy_structs.leave_scope().map_err(|_|
+                                PrivateScalarCallRuntimeError::StateMismatch,
                             )?;
                         }
                         Self::record_owned_resources(
@@ -3070,12 +3085,20 @@ impl PreparedPrivateScalarCall {
                             events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
                         PrivateScalarLocalBinding::UninitializedBool(id) =>
                             events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
+                        PrivateScalarLocalBinding::CopyStruct(id) =>
+                            events.push(PrivateScalarCallEvent::CopyStructScopeEnded(*id)),
                     }
                 }
                 frame.values.clear();
+                if frame.copy_struct_scopes.len() != frame.resource_scopes {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
                 for _ in 0..frame.resource_scopes {
                     resources.leave_scope().map_err(
                         PrivateScalarCallRuntimeError::Resource,
+                    )?;
+                    copy_structs.leave_scope().map_err(|_|
+                        PrivateScalarCallRuntimeError::StateMismatch,
                     )?;
                 }
                 Self::record_owned_resources(
@@ -3110,6 +3133,8 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
                     PrivateScalarLocalBinding::UninitializedBool(id) =>
                         events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
+                    PrivateScalarLocalBinding::CopyStruct(id) =>
+                        events.push(PrivateScalarCallEvent::CopyStructScopeEnded(*id)),
                 }
             }
             root.initialized_order.clear();
@@ -3117,15 +3142,29 @@ impl PreparedPrivateScalarCall {
             root.borrow_tracker.verify_static_snapshot(
                 std::iter::empty::<BorrowFact>(),
             ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
+            if root.copy_struct_scopes.len() != root.resource_scopes {
+                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+            }
             for _ in 0..root.resource_scopes {
                 resources.leave_scope().map_err(
                     PrivateScalarCallRuntimeError::Resource,
+                )?;
+                copy_structs.leave_scope().map_err(|_|
+                    PrivateScalarCallRuntimeError::StateMismatch,
                 )?;
             }
         }
         Self::record_owned_resources(
             &resources, &mut resource_cursor, events,
         );
+        // copy_structs 保留由 P16 真建構、真清理的獨立持有者；
+        // 任何非預期字串資源事件表示超出已證無資源子集，立即拒絕。
+        if !copy_structs.events().is_empty()
+            || !copy_structs.finish().map_err(|_|
+                PrivateScalarCallRuntimeError::StateMismatch,
+            )?.is_empty() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
         let emitted = resources.finish().map_err(
             PrivateScalarCallRuntimeError::Resource,
         )?;
