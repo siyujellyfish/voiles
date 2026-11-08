@@ -1538,7 +1538,9 @@ impl PreparedPrivateScalarCall {
     /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
     /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
     fn checked_copy_struct(
-        name: &str, ty: &str, term: &Term, verified: &VerifiedPrivateSource,
+        name: &str, ty: &str, term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
     ) -> Result<PrivateScalarCopyStructPlan, PrivateScalarCallPrepareError> {
         use crate::mixed_struct_runtime::ScalarKind;
         let definition = verified.structs.get(ty).ok_or(
@@ -1582,11 +1584,52 @@ impl PreparedPrivateScalarCall {
                 .ok_or(PrivateScalarCallPrepareError::Unsupported(
                     "結構局部具名欄位不在原 Checker 型別中",
                 ))?;
-            let seed = approved_seed(term, verified).map_err(|_|
-                PrivateScalarCallPrepareError::Unsupported(
-                    "結構局部具名值缺少原 P16 Checker 核准來源",
+            let seed = match &term.kind {
+                TermKind::Name(source_name) => {
+                    let declaration = *bindings.get(source_name).ok_or(
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名來源不在原 Checker 已編譯詞彙作用域",
+                        ),
+                    )?;
+                    let span = term.node_span();
+                    let expected = match kind {
+                        ScalarKind::Int => crate::common_ir::ScalarType::Int,
+                        ScalarKind::Bool => crate::common_ir::ScalarType::Bool,
+                        _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "非 Copyable 資源欄位不屬此子集",
+                        )),
+                    };
+                    let ty_text = if *kind == ScalarKind::Int { "int" } else { "bool" };
+                    if !verified.plan.declarations.typed_declaration(declaration)
+                        .is_some_and(|fact| fact.ty == ty_text)
+                        || verified.plan.scalar_hir.expression(span)
+                            .is_none_or(|fact| fact.ty != expected)
+                        || verified.plan.scalar_hir.reference(span)
+                            .is_none_or(|fact|
+                                fact.resolved.declaration != declaration
+                                    || fact.resolved.ty != expected)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == term.start && token.end == term.end
+                                && matches!(&token.kind, TokenKind::Name(found)
+                                    if found == source_name)) {
+                        return Err(PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名來源缺少 Checker TypedHIR／DeclarationId／Lexer",
+                        ));
+                    }
+                    if *kind == ScalarKind::Int {
+                        PrivateScalarCopyStructSeed::IntBound(declaration)
+                    } else {
+                        PrivateScalarCopyStructSeed::BoolBound(declaration)
+                    }
+                }
+                _ => PrivateScalarCopyStructSeed::Static(
+                    approved_seed(term, verified).map_err(|_|
+                        PrivateScalarCallPrepareError::Unsupported(
+                            "結構具名值缺少原 P16 Checker 純值來源",
+                        ),
+                    )?,
                 ),
-            )?;
+            };
             if seed.kind() != *kind || supplied.iter().any(|(key, _)| key == field_name) {
                 return Err(PrivateScalarCallPrepareError::Unsupported(
                     "結構局部具名型別不一致或重複",
@@ -1884,7 +1927,9 @@ impl PreparedPrivateScalarCall {
                         "分支 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                let plan = Self::checked_copy_struct(
+                    &owner.name, &owner.ty, term, int_bindings, verified,
+                )?;
                 Ok(PrivateScalarBranchAction::DeclareCopyStruct {
                     declaration: id, name: owner.name.clone(), plan,
                 })
@@ -2277,7 +2322,9 @@ impl PreparedPrivateScalarCall {
                         "函式 Copyable 結構需要原 Checker 完整建立式",
                     ),
                 )?;
-                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                let plan = Self::checked_copy_struct(
+                    &owner.name, &owner.ty, term, &bindings, verified,
+                )?;
                 local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
                     declaration, name: owner.name.clone(), plan,
                 });
