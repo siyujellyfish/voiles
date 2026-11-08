@@ -1620,6 +1620,54 @@ impl PreparedPrivateScalarCall {
         Ok((declaration, value))
     }
 
+    /// V1／F3：原 Checker 已接受的 bool 純值結構欄位寫入；
+    /// 必須核對唯一原 DeclarationId、可寫雙層權限和 RHS bool HIR，
+    /// 而非僅憑字串中「.欄位」推論或將 bool 編成 int。
+    fn checked_copy_struct_bool_write(
+        statement: &Stmt, receiver: &str, field: &str, expression: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        bool_bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<(DeclarationId, PrivateScalarBoolExpr), PrivateScalarCallPrepareError> {
+        let declaration = *bindings.get(receiver).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "bool 欄位寫入接收者缺少原 Checker DeclarationId",
+            ),
+        )?;
+        let fact = verified.plan.declarations.typed_declaration(declaration).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "bool 欄位寫入接收者缺少原 Checker 宣告型別",
+            ),
+        )?;
+        let definition = verified.structs.get(fact.ty).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "bool 欄位寫入接收者不是已驗證結構型別",
+            ),
+        )?;
+        let member = definition.field(field).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "bool 欄位寫入缺少原 Checker 真欄位",
+            ),
+        )?;
+        if !fact.mutable || member.immutable || member.ty != "bool"
+            || !definition.fields.iter().all(|candidate|
+                matches!(candidate.ty.as_str(), "int" | "bool"))
+            || !verified.tokens.iter().any(|token|
+                token.start == statement.start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
+            || !verified.tokens.iter().any(|token|
+                token.start > statement.start && token.end <= expression.start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "bool 欄位寫入缺少原可寫 Checker／Lexer 安全證據",
+            ));
+        }
+        let value = PrivateScalarBoolExpr::from_checked(
+            expression, bool_bindings, verified,
+        )?;
+        Ok((declaration, value))
+    }
+
     /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
     /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
     fn checked_str_assignment(
@@ -1919,12 +1967,26 @@ impl PreparedPrivateScalarCall {
                     )?,
                 )),
             StmtKind::FieldAssign { receiver, field, value } => {
-                let (declaration, value) = Self::checked_copy_struct_int_write(
-                    statement, receiver, field, value, int_bindings, verified,
-                )?;
-                Ok(PrivateScalarBranchAction::AssignCopyStructInt {
-                    declaration, owner: receiver.clone(), field: field.clone(), value,
-                })
+                let is_bool = int_bindings.get(receiver)
+                    .and_then(|id| verified.plan.declarations.typed_declaration(*id))
+                    .and_then(|fact| verified.structs.get(fact.ty))
+                    .and_then(|definition| definition.field(field))
+                    .is_some_and(|member| member.ty == "bool");
+                if is_bool {
+                    let (declaration, value) = Self::checked_copy_struct_bool_write(
+                        statement, receiver, field, value, int_bindings, bool_bindings, verified,
+                    )?;
+                    Ok(PrivateScalarBranchAction::AssignCopyStructBool {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    })
+                } else {
+                    let (declaration, value) = Self::checked_copy_struct_int_write(
+                        statement, receiver, field, value, int_bindings, verified,
+                    )?;
+                    Ok(PrivateScalarBranchAction::AssignCopyStructInt {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    })
+                }
             }
             StmtKind::Assign(assign) => {
                 let id = *int_bindings.get(&assign.name).ok_or(
@@ -2084,12 +2146,26 @@ impl PreparedPrivateScalarCall {
                 continue;
             }
             if let StmtKind::FieldAssign { receiver, field, value } = &statement.kind {
-                let (declaration, value) = Self::checked_copy_struct_int_write(
-                    statement, receiver, field, value, &bindings, verified,
-                )?;
-                local_steps.push(PrivateScalarLocalStep::AssignCopyStructInt {
-                    declaration, owner: receiver.clone(), field: field.clone(), value,
-                });
+                let is_bool = bindings.get(receiver)
+                    .and_then(|id| verified.plan.declarations.typed_declaration(*id))
+                    .and_then(|fact| verified.structs.get(fact.ty))
+                    .and_then(|definition| definition.field(field))
+                    .is_some_and(|member| member.ty == "bool");
+                if is_bool {
+                    let (declaration, value) = Self::checked_copy_struct_bool_write(
+                        statement, receiver, field, value, &bindings, &bool_bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::AssignCopyStructBool {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    });
+                } else {
+                    let (declaration, value) = Self::checked_copy_struct_int_write(
+                        statement, receiver, field, value, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::AssignCopyStructInt {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    });
+                }
                 continue;
             }
             if let StmtKind::Assign(assign) = &statement.kind {
