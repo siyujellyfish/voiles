@@ -21,11 +21,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     outputs:
-      mode: ${{ steps.gate.outputs.mode }
-      reason: ${{ steps.gate.outputs.reason }
-      main_sha: ${{ steps.gate.outputs.main_sha }
-      pr: ${{ steps.gate.outputs.pr }
-      head_sha: ${{ steps.gate.outputs.head_sha }
+      mode: ${{ steps.gate.outputs.mode }}
+      reason: ${{ steps.gate.outputs.reason }}
+      main_sha: ${{ steps.gate.outputs.main_sha }}
+      pr: ${{ steps.gate.outputs.pr }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
     steps:
       - uses: actions/checkout@v7.0.1
         with:
@@ -33,9 +33,9 @@ jobs:
       - name: 查核必要 CI 與衝突的施工 PR
         id: gate
         env:
-          GH_TOKEN: ${{ github.token }
-          HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }
-          HAS_GITHUB_APP: ${{ secrets.VOILES_AUTOMATION_APP_ID != '' && secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY != '' }
+          GH_TOKEN: ${{ github.token }}
+          HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_GITHUB_APP: ${{ secrets.VOILES_AUTOMATION_APP_ID != '' && secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY != '' }}
         run: python3 tools/自動推進排程門檻.py
 
   agent:
@@ -54,14 +54,14 @@ jobs:
           persist-credentials: false
       - name: 鎖定本輪 main SHA
         env:
-          EXPECTED_SHA: ${{ needs.inspect.outputs.main_sha }
+          EXPECTED_SHA: ${{ needs.inspect.outputs.main_sha }}
         run: test "$(git rev-parse HEAD)" = "$EXPECTED_SHA"
       - name: 設定既有 Rust stable
         run: rustup toolchain install stable --profile minimal
       - name: 呼叫 Codex：只施工已證安全的一個子批
         uses: openai/codex-action@v1
         with:
-          openai-api-key: ${{ secrets.OPENAI_API_KEY }
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
           prompt-file: AI-build/自動排程代理單批施工指令.md
           permission-profile: ":workspace"
           safety-strategy: drop-sudo
@@ -89,7 +89,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: voiles-auto-patch
-          path: ${{ runner.temp }/voiles-auto.patch
+          path: ${{ runner.temp }}/voiles-auto.patch
           if-no-files-found: error
           retention-days: 2
 
@@ -106,8 +106,8 @@ jobs:
         id: app
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.VOILES_AUTOMATION_APP_ID }
-          private-key: ${{ secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY }
+          app-id: ${{ secrets.VOILES_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
       - uses: actions/checkout@v7.0.1
@@ -117,10 +117,10 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           name: voiles-auto-patch
-          path: ${{ runner.temp }/voiles-auto
+          path: ${{ runner.temp }}/voiles-auto
       - name: 拒絕主線漂移、來源污染與不合法補丁
         env:
-          EXPECTED_SHA: ${{ needs.inspect.outputs.main_sha }
+          EXPECTED_SHA: ${{ needs.inspect.outputs.main_sha }}
         shell: bash
         run: |
           set -euo pipefail
@@ -142,7 +142,7 @@ jobs:
       - name: 提交唯一 PR（用 App token 才能觸發完整 CI）
         uses: peter-evans/create-pull-request@v8
         with:
-          token: ${{ steps.app.outputs.token }
+          token: ${{ steps.app.outputs.token }}
           branch: auto/voiles-p18-progress
           base: main
           delete-branch: true
@@ -173,25 +173,25 @@ jobs:
       - name: 合併前重新確認所有 HEAD、CI 與 PR 條件
         id: recheck
         env:
-          GH_TOKEN: ${{ github.token }
-          HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }
-          HAS_GITHUB_APP: ${{ secrets.VOILES_AUTOMATION_APP_ID != '' && secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY != '' }
+          GH_TOKEN: ${{ github.token }}
+          HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+          HAS_GITHUB_APP: ${{ secrets.VOILES_AUTOMATION_APP_ID != '' && secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY != '' }}
         run: python3 tools/自動推進排程門檻.py
       - name: 取得僅合併所需的 GitHub App 權杖
         if: steps.recheck.outputs.mode == 'merge'
         id: app
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.VOILES_AUTOMATION_APP_ID }
-          private-key: ${{ secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY }
+          app-id: ${{ secrets.VOILES_AUTOMATION_APP_ID }}
+          private-key: ${{ secrets.VOILES_AUTOMATION_APP_PRIVATE_KEY }}
           permission-contents: write
           permission-pull-requests: write
       - name: 以固定 PR HEAD SHA 原子式 Squash merge
         if: steps.recheck.outputs.mode == 'merge'
         env:
-          GH_TOKEN: ${{ steps.app.outputs.token }
-          PR_NUMBER: ${{ steps.recheck.outputs.pr }
-          EXPECTED_SHA: ${{ steps.recheck.outputs.head_sha }
+          GH_TOKEN: ${{ steps.app.outputs.token }}
+          PR_NUMBER: ${{ steps.recheck.outputs.pr }}
+          EXPECTED_SHA: ${{ steps.recheck.outputs.head_sha }}
         shell: bash
         run: |
           set -euo pipefail
