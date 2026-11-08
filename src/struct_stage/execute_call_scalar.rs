@@ -5159,6 +5159,91 @@ mod g18_private_scalar_call_tests {
         "fn main()->int{\nreturn forward(7)\n}\nfn forward(value:int)->int{\nreturn value\n}\n"
     }
 
+    // V7／A1：原 Checker 已接受的直接 await，不在準備時執行；
+    // 只在原 int 工作圖真正走到 await Call 才逐幀進入並退出。
+    #[test]
+    fn g18_v7_a1_原私有async直接await真int參數進框架返回() {
+        let src = "async fn increase(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await increase(4)\n}\n";
+        let plan = checked(src);
+        assert!(matches!(&plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Call { awaited: true, .. })));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(4)
+        )));
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "increase"
+        )));
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(5)
+        )));
+        assert_eq!(out.parameter_slots_after_exit, 0);
+    }
+
+    #[test]
+    fn g18_v7_a1_真正零參數async直接await不能走舊同步快路() {
+        let src = "async fn ready()->int{\nreturn 8\n}\nfn main()->int{\nreturn await ready()\n}\n";
+        let plan = checked(src);
+        assert!(matches!(&plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Call { awaited: true, .. })));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "ready"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v7_a1_兩個直接await按原運算式順序串行執行() {
+        let src = "async fn left(n:int)->int{\nreturn n+1\n}\nasync fn right(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nreturn await left(2)+await right(3)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        let entered = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["left", "right"]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v7_a1_直接await內層溢位必受控回滾不偽造正常返回() {
+        let src = "async fn increase(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await increase(9223372036854775807)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited { name, returned: false }
+            if name == "increase"
+        )));
+    }
+
+    #[test]
+    fn g18_v7_a1_竄改已編譯await身分即使來源相同仍拒絕執行() {
+        let src = "async fn increase(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await increase(4)\n}\n";
+        let mut plan = checked(src);
+        let Some(PrivateScalarReturnExpr::Call { awaited, .. }) = &mut plan.main_dynamic_call
+            else { panic!("必須是已核准的直接等待工作計畫") };
+        assert!(*awaited);
+        *awaited = false;
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     // V1-F2／R07：不變更 Checker 型別決策，只要求同框架
     // int、bool、str 借用／Move 都使用唯一的原 DeclarationId。
     #[test]
