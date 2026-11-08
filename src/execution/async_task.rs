@@ -223,7 +223,7 @@ mod tests {
 // V7 A2／E3：將真正 P16 ResourceId 與 HC14 BorrowTicket 接到同一個
 // 內部暫停點退出工作框架。來源授權仍須由原 Checker 傳入：
 // 此層不解析 async fn，不簽發新的語言權限，也不是完整協程執行器。
-use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowSafetyError, BorrowTicket};
+use crate::borrow_safety::{BorrowFact, BorrowSafetyError, BorrowTicket};
 use crate::owned_str_runtime::{self, OwnedStrRuntime, ResourceEvent, StrRuntimeError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -503,8 +503,10 @@ mod v7_a2_safe_point_tests {
         ).unwrap();
         let outcome = session.await_direct(id).unwrap();
         let error = outcome.result.as_ref().unwrap_err().clone();
-        assert_eq!(session.status(id), Some(DirectAwaitStatus::Failed));
+        // await_direct 回傳工作內部 outcome 的借用；先完成事件斷言
+        // 再讀取 session 狀態，不能交錯可變與不可變借用。
         assert!(outcome.events.is_empty());
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Failed));
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
         let resource = frames.declare_owned("來源", "異常仍須清理🪼").unwrap();
