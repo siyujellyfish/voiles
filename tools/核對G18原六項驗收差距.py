@@ -269,6 +269,10 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_不在任何框架內的偽造待歸票不得掩蓋溢位",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參後第三引數溢位反序歸還再釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_失敗回滾雙str平衡但錯序還票仍必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_跨子呼叫前後的兩張借用票據各按真返回逆序歸還",
@@ -445,6 +449,10 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_不在任何框架內的偽造待歸票不得掩蓋溢位",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_子集重複票據不得部分歸還其餘合法借用",
@@ -606,6 +614,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_r05_不在任何框架內的偽造待歸票不得掩蓋溢位",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_子集重複票據不得部分歸還其餘合法借用",
