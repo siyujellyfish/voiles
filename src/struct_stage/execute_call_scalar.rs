@@ -8780,6 +8780,50 @@ mod g18_private_scalar_call_tests {
     // var 實例／var 欄位與 TypedHIR RHS 簽發，P16 真值更新後才留下事件。
     // V1／F3：bool 欄位只在真 P16 持有者修改後可改變
     // 同一原 Checker 合法的 if／while 動態控制判斷。
+    // V1／F3：跨欄位 RHS 原值、同一函式內同名結構遮蔽及 for/while
+    // 反向邊共同讀寫，均走原 Checker 與 P16 的真正動態持有者。
+    #[test]
+    fn g18_v1_f3_bool同結構兩欄位真讀再寫保留求值順序() {
+        let source = "struct Flags{\nvar left:bool = false\nvar right:bool = true\n}\nfn run()->int{\nvar f:Flags = Flags()\nf.left = f.right\nf.right = false\nif(f.left){\nreturn 9\n}\nreturn 2\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變() {
+        let source = "struct Meter{\nvar count:int = 1\nvar ready:bool = false\n}\nfn run()->int{\nvar note:Meter = Meter(count=3)\nif(true){\nvar note:Meter = Meter(count=9)\nnote.count = 11\nnote.ready = true\nif(note.ready){\nnote.count = note.count+1\n}\n}\nreturn note.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位for_continue與while_break聯合反向邊() {
+        let source = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nfor i in 0..2{\nf.ready = true\ncontinue\n}\nwhile(f.ready){\nf.ready = false\nbreak\n}\nif(f.ready){\nreturn 99\n}\nreturn 4\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
     #[test]
     fn g18_v1_f3_bool結構欄位寫入後if重新讀取最新值() {
         let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nitem.enabled = false\nif(item.enabled){\nreturn 9\n}\nreturn 2\n}\nfn main()->int{\nreturn step()\n}\n";
