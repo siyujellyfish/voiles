@@ -147,6 +147,26 @@ impl MixedStructRuntime {
         fail_after:Option<&str>,
     )->Result<(),MixedError> {
         self.current_free(name)?;
+        Self::construct_into(&mut self.scopes, &mut self.ledger,
+            name, fields, named, fail_after)
+    }
+    /// G18／V1-F4：同一真正 OwnedStrRuntime 擁有函式一般 str 與
+    /// P16 結構 str 欄位的唯一資源編號及真 UTF-8 buffer；不再做
+    /// 第二個 ledger 的 ID 轉譯、複製或人造 Created／Released。
+    pub(crate) fn construct_with_shared_ledger(&mut self,
+        ledger:&mut OwnedStrRuntime, name:&str,
+        fields:&[MixedFieldSpec<'_>],named:&[NamedMixed<'_>],
+        fail_after:Option<&str>,
+    )->Result<(),MixedError> {
+        self.current_free(name)?;
+        Self::construct_into(&mut self.scopes, ledger, name, fields, named, fail_after)
+    }
+    /// 既有 VB16 原求值次序只維護一份核心：
+    /// 具名覆蓋、預設值與執行中溢位回收皆由傳入的真 ledger 維護。
+    fn construct_into(scopes:&mut Vec<Vec<OwnedSlot>>,ledger:&mut OwnedStrRuntime,
+        name:&str,fields:&[MixedFieldSpec<'_>],named:&[NamedMixed<'_>],
+        fail_after:Option<&str>,
+    )->Result<(),MixedError> {
         let schema:Vec<_>=fields.iter().map(|field|FieldInfo{
             name:field.name,has_default:field.default.is_some(),
             immutable:field.immutable,
@@ -187,20 +207,20 @@ impl MixedStructRuntime {
                     Err(err)=>{
                         // 已完成的具名／預設 UTF-8 先依 VB16 逆序釋放，
                         // 不能讓未完成的純值求值遺失資源責任。
-                        Self::release_value(&mut self.ledger,pending);
+                        Self::release_value(ledger,pending);
                         return Err(err);
                     }
                 },
                 SeedValue::Bool(value)=>StoredValue::Bool(value),
-                SeedValue::Str(text)=>match self.ledger.create_detached(text) {
+                SeedValue::Str(text)=>match ledger.create_detached(text) {
                     Ok(resource)=>StoredValue::Str(resource),
                     Err(err)=>{
-                        Self::release_value(&mut self.ledger,pending);
+                        Self::release_value(ledger,pending);
                         return Err(MixedError::Resource(err));
                     }
                 },
                 SeedValue::Skipped(_) => {
-                    Self::release_value(&mut self.ledger,pending);
+                    Self::release_value(ledger,pending);
                     return Err(MixedError::EvaluationFailed(
                         "不能執行已由合法具名值覆蓋的欄位預設".to_owned(),
                     ));
@@ -212,11 +232,11 @@ impl MixedStructRuntime {
                 name:step.field.clone(), value, immutable,
             });
             if fail_after==Some(step.field.as_str()) {
-                Self::release_value(&mut self.ledger,pending);
+                Self::release_value(ledger,pending);
                 return Err(MixedError::EvaluationFailed(step.field));
             }
         }
-        self.scopes.last_mut().expect("根作用域存在").push(OwnedSlot{
+        scopes.last_mut().expect("根作用域存在").push(OwnedSlot{
             name:name.to_owned(),owned:Some(pending),
         });
         Ok(())
@@ -341,6 +361,24 @@ impl MixedStructRuntime {
         let frame=self.scopes.pop().expect("已預檢作用域");
         Self::cleanup(&mut self.ledger,frame);
         Ok(())
+    }
+    /// 與外部 OwnedStrRuntime 共用同一資源帳時，結構離域
+    /// 必須把實際 OwnedUtf8 交給同一 ledger 釋放。
+    pub(crate) fn leave_scope_with_shared_ledger(
+        &mut self, ledger:&mut OwnedStrRuntime,
+    )->Result<(),MixedError> {
+        if self.scopes.len()==1 {return Err(MixedError::NoInnerScope);}
+        let frame=self.scopes.pop().expect("已預檢結構作用域");
+        Self::cleanup(ledger,frame);
+        Ok(())
+    }
+    /// 僅供 V1-F4 保守拒絕「同一詞彙層純字串持有者與
+    /// 含字串結構交錯」；不同層的 LIFO 仍由真 scope 處理。
+    pub(crate) fn has_str_resource(&self,owner:&str)->Result<bool,MixedError> {
+        let (i,j)=self.locate(owner)?;
+        let owned=self.scopes[i][j].owned.as_ref().ok_or(MixedError::MovedBinding)?;
+        Ok(owned.fields.iter().any(|field|
+            matches!(&field.value,StoredValue::Str(_))))
     }
     pub(crate) fn events(&self)->&[ResourceEvent] {self.ledger.events()}
     pub(crate) fn finish(mut self)->Result<Vec<ResourceEvent>,MixedError> {
