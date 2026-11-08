@@ -9205,6 +9205,86 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+    // V1／F4：真正 Checker .move() 不以新建結構假事件冒充 P16 轉交。
+    #[test]
+    fn g18_v1_f4_原Checker純結構明確move保留唯一真P16持有者() {
+        let src = "struct Meter{\nvar count:int = 3\nvar ready:bool = true\n}\nfn run()->int{\nvar source:Meter = Meter(count=9)\nvar target:Meter = source.move()\nif(target.ready){\nreturn target.count\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_分支原Checker結構move入內層後真離域不假建構() {
+        let src = "struct Meter{\nvar count:int = 3\n}\nfn run()->int{\nvar source:Meter = Meter()\nif(true){\nvar target:Meter = source.move()\ntarget.count = 11\n}\nreturn 7\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_已移走的結構來源再讀必由原Checker拒絕() {
+        let src = "struct Meter{\nvar count:int = 3\n}\nfn run()->int{\nvar source:Meter = Meter()\nvar target:Meter = source.move()\nreturn source.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_結構move來源身分竄改即使事件數相同也須拒絕() {
+        let src = "struct Meter{\nvar count:int = 3\nvar ready:bool = true\n}\nfn run()->int{\nvar source:Meter = Meter(count=9)\nvar target:Meter = source.move()\nif(target.ready){\nreturn target.count\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let relocation = out.events.iter_mut().find(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).expect("同一原 Checker 真 move 事件");
+        if let PrivateScalarCallEvent::CopyStructRelocated { source, .. } = relocation {
+            *source = DeclarationId(0);
+        }
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_含str結構move仍不得無證合併雙資源帳() {
+        let src = "struct Packet{\nvar text:str = \"保留🪼\"\n}\nfn run()->int{\nvar source:Packet = Packet()\nvar target:Packet = source.move()\nreturn 4\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_結構move後真算術溢位仍必逐框架逆序離域() {
+        let src = "struct Meter{\nvar count:int = 7\n}\nfn run()->int{\nvar source:Meter = Meter()\nvar target:Meter = source.move()\nreturn 9223372036854775807+1\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
     #[test]
     fn g18_v1_f4_原v0可達純int結構局部真建構並反序離域() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
