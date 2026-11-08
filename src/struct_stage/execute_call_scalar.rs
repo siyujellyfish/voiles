@@ -579,7 +579,7 @@ impl PrivateScalarReturnExpr {
                 if !definition.fields.iter().any(|candidate|
                     candidate.name == *field && candidate.ty == "int")
                     || !definition.fields.iter().all(|candidate|
-                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                        matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
                     || !verified.tokens.iter().any(|token|
                         token.start == span.start
                             && matches!(&token.kind, TokenKind::Name(found) if found == owner))
@@ -1040,7 +1040,7 @@ impl PrivateScalarBoolExpr {
                 if !definition.fields.iter().any(|candidate|
                         candidate.name == *field && candidate.ty == "bool")
                     || !definition.fields.iter().all(|candidate|
-                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                        matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
                     || !verified.tokens.iter().any(|token|
                         token.start == span.start
                             && matches!(&token.kind, TokenKind::Name(found) if found == owner))
@@ -1525,8 +1525,11 @@ impl PreparedPrivateScalarCall {
             let kind = match field.ty.as_str() {
                 "int" => ScalarKind::Int,
                 "bool" => ScalarKind::Bool,
+                // 使用 P16 原資源欄位與同一 OwnedStrRuntime 真帳；
+                // 仍拒絕巢狀結構／容器等未核准資源語意。
+                "str" => ScalarKind::Str,
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "結構局部 str／巢狀資源尚未接入共同資源退出帳",
+                    "巢狀資源尚未接入原 Checker／P16 共同退出帳",
                 )),
             };
             let overridden = named.iter().any(|(key, _)| key == &field.name);
@@ -1597,7 +1600,7 @@ impl PreparedPrivateScalarCall {
         )?;
         if !fact.mutable || member.immutable || member.ty != "int"
             || !definition.fields.iter().all(|candidate|
-                matches!(candidate.ty.as_str(), "int" | "bool"))
+                matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
             || !verified.tokens.iter().any(|token|
                 token.start == statement.start
                     && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
@@ -1641,7 +1644,7 @@ impl PreparedPrivateScalarCall {
         )?;
         if !fact.mutable || member.immutable || member.ty != "bool"
             || !definition.fields.iter().all(|candidate|
-                matches!(candidate.ty.as_str(), "int" | "bool"))
+                matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
             || !verified.tokens.iter().any(|token|
                 token.start == statement.start
                     && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
