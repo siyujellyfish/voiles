@@ -3142,8 +3142,14 @@ impl PreparedPrivateScalarCall {
                 TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[], true),
                 // main 可 return 原 Checker 已核准的多函式 int 算式，
                 // 但仍不得把純算術當成已有函式動態證據。
-                TermKind::BinaryInt(_) | TermKind::Name(_) if needs_main_local_runtime =>
-                    (source_name, &[], false),
+                // R01：前置語句已含由原 Checker 核准的真普通函式時，
+                // 最後的整數常值 return 同樣合法；不得因尾端
+                // 沒有 Call 就捨棄前置呼叫、錯拒整個函式。
+                // 常值本身仍僅由 Checked TypedHIR 編譯，不在
+                // Prepare 階段執行或虛構任何返回事件。
+                TermKind::BinaryInt(_) | TermKind::Name(_)
+                    | TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
+                    if needs_main_local_runtime => (source_name, &[], false),
                 TermKind::BinaryInt(_) => (source_name, &[], false),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "main 最後一筆須為已核准 int 函式或函式複合返回式",
@@ -7564,6 +7570,97 @@ mod g18_private_scalar_call_tests {
         let src = "fn inspect(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar result:int = 0\nif(false){\nresult = 1\n}else if(true){\nvar source:str = \"單一🪼\"\nvar target:str\ntarget = source.move()\nresult = inspect(source,3)\n}\nreturn result\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+
+    // R01：main 尾端只是合法 int 常值，前置語句裡的函式
+    // 一樣必須真進入與真返回，不能以最後的常值掩蓋它的錯誤。
+    #[test]
+    fn g18_r01_main前置真呼叫後尾端int常值return必執行呼叫() {
+        let src = "fn calc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar ignored:int = calc(3)\nreturn 9\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "calc"
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(4)
+        )));
+    }
+
+    #[test]
+    fn g18_r01_main真賦值函式後尾端括號整數常值仍須執行() {
+        let src = "fn calc(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar output:int\noutput = calc(5)\nreturn (11)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "calc"
+        )).count(), 1);
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(7)
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main分支真str借用函式後返回常值應先歸還再釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(s:str,n:int)->int{\nreturn n+1\n}\nfn main()->int{\nif(true){\nvar owner:str = \"先執行🪼\"\nvar ignored:int = inspect(owner,3)\n}\nreturn 17\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(17));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_main前置函式溢位不可被最後return常值掩蓋() {
+        let src = "fn crash(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar unused:int = crash(9223372036854775807)\nreturn 9\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "crash"
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(9)
+        )));
+    }
+
+    #[test]
+    fn g18_r01_main前置兩函式依序執行後才允許返回無關常值() {
+        let src = "fn first(n:int)->int{\nreturn n+1\n}\nfn second(n:int)->int{\nreturn n+2\n}\nfn main()->int{\nvar a:int = first(2)\nvar b:int = second(a)\nreturn 0\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(0));
+        assert!(out.has_balanced_frame_trace());
+        let entered: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(entered, ["first", "second"]);
+    }
+
+    #[test]
+    fn g18_r01_main前置呼叫尾端常值計畫遭竄改必先拒絕() {
+        let src = "fn calc(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nvar unused:int = calc(3)\nreturn 9\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+        plan.main_dynamic_call = Some(PrivateScalarReturnExpr::Constant(999));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
+    fn g18_r01_不含真函式呼叫的main常值仍不得偽造函式證據() {
+        let src = "fn unused(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn 9\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
 
