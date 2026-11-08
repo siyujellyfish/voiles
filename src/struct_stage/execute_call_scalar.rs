@@ -2867,13 +2867,33 @@ impl PreparedPrivateScalarCall {
         // V1：main 前置已核准 int 初始化也可能包含唯一真函式呼叫；
         // 即使最後只是 return 先前取得的 Copyable 結果，仍可由
         // 原 Parser AST 找到同一已核准函式圖，不猜測字串名稱。
-        let source_name = PrivateScalarReturnExpr::first_source_call(return_call)
-            .or_else(|| PrivateScalarReturnExpr::first_source_call_in_statements(
-                &main.body.statements,
-            ))
-            .ok_or(PrivateScalarCallPrepareError::Unsupported(
-                "main 來源缺少原 Parser 真具名函式呼叫",
-            ))?;
+        // R01／R03：若原 Checker 未為 main 尾端建立 int Expression HIR，
+        // 只在完整 main 控制圖已證明「所有葉分支都提前 Return」時，
+        // 才可排除尾端不可達呼叫。單靠缺 HIR 絕不能擅自跳過來源。
+        // 真合法的前置／分支函式呼叫仍由原 Parser AST 完整收集。
+        let terminal_unreachable = verified.plan.scalar_hir
+            .expression(return_call.node_span()).is_none()
+            && matches!(
+                Self::prepare_function_locals(main, &verified)?.2,
+                PrivateScalarReturnExpr::Unreachable
+            );
+        let reachable_main_statements: &[Stmt] = if terminal_unreachable {
+            &main.body.statements[..main.body.statements.len() - 1]
+        } else {
+            &main.body.statements
+        };
+        let source_name = (if terminal_unreachable {
+            PrivateScalarReturnExpr::first_source_call_in_statements(
+                reachable_main_statements,
+            )
+        } else {
+            PrivateScalarReturnExpr::first_source_call(return_call)
+                .or_else(|| PrivateScalarReturnExpr::first_source_call_in_statements(
+                    reachable_main_statements,
+                ))
+        }).ok_or(PrivateScalarCallPrepareError::Unsupported(
+            "main 可執行來源缺少原 Parser 真具名函式呼叫",
+        ))?;
         let callee = verified.functions.iter()
             .find(|fun| fun.name == source_name && fun.name != "main")
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
@@ -2917,8 +2937,11 @@ impl PreparedPrivateScalarCall {
         let mut reachable = std::collections::BTreeSet::<String>::new();
         let mut pending = Vec::<String>::new();
         let mut main_names = Vec::new();
+        // 不把 Checker 已證的尾端不可達函式冒充可達圖目標。
+        // 其他 if／else／while／for 候選仍須完整編譯，不在靜態階段
+        // 猜測實際會被選中的控制邊。
         PrivateScalarReturnExpr::collect_source_calls_in_statements(
-            &main.body.statements, &mut main_names,
+            reachable_main_statements, &mut main_names,
         );
         for name in main_names {
             if reachable.insert(name.to_owned()) {
@@ -3136,7 +3159,11 @@ impl PreparedPrivateScalarCall {
             ));
         };
         let (call_name, call_arguments, direct_call): (&str, &[Term], bool) =
-            match &return_call.kind {
+            if terminal_unreachable {
+                // 此處仍必經下方 main 動態計畫的 Unreachable 身分
+                // 核對，不將已證不可達的尾端 Call 實參交給執行器。
+                (source_name, &[], false)
+            } else { match &return_call.kind {
                 TermKind::Call(call) =>
                     (call.name.as_str(), call.arguments.as_slice(), true),
                 TermKind::UnresolvedZeroArgs(name) => (name.as_str(), &[], true),
@@ -3154,7 +3181,7 @@ impl PreparedPrivateScalarCall {
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "main 最後一筆須為已核准 int 函式或函式複合返回式",
                 )),
-            };
+            }};
         if direct_call
             && (call_name != callee.name || call_arguments.len() != callee.params.len()) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -7845,6 +7872,59 @@ mod g18_private_scalar_call_tests {
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Check(_))
                 | Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+
+    // R01：主函式尾端若已由 Checker 完整證明不可達，未執行
+    // 的其他合法函式不得被強制當作純 int 動態圖的一環。
+    #[test]
+    fn g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn chosen()->int{\nreturn 4\n}\nfn other()->int{\nreturn 5\n}\nfn main()->int{\nif(true){\nreturn chosen()\n}else{\nreturn other()\n}\nreturn idle()\n}\n";
+        let plan = checked(src);
+        assert!(matches!(&plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Unreachable)));
+        assert_eq!(plan.callee_name, "chosen");
+        assert!(!plan.nested_callees.iter().any(|p| p.name == "idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_r03_main_false分支真函式不被不可達結構呼叫阻塞() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn chosen()->int{\nreturn 4\n}\nfn other()->int{\nreturn 5\n}\nfn main()->int{\nvar select:bool = false\nif(select){\nreturn chosen()\n}else{\nreturn other()\n}\nreturn idle()\n}\n";
+        let plan = checked(src);
+        assert!(matches!(&plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Unreachable)));
+        assert!(!plan.nested_callees.iter().any(|p| p.name == "idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let entered: Vec<_> = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect();
+        assert_eq!(entered, ["other"]);
+    }
+
+    #[test]
+    fn g18_r01_main可達不支援的結構函式仍不可偷略過() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_r01_main不可達來源圖被手工加入未支援函式須拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn chosen()->int{\nreturn 4\n}\nfn other()->int{\nreturn 5\n}\nfn main()->int{\nif(true){\nreturn chosen()\n}else{\nreturn other()\n}\nreturn idle()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(4));
+        plan.callee_name = "idle".to_owned();
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
 

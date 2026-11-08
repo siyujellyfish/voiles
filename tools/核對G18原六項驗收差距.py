@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main可達不支援的結構函式仍不可偷略過",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main不可達來源圖被手工加入未支援函式須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
@@ -260,6 +264,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main不可達來源圖被手工加入未支援函式須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_子框架同名str後溢位必先釋放子層再清理父層",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架",
@@ -579,6 +586,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main全分支提前返回不應編譯尾端不支援的結構函式",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_false分支真函式不被不可達結構呼叫阻塞",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main可達不支援的結構函式仍不可偷略過",
+        "struct_stage::g18_private_scalar_call_tests::g18_r01_main不可達來源圖被手工加入未支援函式須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
