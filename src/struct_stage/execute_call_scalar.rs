@@ -7986,14 +7986,19 @@ mod g18_private_scalar_call_tests {
     #[test]
     fn g18_r04_普通函式提前return真str借用不可達結構零資源() {
         use crate::owned_str_runtime::ResourceEvent as R;
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn route()->int{\nif(true){\nvar owner:str = \"內🪼\"\nreturn inspect(owner,5)\n}else{\nreturn inspect(\"wrong\",1)\n}\nreturn idle()\n}\nfn main()->int{\nreturn route()\n}\n";
-        // 未核准的直接 str 字面值實參仍保守拒絕；
-        // 只選擇已核准且合法的分支用來驗證資源。
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))
-                | Err(PrivateScalarCallPrepareError::Check(_))));
-        let legal = src.replace("return inspect(\\\"wrong\\\",1)", "return inspect(\\\"wrong\\\",1)");
-        assert_eq!(legal, src);
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn fallback()->int{\nreturn 8\n}\nfn route()->int{\nif(true){\nvar owner:str = \"內🪼\"\nreturn inspect(owner,5)\n}else{\nreturn fallback()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let plan = checked(src);
+        assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
     }
 
     #[test]
