@@ -1494,6 +1494,51 @@ impl PreparedPrivateScalarCall {
         Ok(PrivateScalarCopyStructPlan { fields, named: supplied })
     }
 
+    /// V1／F3：只接受原 Checker 完整驗證後的 int 欄位可寫實例。
+    /// 不以名稱或 RHS 文字自行猜測權限，先取得原 DeclarationId
+    /// 與欄位型別，再編譯唯一 TypedHIR int 工作。
+    fn checked_copy_struct_int_write(
+        statement: &Stmt, receiver: &str, field: &str, expression: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<(DeclarationId, PrivateScalarReturnExpr), PrivateScalarCallPrepareError> {
+        let declaration = *bindings.get(receiver).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "欄位寫入接收者缺少本層原 Checker DeclarationId",
+            ),
+        )?;
+        let fact = verified.plan.declarations.typed_declaration(declaration).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "欄位寫入接收者缺少原 Checker 具型別來源",
+            ),
+        )?;
+        let definition = verified.structs.get(fact.ty).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "欄位寫入接收者不是原 Checker 已核准結構型別",
+            ),
+        )?;
+        let member = definition.field(field).ok_or(
+            PrivateScalarCallPrepareError::Unsupported("欄位寫入缺少原結構欄位"),
+        )?;
+        if !fact.mutable || member.immutable || member.ty != "int"
+            || !definition.fields.iter().all(|candidate|
+                matches!(candidate.ty.as_str(), "int" | "bool"))
+            || !verified.tokens.iter().any(|token|
+                token.start == statement.start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
+            || !verified.tokens.iter().any(|token|
+                token.start > statement.start && token.end <= expression.start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "結構 int 欄位寫入缺少原可寫 Checker 權限或 Lexer 欄位身分",
+            ));
+        }
+        let value = PrivateScalarReturnExpr::from_checked_bindings(
+            expression, bindings, verified,
+        )?;
+        Ok((declaration, value))
+    }
+
     /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
     /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
     fn checked_str_assignment(
@@ -1790,6 +1835,14 @@ impl PreparedPrivateScalarCall {
                         &ret.expression, int_bindings, verified,
                     )?,
                 )),
+            StmtKind::FieldAssign { receiver, field, value } => {
+                let (declaration, value) = Self::checked_copy_struct_int_write(
+                    statement, receiver, field, value, int_bindings, verified,
+                )?;
+                Ok(PrivateScalarBranchAction::AssignCopyStructInt {
+                    declaration, owner: receiver.clone(), field: field.clone(), value,
+                })
+            }
             StmtKind::Assign(assign) => {
                 let id = *int_bindings.get(&assign.name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
@@ -1945,6 +1998,15 @@ impl PreparedPrivateScalarCall {
                     verified, false,
                 )?;
                 local_steps.push(PrivateScalarLocalStep::Control(action));
+                continue;
+            }
+            if let StmtKind::FieldAssign { receiver, field, value } = &statement.kind {
+                let (declaration, value) = Self::checked_copy_struct_int_write(
+                    statement, receiver, field, value, &bindings, verified,
+                )?;
+                local_steps.push(PrivateScalarLocalStep::AssignCopyStructInt {
+                    declaration, owner: receiver.clone(), field: field.clone(), value,
+                });
                 continue;
             }
             if let StmtKind::Assign(assign) = &statement.kind {
