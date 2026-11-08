@@ -133,8 +133,10 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
         待重現缺口.get("case") not in 原證據["P18.1"]
-    ) or 待重現缺口.get("category") != "CheckerAcceptedRuntimeUnsupported":
-        raise ValueError("V1 必修的真正 Checker 接受、私有執行器錯拒來源未精確列出")
+    ) or 待重現缺口.get("category") != "HistoricalCheckerAcceptedRuntimeUnsupported" or (
+        待重現缺口.get("resolution") != "ResolvedInV1DefaultVarStr"
+    ) or not isinstance(待重現缺口.get("resolution_details"), str):
+        raise ValueError("V0 歷史真錯拒來源與 V1 真修復測試的追溯不一致")
 
     return 清冊義務, {
         "original_phase_references": sum(len(群) for 群 in 原證據.values()),
