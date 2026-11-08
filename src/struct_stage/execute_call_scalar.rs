@@ -8397,6 +8397,84 @@ mod g18_private_scalar_call_tests {
     // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
     // V1／R01：用與原 Checker 同源的真正 main→函式工作圖驗證
     // Copyable 結構欄位在呼叫實參、賦值、跨框架與故障退出的順序。
+    // V1-F3：來源為原 Checker TypedHIR 認可的 bool 欄位；
+    // 在真正的 if／while 和普通函式 bool 實參位置動態讀取 P16 持有值。
+    #[test]
+    fn g18_v1_f3_結構bool真欄位控制if選中及未選中不造假框架() {
+        let src = "struct Meter{\nvar enabled:bool = true\nvar count:int = 5\n}\nfn yes()->int{\nreturn 7\n}\nfn no()->int{\nreturn 3\n}\nfn route()->int{\nvar note:Meter = Meter(enabled=false)\nif(note.enabled){\nreturn yes()\n}else{\nreturn no()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "yes"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool欄位真實參在子函式if判定() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn yes()->int{\nreturn 10\n}\nfn no()->int{\nreturn 2\n}\nfn choose(flag:bool)->int{\nif(flag){\nreturn yes()\n}\nreturn no()\n}\nfn route()->int{\nvar meter:Meter = Meter(enabled=false)\nreturn choose(meter.enabled)\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::BoolArgumentEvaluated(false)
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool真欄位while每輪判定且break有序離域() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn one(x:int)->int{\nreturn x\n}\nfn route()->int{\nvar meter:Meter = Meter()\nvar total:int = 0\nwhile(meter.enabled){\ntotal = total+1\nbreak\n}\nreturn one(total)\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ConditionalChecked(true)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool_false_while零迭代且保留真函式圖() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn one(x:int)->int{\nreturn x\n}\nfn route()->int{\nvar meter:Meter = Meter(enabled=false)\nvar total:int = 8\nwhile(meter.enabled){\ntotal = total+1\n}\nreturn one(total)\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::ConditionalChecked(false)
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool欄位型別不符原Checker直接拒絕() {
+        let src = "struct Meter{\nvar count:int = 9\n}\nfn yes()->int{\nreturn 7\n}\nfn route()->int{\nvar meter:Meter = Meter()\nif(meter.count){\nreturn yes()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f3_結構bool欄位編譯身分竄改必須零執行拒絕() {
+        let src = "struct Meter{\nvar enabled:bool = true\n}\nfn one()->int{\nreturn 1\n}\nfn route()->int{\nvar meter:Meter = Meter()\nif(meter.enabled){\nreturn one()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(1));
+        let Some(PrivateScalarLocalStep::EarlyReturn(branch)) =
+            plan.root_local_steps.iter_mut().find(|step|
+                matches!(step, PrivateScalarLocalStep::EarlyReturn(_))) else {
+            panic!("原 Checker 真 if 工作圖必須存在");
+        };
+        branch.condition = PrivateScalarBoolExpr::CopyStructBoolField {
+            declaration: DeclarationId(0),
+            owner: "meter".to_owned(), field: "enabled".to_owned(),
+        };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f1_f3_main結構欄位作為真函式實參依動態值求出() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn main()->int{\nvar note:Archive = Archive(count=8)\nreturn plus(note.count)\n}\n";
