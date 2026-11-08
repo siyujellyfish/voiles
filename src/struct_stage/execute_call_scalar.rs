@@ -954,6 +954,8 @@ impl PrivateScalarCallArgument {
 enum PrivateScalarBoolExpr {
     Constant(bool),
     Bound(DeclarationId),
+    /// 原 Checker 唯一 Copyable bool 欄位，從目前 P16 真結構執行期讀值。
+    CopyStructBoolField { declaration: DeclarationId, owner: String, field: String },
 }
 
 impl PrivateScalarBoolExpr {
@@ -1007,6 +1009,39 @@ impl PrivateScalarBoolExpr {
                 }
                 Ok(Self::Bound(id))
             }
+            TermKind::FieldRead(owner, field) => {
+                let declaration = *bindings.get(owner).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位讀取缺少本詞彙作用域 Checker 宣告",
+                    ),
+                )?;
+                let typed = verified.plan.declarations.typed_declaration(declaration)
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位讀取缺少 Checker 型別與 DeclarationId",
+                    ))?;
+                let definition = verified.structs.get(typed.ty).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位來源不是原 Checker 結構宣告",
+                    ),
+                )?;
+                if !definition.fields.iter().any(|candidate|
+                        candidate.name == *field && candidate.ty == "bool")
+                    || !definition.fields.iter().all(|candidate|
+                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(&token.kind, TokenKind::Name(found) if found == owner))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 欄位缺少真 Lexer／Checker 純 Copyable 身分",
+                    ));
+                }
+                Ok(Self::CopyStructBoolField {
+                    declaration, owner: owner.clone(), field: field.clone(),
+                })
+            }
             TermKind::Group(inner) => {
                 if !verified.tokens.iter().any(|token|
                     token.start == span.start
@@ -1021,8 +1056,35 @@ impl PrivateScalarBoolExpr {
                 Self::from_checked(inner, bindings, verified)
             }
             _ => Err(PrivateScalarCallPrepareError::Unsupported(
-                "此子集僅執行原 Checker 已核准 bool 常值或已初始化名稱條件",
+                "此子集只執行原 Checker 核准 bool 常值／具名宣告／純結構欄位",
             )),
+        }
+    }
+
+    /// 所有 bool 取值共用同一種真執行權威，不能在條件與實參各自
+    /// 推定欄位初始常值；唯一 P16 持有者與本框架 DeclarationId
+    /// 必須同時存在，未到達宣告則零讀取／零資源事件。
+    fn evaluate_runtime(
+        &self,
+        frame: &PrivateScalarActiveFrame,
+        structs: &crate::mixed_struct_runtime::MixedStructRuntime,
+    ) -> Result<bool, PrivateScalarCallRuntimeError> {
+        match self {
+            Self::Constant(value) => Ok(*value),
+            Self::Bound(id) => frame.bool_values.get(id).copied()
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::CopyStructBoolField { declaration, owner, field } => {
+                if !frame.copy_struct_scopes.iter().rev().flatten()
+                    .any(|(id, name)| id == declaration && name == owner) {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
+                match structs.field(owner, field).map_err(|_|
+                    PrivateScalarCallRuntimeError::StateMismatch,
+                )? {
+                    crate::mixed_struct_runtime::Observed::Bool(value) => Ok(value),
+                    _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                }
+            }
         }
     }
 }
@@ -1600,7 +1662,9 @@ impl PreparedPrivateScalarCall {
                     // 同一張 Checker 名稱表只做 DeclarationId 身分查找；
                     // str 來源不得被當成 int 值求出，Expr 仍由 HIR 型別拒絕。
                     local_int.insert(owner.name.clone(), id);
-                    if owner.ty == "bool" {
+                    if owner.ty == "bool" || verified.structs.contains_key(&owner.ty) {
+                        // bool 值或 Copyable 結構 bool 欄位共用
+                        // Checker DeclarationId；Name(bool) 仍須 HIR 驗證。
                         local_bool.insert(owner.name.clone(), id);
                     } else {
                         local_bool.remove(&owner.name);
@@ -2013,7 +2077,9 @@ impl PreparedPrivateScalarCall {
                     declaration, name: owner.name.clone(), plan,
                 });
                 bindings.insert(owner.name.clone(), declaration);
-                bool_bindings.remove(&owner.name);
+                // 保留 struct 來源於 bool 詞彙索引，只有原 Checker
+                // 已核准 bool FieldRead 才能從它取得布林值。
+                bool_bindings.insert(owner.name.clone(), declaration);
                 continue;
             }
             if owner.ty == "str" {
