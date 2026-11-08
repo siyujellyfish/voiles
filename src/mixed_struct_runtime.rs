@@ -252,6 +252,24 @@ impl MixedStructRuntime {
         *old=value;
         Ok(())
     }
+    /// G18／V1-F3：只在原 Checker 證明可寫的純值 bool 欄位
+    /// 上使用，重用 P16 真結構持有者，不建立任何虛構 UTF-8 資源。
+    /// 兩層 const 與完整初始化限制均由此核心再核對。
+    pub(crate) fn write_bool_field(
+        &mut self, owner:&str, field:&str, value:bool, receiver_mutable:bool,
+    )->Result<(),MixedError> {
+        if !receiver_mutable { return Err(MixedError::ImmutableReceiver); }
+        let (i,j)=self.valid_whole(owner)?;
+        let member=self.scopes[i][j].owned.as_mut()
+            .expect("已驗證完整持有者").fields.iter_mut()
+            .find(|member|member.name==field).ok_or(MixedError::MissingField)?;
+        if member.immutable { return Err(MixedError::ImmutableField); }
+        let StoredValue::Bool(old)=&mut member.value else {
+            return Err(MixedError::TypeMismatch(field.to_owned()));
+        };
+        *old=value;
+        Ok(())
+    }
     fn valid_whole(&self,name:&str)->Result<(usize,usize),MixedError> {
         let (i,j)=self.locate(name)?;
         let value=self.scopes[i][j].owned.as_ref()
