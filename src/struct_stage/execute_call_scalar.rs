@@ -8399,6 +8399,56 @@ mod g18_private_scalar_call_tests {
     // Copyable 結構欄位在呼叫實參、賦值、跨框架與故障退出的順序。
     // V1-F3：來源為原 Checker TypedHIR 認可的 bool 欄位；
     // 在真正的 if／while 和普通函式 bool 實參位置動態讀取 P16 持有值。
+    // V1-F3：真 Parser/Checker 的 for／while 控制與 Copyable 結構
+    // int/bool 欄位混合，逐輪動態求值；不可達邊不得冒充函式進入。
+    #[test]
+    fn g18_v1_f3_真結構bool欄位三輪for內呼叫函式有序累積() {
+        let src = "struct Meter{\nvar enabled:bool = true\nvar count:int = 3\n}\nfn step(x:int)->int{\nreturn x+2\n}\nfn route()->int{\nvar meter:Meter = Meter()\nvar total:int = 0\nfor i in 0..3{\nif(meter.enabled){\ntotal = total+step(meter.count)\n}\n}\nreturn total\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(15));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "step"
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_v1_f3_真結構欄位while中呼叫後break不重複執行() {
+        let src = "struct Meter{\nvar enabled:bool = true\nvar count:int = 4\n}\nfn next(x:int)->int{\nreturn x+1\n}\nfn route()->int{\nvar meter:Meter = Meter()\nvar total:int = 0\nwhile(meter.enabled){\ntotal = next(meter.count)\nbreak\n}\nreturn total\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "next"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_真結構欄位零次for永不進入待呼叫函式() {
+        let src = "struct Meter{\nvar count:int = 4\n}\nfn next(x:int)->int{\nreturn x+1\n}\nfn route()->int{\nvar meter:Meter = Meter()\nvar total:int = 8\nfor i in 0..0{\ntotal = next(meter.count)\n}\nreturn total\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "next"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_真結構欄位for條件continue不執行後續呼叫() {
+        let src = "struct Meter{\nvar enabled:bool = true\nvar count:int = 5\n}\nfn next(x:int)->int{\nreturn x+1\n}\nfn route()->int{\nvar meter:Meter = Meter()\nvar total:int = 0\nfor i in 0..2{\nif(meter.enabled){\ncontinue\n}\ntotal = next(meter.count)\n}\nreturn total\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(0));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "next"
+        )));
+    }
+
     #[test]
     fn g18_v1_f3_結構bool真欄位控制if選中及未選中不造假框架() {
         let src = "struct Meter{\nvar enabled:bool = true\nvar count:int = 5\n}\nfn yes()->int{\nreturn 7\n}\nfn no()->int{\nreturn 3\n}\nfn route()->int{\nvar note:Meter = Meter(enabled=false)\nif(note.enabled){\nreturn yes()\n}else{\nreturn no()\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
