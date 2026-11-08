@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百一十一項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百一十五項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
+    "g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
+    "g18_v1_正迭代for可達結構函式仍須保守拒絕",
+    "g18_v1_空迭代閉包被竄改新增可達目標須零執行拒絕",
     "g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
     "g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
     "g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
