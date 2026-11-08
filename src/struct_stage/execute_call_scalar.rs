@@ -8112,7 +8112,24 @@ mod g18_private_scalar_call_tests {
     #[test]
     fn g18_r05_跨子呼叫前後的兩張借用票據各按真返回逆序歸還() {
         let src = "fn leaf(s:str,n:int)->int{\nreturn n+1\n}\nfn parent(s:str,n:int)->int{\nreturn n+2\n}\nfn main()->int{\nconst outer:str = \"外\"\nconst inner:str = \"內\"\nreturn parent(outer,leaf(inner,3))\n}\n";
-        let out = checked(src).execute().unwrap();
+        let plan = checked(src);
+        let mut events = Vec::new();
+        let mut resource_events = Vec::new();
+        let base = plan.main_owners.iter().copied()
+            .collect::<BTreeMap<DeclarationId, i64>>();
+        let budget = PrivateScalarExecutionBudget::default();
+        let adjusted = PrivateScalarExecutionBudget {
+            max_call_frames: budget.max_call_frames.saturating_add(1),
+            max_steps: budget.max_steps,
+        };
+        let raw = plan.evaluate_graph(
+            plan.main_dynamic_call.as_ref().expect("main 必有動態圖"),
+            &base, &mut events, &mut resource_events,
+            adjusted, false, &plan.main_dynamic_steps,
+        );
+        eprintln!("R05 nested raw result: {:?} events: {:?} resources: {:?}",
+            raw, events, resource_events);
+        let out = plan.execute().unwrap();
         assert_eq!(out.result, Ok(6));
         assert!(out.has_balanced_frame_trace());
         let acquired: Vec<_> = out.events.iter().filter_map(|event| match event {
