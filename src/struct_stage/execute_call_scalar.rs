@@ -4985,16 +4985,21 @@ impl PreparedPrivateScalarCall {
         }
     }
 
-    /// V1／F1：最外層 main 直接返回普通函式呼叫時，最外層真正
-    /// Returned 值必須等於完成原 Checker 工作圖後的結果。
+    /// V1／F1：無論新 main 工作圖或既有單一直接 int 呼叫，
+    /// 最外層真 Returned 值必須等於原 Checker 已核准直接呼叫的結果。
     /// 一般「main 返回 f()+g()」或另有算術運算的複合返回不適用：
     /// 子函式各自 Returned 的值本來就不等於 main 的算術結果。
     fn audit_graph_outcome(
         &self, outcome: PrivateScalarCallOutcome,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
         let outcome = Self::audit_outcome(outcome)?;
-        if !matches!(&self.main_dynamic_call,
-            Some(PrivateScalarReturnExpr::Call { .. })) {
+        // None 是先前已核准「直接 main 呼叫、純 int 實參」的
+        // 獨立快路；其成功時也由相同的原 Checker 根 Call 決定結果。
+        // Some(Addition/Subtraction/Unreachable/Parameter) 則不能直接
+        // 把最後子呼叫 Returned 與 main 複合結果視為相等。
+        if self.main_dynamic_call.is_some()
+            && !matches!(&self.main_dynamic_call,
+                Some(PrivateScalarReturnExpr::Call { .. })) {
             return Ok(outcome);
         }
         let Ok(expected) = outcome.result else { return Ok(outcome); };
@@ -5118,7 +5123,7 @@ impl PreparedPrivateScalarCall {
         events.push(PrivateScalarCallEvent::FunctionExited {
             name: self.callee_name.clone(), returned: result.is_ok(),
         });
-        Self::audit_outcome(PrivateScalarCallOutcome {
+        self.audit_graph_outcome(PrivateScalarCallOutcome {
             result, events, resource_events, parameter_slots_after_exit: frame.len(),
         })
     }
@@ -5299,6 +5304,61 @@ mod g18_private_scalar_call_tests {
             Some(PrivateScalarReturnExpr::Addition(_, _))));
         let out = prepared.execute().unwrap();
         assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert!(prepared.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f1_舊式純int直接呼叫沿同一原Checker結果真值稽核() {
+        let prepared = checked(literal_src());
+        assert!(prepared.main_dynamic_call.is_none());
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(prepared.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f1_舊式純int直接返回被改寫即使事件平衡也必拒絕() {
+        let prepared = checked(literal_src());
+        assert!(prepared.main_dynamic_call.is_none());
+        let mut out = prepared.execute().unwrap();
+        let event = out.events.iter_mut().rfind(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )).expect("原動態函式返回");
+        if let PrivateScalarCallEvent::Returned(value) = event {
+            *value = 777;
+        }
+        assert!(out.has_balanced_frame_trace());
+        assert!(matches!(prepared.audit_graph_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v1_f1_舊式純int多層函式返回不得把子函式結果當主返回() {
+        let src = "fn leaf(n:int)->int{\nreturn n+1\n}\nfn wrap(n:int)->int{\nreturn leaf(n)+2\n}\nfn main()->int{\nreturn wrap(4)\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.main_dynamic_call.is_none());
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        let returns = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::Returned(value) => Some(*value),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(returns, [5, 7]);
+        assert!(prepared.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v1_f1_舊式純int溢位無返回且仍正常回滾() {
+        let src = "fn forward(value:int)->int{\nreturn value+1\n}\nfn main()->int{\nreturn forward(9223372036854775807)\n}\n";
+        let prepared = checked(src);
+        assert!(prepared.main_dynamic_call.is_none());
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
+        )));
         assert!(out.has_balanced_frame_trace());
         assert!(prepared.audit_graph_outcome(out).is_ok());
     }
