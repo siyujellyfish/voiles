@@ -1738,7 +1738,13 @@ impl PreparedPrivateScalarCall {
                 let branch = Self::compile_early_if(
                     statement, &bindings, &bool_bindings, verified, false,
                 )?;
+                // V1／F3：原 Checker 已證整個頂層 if／else-if／else
+                // 都返回時，後續同層來源沒有執行邊；不再編譯
+                // 無 TypedHIR 的不可達局部與不支援的結構呼叫。
+                // 未證全返回的分支仍完整保留後續動態工作。
+                let all_paths_return = branch.always_returns();
                 local_steps.push(PrivateScalarLocalStep::EarlyReturn(branch));
+                if all_paths_return { break; }
                 continue;
             }
             if matches!(&statement.kind,
@@ -2966,29 +2972,25 @@ impl PreparedPrivateScalarCall {
         // 只在完整 main 控制圖已證明「所有葉分支都提前 Return」時，
         // 才可排除尾端不可達呼叫。單靠缺 HIR 絕不能擅自跳過來源。
         // 真合法的前置／分支函式呼叫仍由原 Parser AST 完整收集。
+        // V1／F3：main 的入口函式也以 Checker 已編譯工作計畫
+        // 而非第二條 Parser AST 掃描選擇。先取 return 表達式，
+        // 再取原順序的前置控制／宣告工作；所有葉分支返回後
+        // 的來源不會在這裡成為入口，更不會提前執行。
+        let (_, main_graph_steps, main_graph_return, _) =
+            Self::prepare_function_locals(main, &verified)?;
         let terminal_unreachable = verified.plan.scalar_hir
             .expression(return_call.node_span()).is_none()
-            && matches!(
-                Self::prepare_function_locals(main, &verified)?.2,
-                PrivateScalarReturnExpr::Unreachable
-            );
-        let reachable_main_statements: &[Stmt] = if terminal_unreachable {
-            &main.body.statements[..main.body.statements.len() - 1]
-        } else {
-            &main.body.statements
-        };
-        let source_name = (if terminal_unreachable {
-            PrivateScalarReturnExpr::first_source_call_in_statements(
-                reachable_main_statements,
-            )
-        } else {
-            PrivateScalarReturnExpr::first_source_call(return_call)
-                .or_else(|| PrivateScalarReturnExpr::first_source_call_in_statements(
-                    reachable_main_statements,
-                ))
-        }).ok_or(PrivateScalarCallPrepareError::Unsupported(
-            "main 可執行來源缺少原 Parser 真具名函式呼叫",
-        ))?;
+            && matches!(&main_graph_return, PrivateScalarReturnExpr::Unreachable);
+        let mut main_names = Vec::new();
+        main_graph_return.collect_calls(&mut main_names);
+        for step in &main_graph_steps {
+            step.collect_calls(&mut main_names);
+        }
+        let source_name = main_names.first().copied().ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "main 已編譯可達工作計畫缺少真具名函式呼叫",
+            ),
+        )?;
         let callee = verified.functions.iter()
             .find(|fun| fun.name == source_name && fun.name != "main")
             .ok_or(PrivateScalarCallPrepareError::Unsupported(
@@ -3025,25 +3027,12 @@ impl PreparedPrivateScalarCall {
         let param = callee.params.first();
         let (root_local_inits, root_local_steps, return_expr, param_return_span) =
             Self::prepare_function_locals(callee, &verified)?;
-        // R01：先以原 AST 列出 main 可能到達的呼叫，再遞迴走訪
-        // 每個已宣告的函式本體。未在呼叫閉包內的合法輔助函式
-        // 不應被錯誤當成必須支援的動態執行目標；可達但
-        // 非 int／未證明的函式仍由下方正式型別／圖核對拒絕。
+        // R01／V1：從 main 已編譯工作計畫的真正候選呼叫出發，
+        // 遞迴收集已核准的函式依賴；不走原 AST 第二次猜圖。
         let mut reachable = std::collections::BTreeSet::<String>::new();
         let mut pending = Vec::<String>::new();
-        // V1／F3：main 與普通函式均以「原 Checker 已編譯的
-        // TypedHIR／控制工作計畫」建立可能的子呼叫閉包。
-        // AST 來源目錄仍用來定位第一個真正具名呼叫，但不得用
-        // 未經工作計畫證明的 AST 遞迴掃描替代可達執行依賴：
-        // 空 for、false while、已無條件 return／break／continue
-        // 之後的合法原始語句，均不能額外產生函式框架。
-        let (_, main_graph_steps, main_graph_return, _) =
-            Self::prepare_function_locals(main, &verified)?;
-        let mut main_names = Vec::new();
-        main_graph_return.collect_calls(&mut main_names);
-        for step in &main_graph_steps {
-            step.collect_calls(&mut main_names);
-        }
+        // 原 main 的同一已編譯候選同時決定入口和傳遞可達圖，
+        // 任何零迭代／終止後綴都不能額外建立函式框架。
         for name in main_names {
             if reachable.insert(name.to_owned()) {
                 pending.push(name.to_owned());
@@ -8249,6 +8238,45 @@ mod g18_private_scalar_call_tests {
     #[test]
     fn g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_v1_頂層普通函式全葉返回後局部不可達不再錯編() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 4\n}\nfn right()->int{\nreturn 8\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn left()\n}else{\nreturn right()\n}\nconst skipped:int = idle()\nreturn 0\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let plan = checked(src);
+        assert!(matches!(plan.return_expr, PrivateScalarReturnExpr::Unreachable));
+        assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(4));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(outcome.resource_events.is_empty());
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_main全葉返回後局部不可達不再污染首入口() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn left()->int{\nreturn 4\n}\nfn right()->int{\nreturn 8\n}\nfn main()->int{\nif(false){\nreturn left()\n}else{\nreturn right()\n}\nconst skipped:int = idle()\nreturn 0\n}\n";
+        let plan = checked(src);
+        assert_eq!(plan.callee_name, "left");
+        assert!(matches!(plan.main_dynamic_call,
+            Some(PrivateScalarReturnExpr::Unreachable)));
+        assert!(!plan.nested_callees.iter().any(|c| c.name == "idle"));
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(8));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(outcome.resource_events.is_empty());
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_頂層非全葉返回仍不得忽略可達結構局部() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
