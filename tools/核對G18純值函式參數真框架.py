@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百二十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百二十七項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_v1_頂層普通函式全葉返回後局部不可達不再錯編",
+    "g18_v1_main全葉返回後局部不可達不再污染首入口",
+    "g18_v1_頂層非全葉返回仍不得忽略可達結構局部",
     "g18_v1_main空for內可達性被原Checker排除不污染呼叫圖",
     "g18_v1_main_false_while內結構函式零建構且返回真目標",
     "g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過",
