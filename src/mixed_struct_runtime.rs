@@ -252,6 +252,23 @@ impl MixedStructRuntime {
         *old=value;
         Ok(())
     }
+    /// G18／V1：與既有 int 欄位相同的已核准 Copyable bool 更新，
+    /// 唯獨真正接收者與欄位可寫，且不建立任何 OwnedUtf8。
+    pub(crate) fn write_bool_field(
+        &mut self, owner:&str, field:&str, value:bool, receiver_mutable:bool,
+    )->Result<(),MixedError> {
+        if !receiver_mutable { return Err(MixedError::ImmutableReceiver); }
+        let (i,j)=self.valid_whole(owner)?;
+        let member=self.scopes[i][j].owned.as_mut()
+            .expect("已驗證完整持有者").fields.iter_mut()
+            .find(|member|member.name==field).ok_or(MixedError::MissingField)?;
+        if member.immutable { return Err(MixedError::ImmutableField); }
+        let StoredValue::Bool(old)=&mut member.value else {
+            return Err(MixedError::TypeMismatch(field.to_owned()));
+        };
+        *old=value;
+        Ok(())
+    }
     fn valid_whole(&self,name:&str)->Result<(usize,usize),MixedError> {
         let (i,j)=self.locate(name)?;
         let value=self.scopes[i][j].owned.as_ref()
