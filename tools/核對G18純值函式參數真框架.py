@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百六十五項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百六十六項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -17,6 +17,7 @@ from pathlib import Path
     "g18_v1_f3_真結構欄位while中呼叫後break不重複執行",
     "g18_v1_f3_真結構欄位零次for永不進入待呼叫函式",
     "g18_v1_f3_真結構欄位for條件continue不執行後續呼叫",
+    "g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變",
     "g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
     "g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
     "g18_v1_f3_bool欄位for_continue與while_break真回邊",

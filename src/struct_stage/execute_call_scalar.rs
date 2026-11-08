@@ -8782,6 +8782,21 @@ mod g18_private_scalar_call_tests {
     // 同一原 Checker 合法的 if／while 動態控制判斷。
     // V1／F3：補 #660 未涵蓋的來源交叉，沿用同一 Checker/P16 真 runtime。
     #[test]
+    fn g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變() {
+        let source = "struct Meter{\nvar count:int = 1\nvar ready:bool = false\n}\nfn run()->int{\nvar note:Meter = Meter(count=3)\nif(true){\nvar note:Meter = Meter(count=9)\nnote.count = 11\nnote.ready = true\nif(note.ready){\nnote.count = note.count+1\n}\n}\nreturn note.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
     fn g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫() {
         let src = "struct Flags{\nvar left:bool = false\nvar right:bool = true\n}\nfn route()->int{\nvar f:Flags = Flags()\nf.left = f.right\nf.right = false\nif(f.left){\nreturn 9\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
         let out = checked(src).execute().unwrap();
