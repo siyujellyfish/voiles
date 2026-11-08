@@ -69,6 +69,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          git reset -q
           git add -N -- src tools tests AI-build
           python3 - <<'PY'
           import subprocess
@@ -80,7 +81,7 @@ jobs:
               if 項目[:2] in (b"R ", b" R", b"C ", b" C"):
                   sys.exit("自動代理不可直接提交重新命名／複製")
               路徑 = 項目[3:].decode("utf-8")
-              if not 路徑.startswith(("src/", "tools/", "tests/", "AI-build/")):
+              if (not 路徑.startswith(("src/", "tools/", "tests/", "AI-build/")) or 路徑 in ("AI-build/建構階段.md", "tools/核對G18原六項驗收差距.py", "tools/核對G18-R07正式狀態一致性.py")):
                   sys.exit(f"自動代理碰觸了受保護的範圍：{路徑}")
           PY
           git diff --binary -- src tools tests AI-build > "$RUNNER_TEMP/voiles-auto.patch"
@@ -135,7 +136,7 @@ jobs:
               if not 項目:
                   continue
               路徑 = 項目[3:].decode("utf-8")
-              if not 路徑.startswith(("src/", "tools/", "tests/", "AI-build/")):
+              if (not 路徑.startswith(("src/", "tools/", "tests/", "AI-build/")) or 路徑 in ("AI-build/建構階段.md", "tools/核對G18原六項驗收差距.py", "tools/核對G18-R07正式狀態一致性.py")):
                   sys.exit(f"拒絕越權補丁：{路徑}")
           PY
           python3 tools/檢查專案.py
