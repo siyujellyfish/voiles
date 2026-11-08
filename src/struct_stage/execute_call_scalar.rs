@@ -47,6 +47,7 @@ enum PrivateScalarCallEvent {
     /// V1／F4：原 Checker 合法、P16 MixedStructRuntime 真建構
     /// 的純 Copyable int／bool 結構局部；不偽造 UTF-8 ResourceId。
     CopyStructConstructed(DeclarationId),
+    CopyStructRelocated { source: DeclarationId, target: DeclarationId },
     CopyStructScopeEnded(DeclarationId),
     /// 原 Checker 已核准的可寫結構 int 欄位，真 P16 持有者更新後才記錄。
     CopyStructIntFieldAssigned(DeclarationId, String, i64),
@@ -105,6 +106,7 @@ impl PrivateScalarCallOutcome {
         struct TraceFrame {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
+            moved_copy_structs: std::collections::BTreeSet<DeclarationId>,
             resource_ids: std::collections::HashSet<u64>,
             owner_resources: BTreeMap<DeclarationId, u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
@@ -118,6 +120,7 @@ impl PrivateScalarCallOutcome {
         }
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
+            moved_copy_structs: std::collections::BTreeSet::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
@@ -156,6 +159,7 @@ impl PrivateScalarCallOutcome {
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
+                        moved_copy_structs: std::collections::BTreeSet::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
@@ -261,18 +265,35 @@ impl PrivateScalarCallOutcome {
                     ) { return false; }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*id));
                 }
+                PrivateScalarCallEvent::CopyStructRelocated { source, target } => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || source == target
+                        || frame.moved_copy_structs.contains(source)
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::CopyStruct(id)
+                                if id == source))
+                        || frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::CopyStruct(id)
+                                if id == target)) {
+                        return false;
+                    }
+                    frame.moved_copy_structs.insert(*source);
+                    frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*target));
+                }
                 PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
                         Some(PrivateScalarLocalBinding::CopyStruct(previous))
                             if previous == *id) { return false; }
+                    frame.moved_copy_structs.remove(id);
                 }
                 PrivateScalarCallEvent::CopyStructIntFieldAssigned(id, field, _)
                     | PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, field, _) => {
                     let Some(frame) = frames.last() else { return false; };
-                    if field.is_empty() || frame.returned || !frame.locals.iter().any(|entry|
-                        matches!(entry, PrivateScalarLocalBinding::CopyStruct(old) if old == id)
-                    ) { return false; }
+                    if field.is_empty() || frame.returned || frame.moved_copy_structs.contains(id)
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::CopyStruct(old) if old == id)
+                        ) { return false; }
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -429,6 +450,7 @@ impl PrivateScalarCallOutcome {
                     if frame.name.as_deref() != Some(name.as_str())
                         || (unwinding && *returned)
                         || frame.returned != *returned || !frame.locals.is_empty()
+                        || !frame.moved_copy_structs.is_empty()
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
                         || !frame.owner_resources.is_empty()
                         || !frame.pending_transfers.is_empty()
@@ -459,6 +481,8 @@ impl PrivateScalarCallOutcome {
                 | PrivateScalarCallEvent::BoolInitialized(id, _)
                 | PrivateScalarCallEvent::CopyStructConstructed(id) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
+            PrivateScalarCallEvent::CopyStructRelocated { target, .. } =>
+                Some(PrivateSharedCallExitEvent::LocalInitialized(*target)),
             PrivateScalarCallEvent::LocalAssigned(id, _)
                 | PrivateScalarCallEvent::CopyStructIntFieldAssigned(id, _, _)
                 | PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, _, _)
@@ -484,6 +508,7 @@ impl PrivateScalarCallOutcome {
             _ => None,
         }).collect::<Vec<_>>();
         frames.len() == 1 && frames[0].locals.is_empty()
+            && frames[0].moved_copy_structs.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
             && frames[0].pending_transfers.is_empty()
