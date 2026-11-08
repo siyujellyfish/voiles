@@ -27,8 +27,16 @@ fn verified_private_syntax_roles(
                     && term(&binary.right, span, audit),
             TermKind::Construct(_, arguments) =>
                 arguments.iter().all(|(_, expression)| term(expression, span, audit)),
-            TermKind::Call(call) =>
-                call.arguments.iter().all(|expression| term(expression, span, audit)),
+            TermKind::Call(call) => {
+                // 真 Parser 先前已保留 await 前綴的完整 byte span。
+                // 來源至少必須以同一前綴起始；詳細 token 類別與
+                // 名稱位置由 token_provenance 的相鄰 Lexer token 稽核。
+                let prefix = !call.awaited || audit.source.get(
+                    span.start..span.start.saturating_add(5),
+                ) == Some("await");
+                prefix && call.arguments.iter().all(|expression|
+                    term(expression, span, audit))
+            },
             TermKind::MethodCall(_, _, arguments) =>
                 arguments.iter().all(|expression| term(expression, span, audit)),
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
