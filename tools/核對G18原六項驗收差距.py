@@ -19,6 +19,12 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構整筆move真值唯一轉交而無第二建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構兩次move鏈只交付最後唯一持有者",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構真分支整筆move早返且完成雙局部離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move後再次移動相同原結構原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
@@ -252,6 +258,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構整筆move真值唯一轉交而無第二建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構兩次move鏈只交付最後唯一持有者",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構真分支整筆move早返且完成雙局部離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move後再次移動相同原結構原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
@@ -548,6 +560,12 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構整筆move真值唯一轉交而無第二建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構兩次move鏈只交付最後唯一持有者",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構真分支整筆move早返且完成雙局部離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move後再次移動相同原結構原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
@@ -736,6 +754,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構整筆move真值唯一轉交而無第二建構",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構兩次move鏈只交付最後唯一持有者",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構真分支整筆move早返且完成雙局部離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move後再次移動相同原結構原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
