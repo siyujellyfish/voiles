@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main空for內可達性被原Checker排除不污染呼叫圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main_false_while內結構函式零建構且返回真目標",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_區塊已返回後結構函式不得進入工作圖",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_巢狀全分支返回後不可達建構不得污染兄弟返回",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕",
@@ -208,6 +211,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main空for內可達性被原Checker排除不污染呼叫圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main_false_while內結構函式零建構且返回真目標",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_區塊已返回後結構函式不得進入工作圖",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_巢狀全分支返回後不可達建構不得污染兄弟返回",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕",
@@ -634,6 +640,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main空for內可達性被原Checker排除不污染呼叫圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main_false_while內結構函式零建構且返回真目標",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_區塊已返回後結構函式不得進入工作圖",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_巢狀全分支返回後不可達建構不得污染兄弟返回",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕",

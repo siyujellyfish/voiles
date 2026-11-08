@@ -3031,13 +3031,19 @@ impl PreparedPrivateScalarCall {
         // 非 int／未證明的函式仍由下方正式型別／圖核對拒絕。
         let mut reachable = std::collections::BTreeSet::<String>::new();
         let mut pending = Vec::<String>::new();
+        // V1／F3：main 與普通函式均以「原 Checker 已編譯的
+        // TypedHIR／控制工作計畫」建立可能的子呼叫閉包。
+        // AST 來源目錄仍用來定位第一個真正具名呼叫，但不得用
+        // 未經工作計畫證明的 AST 遞迴掃描替代可達執行依賴：
+        // 空 for、false while、已無條件 return／break／continue
+        // 之後的合法原始語句，均不能額外產生函式框架。
+        let (_, main_graph_steps, main_graph_return, _) =
+            Self::prepare_function_locals(main, &verified)?;
         let mut main_names = Vec::new();
-        // 不把 Checker 已證的尾端不可達函式冒充可達圖目標。
-        // 其他 if／else／while／for 候選仍須完整編譯，不在靜態階段
-        // 猜測實際會被選中的控制邊。
-        PrivateScalarReturnExpr::collect_source_calls_in_statements(
-            reachable_main_statements, &mut main_names,
-        );
+        main_graph_return.collect_calls(&mut main_names);
+        for step in &main_graph_steps {
+            step.collect_calls(&mut main_names);
+        }
         for name in main_names {
             if reachable.insert(name.to_owned()) {
                 pending.push(name.to_owned());
@@ -8204,6 +8210,48 @@ mod g18_private_scalar_call_tests {
     // V1／F3：同一原 Parser／Checker 已證的 Return 須切斷後續工作圖。
     // 不可達函式不得占用 frame／OwnedStr ResourceId，也不可把合法
     // 但未接通的結構執行路徑誤判成此選中分支的必要功能。
+
+    // V1／F3：root main 也須由原 Checker 已編譯的控制工作圖
+    // 列出可能的子呼叫；不再以原 AST 遞迴掃描推定執行可達。
+
+    #[test]
+    fn g18_v1_main空for內可達性被原Checker排除不污染呼叫圖() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..0{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        let plan = checked(src);
+        let names = plan.nested_callees.iter()
+            .map(|entry| entry.name.as_str()).collect::<Vec<_>>();
+        assert!(!names.contains(&"idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_main_false_while內結構函式零建構且返回真目標() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 11\n}\nfn main()->int{\nwhile(false){\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        let plan = checked(src);
+        let names = plan.nested_callees.iter()
+            .map(|entry| entry.name.as_str()).collect::<Vec<_>>();
+        assert!(!names.contains(&"idle"));
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(11));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
 
     #[test]
     fn g18_v1_區塊已返回後結構函式不得進入工作圖() {
