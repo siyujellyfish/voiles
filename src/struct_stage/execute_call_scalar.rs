@@ -288,6 +288,25 @@ impl PrivateScalarCallOutcome {
                     }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*target));
                 }
+                PrivateScalarCallEvent::CopyStructResourceOwnerBound {
+                    declaration, field, resource_id,
+                } => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || field.is_empty()
+                        || !frame.resource_ids.contains(resource_id)
+                        || !frame.locals.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(id) if id == declaration
+                        ))
+                        || frame.moved_copy_struct_sources.contains(declaration)
+                        || frame.owner_resources.values().any(|id| id == resource_id)
+                        || frame.struct_owner_resources.values().any(|id| id == resource_id)
+                        || frame.struct_owner_resources.contains_key(&(*declaration, field.clone())) {
+                        return false;
+                    }
+                    frame.struct_owner_resources.insert(
+                        (*declaration, field.clone()), *resource_id,
+                    );
+                }
                 PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
@@ -421,11 +440,20 @@ impl PrivateScalarCallOutcome {
                             } else { false }
                         }
                         crate::owned_str_runtime::ResourceEvent::Released(id) => {
-                            let former = frame.owner_resources.iter().find_map(|(owner, held)|
+                            let scalar = frame.owner_resources.iter().find_map(|(owner, held)|
                                 (held == id).then_some(*owner));
-                            frame.resource_ids.remove(id)
-                                && former.is_some_and(|owner|
-                                    frame.owner_resources.remove(&owner) == Some(*id))
+                            let structure = frame.struct_owner_resources.iter()
+                                .find_map(|(owner, held)| (held == id).then_some(owner.clone()));
+                            // 結構的 P16 OwnedUtf8 必須與原宣告、真欄位的
+                            // ResourceId 一對一；不能由另一個存活持有者替釋放。
+                            let bound = if let Some(owner) = scalar {
+                                frame.owner_resources.remove(&owner) == Some(*id)
+                            } else if let Some(owner) = structure {
+                                frame.struct_owner_resources.remove(&owner) == Some(*id)
+                            } else {
+                                false
+                            };
+                            frame.resource_ids.remove(id) && bound
                         }
                     };
                     if !valid { return false; }
@@ -435,7 +463,8 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || !frame.resource_ids.contains(resource_id)
                         || frame.owner_resources.contains_key(declaration)
-                        || frame.owner_resources.values().any(|held| held == resource_id) {
+                        || frame.owner_resources.values().any(|held| held == resource_id)
+                        || frame.struct_owner_resources.values().any(|held| held == resource_id) {
                         return false;
                     }
                     if let Some((target, moved)) = frame.pending_transfers.get(resource_id) {
@@ -462,6 +491,7 @@ impl PrivateScalarCallOutcome {
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
                         || !frame.moved_copy_struct_sources.is_empty()
                         || !frame.owner_resources.is_empty()
+                        || !frame.struct_owner_resources.is_empty()
                         || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
                         || frames.last().is_none_or(|parent|
@@ -3258,6 +3288,15 @@ impl PreparedPrivateScalarCall {
                         )?.push((id, name.to_owned()));
                         frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
                         events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
+                        // 只取 P16 真建構後唯一 OwnedUtf8 欄位的 ResourceId，
+                        // 不以文字或模擬配置補造 Created／Moved／Released。
+                        for (field, resource_id) in copy_structs.field_resource_ids(name)
+                            .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?
+                        {
+                            events.push(PrivateScalarCallEvent::CopyStructResourceOwnerBound {
+                                declaration: id, field, resource_id,
+                            });
+                        }
                     }
                     PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
                         let frame = frames.last_mut().ok_or(
