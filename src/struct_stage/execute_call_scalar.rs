@@ -2927,7 +2927,7 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
                     }
-                    PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
+                    PrivateScalarTask::DeclareCopyStruct(id, name, initializer) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -2937,34 +2937,56 @@ impl PreparedPrivateScalarCall {
                             scope.iter().any(|(_, known)| known == name)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
-                        // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
-                        let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
-                            crate::mixed_struct_runtime::MixedFieldSpec {
-                                name: field, kind: *kind,
-                                default: default.as_ref().map(ApprovedSeed::runtime),
-                                immutable: *immutable,
+                        match initializer {
+                            PrivateScalarCopyStructInitializer::Construct(plan) => {
+                                // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
+                                let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
+                                    crate::mixed_struct_runtime::MixedFieldSpec {
+                                        name: field, kind: *kind,
+                                        default: default.as_ref().map(ApprovedSeed::runtime),
+                                        immutable: *immutable,
+                                    }
+                                ).collect::<Vec<_>>();
+                                // 僅在動態執行真正抵達宣告時讀本 frame 純值。
+                                // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
+                                // 皆為無副作用 int/bool 讀取，P16 仍控制後續
+                                // 具名書寫順序及覆蓋預設、溢位等原安全語意。
+                                let named_values = plan.named.iter().map(|(field, source)|
+                                    source.evaluate(frame, &copy_structs)
+                                        .map(|value| (field.as_str(), value))
+                                ).collect::<Result<Vec<_>, _>>()?;
+                                let named = named_values.iter().map(|(field, value)|
+                                    crate::mixed_struct_runtime::NamedMixed {
+                                        field, value: value.runtime(),
+                                    }
+                                ).collect::<Vec<_>>();
+                                copy_structs.construct(name, &fields, &named, None).map_err(|error|
+                                    match error {
+                                        crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                            PrivateScalarCallRuntimeError::IntegerOverflow,
+                                        _ => PrivateScalarCallRuntimeError::StateMismatch,
+                                    },
+                                )?;
+                                events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
                             }
-                        ).collect::<Vec<_>>();
-                        // 僅在動態執行真正抵達宣告時讀本 frame 純值。
-                        // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
-                        // 皆為無副作用 int/bool 讀取，P16 仍控制後續
-                        // 具名書寫順序及覆蓋預設、溢位等原安全語意。
-                        let named_values = plan.named.iter().map(|(field, source)|
-                            source.evaluate(frame, &copy_structs)
-                                .map(|value| (field.as_str(), value))
-                        ).collect::<Result<Vec<_>, _>>()?;
-                        let named = named_values.iter().map(|(field, value)|
-                            crate::mixed_struct_runtime::NamedMixed {
-                                field, value: value.runtime(),
+                            PrivateScalarCopyStructInitializer::Move { source, declaration } => {
+                                if !frame.copy_struct_scopes.iter().rev().flatten()
+                                    .any(|(known, active)| known == declaration && active == source)
+                                    || !frame.initialized_order.iter().any(|entry|
+                                        matches!(entry, PrivateScalarLocalBinding::CopyStruct(known)
+                                            if known == declaration)) {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                frame.borrow_tracker.check_direct_access(*declaration)
+                                    .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                                copy_structs.move_whole(source, name).map_err(|_|
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?;
+                                events.push(PrivateScalarCallEvent::CopyStructRelocated {
+                                    source: *declaration, target: id,
+                                });
                             }
-                        ).collect::<Vec<_>>();
-                        copy_structs.construct(name, &fields, &named, None).map_err(|error|
-                            match error {
-                                crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
-                                    PrivateScalarCallRuntimeError::IntegerOverflow,
-                                _ => PrivateScalarCallRuntimeError::StateMismatch,
-                            },
-                        )?;
+                        }
                         if !copy_structs.events().is_empty() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -2972,7 +2994,6 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?.push((id, name.to_owned()));
                         frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
-                        events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
                     }
                     PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
                         let frame = frames.last_mut().ok_or(
