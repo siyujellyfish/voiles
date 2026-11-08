@@ -1954,3 +1954,71 @@ mod v7_direct_await_source_tests {
         assert!(inspected(text).is_ok());
     }
 }
+
+
+/// V7／E5：原 Parser→Checker 活躍 DeclarationId 借用與
+/// 直接 await 安全點共用 VB15-01-A；拒絕應發生在動態執行之前。
+#[cfg(test)]
+mod v7_e5_await_borrow_boundary_tests {
+    use super::*;
+
+    fn diagnostic(source: &str) -> crate::Diagnostic {
+        inspect(source).expect_err("仍有效的來源借用必須在原 Checker 遭拒絕")
+    }
+
+    #[test]
+    fn v7_e5_仍會在等待後使用的借用別名不可跨await() {
+        let source = "async fn ready(n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:int = 4\nconst alias:int = source.borrow()\nreturn await ready(2)+alias\n}\n";
+        let rejected = diagnostic(source);
+        assert_eq!(rejected.kind, crate::DiagnosticKind::Static);
+        assert!(rejected.message.contains("VB15-01-A"), "{:?}", rejected.message);
+        assert!(rejected.message.contains("有效借用"));
+    }
+
+    #[test]
+    fn v7_e5_最後使用點已歸還的別名不阻擋後續直接await() {
+        let source = "async fn ready(n:int)->int{\nreturn n\n}\nfn main()->int{\nconst source:int = 4\nconst alias:int = source.borrow()\nvar used:int = alias\nreturn await ready(2)+used\n}\n";
+        inspect(source).expect("真 Checker 已於最後使用點歸還，不應擋住後續 await");
+    }
+
+    #[test]
+    fn v7_e5_直接await不可用具名str建立跨等待的預設借用() {
+        let source = "async fn consume(value:str)->int{\nreturn 3\n}\nfn main()->int{\nvar source:str = \"UTF-8🪼\"\nreturn await consume(source)\n}\n";
+        let rejected = diagnostic(source);
+        assert_eq!(rejected.kind, crate::DiagnosticKind::Static);
+        assert!(rejected.message.contains("VB15-01-A"), "{:?}", rejected.message);
+        assert!(rejected.message.contains("預設借用"));
+    }
+
+    #[test]
+    fn v7_e5_明確整筆移交不等於跨await保留預設借用() {
+        let source = "async fn consume(value:str)->int{\nreturn 3\n}\nfn main()->int{\nvar source:str = \"UTF-8\"\nreturn await consume(source.move())\n}\n";
+        inspect(source).expect("原 P15.6 明確 Move 與非 Copyable 預設借用必須區分");
+    }
+
+    #[test]
+    fn v7_e5_同步函式前序str借用不得跨後續int實參中的await() {
+        let source = "fn combine(value:str,n:int)->int{\nreturn n\n}\nasync fn ready()->int{\nreturn 9\n}\nfn main()->int{\nvar source:str = \"所有者\"\nreturn combine(source,await ready())\n}\n";
+        let rejected = diagnostic(source);
+        assert_eq!(rejected.kind, crate::DiagnosticKind::Static);
+        assert!(rejected.message.contains("VB15-01-A"), "{:?}", rejected.message);
+        assert!(rejected.message.contains("前序"));
+    }
+
+    #[test]
+    fn v7_e5_同步呼叫較後實參加法內仍能找出等待邊界() {
+        let source = "fn combine(value:str,n:int)->int{\nreturn n\n}\nasync fn ready()->int{\nreturn 9\n}\nfn main()->int{\nvar source:str = \"所有者\"\nreturn combine(source,1+await ready())\n}\n";
+        let rejected = diagnostic(source);
+        assert_eq!(rejected.kind, crate::DiagnosticKind::Static);
+        assert!(rejected.message.contains("VB15-01-A"), "{:?}", rejected.message);
+        assert!(rejected.message.contains("前序"));
+    }
+
+    #[test]
+    fn v7_e5_合法同步str借用與獨立純int等待各自不誤判() {
+        let sync_only = "fn combine(value:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar source:str = \"已證合法\"\nreturn combine(source,2)\n}\n";
+        inspect(sync_only).expect("無等待邊界的原 P15.6 借用不能被誤拒");
+        let wait_only = "fn combine(a:int,b:int)->int{\nreturn a+b\n}\nasync fn ready()->int{\nreturn 9\n}\nfn main()->int{\nreturn combine(2,await ready())\n}\n";
+        inspect(wait_only).expect("只有 Copyable 實參時不應假造跨 await 借用");
+    }
+}
