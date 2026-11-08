@@ -1514,6 +1514,16 @@ impl PreparedPrivateScalarCall {
                     }
                     events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(id));
                 }
+                Some(PrivateScalarLocalBinding::CopyStruct(id)) => {
+                    let Some(scope) = frame.copy_struct_scopes.last_mut() else {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    };
+                    if !scope.iter().any(|(known, _)| *known == id) {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    scope.retain(|(known, _)| *known != id);
+                    events.push(PrivateScalarCallEvent::CopyStructScopeEnded(id));
+                }
                 None => return Err(PrivateScalarCallRuntimeError::StateMismatch),
             }
         }
@@ -1605,6 +1615,23 @@ impl PreparedPrivateScalarCall {
                 Ok(PrivateScalarBranchAction::DeclareStr {
                     declaration: id, name: owner.name.clone(),
                     mutable: owner.mutable, initializer,
+                })
+            }
+            StmtKind::Declare(owner) if verified.structs.contains_key(&owner.ty) => {
+                let id = DeclarationId(statement.start);
+                if !verified.plan.declarations.matches(id, &owner.ty, owner.mutable) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "分支結構宣告缺少原 Checker DeclarationId／型別",
+                    ));
+                }
+                let term = owner.initializer.as_ref().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "分支 Copyable 結構需要原 Checker 完整建立式",
+                    ),
+                )?;
+                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                Ok(PrivateScalarBranchAction::DeclareCopyStruct {
+                    declaration: id, name: owner.name.clone(), plan,
                 })
             }
             StmtKind::Declare(owner) if matches!(owner.ty.as_str(), "int" | "bool") => {
@@ -1933,6 +1960,25 @@ impl PreparedPrivateScalarCall {
                 ));
             };
             let declaration = DeclarationId(statement.start);
+            if verified.structs.contains_key(&owner.ty) {
+                if !verified.plan.declarations.matches(declaration, &owner.ty, owner.mutable) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "函式結構局部缺少原 Checker DeclarationId／型別",
+                    ));
+                }
+                let term = owner.initializer.as_ref().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "函式 Copyable 結構需要原 Checker 完整建立式",
+                    ),
+                )?;
+                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
+                    declaration, name: owner.name.clone(), plan,
+                });
+                bindings.insert(owner.name.clone(), declaration);
+                bool_bindings.remove(&owner.name);
+                continue;
+            }
             if owner.ty == "str" {
                 if !verified.plan.declarations.matches(declaration, "str", owner.mutable) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -2043,14 +2089,18 @@ impl PreparedPrivateScalarCall {
         initial_local_steps: &'a [PrivateScalarLocalStep],
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
+        // P16 MixedStructRuntime 的真建構與詞彙離域；本批拒絕任何 str 欄位。
+        let mut copy_structs = crate::mixed_struct_runtime::MixedStructRuntime::new();
         let mut resource_cursor = 0usize;
         resources.enter_scope();
+        copy_structs.enter_scope();
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
             bool_values: BTreeMap::new(),
             initialized_order: Vec::new(),
             resource_scopes: 1,
             str_owner_scopes: vec![Vec::new()],
+            copy_struct_scopes: vec![Vec::new()],
             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
             incoming_borrows: Vec::new(),
         }];
@@ -2084,6 +2134,11 @@ impl PreparedPrivateScalarCall {
                     declaration, name, mutable,
                 } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
                     *declaration, name, *mutable,
+                )),
+                PrivateScalarLocalStep::DeclareCopyStruct {
+                    declaration, name, plan,
+                } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
+                    *declaration, name, plan,
                 )),
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
