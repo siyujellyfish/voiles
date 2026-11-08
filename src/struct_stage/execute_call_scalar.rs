@@ -8778,6 +8778,91 @@ mod g18_private_scalar_call_tests {
 
     // V1／F3：所有 int 欄位寫入均由真正 Checker 允許的
     // var 實例／var 欄位與 TypedHIR RHS 簽發，P16 真值更新後才留下事件。
+    // V1／F3：bool 欄位只在真 P16 持有者修改後可改變
+    // 同一原 Checker 合法的 if／while 動態控制判斷。
+    #[test]
+    fn g18_v1_f3_bool結構欄位寫入後if重新讀取最新值() {
+        let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nitem.enabled = false\nif(item.enabled){\nreturn 9\n}\nreturn 2\n}\nfn main()->int{\nreturn step()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(_, name, false)
+                if name == "enabled"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位while首輪更新後反向邊真結束() {
+        let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nvar total:int = 0\nwhile(item.enabled){\ntotal = total+1\nitem.enabled = false\n}\nreturn total\n}\nfn main()->int{\nreturn step()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ConditionalChecked(true)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ConditionalChecked(false)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool結構欄位只有選中分支真更新() {
+        let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nif(false){\nitem.enabled = false\n}else{\nitem.enabled = true\n}\nif(item.enabled){\nreturn 8\n}\nreturn 2\n}\nfn main()->int{\nreturn step()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(_, _, true)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(_, _, false)
+        )));
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_v1_f3_bool結構寫入後溢位要正常單次離域() {
+        let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nitem.enabled = false\nreturn 9223372036854775807+1\n}\nfn main()->int{\nreturn step()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位const持有者或const欄位原Checker拒絕() {
+        let owner = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nconst item:Flag = Flag()\nitem.enabled = false\nreturn 1\n}\nfn main()->int{\nreturn step()\n}\n";
+        let field = "struct Flag{\nconst enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nitem.enabled = false\nreturn 1\n}\nfn main()->int{\nreturn step()\n}\n";
+        for src in [owner, field] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))));
+        }
+    }
+
+    #[test]
+    fn g18_v1_f3_bool欄位偽造更新DeclarationId必拒絕() {
+        let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nitem.enabled = false\nreturn 3\n}\nfn main()->int{\nreturn step()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let mut changed = out;
+        let target = changed.events.iter_mut().find(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).expect("真 P16 bool 欄位事件");
+        if let PrivateScalarCallEvent::CopyStructBoolFieldAssigned(id, _, _) = target {
+            *id = DeclarationId(0);
+        }
+        assert!(!changed.has_balanced_frame_trace());
+    }
+
     #[test]
     fn g18_v1_f3_真struct_int欄位寫入後讀回更新值() {
         let src = "struct Meter{\nvar count:int = 3\n}\nfn step()->int{\nvar note:Meter = Meter()\nnote.count = note.count+4\nreturn note.count\n}\nfn main()->int{\nreturn step()\n}\n";
