@@ -8299,9 +8299,72 @@ mod g18_private_scalar_call_tests {
         assert_eq!(entered, ["other"]);
     }
 
+
+    // V1／F4：以下均由原 Parser／Checker 已核准的真來源出發，
+    // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
+    #[test]
+    fn g18_v1_f4_原v0可達純int結構局部真建構並反序離域() {
+        let src = "struct Archive{\\nvar count:int = 7\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 99\\n}\\nfn good()->int{\\nreturn 7\\n}\\nfn route(flag:bool)->int{\\nif(flag){\\nreturn good()\\n}\\nreturn idle()\\n}\\nfn main()->int{\\nreturn route(false)\\n}\\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(99));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["route", "idle"]);
+    }
+
+    #[test]
+    fn g18_v1_f4_未選分支純結構與資源均零建構() {
+        let src = "struct Archive{\\nvar count:int = 7\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 99\\n}\\nfn good()->int{\\nreturn 7\\n}\\nfn route(flag:bool)->int{\\nif(flag){\\nreturn good()\\n}\\nreturn idle()\\n}\\nfn main()->int{\\nreturn route(true)\\n}\\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f4_純結構建構後int溢位逐框架離域不留資源() {
+        let src = "struct Archive{\\nvar count:int = 7\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 9223372036854775807+1\\n}\\nfn main()->int{\\nreturn idle()\\n}\\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充() {
+        let src = "struct Archive{\\nvar count:int = 7\\nvar resource:str = \\"保留🪼\\"\\n}\\nfn idle()->int{\\nvar r:Archive = Archive()\\nreturn 99\\n}\\nfn main()->int{\\nreturn idle()\\n}\\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
     #[test]
     fn g18_r01_main可達不支援的結構函式仍不可偷略過() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8441,7 +8504,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_正迭代for可達結構函式仍須保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8497,7 +8560,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8536,7 +8599,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_頂層非全葉返回仍不得忽略可達結構局部() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8581,17 +8644,17 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
         // route(false) 並不能靜態推得所有可能的動態路徑；
-        // 未經本標量 evaluator 支援、但仍可由 flag=true 走到的
-        // 結構建構必須保持 Unsupported，不可靠傳入常值預測執行分支。
+        // 含 str 資源尚未經共同帳簿證明、但仍可由 flag=true 走到的
+        // 含 str 之結構建構必須保持 Unsupported，不可靠傳入常值預測執行分支。
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
     #[test]
     fn g18_r01_真正可達的結構局部函式仍須保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
