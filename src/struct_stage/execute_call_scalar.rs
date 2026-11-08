@@ -2060,9 +2060,12 @@ impl PreparedPrivateScalarCall {
                 "整筆移動目標缺少原 Checker 結構型別",
             ),
         )?;
+        // 原 Checker 允許的具名 var str 已由 checked_copy_struct
+        // 強制在真建構前提供受核准的字面 UTF-8；真正持有者先經
+        // 共享帳 construct 成功，Move 才可沿 P16 同一唯一資源轉交。
+        // 無具名預設的 var str 仍在前序 Prepare 保守拒絕。
         if !definition.fields.iter().all(|field|
-                matches!(field.ty.as_str(), "int" | "bool")
-                    || field.ty == "str" && field.immutable)
+                matches!(field.ty.as_str(), "int" | "bool" | "str"))
             || source == target || source_name == target_name
             || !verified.plan.declarations.matches(target, ty, mutable)
             || !verified.plan.declarations.typed_declaration(source)
@@ -9806,7 +9809,9 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_f4_可寫str資源結構整筆move仍須保守拒絕() {
-        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker(data=\"已建\")\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        // 沒有具名 var str 初始化的舊 V0 來源仍須阻擋，
+        // 不能因具名欄位共享帳合法而擴權所有預設路徑。
+        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
