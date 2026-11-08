@@ -57,6 +57,8 @@ enum PrivateScalarCallEvent {
     CopyStructIntFieldAssigned(DeclarationId, String, i64),
     /// 唯有 P16 真 bool 欄位更新後才發出的原 Checker 同源事件。
     CopyStructBoolFieldAssigned(DeclarationId, String, bool),
+    /// 原 Checker 已核准 var str 真值替換後才可發出的資源身分事件。
+    CopyStructStrFieldAssigned(DeclarationId, String, u64),
     /// 只有執行時真正到達的 if 條件才可記錄求值結果。
     ConditionalChecked(bool),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
@@ -322,6 +324,12 @@ impl PrivateScalarCallOutcome {
                         || !frame.locals.iter().any(|entry|
                         matches!(entry, PrivateScalarLocalBinding::CopyStruct(old) if old == id)
                     ) { return false; }
+                }
+                PrivateScalarCallEvent::CopyStructStrFieldAssigned(id, field, resource_id) => {
+                    let Some(frame) = frames.last() else { return false; };
+                    if frame.returned || frame.moved_copy_struct_sources.contains(id)
+                        || frame.struct_owner_resources.get(&(*id, field.clone()))
+                            != Some(resource_id) { return false; }
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -1208,6 +1216,9 @@ enum PrivateScalarBranchAction {
         declaration: DeclarationId, owner: String, field: String,
         value: PrivateScalarBoolExpr,
     },
+    AssignCopyStructStr {
+        declaration: DeclarationId, owner: String, field: String, value: String,
+    },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     /// 原 Checker 可寫 str 的真字面值／明確整筆 .move() 覆寫。
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
@@ -1240,7 +1251,8 @@ impl PrivateScalarBranchAction {
                 | Self::DeclareBool { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
                 | Self::MoveCopyStruct { .. }
-                | Self::AssignStr { .. } | Self::Break | Self::Continue => {}
+                | Self::AssignStr { .. } | Self::AssignCopyStructStr { .. }
+                | Self::Break | Self::Continue => {}
         }
     }
 
@@ -1252,6 +1264,7 @@ impl PrivateScalarBranchAction {
             Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignCopyStructInt { .. } | Self::AssignCopyStructBool { .. }
+                | Self::AssignCopyStructStr { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
                 | Self::DeclareEmptyStr { .. } | Self::DeclareCopyStruct { .. }
@@ -1494,6 +1507,9 @@ enum PrivateScalarLocalStep {
         declaration: DeclarationId, owner: String, field: String,
         value: PrivateScalarBoolExpr,
     },
+    AssignCopyStructStr {
+        declaration: DeclarationId, owner: String, field: String, value: String,
+    },
     EarlyReturn(PrivateScalarEarlyIf),
     Control(PrivateScalarBranchAction),
 }
@@ -1508,7 +1524,8 @@ impl PrivateScalarLocalStep {
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
-                | Self::AssignCopyStructBool { .. } | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
+                | Self::AssignCopyStructBool { .. } | Self::AssignCopyStructStr { .. }
+                | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
                 | Self::MoveCopyStruct { .. }
                 | Self::AssignStr { .. } => {}
@@ -1628,6 +1645,7 @@ enum PrivateScalarTask<'a> {
     AssignLocal(DeclarationId),
     WriteCopyStructInt(DeclarationId, &'a str, &'a str),
     WriteCopyStructBool(DeclarationId, &'a str, &'a str, &'a PrivateScalarBoolExpr),
+    WriteCopyStructStr(DeclarationId, &'a str, &'a str, &'a str),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
@@ -2059,6 +2077,54 @@ impl PreparedPrivateScalarCall {
         Ok((declaration, value))
     }
 
+    /// 原 Checker 已核准的可寫 str 欄位，只准字面值進本次
+    /// 私有替換工作，不擅自將其他持有者當成可複製的 UTF-8。
+    fn checked_copy_struct_str_write(
+        statement: &Stmt, receiver: &str, field: &str, expression: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<(DeclarationId, String), PrivateScalarCallPrepareError> {
+        let declaration = *bindings.get(receiver).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "str 欄位寫入缺少原 Checker 詞彙接收者身分",
+            ),
+        )?;
+        let fact = verified.plan.declarations.typed_declaration(declaration).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "str 欄位寫入缺少原 Checker DeclarationId",
+            ),
+        )?;
+        let definition = verified.structs.get(fact.ty).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "str 欄位寫入缺少原 Checker 結構型別",
+            ),
+        )?;
+        let member = definition.field(field).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "str 欄位寫入缺少原 Checker 欄位",
+            ),
+        )?;
+        if !fact.mutable || member.immutable || member.ty != "str"
+            || !definition.fields.iter().all(|candidate|
+                matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
+            || !verified.tokens.iter().any(|token|
+                token.start == statement.start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
+            || !verified.tokens.iter().any(|token|
+                token.start > statement.start && token.end <= expression.start
+                    && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str 欄位寫入缺少原 Checker 可寫權限與 Lexer 身分",
+            ));
+        }
+        let text = private_str_literal(expression, &verified.tokens).map_err(|_|
+            PrivateScalarCallPrepareError::Unsupported(
+                "str 欄位覆寫只接受原 Lexer／Checker 核准字面值",
+            ),
+        )?;
+        Ok((declaration, text))
+    }
+
     /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
     /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
     fn checked_str_assignment(
@@ -2385,6 +2451,17 @@ impl PreparedPrivateScalarCall {
                     Ok(PrivateScalarBranchAction::AssignCopyStructBool {
                         declaration, owner: receiver.clone(), field: field.clone(), value,
                     })
+                } else if verified.plan.declarations.typed_declaration(
+                    *int_bindings.get(receiver).expect("原 Checker 已驗證 receiver"),
+                ).and_then(|fact| verified.structs.get(fact.ty))
+                    .and_then(|definition| definition.field(field))
+                    .is_some_and(|member| member.ty == "str") {
+                    let (declaration, value) = Self::checked_copy_struct_str_write(
+                        statement, receiver, field, value, int_bindings, verified,
+                    )?;
+                    Ok(PrivateScalarBranchAction::AssignCopyStructStr {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    })
                 } else {
                     let (declaration, value) = Self::checked_copy_struct_int_write(
                         statement, receiver, field, value, int_bindings, verified,
@@ -2565,6 +2642,17 @@ impl PreparedPrivateScalarCall {
                         statement, receiver, field, value, &bool_bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::AssignCopyStructBool {
+                        declaration, owner: receiver.clone(), field: field.clone(), value,
+                    });
+                } else if verified.plan.declarations.typed_declaration(
+                    *bindings.get(receiver).expect("原 Checker 已驗證 receiver"),
+                ).and_then(|fact| verified.structs.get(fact.ty))
+                    .and_then(|definition| definition.field(field))
+                    .is_some_and(|member| member.ty == "str") {
+                    let (declaration, value) = Self::checked_copy_struct_str_write(
+                        statement, receiver, field, value, &bindings, verified,
+                    )?;
+                    local_steps.push(PrivateScalarLocalStep::AssignCopyStructStr {
                         declaration, owner: receiver.clone(), field: field.clone(), value,
                     });
                 } else {
@@ -2830,6 +2918,11 @@ impl PreparedPrivateScalarCall {
                 PrivateScalarLocalStep::AssignCopyStructBool {
                     declaration, owner, field, value,
                 } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                    *declaration, owner, field, value,
+                )),
+                PrivateScalarLocalStep::AssignCopyStructStr {
+                    declaration, owner, field, value,
+                } => tasks.push(PrivateScalarTask::WriteCopyStructStr(
                     *declaration, owner, field, value,
                 )),
                 PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
@@ -3107,6 +3200,38 @@ impl PreparedPrivateScalarCall {
                         )?;
                         events.push(PrivateScalarCallEvent::CopyStructBoolFieldAssigned(
                             id, field.to_owned(), value,
+                        ));
+                    }
+                    PrivateScalarTask::WriteCopyStructStr(id, owner, field, text) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.copy_struct_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == owner) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(id)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        // 同一 P16 真持有者對原 Checker var str 欄位先配置
+                        // 新 UTF-8，再以原子交換釋放舊值；任何前置拒絕
+                        // 都不應建立 ResourceId 或錯動原持有者。
+                        copy_structs.write_str_field_with_shared_ledger(
+                            &mut resources, owner, field, text, true,
+                        ).map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
+                        );
+                        let resource_id = copy_structs.field_resource_ids(owner)
+                            .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?
+                            .into_iter().find_map(|(name, id)|
+                                (name == field).then_some(id)
+                            ).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                        // 必須在舊 ResourceId 真釋放後才綁定新身分。
+                        events.push(PrivateScalarCallEvent::CopyStructResourceOwnerBound {
+                            declaration: id, field: field.to_owned(), resource_id,
+                        });
+                        events.push(PrivateScalarCallEvent::CopyStructStrFieldAssigned(
+                            id, field.to_owned(), resource_id,
                         ));
                     }
                     PrivateScalarTask::WriteCopyStructInt(id, owner, field) => {
@@ -3663,6 +3788,11 @@ impl PreparedPrivateScalarCall {
                         } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
                             *declaration, owner, field, value,
                         )),
+                        PrivateScalarBranchAction::AssignCopyStructStr {
+                            declaration, owner, field, value,
+                        } => tasks.push(PrivateScalarTask::WriteCopyStructStr(
+                            *declaration, owner, field, value,
+                        )),
                         PrivateScalarBranchAction::AssignBool { declaration, value } => {
                             tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
                         }
@@ -3851,6 +3981,11 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarLocalStep::AssignCopyStructBool {
                                     declaration, owner, field, value,
                                 } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
+                                    *declaration, owner, field, value,
+                                )),
+                                PrivateScalarLocalStep::AssignCopyStructStr {
+                                    declaration, owner, field, value,
+                                } => tasks.push(PrivateScalarTask::WriteCopyStructStr(
                                     *declaration, owner, field, value,
                                 )),
                                 PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
@@ -10414,6 +10549,74 @@ mod g18_private_scalar_call_tests {
 
     // V1-F4：原 Checker 准許的具名 var str 字面值，與不可寫
     // str 欄位使用 P16 同一真 OwnedUtf8 資源帳，不放行預設 var str。
+    // V1-F4：所有替換只能在原 Checker 合法的 var str 欄位上，
+    // 真共享帳先建新 OwnedUtf8 再釋放舊 ResourceId。
+    #[test]
+    fn g18_v1_f4_具名varstr欄位真字面覆寫建立新id釋放舊id() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 7\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"舊🪼\")\nitem.body = \"新🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(_, field, 2)
+                if field == "body"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_同一varstr欄位雙次更新每id只真釋放一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 3\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"初始\")\nitem.body = \"第一次\"\nitem.body = \"第二次🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1),
+            R::Created(3), R::Released(2), R::Released(3),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_if真分支更新varstr假分支零新資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 5\n}\nfn run(flag:bool)->int{\nvar item:Archive = Archive(body=\"原值\")\nif(flag){\nitem.body = \"選中🪼\"\n}\nreturn item.count\n}\nfn main()->int{\nreturn run(false)+run(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Released(1),
+            R::Created(2), R::Created(3), R::Released(2), R::Released(3),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr欄位寫入由原Checker拒絕不得產生資源() {
+        let src = "struct Archive{\nconst label:str = \"不可寫\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive()\nitem.label = \"非法\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(PreparedPrivateScalarCall::prepare(src).is_err());
+    }
+
+    #[test]
+    fn g18_v1_f4_竄改str欄位寫入後resourceid不得通過退出稽核() {
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"原值\")\nitem.body = \"新值\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        let id = out.events.iter_mut().find_map(|event| match event {
+            PrivateScalarCallEvent::CopyStructStrFieldAssigned(_, _, resource_id) =>
+                Some(resource_id),
+            _ => None,
+        }).expect("原 Checker 真 str 欄位寫入身分");
+        *id = 999;
+        assert!(!out.has_balanced_frame_trace());
+    }
+
     #[test]
     fn g18_v1_f4_具名varstr欄位以真utf8覆蓋未執行預設() {
         use crate::owned_str_runtime::ResourceEvent as R;
