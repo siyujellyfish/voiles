@@ -124,6 +124,8 @@ pub(crate) struct ParsedFunction<P, R, B> {
     pub(crate) name: String,
     pub(crate) params: P,
     pub(crate) result_ty: R,
+    /// V7：來自原 Lexer／Parser 的 async 宣告身分；公開 MVP-A 固定 false。
+    pub(crate) is_async: bool,
     pub(crate) body: B,
     pub(crate) start: usize,
     pub(crate) end: usize,
@@ -147,6 +149,8 @@ pub(crate) trait FunctionSyntax {
     type ResultType;
     type Body;
     fn begin_function(&mut self) -> Result<usize, crate::Diagnostic>;
+    /// 公開 P01 沒有 async；私有來源於消耗 async fn 時回報 true。
+    fn function_is_async(&self) -> bool { false }
     fn function_name(&mut self) -> Result<String, crate::Diagnostic>;
     fn function_left_paren(&mut self) -> Result<(), crate::Diagnostic>;
     fn function_params(&mut self) -> Result<Self::Params, crate::Diagnostic>;
@@ -161,6 +165,7 @@ pub(crate) fn parse_function_decl<P: FunctionSyntax>(
     parser: &mut P,
 ) -> Result<ParsedFunction<P::Params, P::ResultType, P::Body>, crate::Diagnostic> {
     let start = parser.begin_function()?;
+    let is_async = parser.function_is_async();
     let name = parser.function_name()?;
     parser.function_left_paren()?;
     let params = parser.function_params()?;
@@ -169,7 +174,7 @@ pub(crate) fn parse_function_decl<P: FunctionSyntax>(
     let result_ty = parser.function_result_type()?;
     let body = parser.function_body()?;
     Ok(ParsedFunction {
-        name, params, result_ty, body,
+        name, params, result_ty, is_async, body,
         start, end: parser.function_last_end(),
     })
 }
@@ -397,21 +402,33 @@ pub(crate) fn checked_declaration_tokens<T, E>(
 /// 私有參數的名字及型別則由原 FunctionSyntax 已存的 token 檢查。
 pub(crate) fn checked_function_header_tokens(
     function_start: usize, function_end: usize, body_start: usize,
-    name: &str, result_type: &str, tokens: &[Token],
+    name: &str, result_type: &str, is_async: bool, tokens: &[Token],
     audit: &mut crate::common_ir::SourceIdentityAudit<'_>,
 ) -> bool {
     use crate::common_ir::{NodeRole, NodeSpan};
     let Some(index) = tokens.binary_search_by_key(
         &function_start, |token| token.start,
     ).ok() else { return false; };
-    let Some(keyword) = tokens.get(index) else { return false; };
-    let Some(named) = tokens.get(index + 1) else { return false; };
+    // V7：由原 Lexer 的相鄰兩個 token 證明 async fn，
+    // 不把原始來源字串比對冒充另一份 Parser／Checker。
+    let keyword_index = if is_async { index + 1 } else { index };
+    let prefix_is_valid = if is_async {
+        tokens.get(index).is_some_and(|prefix|
+            matches!(&prefix.kind, TokenKind::Keyword(word) if word == "async")
+                && prefix.start == function_start
+                && audit.source.get(prefix.start..prefix.end) == Some("async")
+                && tokens.get(keyword_index).is_some_and(|keyword|
+                    prefix.end <= keyword.start))
+    } else { true };
+    let Some(keyword) = tokens.get(keyword_index) else { return false; };
+    let Some(named) = tokens.get(keyword_index + 1) else { return false; };
     let span = NodeSpan::new(function_start, function_end);
-    let Some(open) = tokens.get(index + 2) else { return false; };
-    if !matches!(&keyword.kind, TokenKind::Keyword(word) if word == "fn")
+    let Some(open) = tokens.get(keyword_index + 2) else { return false; };
+    if !prefix_is_valid
+        || !matches!(&keyword.kind, TokenKind::Keyword(word) if word == "fn")
         || !matches!(&named.kind, TokenKind::Name(actual) if actual == name)
         || !matches!(open.kind, TokenKind::Symbol('('))
-        || keyword.start != function_start
+        || (!is_async && keyword.start != function_start)
         || keyword.end > named.start || named.end > open.start
         || audit.source.get(keyword.start..keyword.end) != Some("fn")
         || audit.source.get(open.start..open.end) != Some("(")
@@ -419,7 +436,7 @@ pub(crate) fn checked_function_header_tokens(
         return false;
     }
     let Some((arrow, _)) = tokens.iter().enumerate()
-        .skip(index + 2).take_while(|(_, token)| token.start < body_start)
+        .skip(keyword_index + 2).take_while(|(_, token)| token.start < body_start)
         .find(|(_, token)| matches!(token.kind, TokenKind::Arrow))
     else { return false; };
     let Some(typed) = tokens.get(arrow + 1) else { return false; };
