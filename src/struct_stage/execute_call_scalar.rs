@@ -44,6 +44,10 @@ enum PrivateScalarCallEvent {
     BoolInitialized(DeclarationId, bool),
     BoolAssigned(DeclarationId, bool),
     BoolScopeEnded(DeclarationId),
+    /// V1／F4：原 Checker 合法、P16 MixedStructRuntime 真建構
+    /// 的純 Copyable int／bool 結構局部；不偽造 UTF-8 ResourceId。
+    CopyStructConstructed(DeclarationId),
+    CopyStructScopeEnded(DeclarationId),
     /// 只有執行時真正到達的 if 條件才可記錄求值結果。
     ConditionalChecked(bool),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
@@ -131,6 +135,7 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::LoanReturned(_)
                     | PrivateScalarCallEvent::LocalScopeEnded(_)
                     | PrivateScalarCallEvent::BoolScopeEnded(_)
+                    | PrivateScalarCallEvent::CopyStructScopeEnded(_)
                     | PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
                     | PrivateScalarCallEvent::BoolScopeEndedEmpty(_)
                     | PrivateScalarCallEvent::OwnedResource(
@@ -244,6 +249,19 @@ impl PrivateScalarCallOutcome {
                     } else {
                         frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
                     }
+                }
+                PrivateScalarCallEvent::CopyStructConstructed(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::CopyStruct(old) if old == id)
+                    ) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*id));
+                }
+                PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::CopyStruct(previous))
+                            if previous == *id) { return false; }
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -427,13 +445,15 @@ impl PrivateScalarCallOutcome {
                 | PrivateScalarCallEvent::BoolDeclaredEmpty(id) =>
                 Some(PrivateSharedCallExitEvent::LocalDeclaredEmpty(*id)),
             PrivateScalarCallEvent::LocalInitialized(id, _)
-                | PrivateScalarCallEvent::BoolInitialized(id, _) =>
+                | PrivateScalarCallEvent::BoolInitialized(id, _)
+                | PrivateScalarCallEvent::CopyStructConstructed(id) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
             PrivateScalarCallEvent::LocalAssigned(id, _)
                 | PrivateScalarCallEvent::BoolAssigned(id, _) =>
                 Some(PrivateSharedCallExitEvent::LocalAssigned(*id)),
             PrivateScalarCallEvent::LocalScopeEnded(id)
-                | PrivateScalarCallEvent::BoolScopeEnded(id) =>
+                | PrivateScalarCallEvent::BoolScopeEnded(id)
+                | PrivateScalarCallEvent::CopyStructScopeEnded(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
             PrivateScalarCallEvent::LocalScopeEndedEmpty(id)
                 | PrivateScalarCallEvent::BoolScopeEndedEmpty(id) =>
@@ -994,6 +1014,9 @@ enum PrivateScalarBranchAction {
     },
     /// str 詞彙持有者存在，但尚無 ResourceId／UTF-8 緩衝區。
     DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
+    DeclareCopyStruct {
+        declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
+    },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -1027,7 +1050,7 @@ impl PrivateScalarBranchAction {
             Self::AssignBool { .. } | Self::DeclareBool { .. }
                 | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::AssignStr { .. }
+                | Self::DeclareCopyStruct { .. } | Self::AssignStr { .. }
                 | Self::Break | Self::Continue => {}
         }
     }
@@ -1041,7 +1064,8 @@ impl PrivateScalarBranchAction {
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
-                | Self::DeclareEmptyStr { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
+                | Self::DeclareEmptyStr { .. } | Self::DeclareCopyStruct { .. }
+                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -1083,6 +1107,14 @@ impl PrivateScalarEarlyIf {
     }
 }
 
+/// V1／F4：原 Checker 唯一結構型別及 P16 VB16 預設／具名欄位
+/// 來源工作計畫；只接通無 str 資源的 int／bool 欄位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateScalarCopyStructPlan {
+    fields: Vec<(String, crate::mixed_struct_runtime::ScalarKind, Option<ApprovedSeed>, bool)>,
+    named: Vec<(String, ApprovedSeed)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarLocalStep {
     Declare(PrivateScalarLocalInit),
@@ -1092,6 +1124,9 @@ enum PrivateScalarLocalStep {
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
     DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
+    DeclareCopyStruct {
+        declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
+    },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
@@ -1108,7 +1143,7 @@ impl PrivateScalarLocalStep {
             Self::DeclareBool { .. } | Self::AssignBool { .. }
                 | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::AssignStr { .. } => {}
+                | Self::DeclareCopyStruct { .. } | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -1177,6 +1212,7 @@ enum PrivateScalarLocalBinding {
     Bool(DeclarationId),
     UninitializedInt(DeclarationId),
     UninitializedBool(DeclarationId),
+    CopyStruct(DeclarationId),
 }
 
 struct PrivateScalarActiveFrame {
@@ -1189,6 +1225,8 @@ struct PrivateScalarActiveFrame {
     resource_scopes: usize,
     /// 每一詞彙層原 Checker 的真 str 宣告身分。
     str_owner_scopes: Vec<Vec<(DeclarationId, String)>>,
+    /// 由 P16 MixedStructRuntime 持有真正結構值，本表只對帳來源身分。
+    copy_struct_scopes: Vec<Vec<(DeclarationId, String)>>,
     borrow_tracker: crate::borrow_safety::BorrowSafety,
     incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
 }
@@ -1223,6 +1261,7 @@ enum PrivateScalarTask<'a> {
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
+    DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
@@ -1331,6 +1370,72 @@ impl PreparedPrivateScalarCall {
         })
     }
 
+    /// V1／F4：只交付原 Checker 已接受、P16 真能建構的無資源
+    /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
+    /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
+    fn checked_copy_struct(
+        name: &str, ty: &str, term: &Term, verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarCopyStructPlan, PrivateScalarCallPrepareError> {
+        use crate::mixed_struct_runtime::ScalarKind;
+        let definition = verified.structs.get(ty).ok_or(
+            PrivateScalarCallPrepareError::Unsupported("結構局部缺少原 Checker 型別"),
+        )?;
+        let named: &[(String, Term)] = match &term.kind {
+            TermKind::Construct(found, supplied) if found == ty => supplied,
+            TermKind::UnresolvedZeroArgs(found) if found == ty => &[],
+            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                "結構局部必須是原 Parser／Checker 真建立式",
+            )),
+        };
+        let mut fields = Vec::new();
+        for field in &definition.fields {
+            let kind = match field.ty.as_str() {
+                "int" => ScalarKind::Int,
+                "bool" => ScalarKind::Bool,
+                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部 str／巢狀資源尚未接入共同資源退出帳",
+                )),
+            };
+            let overridden = named.iter().any(|(key, _)| key == &field.name);
+            let default = if overridden {
+                field.default.as_ref().map(|_| ApprovedSeed::Skipped(kind))
+            } else {
+                field.default.as_ref().map(|seed| approved_seed(seed, verified)
+                    .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                        "結構局部預設值缺少原 P16 Checker 核准來源",
+                    ))).transpose()?
+            };
+            if default.as_ref().is_some_and(|seed| seed.kind() != kind) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部預設值和原 Checker 型別不一致",
+                ));
+            }
+            fields.push((field.name.clone(), kind, default, field.immutable));
+        }
+        let mut supplied = Vec::new();
+        for (field_name, term) in named {
+            let (_, kind, _, _) = fields.iter().find(|(key, _, _, _)| key == field_name)
+                .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部具名欄位不在原 Checker 型別中",
+                ))?;
+            let seed = approved_seed(term, verified).map_err(|_|
+                PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部具名值缺少原 P16 Checker 核准來源",
+                ),
+            )?;
+            if seed.kind() != *kind || supplied.iter().any(|(key, _)| key == field_name) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部具名型別不一致或重複",
+                ));
+            }
+            supplied.push((field_name.clone(), seed));
+        }
+        // 不以字面相同的使用者變數取代原 Checker DeclarationId；
+        // caller 另在真正 Declare 節點核對 id、型別與可變性。
+        let _ = name;
+        Ok(PrivateScalarCopyStructPlan { fields, named: supplied })
+    }
+
     /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
     /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
     fn checked_str_assignment(
@@ -1367,7 +1472,8 @@ impl PreparedPrivateScalarCall {
                 | PrivateScalarBranchAction::DeclareEmptyInt { .. }
                 | PrivateScalarBranchAction::DeclareEmptyBool { .. }
                 | PrivateScalarBranchAction::DeclareStr { .. }
-                | PrivateScalarBranchAction::DeclareEmptyStr { .. } =>
+                | PrivateScalarBranchAction::DeclareEmptyStr { .. }
+                | PrivateScalarBranchAction::DeclareCopyStruct { .. } =>
                     PrivateScalarBranchAction::Scoped(vec![action]),
             other => other,
         }
@@ -1407,6 +1513,16 @@ impl PreparedPrivateScalarCall {
                         return Err(PrivateScalarCallRuntimeError::StateMismatch);
                     }
                     events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(id));
+                }
+                Some(PrivateScalarLocalBinding::CopyStruct(id)) => {
+                    let Some(scope) = frame.copy_struct_scopes.last_mut() else {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    };
+                    if !scope.iter().any(|(known, _)| *known == id) {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    }
+                    scope.retain(|(known, _)| *known != id);
+                    events.push(PrivateScalarCallEvent::CopyStructScopeEnded(id));
                 }
                 None => return Err(PrivateScalarCallRuntimeError::StateMismatch),
             }
@@ -1499,6 +1615,23 @@ impl PreparedPrivateScalarCall {
                 Ok(PrivateScalarBranchAction::DeclareStr {
                     declaration: id, name: owner.name.clone(),
                     mutable: owner.mutable, initializer,
+                })
+            }
+            StmtKind::Declare(owner) if verified.structs.contains_key(&owner.ty) => {
+                let id = DeclarationId(statement.start);
+                if !verified.plan.declarations.matches(id, &owner.ty, owner.mutable) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "分支結構宣告缺少原 Checker DeclarationId／型別",
+                    ));
+                }
+                let term = owner.initializer.as_ref().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "分支 Copyable 結構需要原 Checker 完整建立式",
+                    ),
+                )?;
+                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                Ok(PrivateScalarBranchAction::DeclareCopyStruct {
+                    declaration: id, name: owner.name.clone(), plan,
                 })
             }
             StmtKind::Declare(owner) if matches!(owner.ty.as_str(), "int" | "bool") => {
@@ -1827,6 +1960,25 @@ impl PreparedPrivateScalarCall {
                 ));
             };
             let declaration = DeclarationId(statement.start);
+            if verified.structs.contains_key(&owner.ty) {
+                if !verified.plan.declarations.matches(declaration, &owner.ty, owner.mutable) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "函式結構局部缺少原 Checker DeclarationId／型別",
+                    ));
+                }
+                let term = owner.initializer.as_ref().ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "函式 Copyable 結構需要原 Checker 完整建立式",
+                    ),
+                )?;
+                let plan = Self::checked_copy_struct(&owner.name, &owner.ty, term, verified)?;
+                local_steps.push(PrivateScalarLocalStep::DeclareCopyStruct {
+                    declaration, name: owner.name.clone(), plan,
+                });
+                bindings.insert(owner.name.clone(), declaration);
+                bool_bindings.remove(&owner.name);
+                continue;
+            }
             if owner.ty == "str" {
                 if !verified.plan.declarations.matches(declaration, "str", owner.mutable) {
                     return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1937,14 +2089,18 @@ impl PreparedPrivateScalarCall {
         initial_local_steps: &'a [PrivateScalarLocalStep],
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
+        // P16 MixedStructRuntime 的真建構與詞彙離域；本批拒絕任何 str 欄位。
+        let mut copy_structs = crate::mixed_struct_runtime::MixedStructRuntime::new();
         let mut resource_cursor = 0usize;
         resources.enter_scope();
+        copy_structs.enter_scope();
         let mut frames = vec![PrivateScalarActiveFrame {
             name: self.callee_name.clone(), values: initial_frame.clone(),
             bool_values: BTreeMap::new(),
             initialized_order: Vec::new(),
             resource_scopes: 1,
             str_owner_scopes: vec![Vec::new()],
+            copy_struct_scopes: vec![Vec::new()],
             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
             incoming_borrows: Vec::new(),
         }];
@@ -1978,6 +2134,11 @@ impl PreparedPrivateScalarCall {
                     declaration, name, mutable,
                 } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
                     *declaration, name, *mutable,
+                )),
+                PrivateScalarLocalStep::DeclareCopyStruct {
+                    declaration, name, plan,
+                } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
+                    *declaration, name, plan,
                 )),
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
@@ -2233,6 +2394,45 @@ impl PreparedPrivateScalarCall {
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
                         events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
                     }
+                    PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.initialized_order.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(found) if *found == id
+                        )) || frame.copy_struct_scopes.last().is_none_or(|scope|
+                            scope.iter().any(|(_, known)| known == name)) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
+                        let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
+                            crate::mixed_struct_runtime::MixedFieldSpec {
+                                name: field, kind: *kind,
+                                default: default.as_ref().map(ApprovedSeed::runtime),
+                                immutable: *immutable,
+                            }
+                        ).collect::<Vec<_>>();
+                        let named = plan.named.iter().map(|(field, value)|
+                            crate::mixed_struct_runtime::NamedMixed {
+                                field, value: value.runtime(),
+                            }
+                        ).collect::<Vec<_>>();
+                        copy_structs.construct(name, &fields, &named, None).map_err(|error|
+                            match error {
+                                crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                    PrivateScalarCallRuntimeError::IntegerOverflow,
+                                _ => PrivateScalarCallRuntimeError::StateMismatch,
+                            },
+                        )?;
+                        if !copy_structs.events().is_empty() {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.copy_struct_scopes.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.push((id, name.to_owned()));
+                        frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
+                        events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
+                    }
                     PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -2431,7 +2631,14 @@ impl PreparedPrivateScalarCall {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         frame.str_owner_scopes.pop();
+                        if frame.copy_struct_scopes.len() <= 1 {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.copy_struct_scopes.pop();
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
+                        copy_structs.leave_scope().map_err(|_|
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
                     }
                     PrivateScalarTask::ExecuteBranchAction(action) => match action {
@@ -2476,8 +2683,15 @@ impl PreparedPrivateScalarCall {
                                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                                         }
                                         frame.str_owner_scopes.pop();
+                                        if frame.copy_struct_scopes.len() <= 1 {
+                                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                        }
+                                        frame.copy_struct_scopes.pop();
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
+                                        )?;
+                                        copy_structs.leave_scope().map_err(|_|
+                                            PrivateScalarCallRuntimeError::StateMismatch,
                                         )?;
                                         Self::record_owned_resources(
                                             &resources, &mut resource_cursor, events,
@@ -2502,7 +2716,9 @@ impl PreparedPrivateScalarCall {
                             let baseline = frame.initialized_order.len();
                             frame.resource_scopes += 1;
                             frame.str_owner_scopes.push(Vec::new());
+                            frame.copy_struct_scopes.push(Vec::new());
                             resources.enter_scope();
+                            copy_structs.enter_scope();
                             tasks.push(PrivateScalarTask::EndScope(baseline));
                             for action in actions.iter().rev() {
                                 tasks.push(PrivateScalarTask::ExecuteBranchAction(action));
@@ -2530,6 +2746,11 @@ impl PreparedPrivateScalarCall {
                             declaration, name, mutable,
                         } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
                             *declaration, name, *mutable,
+                        )),
+                        PrivateScalarBranchAction::DeclareCopyStruct {
+                            declaration, name, plan,
+                        } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
+                            *declaration, name, plan,
                         )),
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
@@ -2686,12 +2907,14 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         events.extend(bound_events);
                         resources.enter_scope();
+                        copy_structs.enter_scope();
                         frames.push(PrivateScalarActiveFrame {
                             name: name.to_owned(), values: locals,
                             bool_values: bool_locals,
                             initialized_order: Vec::new(),
                             resource_scopes: 1,
                             str_owner_scopes: vec![Vec::new()],
+                            copy_struct_scopes: vec![Vec::new()],
                             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
                             incoming_borrows,
                         });
@@ -2750,6 +2973,11 @@ impl PreparedPrivateScalarCall {
                                 } => tasks.push(PrivateScalarTask::DeclareEmptyStr(
                                     *declaration, name, *mutable,
                                 )),
+                                PrivateScalarLocalStep::DeclareCopyStruct {
+                                    declaration, name, plan,
+                                } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
+                                    *declaration, name, plan,
+                                )),
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
                                 } => tasks.push(PrivateScalarTask::AssignStr(
@@ -2787,12 +3015,20 @@ impl PreparedPrivateScalarCall {
                                     events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
                                 PrivateScalarLocalBinding::UninitializedBool(id) =>
                                     events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
+                                PrivateScalarLocalBinding::CopyStruct(id) =>
+                                    events.push(PrivateScalarCallEvent::CopyStructScopeEnded(*id)),
                             }
                         }
                         frame.values.clear();
+                        if frame.copy_struct_scopes.len() != frame.resource_scopes {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         for _ in 0..frame.resource_scopes {
                             resources.leave_scope().map_err(
                                 PrivateScalarCallRuntimeError::Resource,
+                            )?;
+                            copy_structs.leave_scope().map_err(|_|
+                                PrivateScalarCallRuntimeError::StateMismatch,
                             )?;
                         }
                         Self::record_owned_resources(
@@ -2849,12 +3085,20 @@ impl PreparedPrivateScalarCall {
                             events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
                         PrivateScalarLocalBinding::UninitializedBool(id) =>
                             events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
+                        PrivateScalarLocalBinding::CopyStruct(id) =>
+                            events.push(PrivateScalarCallEvent::CopyStructScopeEnded(*id)),
                     }
                 }
                 frame.values.clear();
+                if frame.copy_struct_scopes.len() != frame.resource_scopes {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
                 for _ in 0..frame.resource_scopes {
                     resources.leave_scope().map_err(
                         PrivateScalarCallRuntimeError::Resource,
+                    )?;
+                    copy_structs.leave_scope().map_err(|_|
+                        PrivateScalarCallRuntimeError::StateMismatch,
                     )?;
                 }
                 Self::record_owned_resources(
@@ -2889,6 +3133,8 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::LocalScopeEndedEmpty(*id)),
                     PrivateScalarLocalBinding::UninitializedBool(id) =>
                         events.push(PrivateScalarCallEvent::BoolScopeEndedEmpty(*id)),
+                    PrivateScalarLocalBinding::CopyStruct(id) =>
+                        events.push(PrivateScalarCallEvent::CopyStructScopeEnded(*id)),
                 }
             }
             root.initialized_order.clear();
@@ -2896,15 +3142,29 @@ impl PreparedPrivateScalarCall {
             root.borrow_tracker.verify_static_snapshot(
                 std::iter::empty::<BorrowFact>(),
             ).map_err(PrivateScalarCallRuntimeError::Borrow)?;
+            if root.copy_struct_scopes.len() != root.resource_scopes {
+                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+            }
             for _ in 0..root.resource_scopes {
                 resources.leave_scope().map_err(
                     PrivateScalarCallRuntimeError::Resource,
+                )?;
+                copy_structs.leave_scope().map_err(|_|
+                    PrivateScalarCallRuntimeError::StateMismatch,
                 )?;
             }
         }
         Self::record_owned_resources(
             &resources, &mut resource_cursor, events,
         );
+        // copy_structs 保留由 P16 真建構、真清理的獨立持有者；
+        // 任何非預期字串資源事件表示超出已證無資源子集，立即拒絕。
+        if !copy_structs.events().is_empty()
+            || !copy_structs.finish().map_err(|_|
+                PrivateScalarCallRuntimeError::StateMismatch,
+            )?.is_empty() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
         let emitted = resources.finish().map_err(
             PrivateScalarCallRuntimeError::Resource,
         )?;
@@ -8039,9 +8299,72 @@ mod g18_private_scalar_call_tests {
         assert_eq!(entered, ["other"]);
     }
 
+
+    // V1／F4：以下均由原 Parser／Checker 已核准的真來源出發，
+    // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
+    #[test]
+    fn g18_v1_f4_原v0可達純int結構局部真建構並反序離域() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(99));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+        let entered = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::FunctionEntered(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(entered, ["route", "idle"]);
+    }
+
+    #[test]
+    fn g18_v1_f4_未選分支純結構與資源均零建構() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f4_純結構建構後int溢位逐框架離域不留資源() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 9223372036854775807+1\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充() {
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"保留🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn main()->int{\nreturn idle()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
     #[test]
     fn g18_r01_main可達不支援的結構函式仍不可偷略過() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8181,7 +8504,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_正迭代for可達結構函式仍須保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8237,7 +8560,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8276,7 +8599,7 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_頂層非全葉返回仍不得忽略可達結構局部() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
@@ -8321,17 +8644,17 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
         // route(false) 並不能靜態推得所有可能的動態路徑；
-        // 未經本標量 evaluator 支援、但仍可由 flag=true 走到的
-        // 結構建構必須保持 Unsupported，不可靠傳入常值預測執行分支。
+        // 含 str 資源尚未經共同帳簿證明、但仍可由 flag=true 走到的
+        // 含 str 之結構建構必須保持 Unsupported，不可靠傳入常值預測執行分支。
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
     #[test]
     fn g18_r01_真正可達的結構局部函式仍須保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
