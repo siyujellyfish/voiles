@@ -162,7 +162,32 @@ fn approved_seed(term: &Term, verified: &VerifiedPrivateSource)
             crate::syntax_shared::integer_i64(n)
                 .map(ApprovedSeed::Int)
                 .map_err(|_| PrivateStructPrepareError::Unsupported("整數值超出已驗證範圍")),
-        TermKind::Group(_) | TermKind::BinaryInt(_) =>
+        TermKind::Group(inner) => {
+            // 原 Checker 允許已核准 bool 常值以括號分組作為結構欄位預設；
+            // 先驗證整個 Group 的 TypedHIR 與真 Lexer 括號，不能把 bool
+            // 錯送到只接受 int 的 approved_int_seed，亦不偷允許動態副作用。
+            if verified.plan.scalar_hir.expression(term.node_span())
+                .is_some_and(|fact| fact.ty == crate::common_ir::ScalarType::Bool) {
+                if !verified.tokens.iter().any(|token|
+                    token.start == term.start
+                        && matches!(token.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == term.end
+                            && matches!(token.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateStructPrepareError::Unsupported(
+                        "bool 預設 Group 缺少原 Lexer 左右括號",
+                    ));
+                }
+                return match approved_seed(inner, verified)? {
+                    ApprovedSeed::Bool(value) => Ok(ApprovedSeed::Bool(value)),
+                    _ => Err(PrivateStructPrepareError::Unsupported(
+                        "bool 預設 Group 只接通原 Checker 靜態常值",
+                    )),
+                };
+            }
+            approved_int_seed(term, verified).map(ApprovedSeed::IntExpression)
+        }
+        TermKind::BinaryInt(_) =>
             approved_int_seed(term, verified).map(ApprovedSeed::IntExpression),
         TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) =>
             Ok(ApprovedSeed::Bool(*b)),
