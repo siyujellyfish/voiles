@@ -233,6 +233,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_結構bool真欄位控制if選中及未選中不造假框架",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_結構bool欄位真實參在子函式if判定",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_結構bool真欄位while每輪判定且break有序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_結構bool_false_while零迭代且保留真函式圖",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_結構bool欄位型別不符原Checker直接拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_結構bool欄位編譯身分竄改必須零執行拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
