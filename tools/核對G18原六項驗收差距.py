@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_子框架同名str後溢位必先釋放子層再清理父層",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
@@ -184,6 +189,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_子框架同名str後溢位必先釋放子層再清理父層",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用str參數不得因子函式可見同名文字擅自move",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
@@ -249,6 +260,9 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_子框架同名str後溢位必先釋放子層再清理父層",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
@@ -413,6 +427,9 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用str參數不得因子函式可見同名文字擅自move",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支提前返回溢位不可退回不可達常值",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
@@ -562,6 +579,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_子框架同名str後溢位必先釋放子層再清理父層",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架",
+        "struct_stage::g18_private_scalar_call_tests::g18_r02_借用str參數不得因子函式可見同名文字擅自move",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
