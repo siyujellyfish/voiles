@@ -9660,6 +9660,119 @@ mod g18_private_scalar_call_tests {
     // 交由已驗證 P16 建構求值；動態溢位不得留下半個資源結構。
     // V1／F1/F3/F4：具名 Copyable int 的真函式 Call 必須經
     // 同一顯式工作堆疊執行，所有 RHS 完成後 P16 才能原子建構。
+    // V1／F2×F4：具名建構中的真普通函式可借用／移動 str，
+    // 但 ResourceId／BorrowTicket 一律先完成原函式退出才允許 P16 建構。
+    #[test]
+    fn g18_v1_f2_f4_具名呼叫借str真票據先歸還後建構且資源唯一() {
+        let src = "struct Meter{\nvar count:int = 0\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn build()->int{\nconst owner:str = \"原資料🪼\"\nvar note:Meter = Meter(count=inspect(owner,4))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(src).execute().unwrap();
+        use crate::owned_str_runtime::ResourceEvent as R;
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).expect("callee 回票");
+        let constructed = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).expect("具名函式完畢後才建構");
+        assert!(released < constructed);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f2_f4_具名呼叫真str_move先轉唯一資源且返回後建構() {
+        let src = "struct Meter{\nvar count:int = 0\n}\nfn consume(item:str,n:int)->int{\nreturn n+1\n}\nfn build()->int{\nvar owner:str = \"整筆轉交🪼\"\nvar note:Meter = Meter(count=consume(owner.move(),3))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(src).execute().unwrap();
+        use crate::owned_str_runtime::ResourceEvent as R;
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Moved(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        let released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        )).expect("唯一原資源在 callee 離域");
+        let constructed = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).expect("P16 真建構");
+        assert!(released < constructed);
+    }
+
+    #[test]
+    fn g18_v1_f2_f4_雙str具名函式依序借還且兩個resourceid不混() {
+        let src = "struct Pair{\nvar first:int = 0\nvar second:int = 0\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn build()->int{\nconst a:str = \"甲🪼\"\nconst b:str = \"乙🪼\"\nvar note:Pair = Pair(first=inspect(a,2),second=inspect(b,6))\nreturn note.first+note.second\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(src).execute().unwrap();
+        use crate::owned_str_runtime::ResourceEvent as R;
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let acquired = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(*ticket),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let returned = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanReturned(ticket) => Some(*ticket),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(acquired.len(), 2);
+        assert_eq!(returned, acquired);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f2_f4_第一具名借用已成功後第二呼叫溢位仍不得建構() {
+        let src = "struct Pair{\nvar first:int = 0\nvar second:int = 0\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn overflow(x:int)->int{\nreturn x+1\n}\nfn build()->int{\nconst owner:str = \"保留🪼\"\nvar maximum:int = 9223372036854775807\nvar note:Pair = Pair(first=inspect(owner,3),second=overflow(maximum))\nreturn note.first+note.second\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(src).execute().unwrap();
+        use crate::owned_str_runtime::ResourceEvent as R;
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f2_f4_具名已取得str借用但子呼叫預算耗盡必先還票() {
+        let src = "struct Meter{\nvar count:int = 0\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn build()->int{\nconst owner:str = \"框架預算🪼\"\nvar note:Meter = Meter(count=inspect(owner,2))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
+        let out = checked(src).execute_with_budget(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 300 }
+        ).unwrap();
+        use crate::owned_str_runtime::ResourceEvent as R;
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "inspect"
+        )));
+    }
+
     #[test]
     fn g18_v1_f4_具名int真呼叫先返回後才建構P16唯一值() {
         let source = "struct Meter{\nvar count:int = 0\n}\nfn add(x:int)->int{\nreturn x+1\n}\nfn build()->int{\nvar base:int = 8\nvar note:Meter = Meter(count=add(base))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
