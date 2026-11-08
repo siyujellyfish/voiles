@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百八十四項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的二百九十項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,12 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r02_父子函式同名str各自建立並依框架反向釋放",
+    "g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
+    "g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
+    "g18_r03_子框架同名str後溢位必先釋放子層再清理父層",
+    "g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架",
+    "g18_r02_借用str參數不得因子函式可見同名文字擅自move",
     "g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
     "g18_r03_main_if_else假分支不進且不可達末端return零事件",
     "g18_r03_main全分支返回時選中str借用完成還票與資源清理",
