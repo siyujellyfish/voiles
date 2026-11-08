@@ -9271,7 +9271,9 @@ mod g18_private_scalar_call_tests {
         let src = "struct Meter{\nvar count:int = 1\n}\nfn route()->int{\nvar n:int = 5\nn = 9\nvar note:Meter = Meter(count=n)\nreturn note.count\n}\nfn main()->int{\nreturn route()\n}\n";
         let mut plan = checked(src);
         assert_eq!(plan.execute().unwrap().result, Ok(9));
-        let Some(PrivateScalarLocalStep::DeclareCopyStruct { plan: named, .. }) =
+        let Some(PrivateScalarLocalStep::DeclareCopyStruct {
+            initializer: PrivateScalarCopyStructInitializer::Construct(named), ..
+        }) =
             plan.root_local_steps.iter_mut().find(|step|
                 matches!(step, PrivateScalarLocalStep::DeclareCopyStruct { .. })) else {
             panic!("原 Checker 真具名 struct 工作不存在");
