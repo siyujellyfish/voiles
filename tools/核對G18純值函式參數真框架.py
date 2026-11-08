@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百一十五項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百一十八項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,9 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_v1_三層真工作計畫只收錄動態可能呼叫的函式",
+    "g18_v1_普通函式工作計畫須保留兩個動態可能的分支呼叫",
+    "g18_v1_工作計畫閉包竄改巢狀被呼叫者不得通過來源稽核",
     "g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
     "g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
     "g18_v1_正迭代for可達結構函式仍須保守拒絕",
