@@ -3318,7 +3318,13 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                        // 一個詞彙層中，先建含 const str 的 P16 結構，
+                        // 再以真 Lexer 字面值建立普通 str，必由同一帳本
+                        // 先釋放後建立的 str，再逆序釋放較早的結構。
+                        // 此窄化安全子集不包含從外層取得既存 ResourceId
+                        // 的 Move；它的建立先後不等於本層綁定先後。
+                        if Self::current_scope_has_str_struct(frame, &copy_structs)
+                            && !matches!(initializer, PrivateScalarStrInitializer::Literal(_)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if let PrivateScalarStrInitializer::Move {
@@ -3351,6 +3357,13 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        // 若本層已有較早完成的結構字串，只能從真正
+                        // 新建立的 UTF-8 字面值替換；移入外層舊資源
+                        // 尚無跨資源種類全域退出次序證明，維持拒絕。
+                        if Self::current_scope_has_str_struct(frame, &copy_structs)
+                            && matches!(initializer, PrivateScalarStrInitializer::Move { .. }) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if !frame.str_owner_scopes.iter().rev().flatten()
                             .any(|(known, active)| *known == id && active == name) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
@@ -10330,6 +10343,75 @@ mod g18_private_scalar_call_tests {
 
     // V1-F4：原 Checker 核准 const str 結構的真正 UTF-8 所有權，
     // 同一 OwnedStrRuntime 帳中按建構先後配置 ResourceId。
+    #[test]
+    fn g18_v1_f4_同層先conststr結構後字面str按真建立反序離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"結構\"\n}\nfn run()->int{\nvar item:Archive = Archive()\nvar tail:str = \"晚建🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層雙str結構先於普通str三資源真反序() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nconst first:str = \"甲\"\nconst second:str = \"乙\"\nvar count:int = 5\n}\nfn run()->int{\nvar item:Archive = Archive()\nconst tail:str = \"丙\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Created(3),
+            R::Released(3), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層後建varstr兩次字面覆寫仍先於結構離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 9\nconst label:str = \"先建\"\n}\nfn run()->int{\nvar item:Archive = Archive()\nvar tail:str = \"舊\"\ntail = \"新🪼\"\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Created(3),
+            R::Released(2), R::Released(3), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層後建str借用先還票再釋放字串與結構() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 4\nconst label:str = \"較早\"\n}\nfn receive(s:str)->int{\nreturn 6\n}\nfn run()->int{\nvar item:Archive = Archive()\nconst tail:str = \"借用者\"\nreturn receive(tail)+item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).expect("BorrowTicket 真歸還");
+        let released = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Released(_))
+        )).expect("真資源退出");
+        assert!(returned < released);
+    }
+
+    #[test]
+    fn g18_v1_f4_真if局部先結構後str兩資源按所選葉釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 3\nconst label:str = \"分支\"\n}\nfn run()->int{\nif(true){\nvar item:Archive = Archive()\nvar tail:str = \"內層🪼\"\n}\nreturn 8\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
     #[test]
     fn g18_v1_f4_conststr具名int函式真返回後才建立資源結構() {
         use crate::owned_str_runtime::ResourceEvent as R;
