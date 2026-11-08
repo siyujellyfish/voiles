@@ -3,7 +3,7 @@
 // 原私有 async fn 方法 Parser／Checker 與跨 await 真暫停尚未接通。
 // 不把本模組的內部驗證冒稱 P18.6 A1/A2 或 G18 全項 Passed。
 use std::collections::BTreeMap;
-use super::{ExecutionBudget, ExecutionOutcome, PreparationFailure, PreparedProgram, RuntimeFailure};
+use super::{ExecutionBudget, ExecutionOutcome, PreparationFailure, PreparedProgram, RuntimeFailure, Value};
 use crate::borrow_safety::BorrowSafety;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -232,6 +232,7 @@ enum AsyncSafePointState {
     Suspended,
     Cancelled,
     Failed,
+    Succeeded,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -240,6 +241,7 @@ enum AsyncSafePointError {
     NoFrame,
     NoActiveTicket,
     ActiveBorrowAcrossAwait,
+    DirectAwait(DirectAwaitError),
     Borrow(BorrowSafetyError),
     Resource(StrRuntimeError),
 }
@@ -273,6 +275,14 @@ struct AsyncSafePointEvidence {
 struct AsyncSafePointFailure {
     error: RuntimeFailure,
     evidence: AsyncSafePointEvidence,
+}
+
+/// 由原 P17 CheckedTask 的真結果決定唯一終態；
+/// 不以工作名稱、事先估計的回傳值或假事件決定成功／失敗。
+#[derive(Debug)]
+enum AsyncSafePointSettlement {
+    Succeeded { value: Value, evidence: AsyncSafePointEvidence },
+    Failed(AsyncSafePointFailure),
 }
 
 /// 暫停狀態保留原 P16 OwnedStrRuntime 和原 HC14 BorrowSafety；
@@ -443,6 +453,39 @@ impl AsyncSafePointFrames {
         let evidence = self.unwind_frames(AsyncSafePointState::Failed, true)?;
         Ok(AsyncSafePointFailure { error, evidence })
     }
+
+    /// V7／A1+A2：P17 真 Checker 已核准的直接等待工作，
+    /// 從合法安全點交付執行器，完成後將真正 Value／RuntimeFailure
+    /// 與 P16／HC14 框架的清理證據一併交付。
+    ///
+    /// 此私有橋接不解析使用者 await，也不為語言來源憑空提供
+    /// OwnedStr／借用權限；資源框架的正式 BorrowFact 來源仍待接通。
+    fn await_verified_scalar(
+        &mut self, session: &mut DirectAwaitSession, task: u64,
+    ) -> Result<AsyncSafePointSettlement, AsyncSafePointError> {
+        // 先由真 BorrowSafety 驗證 VB15-01-A；有活躍票據不得啟動工作。
+        self.suspend()?;
+        let outcome = session.await_direct(task);
+        // 不論是完成、真執行期錯誤、未知／已取消的工作，
+        // 自此同步直接等待邊界恢復 Running，後者不能偷做清理。
+        self.resume()?;
+        let outcome = outcome.map_err(AsyncSafePointError::DirectAwait)?;
+        match &outcome.result {
+            Ok(value) => {
+                // 真成功返回時，await 已證無有效跨邊界票據。
+                // 同一個 P16 退出核心釋放資源，絕不憑返回值假造事件。
+                let evidence = self.unwind_frames(AsyncSafePointState::Succeeded, false)?;
+                Ok(AsyncSafePointSettlement::Succeeded {
+                    value: *value, evidence,
+                })
+            }
+            Err(error) => {
+                // 保留原 P17 RuntimeFailure，不能以取消或正常返回替代。
+                let failure = self.fail_running(error.clone())?;
+                Ok(AsyncSafePointSettlement::Failed(failure))
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -450,6 +493,148 @@ mod v7_a2_safe_point_tests {
     use super::*;
     use crate::borrow_safety::BorrowKind;
     use crate::ownership_ledger::DeclarationId;
+
+    #[test]
+    fn v7_a1_a2_直接等待真成功值與父子ownedutf8由共用退出清理() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 19 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let parent = frames.declare_owned("父", "原真 UTF-8🪼").unwrap();
+        frames.enter_frame().unwrap();
+        let child = frames.declare_owned("子", "第二 UTF-8").unwrap();
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        let result = frames.await_verified_scalar(&mut session, id).unwrap();
+        let AsyncSafePointSettlement::Succeeded { value, evidence } = result else {
+            panic!("原 P17 正常求值不可偽裝成 Failed");
+        };
+        assert_eq!(value, Value::Int(19));
+        assert_eq!(evidence.unwound_frames, 2);
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(parent), ResourceEvent::Created(child),
+            ResourceEvent::Released(child), ResourceEvent::Released(parent),
+        ]);
+        assert_eq!(evidence.exit_events, [
+            AsyncSafeExitEvent::ResourceReleased(child),
+            AsyncSafeExitEvent::FrameUnwound(2),
+            AsyncSafeExitEvent::ResourceReleased(parent),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+        assert_eq!(frames.state, AsyncSafePointState::Succeeded);
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Succeeded));
+        assert_eq!(session.execution_order(), &[id]);
+        assert_eq!(frames.resume(), Err(AsyncSafePointError::WrongState));
+    }
+
+    #[test]
+    fn v7_a1_a2_直接等待原執行預算錯誤完整保留並執行資源回滾() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 3 }".to_vec(),
+            ExecutionBudget { max_call_frames: 1, max_steps: 0 },
+        ).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("來源", "仍需真釋放").unwrap();
+        let result = frames.await_verified_scalar(&mut session, id).unwrap();
+        let AsyncSafePointSettlement::Failed(failure) = result else {
+            panic!("原 P17 預算耗盡不可偽造成成功");
+        };
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Failed));
+        let original = session.tasks.get(&id).unwrap()
+            .outcome.as_ref().unwrap().result.as_ref().unwrap_err();
+        assert_eq!(&failure.error, original);
+        assert_eq!(failure.evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(failure.evidence.exit_events, [
+            AsyncSafeExitEvent::ResourceReleased(resource),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+        assert_eq!(frames.state, AsyncSafePointState::Failed);
+    }
+
+    #[test]
+    fn v7_a1_a2_活躍借用阻止工作啟動歸還後直接等待才正常退出() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 7 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("持有", "不可以提前釋放").unwrap();
+        let ticket = frames.acquire_for_frame(BorrowFact::new(
+            DeclarationId(24), BorrowKind::SharedRead,
+        )).unwrap();
+        assert!(matches!(frames.await_verified_scalar(&mut session, id),
+            Err(AsyncSafePointError::ActiveBorrowAcrossAwait)));
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert_eq!(frames.resources.resource_id("持有"), Ok(resource));
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert!(session.execution_order().is_empty());
+        frames.return_latest_loan().unwrap();
+        let result = frames.await_verified_scalar(&mut session, id).unwrap();
+        let AsyncSafePointSettlement::Succeeded { value, evidence } = result else {
+            panic!("合法歸票之後應取得真結果");
+        };
+        assert_eq!(value, Value::Int(7));
+        assert_eq!(evidence.exit_events, [
+            AsyncSafeExitEvent::LoanReturned(ticket),
+            AsyncSafeExitEvent::ResourceReleased(resource),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+        assert_eq!(session.execution_order(), &[id]);
+    }
+
+    #[test]
+    fn v7_a1_a2_待等待工作被取消不能冒充成功也不釋放現存框架() {
+        let mut session = DirectAwaitSession::new();
+        let cancelled = session.prepare_verified_scalar(
+            b"fn main()->int{ return 1 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        session.cancel_before_start(cancelled).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("來源", "仍然有效").unwrap();
+        assert!(matches!(frames.await_verified_scalar(&mut session, cancelled),
+            Err(AsyncSafePointError::DirectAwait(DirectAwaitError::Cancelled))));
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert_eq!(frames.resources.resource_id("來源"), Ok(resource));
+        assert!(session.execution_order().is_empty());
+        let valid = session.prepare_verified_scalar(
+            b"fn main()->int{ return 2 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let result = frames.await_verified_scalar(&mut session, valid).unwrap();
+        assert!(matches!(result, AsyncSafePointSettlement::Succeeded {
+            value: Value::Int(2), ..
+        }));
+        assert_eq!(session.execution_order(), &[valid]);
+    }
+
+    #[test]
+    fn v7_a1_a2_等待器自身活躍借用亦不得偷啟動並損失框架資源() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 6 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let ticket = session.loans.acquire(DeclarationId(301), BorrowKind::ExclusiveWrite).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("唯一", "未啟動").unwrap();
+        assert_eq!(frames.await_verified_scalar(&mut session, id).err(),
+            Some(AsyncSafePointError::DirectAwait(
+                DirectAwaitError::ActiveBorrowAcrossAwait)));
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert_eq!(frames.resources.resource_id("唯一"), Ok(resource));
+        session.loans.release(ticket).unwrap();
+        let result = frames.await_verified_scalar(&mut session, id).unwrap();
+        assert!(matches!(result, AsyncSafePointSettlement::Succeeded {
+            value: Value::Int(6), ..
+        }));
+    }
 
     #[test]
     fn v7_a2_e4_真執行中錯誤跨兩框架先還票再逆序釋放資源() {
