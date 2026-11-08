@@ -8780,6 +8780,57 @@ mod g18_private_scalar_call_tests {
     // var 實例／var 欄位與 TypedHIR RHS 簽發，P16 真值更新後才留下事件。
     // V1／F3：bool 欄位只在真 P16 持有者修改後可改變
     // 同一原 Checker 合法的 if／while 動態控制判斷。
+    // V1／F3：補 #660 未涵蓋的來源交叉，沿用同一 Checker/P16 真 runtime。
+    #[test]
+    fn g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫() {
+        let src = "struct Flags{\nvar left:bool = false\nvar right:bool = true\n}\nfn route()->int{\nvar f:Flags = Flags()\nf.left = f.right\nf.right = false\nif(f.left){\nreturn 9\n}\nreturn 0\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 2);
+    }
+
+
+    #[test]
+    fn g18_v1_f3_bool欄位只寫所選if葉而且可傳實參() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn choose(value:bool)->int{\nif(value){\nreturn 5\n}\nreturn 2\n}\nfn route(flag:bool)->int{\nvar f:Flag = Flag()\nif(flag){\nf.ready = true\n}else{\nf.ready = false\n}\nreturn choose(f.ready)\n}\nfn main()->int{\nreturn route(false)+route(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 2);
+    }
+
+
+    #[test]
+    fn g18_v1_f3_bool欄位for_continue與while_break真回邊() {
+        let src = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nfor i in 0..2{\nf.ready = true\ncontinue\n}\nwhile(f.ready){\nf.ready = false\nbreak\n}\nif(f.ready){\nreturn 99\n}\nreturn 4\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructBoolFieldAssigned(..)
+        )).count(), 3);
+    }
+
+
+    #[test]
+    fn g18_v1_f3_bool欄位非法const及錯型別必原Checker拒絕() {
+        let const_owner = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nconst f:Flag = Flag()\nf.ready = true\nreturn 0\n}\nfn main()->int{return route()}\n";
+        let const_field = "struct Flag{\nconst ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nf.ready = true\nreturn 0\n}\nfn main()->int{return route()}\n";
+        let wrong_type = "struct Flag{\nvar ready:bool = false\n}\nfn route()->int{\nvar f:Flag = Flag()\nf.ready = 1\nreturn 0\n}\nfn main()->int{return route()}\n";
+        for src in [const_owner, const_field, wrong_type] {
+            assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+                Err(PrivateScalarCallPrepareError::Check(_))));
+        }
+    }
+
     #[test]
     fn g18_v1_f3_bool結構欄位寫入後if重新讀取最新值() {
         let src = "struct Flag{\nvar enabled:bool = true\n}\nfn step()->int{\nvar item:Flag = Flag()\nitem.enabled = false\nif(item.enabled){\nreturn 9\n}\nreturn 2\n}\nfn main()->int{\nreturn step()\n}\n";
