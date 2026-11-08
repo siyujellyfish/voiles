@@ -2237,6 +2237,14 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                 }
+                PrivateScalarLocalStep::AssignCopyStructInt {
+                    declaration, owner, field, value,
+                } => {
+                    tasks.push(PrivateScalarTask::WriteCopyStructInt(
+                        *declaration, owner, field,
+                    ));
+                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                }
                 PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
                     tasks.push(PrivateScalarTask::DeclareEmptyInt(*declaration)),
                 PrivateScalarLocalStep::DeclareEmptyBool(declaration) =>
@@ -2492,6 +2500,26 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.initialized_order.push(PrivateScalarLocalBinding::Int(id));
                         events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
+                    }
+                    PrivateScalarTask::WriteCopyStructInt(id, owner, field) => {
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.copy_struct_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == owner) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(id)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        copy_structs.write_int_field(owner, field, value, true).map_err(|_|
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        events.push(PrivateScalarCallEvent::CopyStructIntFieldAssigned(
+                            id, field.to_owned(), value,
+                        ));
                     }
                     PrivateScalarTask::AssignLocal(id) => {
                         let value = values.pop().ok_or(
@@ -2917,6 +2945,14 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::AssignLocal(*declaration));
                             tasks.push(PrivateScalarTask::Evaluate(value, false));
                         }
+                        PrivateScalarBranchAction::AssignCopyStructInt {
+                            declaration, owner, field, value,
+                        } => {
+                            tasks.push(PrivateScalarTask::WriteCopyStructInt(
+                                *declaration, owner, field,
+                            ));
+                            tasks.push(PrivateScalarTask::Evaluate(value, false));
+                        }
                         PrivateScalarBranchAction::AssignBool { declaration, value } => {
                             tasks.push(PrivateScalarTask::AssignBool(*declaration, value));
                         }
@@ -3092,6 +3128,14 @@ impl PreparedPrivateScalarCall {
                                 }
                                 PrivateScalarLocalStep::Assign { declaration, value } => {
                                     tasks.push(PrivateScalarTask::AssignLocal(*declaration));
+                                    tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                }
+                                PrivateScalarLocalStep::AssignCopyStructInt {
+                                    declaration, owner, field, value,
+                                } => {
+                                    tasks.push(PrivateScalarTask::WriteCopyStructInt(
+                                        *declaration, owner, field,
+                                    ));
                                     tasks.push(PrivateScalarTask::Evaluate(value, false));
                                 }
                                 PrivateScalarLocalStep::DeclareEmptyInt(declaration) =>
