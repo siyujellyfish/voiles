@@ -289,6 +289,31 @@ impl MixedStructRuntime {
         *old=value;
         Ok(())
     }
+    /// G18／V1-F4：原 Checker 已授權的可寫 str 結構欄位，
+    /// 與普通 str 使用唯一 OwnedStrRuntime 原子替換真 UTF-8。
+    /// 先確定接收者與欄位具可寫權限，再建立新 OwnedUtf8；
+    /// 新資源配置失敗時，舊欄位完全不移動、不釋放。
+    /// 成功後由同一帳簿記錄 Created(new)→Released(old)，
+    /// 外層再依原 DeclarationId／欄位與新 ResourceId 重新綁定。
+    pub(crate) fn write_str_field_with_shared_ledger(
+        &mut self,ledger:&mut OwnedStrRuntime,owner:&str,field:&str,
+        text:&str,receiver_mutable:bool,
+    )->Result<(),MixedError> {
+        if !receiver_mutable {return Err(MixedError::ImmutableReceiver);}
+        let (i,j)=self.valid_whole(owner)?;
+        let member=self.scopes[i][j].owned.as_mut()
+            .expect("已核對完整結構持有者").fields.iter_mut()
+            .find(|member|member.name==field).ok_or(MixedError::MissingField)?;
+        if member.immutable {return Err(MixedError::ImmutableField);}
+        let StoredValue::Str(old)=&mut member.value else {
+            return Err(MixedError::TypeMismatch(field.to_owned()));
+        };
+        let replacement=ledger.create_detached(text).map_err(MixedError::Resource)?;
+        let former=std::mem::replace(old,replacement);
+        ledger.release_detached(former);
+        Ok(())
+    }
+
     fn valid_whole(&self,name:&str)->Result<(usize,usize),MixedError> {
         let (i,j)=self.locate(name)?;
         let value=self.scopes[i][j].owned.as_ref()
