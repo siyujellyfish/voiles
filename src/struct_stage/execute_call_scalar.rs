@@ -3043,40 +3043,50 @@ impl PreparedPrivateScalarCall {
                 pending.push(name.to_owned());
             }
         }
+        // V1／F3：main 來源目錄已由完整 Checker 驗證。自第一層
+        // 普通函式開始，不再第二次走訪原 AST 猜哪些子呼叫可達，
+        // 而由原 Checker TypedHIR 所編譯的同一動態工作計畫取得
+        // return、宣告、賦值、分支及逐輪控制的 Call 依賴。
+        // 零迭代、已證全分支提前返回及無條件中止都已在計畫中
+        // 被適法排除；未知條件的兩個合法分支仍完整保留。
         while let Some(name) = pending.pop() {
-            if let Some(function) = verified.functions.iter()
-                .find(|fun| fun.name == name) {
-                // R01／R03：main 以外的普通函式，同樣可能由原 Checker
-                // 證明 if／else 所有葉子均提前 return。不可達的最後
-                // Return 不應把未執行的函式拉入必要可達閉包。
-                // 只有「無末端 int HIR」且既有函式編譯器已確證
-                // Unreachable 時才排除；失敗或證據不足時保守保留。
-                let statements = if function.name == "main" {
-                    reachable_main_statements
-                } else {
-                    let unreachable_tail = function.result_ty == "int"
-                        && function.body.statements.last().is_some_and(|statement|
-                            matches!(&statement.kind, StmtKind::Return(ret)
-                                if verified.plan.scalar_hir
-                                    .expression(ret.expression.node_span()).is_none()))
-                        && matches!(
-                            Self::prepare_function_locals(function, &verified),
-                            Ok((_, _, PrivateScalarReturnExpr::Unreachable, _))
-                        );
-                    if unreachable_tail {
-                        &function.body.statements[..function.body.statements.len() - 1]
-                    } else {
-                        &function.body.statements
-                    }
-                };
-                let mut nested_names = Vec::new();
-                PrivateScalarReturnExpr::collect_source_calls_in_statements(
-                    statements, &mut nested_names,
-                );
-                for nested in nested_names {
-                    if reachable.insert(nested.to_owned()) {
-                        pending.push(nested.to_owned());
-                    }
+            let Some(function) = verified.functions.iter()
+                .find(|fun| fun.name == name) else {
+                // 無來源宣告的目標留給下方正式 graph 完整性檢查拒絕。
+                continue;
+            };
+            if function.name == "main" {
+                // main 是既有 root，普通函式簽章不得以 main 假造。
+                continue;
+            }
+            let mut nested_names = Vec::new();
+            if function.name == callee.name {
+                return_expr.collect_calls(&mut nested_names);
+                for step in &root_local_steps {
+                    step.collect_calls(&mut nested_names);
+                }
+            } else {
+                // 只讓原 Checker/TypedHIR 通過的返回和語句出現在
+                // 工作計畫；任何未接通的真正可達合法形狀仍在此
+                // 受控 Unsupported，不可偷略過或擅自創造語意。
+                if function.result_ty != "int"
+                    || function.params.iter().any(|param|
+                        !matches!(param.ty.as_str(), "int" | "bool" | "str"))
+                    || function.body.statements.is_empty() {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "可達子函式缺少已核准 int 完整簽章",
+                    ));
+                }
+                let (_, steps, result, _) =
+                    Self::prepare_function_locals(function, &verified)?;
+                result.collect_calls(&mut nested_names);
+                for step in &steps {
+                    step.collect_calls(&mut nested_names);
+                }
+            }
+            for nested in nested_names {
+                if reachable.insert(nested.to_owned()) {
+                    pending.push(nested.to_owned());
                 }
             }
         }
@@ -8098,6 +8108,50 @@ mod g18_private_scalar_call_tests {
 
     // V1／F4：原 Checker 合法的零迭代本體不在執行圖內。
     // 只可以略過真正不可達的 work；有正迭代的結構局部仍須拒絕。
+    // V1/F3：跨三層普通函式的子呼叫集合來自同一份
+    // 原 Checker 已簽發的工作計畫，零迭代中的合法構造函式
+    // 不可回流成新的子函式依賴。
+    #[test]
+    fn g18_v1_三層真工作計畫只收錄動態可能呼叫的函式() {
+        let source = "struct Archive{\nvar count:int = 7\n}\nfn hidden()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn leaf()->int{\nreturn 9\n}\nfn mid()->int{\nfor i in 0..0{\nvar phantom:int = hidden()\n}\nreturn leaf()\n}\nfn top()->int{\nreturn mid()\n}\nfn main()->int{\nreturn top()\n}\n";
+        let plan = checked(source);
+        assert_eq!(plan.callee_name, "top");
+        let names: Vec<_> = plan.nested_callees.iter()
+            .map(|callee| callee.name.as_str()).collect();
+        assert_eq!(names, ["leaf", "mid"]);
+        let result = plan.execute().unwrap();
+        assert_eq!(result.result, Ok(9));
+        assert!(result.has_balanced_frame_trace());
+        assert!(!result.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "hidden"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_普通函式工作計畫須保留兩個動態可能的分支呼叫() {
+        let source = "fn left()->int{\nreturn 6\n}\nfn right()->int{\nreturn 8\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn left()\n}else{\nreturn right()\n}\nreturn 0\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let plan = checked(source);
+        let names: Vec<_> = plan.nested_callees.iter()
+            .map(|callee| callee.name.as_str()).collect();
+        assert_eq!(names, ["left", "right"]);
+        let result = plan.execute().unwrap();
+        assert_eq!(result.result, Ok(8));
+        assert!(result.has_balanced_frame_trace());
+        assert!(!result.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "left"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_工作計畫閉包竄改巢狀被呼叫者不得通過來源稽核() {
+        let source = "fn leaf()->int{\nreturn 9\n}\nfn mid()->int{\nreturn leaf()\n}\nfn top()->int{\nreturn mid()\n}\nfn main()->int{\nreturn top()\n}\n";
+        let mut plan = checked(source);
+        assert_eq!(plan.execute().unwrap().result, Ok(9));
+        plan.nested_callees.pop();
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_原checker空for本體結構函式不污染可達呼叫閉包() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..0{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
