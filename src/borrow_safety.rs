@@ -316,6 +316,25 @@ impl BorrowSafety {
         Ok(())
     }
 
+    /// G18／R05：巢狀實參求值中，父呼叫的票據與內層函式的
+    /// 票據可能同時存活於同一呼叫者 tracker；內層先結束時
+    /// 只可原子歸還「此內層呼叫」的已核准票據子集。
+    /// 與 finish_scope_verified 的「整個活躍快照」契約不同，
+    /// 不能藉此提早解鎖仍屬外層的票據。
+    /// 每張原 Checker BorrowFact 必與動態 Ticket 完全對應，
+    /// 之後交由既有 finish_scope 對整批來源／序號／tracker
+    /// 唯讀預檢，再一起提交；任何失配不應部分釋放。
+    pub(crate) fn finish_selected_verified(
+        &mut self, tickets: &[BorrowTicket], checked: &[BorrowFact],
+    ) -> Result<(), BorrowSafetyError> {
+        if tickets.len() != checked.len()
+            || tickets.iter().zip(checked).any(|(ticket, fact)|
+                ticket.fact() != *fact) {
+            return Err(BorrowSafetyError::SnapshotMismatch);
+        }
+        self.finish_scope(tickets)
+    }
+
     /// F06／F09：正式 Checker 先依已解析詞彙 DeclarationId 建立靜態
     /// 借用事實，與本次呼叫真正簽出的票據逐筆核對後才整批歸還。
     /// 此處不從 BorrowTicket.fact() 倒推靜態證據；任何快照差異都
@@ -339,6 +358,82 @@ impl BorrowSafety {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據() {
+        let mut tracker = BorrowSafety::new();
+        let outer = DeclarationId(8041);
+        let inner = DeclarationId(8042);
+        let first = tracker.acquire(outer, BorrowKind::SharedRead).unwrap();
+        let second = tracker.acquire(inner, BorrowKind::SharedRead).unwrap();
+        tracker.finish_selected_verified(&[second], &[second.fact()]).unwrap();
+        assert_eq!(
+            tracker.check_direct_access(outer),
+            Err(BorrowSafetyError::SourceIsBorrowed),
+        );
+        assert_eq!(tracker.check_direct_access(inner), Ok(()));
+        assert_eq!(
+            tracker.check_ticket_access(first, BorrowKind::SharedRead), Ok(outer),
+        );
+        tracker.finish_scope_verified(&[first], &[first.fact()]).unwrap();
+        assert_eq!(tracker.check_direct_access(outer), Ok(()));
+    }
+
+    #[test]
+    fn g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據() {
+        let mut tracker = BorrowSafety::new();
+        let first = tracker.acquire(
+            DeclarationId(8061), BorrowKind::SharedRead,
+        ).unwrap();
+        let second = tracker.acquire(
+            DeclarationId(8062), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(
+            tracker.finish_selected_verified(&[second], &[first.fact()]),
+            Err(BorrowSafetyError::SnapshotMismatch),
+        );
+        assert_eq!(
+            tracker.finish_selected_verified(&[second], &[]),
+            Err(BorrowSafetyError::SnapshotMismatch),
+        );
+        for ticket in [first, second] {
+            assert_eq!(
+                tracker.check_ticket_access(ticket, BorrowKind::SharedRead),
+                Ok(ticket.fact().source),
+            );
+        }
+        tracker.finish_scope_verified(
+            &[first, second], &[first.fact(), second.fact()],
+        ).unwrap();
+    }
+
+    #[test]
+    fn g18_r05_子集重複票據不得部分歸還其餘合法借用() {
+        let mut tracker = BorrowSafety::new();
+        let original = tracker.acquire(
+            DeclarationId(8081), BorrowKind::SharedRead,
+        ).unwrap();
+        let remaining = tracker.acquire(
+            DeclarationId(8082), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(
+            tracker.finish_selected_verified(
+                &[original, original], &[original.fact(), original.fact()],
+            ),
+            Err(BorrowSafetyError::InvalidRelease),
+        );
+        assert_eq!(
+            tracker.check_ticket_access(original, BorrowKind::SharedRead),
+            Ok(original.fact().source),
+        );
+        assert_eq!(
+            tracker.check_ticket_access(remaining, BorrowKind::SharedRead),
+            Ok(remaining.fact().source),
+        );
+        tracker.finish_scope_verified(
+            &[original, remaining], &[original.fact(), remaining.fact()],
+        ).unwrap();
+    }
 
     #[test]
     fn f08_失效合流快照不可對無關來源發放新借用或直接操作授權() {
