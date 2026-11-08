@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支提前返回溢位不可退回不可達常值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main不可達尾端計畫遭改為可執行常值須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
@@ -179,6 +184,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
@@ -242,6 +249,11 @@ from pathlib import Path
         "struct_stage::g18_private_source_loop_tests::g18_b_真_break_只執行首輪且離域釋放",
     ),
     "P18.3": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支提前返回溢位不可退回不可達常值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main不可達尾端計畫遭改為可執行常值須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main前置函式溢位不可被最後return常值掩蓋",
@@ -401,6 +413,8 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支提前返回溢位不可退回不可達常值",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main前置函式溢位不可被最後return常值掩蓋",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
@@ -548,6 +562,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else全分支真返回且末端不可達常值不需假hir",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if_else假分支不進且不可達末端return零事件",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支返回時選中str借用完成還票與資源清理",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main全分支提前返回溢位不可退回不可達常值",
+        "struct_stage::g18_private_scalar_call_tests::g18_r03_main不可達尾端計畫遭改為可執行常值須拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main前置真呼叫後尾端int常值return必執行呼叫",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_main真賦值函式後尾端括號整數常值仍須執行",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_main分支真str借用函式後返回常值應先歸還再釋放",
