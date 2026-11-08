@@ -9678,6 +9678,102 @@ mod g18_private_scalar_call_tests {
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
+
+    // V1-F4：含 const str 的整筆結構移動不重新建立 UTF-8，
+    // 原 P16 真 OwnedUtf8 必須保有 ResourceId 並由新持有者唯一釋放。
+    #[test]
+    fn g18_v1_f4_conststr結構整筆move真資源唯一轉交() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 7\nconst data:str = \"真資源🪼\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructResourceOwnerBound { .. }
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_雙conststr整筆move兩個id不複製並反序退出() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nconst first:str = \"甲\"\nconst second:str = \"乙🪼\"\nvar count:int = 5\n}\nfn route()->int{\nvar old:Marker = Marker()\nvar new:Marker = old.move()\nreturn new.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Moved(2),
+            R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr整筆move在真條件分支才發出moved() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 7\nconst data:str = \"分支資源\"\n}\nfn route(flag:bool)->int{\nvar first:Marker = Marker()\nif(flag){\nvar second:Marker = first.move()\nreturn second.count\n}\nreturn first.count\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )).count(), 1);
+        let src_false = src.replace("route(true)", "route(false)");
+        let absent = checked(&src_false).execute().unwrap();
+        assert_eq!(absent.result, Ok(7));
+        assert!(absent.has_balanced_frame_trace());
+        assert_eq!(absent.resource_events, [R::Created(1), R::Released(1)]);
+        assert!(!absent.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr整筆move後溢位仍真釋放唯一資源() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 7\nconst data:str = \"回滾🪼\"\n}\nfn route()->int{\nvar old:Marker = Marker()\nvar new:Marker = old.move()\nreturn new.count+9223372036854775807\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr整筆move資源事件竄改及刪除必拒絕() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 7\nconst data:str = \"防偽\"\n}\nfn route()->int{\nvar old:Marker = Marker()\nvar new:Marker = old.move()\nreturn new.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let index = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::OwnedResource(R::Moved(_))
+        )).expect("原共享帳已發出真 Moved");
+        let original = out.events[index].clone();
+        out.events[index] = PrivateScalarCallEvent::OwnedResource(R::Moved(999));
+        assert!(!out.has_balanced_frame_trace());
+        out.events[index] = original;
+        out.events.remove(index);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_可寫str資源結構整筆move仍須保守拒絕() {
+        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker(data=\"已建\")\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
     #[test]
     fn g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕() {
         let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
