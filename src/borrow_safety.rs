@@ -327,7 +327,9 @@ impl BorrowSafety {
     pub(crate) fn finish_selected_verified(
         &mut self, tickets: &[BorrowTicket], checked: &[BorrowFact],
     ) -> Result<(), BorrowSafetyError> {
-        if tickets.len() != checked.len()
+        // 子集重數預檢保留獨立來源；完整快照的既有
+        // G3 權威比對條件仍只存在 finish_scope_verified 一處。
+        if checked.len() != tickets.len()
             || tickets.iter().zip(checked).any(|(ticket, fact)|
                 ticket.fact() != *fact) {
             return Err(BorrowSafetyError::SnapshotMismatch);
