@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真struct_int欄位寫入後讀回更新值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_分支只寫入選中路徑的真struct欄位",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真struct可寫欄位在callee故障後仍須一次逆序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_const結構或const欄位的寫入原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_偽造struct欄位更新來源身分必在稽核拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
@@ -237,6 +242,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真struct_int欄位寫入後讀回更新值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_分支只寫入選中路徑的真struct欄位",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真struct可寫欄位在callee故障後仍須一次逆序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_const結構或const欄位的寫入原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_偽造struct欄位更新來源身分必在稽核拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真結構bool欄位三輪for內呼叫函式有序累積",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真結構欄位while中呼叫後break不重複執行",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真結構欄位零次for永不進入待呼叫函式",
@@ -702,6 +712,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真struct_int欄位寫入後讀回更新值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_分支只寫入選中路徑的真struct欄位",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_真struct可寫欄位在callee故障後仍須一次逆序離域",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_const結構或const欄位的寫入原Checker必拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_偽造struct欄位更新來源身分必在稽核拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
