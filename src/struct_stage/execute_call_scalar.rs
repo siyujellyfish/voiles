@@ -2060,9 +2060,12 @@ impl PreparedPrivateScalarCall {
                 "整筆移動目標缺少原 Checker 結構型別",
             ),
         )?;
+        // 原 Checker 允許的具名 var str 已由 checked_copy_struct
+        // 強制在真建構前提供受核准的字面 UTF-8；真正持有者先經
+        // 共享帳 construct 成功，Move 才可沿 P16 同一唯一資源轉交。
+        // 無具名預設的 var str 仍在前序 Prepare 保守拒絕。
         if !definition.fields.iter().all(|field|
-                matches!(field.ty.as_str(), "int" | "bool")
-                    || field.ty == "str" && field.immutable)
+                matches!(field.ty.as_str(), "int" | "bool" | "str"))
             || source == target || source_name == target_name
             || !verified.plan.declarations.matches(target, ty, mutable)
             || !verified.plan.declarations.typed_declaration(source)
@@ -9718,6 +9721,88 @@ mod g18_private_scalar_call_tests {
 
     // V1-F4：含 const str 的整筆結構移動不重新建立 UTF-8，
     // 原 P16 真 OwnedUtf8 必須保有 ResourceId 並由新持有者唯一釋放。
+    // V1-F4：原 Checker 真具名 var str 完整結構以同一
+    // P16 SharedLedger Move，移後仍可依既存原子欄位覆寫核准路徑更新。
+    #[test]
+    fn g18_v1_f4_具名varstr結構整筆move原resourceid唯一轉交() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 7\nvar data:str = \"未選預設\"\n}\nfn route()->int{\nvar first:Marker = Marker(data=\"真值🪼\")\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr移動前後兩次真覆寫各id只釋放一次() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 7\nvar data:str = \"不執行預設\"\n}\nfn route()->int{\nvar first:Marker = Marker(data=\"初始\")\nfirst.data = \"移動前\"\nvar second:Marker = first.move()\nsecond.data = \"移動後🪼\"\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(1), R::Moved(2),
+            R::Created(3), R::Released(2), R::Released(3),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_雙具名varstr整筆move保持雙resourceid及逆序退出() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar first:str = \"忽略甲\"\nvar second:str = \"忽略乙\"\nvar count:int = 5\n}\nfn route()->int{\nvar old:Marker = Marker(first=\"甲\",second=\"乙🪼\")\nvar new:Marker = old.move()\nreturn new.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Moved(2),
+            R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr與conststr整筆move後僅var可覆寫() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar data:str = \"預設\"\nconst label:str = \"不可寫\"\nvar count:int = 9\n}\nfn route()->int{\nvar old:Marker = Marker(data=\"可移🪼\")\nvar new:Marker = old.move()\nnew.data = \"新值\"\nreturn new.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(1), R::Moved(2),
+            R::Created(3), R::Released(1), R::Released(2), R::Released(3),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructStrFieldAssigned(..)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr整筆move僅真條件葉有資源移動() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Marker{\nvar count:int = 4\nvar data:str = \"預設\"\n}\nfn route(flag:bool)->int{\nvar old:Marker = Marker(data=\"真值\")\nif(flag){\nvar new:Marker = old.move()\nreturn new.count\n}\nreturn old.count\n}\nfn main()->int{\nreturn route(true)\n}\n";
+        let selected = checked(src).execute().unwrap();
+        assert_eq!(selected.result, Ok(4));
+        assert!(selected.has_balanced_frame_trace());
+        assert_eq!(selected.resource_events, [
+            R::Created(1), R::Moved(1), R::Released(1),
+        ]);
+        let false_src = src.replace("route(true)", "route(false)");
+        let not_selected = checked(&false_src).execute().unwrap();
+        assert_eq!(not_selected.result, Ok(4));
+        assert!(not_selected.has_balanced_frame_trace());
+        assert_eq!(not_selected.resource_events, [R::Created(1), R::Released(1)]);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr整筆move後再讀來源原Checker必拒絕() {
+        let src = "struct Marker{\nvar count:int = 7\nvar data:str = \"預設\"\n}\nfn route()->int{\nvar first:Marker = Marker(data=\"源值\")\nvar second:Marker = first.move()\nreturn first.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(PreparedPrivateScalarCall::prepare(src).is_err());
+    }
+
     #[test]
     fn g18_v1_f4_conststr結構整筆move真資源唯一轉交() {
         use crate::owned_str_runtime::ResourceEvent as R;
@@ -9806,7 +9891,9 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_f4_可寫str資源結構整筆move仍須保守拒絕() {
-        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker(data=\"已建\")\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        // 沒有具名 var str 初始化的舊 V0 來源仍須阻擋，
+        // 不能因具名欄位共享帳合法而擴權所有預設路徑。
+        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }

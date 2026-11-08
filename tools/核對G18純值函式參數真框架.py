@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四百四十五項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四百五十一項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -48,6 +48,12 @@ from pathlib import Path
     "g18_v1_f4_純結構真分支整筆move早返且完成雙局部離域",
     "g18_v1_f4_move後再次移動相同原結構原Checker必拒絕",
     "g18_v1_f4_move動態計畫DeclarationId遭改寫必先拒絕",
+    "g18_v1_f4_具名varstr結構整筆move原resourceid唯一轉交",
+    "g18_v1_f4_具名varstr移動前後兩次真覆寫各id只釋放一次",
+    "g18_v1_f4_雙具名varstr整筆move保持雙resourceid及逆序退出",
+    "g18_v1_f4_具名varstr與conststr整筆move後僅var可覆寫",
+    "g18_v1_f4_具名varstr整筆move僅真條件葉有資源移動",
+    "g18_v1_f4_具名varstr整筆move後再讀來源原Checker必拒絕",
     "g18_v1_f4_conststr結構整筆move真資源唯一轉交",
     "g18_v1_f4_雙conststr整筆move兩個id不複製並反序退出",
     "g18_v1_f4_conststr整筆move在真條件分支才發出moved",
