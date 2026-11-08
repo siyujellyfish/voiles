@@ -170,7 +170,8 @@ impl PrivateScalarCallOutcome {
         for event in &self.events {
             if let Some(target) = awaited_entry {
                 if !matches!(event,
-                    PrivateScalarCallEvent::FunctionEntered(name) if name == target) {
+                    PrivateScalarCallEvent::FunctionEntered(name)
+                        if name.as_str() == target) {
                     return false;
                 }
             }
@@ -5247,6 +5248,130 @@ mod g18_private_scalar_call_tests {
 
     fn literal_src() -> &'static str {
         "fn main()->int{\nreturn forward(7)\n}\nfn forward(value:int)->int{\nreturn value\n}\n"
+    }
+
+    // E5：真動態 BorrowSafety 安全點只在原 Checker 的
+    // await Call 實際到達後簽發，並與具名 async 函式 EnterCall 對帳。
+    #[test]
+    fn g18_v7_e5_直接await確實留下與真async框架相鄰的安全點() {
+        let src = "async fn ready(n:int)->int{\nreturn n+1\n}\nfn main()->int{\nreturn await ready(6)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        let marker = out.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "ready"
+        )).expect("真正到達 await 才產生安全點");
+        assert!(matches!(out.events.get(marker+1),
+            Some(PrivateScalarCallEvent::FunctionEntered(name)) if name == "ready"));
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e5_偽造刪除async等待事件不得冒充同步進框架() {
+        let src = "async fn ready()->int{\nreturn 7\n}\nfn main()->int{\nreturn await ready()\n}\n";
+        let plan = checked(src);
+        let mut out = plan.execute().unwrap();
+        out.events.retain(|e| !matches!(e, PrivateScalarCallEvent::AwaitSafePoint(_)));
+        // 舊的純框架平衡表只看 enter/exit，須另用原 Checker
+        // async 來源身分對帳防止等待事件整筆消失。
+        assert!(out.has_balanced_frame_trace());
+        assert!(matches!(plan.audit_graph_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v7_e5_等待點改綁別的函式或重播都必須拒絕() {
+        let src = "async fn ready()->int{\nreturn 7\n}\nfn main()->int{\nreturn await ready()\n}\n";
+        let plan = checked(src);
+        let mut forged = plan.execute().unwrap();
+        let mark = forged.events.iter_mut().find_map(|e| match e {
+            PrivateScalarCallEvent::AwaitSafePoint(name) => Some(name),
+            _ => None,
+        }).unwrap();
+        *mark = "another".to_string();
+        assert!(!forged.has_balanced_frame_trace());
+        assert!(matches!(plan.audit_graph_outcome(forged),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+        let mut replayed = plan.execute().unwrap();
+        let pos = replayed.events.iter().position(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+        )).unwrap();
+        replayed.events.insert(pos, PrivateScalarCallEvent::AwaitSafePoint(
+            "ready".to_string(),
+        ));
+        assert!(!replayed.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v7_e5_原同步普通函式不得假造await安全點() {
+        let src = "fn forward(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn forward(7)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+        )));
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e5_跨函式帶入未歸還str票據阻止子async啟動且安全回滾() {
+        let src = "async fn ready()->int{\nreturn 4\n}\nfn wrapper(source:str)->int{\nreturn await ready()\n}\nfn main()->int{\nvar source:str = \"真資源🪼\"\nreturn wrapper(source)\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert!(matches!(out.result,
+            Err(PrivateScalarCallRuntimeError::Borrow(
+                crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed
+            ))));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name)
+                if name == "ready"
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+        )));
+    }
+
+    #[test]
+    fn g18_v7_e5_同資源明確move交給父框架時直接await不會假裝仍有借用() {
+        let src = "async fn ready()->int{\nreturn 4\n}\nfn wrapper(source:str)->int{\nreturn await ready()\n}\nfn main()->int{\nvar source:str = \"真移交🪼\"\nreturn wrapper(source.move())\n}\n";
+        let plan = checked(src);
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "ready"
+        )).count(), 1);
+        let releases = out.resource_events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Released(_)
+        )).count();
+        assert_eq!(releases, 1);
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e5_尚未能進入async函式的框架預算錯誤不可虛構安全點() {
+        let src = "async fn ready()->int{\nreturn 4\n}\nfn wrapper()->int{\nreturn await ready()\n}\nfn main()->int{\nreturn wrapper()\n}\n";
+        let plan = checked(src);
+        let out = plan.execute_with_budget(PrivateScalarExecutionBudget {
+            max_call_frames: 1, max_steps: 500,
+        }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+        )));
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )));
     }
 
     // V7／A1：原 Checker 已接受的直接 await，不在準備時執行；
