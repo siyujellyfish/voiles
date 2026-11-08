@@ -47,6 +47,8 @@ enum PrivateScalarCallEvent {
     /// V1／F4：原 Checker 合法、P16 MixedStructRuntime 真建構
     /// 的純 Copyable int／bool 結構局部；不偽造 UTF-8 ResourceId。
     CopyStructConstructed(DeclarationId),
+    /// 原 Checker 認可的結構 int 欄位寫入，非 UTF-8 事件。
+    CopyStructIntFieldWritten(DeclarationId, String, i64),
     CopyStructScopeEnded(DeclarationId),
     /// 只有執行時真正到達的 if 條件才可記錄求值結果。
     ConditionalChecked(bool),
@@ -257,6 +259,15 @@ impl PrivateScalarCallOutcome {
                     ) { return false; }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*id));
                 }
+                PrivateScalarCallEvent::CopyStructIntFieldWritten(id, field, _) => {
+                    let Some(frame) = frames.last() else { return false; };
+                    if frame.returned || field.is_empty()
+                        || !frame.locals.iter().any(|entry|
+                            matches!(entry, PrivateScalarLocalBinding::CopyStruct(held)
+                                if held == id)) {
+                        return false;
+                    }
+                }
                 PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if !matches!(frame.locals.pop(),
@@ -449,7 +460,8 @@ impl PrivateScalarCallOutcome {
                 | PrivateScalarCallEvent::CopyStructConstructed(id) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
             PrivateScalarCallEvent::LocalAssigned(id, _)
-                | PrivateScalarCallEvent::BoolAssigned(id, _) =>
+                | PrivateScalarCallEvent::BoolAssigned(id, _)
+                | PrivateScalarCallEvent::CopyStructIntFieldWritten(id, _, _) =>
                 Some(PrivateSharedCallExitEvent::LocalAssigned(*id)),
             PrivateScalarCallEvent::LocalScopeEnded(id)
                 | PrivateScalarCallEvent::BoolScopeEnded(id)
@@ -1116,6 +1128,10 @@ enum PrivateScalarBranchAction {
     DeclareCopyStruct {
         declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
     },
+    WriteCopyStructIntField {
+        declaration: DeclarationId, owner: String, field: String,
+        value: PrivateScalarReturnExpr,
+    },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -1142,7 +1158,8 @@ impl PrivateScalarBranchAction {
             }
             Self::NestedIf(plan) => plan.collect_calls(calls),
             Self::Return(expr) | Self::AssignInt { value: expr, .. }
-                | Self::DeclareInt { value: expr, .. } =>
+                | Self::DeclareInt { value: expr, .. }
+                | Self::WriteCopyStructIntField { value: expr, .. } =>
                 expr.collect_calls(calls),
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
@@ -1161,7 +1178,8 @@ impl PrivateScalarBranchAction {
                 actions.last().is_some_and(Self::always_returns),
             Self::NestedIf(plan) => plan.always_returns(),
             Self::AssignInt { .. } | Self::AssignBool { .. }
-                | Self::AssignStr { .. } | Self::DeclareInt { .. }
+                | Self::AssignStr { .. } | Self::WriteCopyStructIntField { .. }
+                | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
                 | Self::DeclareEmptyStr { .. } | Self::DeclareCopyStruct { .. }
                 | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
@@ -1226,6 +1244,10 @@ enum PrivateScalarLocalStep {
     DeclareCopyStruct {
         declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
     },
+    WriteCopyStructIntField {
+        declaration: DeclarationId, owner: String, field: String,
+        value: PrivateScalarReturnExpr,
+    },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
@@ -1236,7 +1258,9 @@ impl PrivateScalarLocalStep {
     fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
         match self {
             Self::Declare(init) => init.value.collect_calls(calls),
-            Self::Assign { value, .. } => value.collect_calls(calls),
+            Self::Assign { value, .. }
+                | Self::WriteCopyStructIntField { value, .. } =>
+                value.collect_calls(calls),
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
@@ -1361,6 +1385,7 @@ enum PrivateScalarTask<'a> {
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
+    WriteCopyStructIntField(DeclarationId, &'a str, &'a str),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
