@@ -3202,6 +3202,38 @@ impl PreparedPrivateScalarCall {
                             id, field.to_owned(), value,
                         ));
                     }
+                    PrivateScalarTask::WriteCopyStructStr(id, owner, field, text) => {
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.copy_struct_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == owner) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        frame.borrow_tracker.check_direct_access(id)
+                            .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        // 同一 P16 真持有者對原 Checker var str 欄位先配置
+                        // 新 UTF-8，再以原子交換釋放舊值；任何前置拒絕
+                        // 都不應建立 ResourceId 或錯動原持有者。
+                        copy_structs.write_str_field_with_shared_ledger(
+                            &mut resources, owner, field, text, true,
+                        ).map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
+                        );
+                        let resource_id = copy_structs.field_resource_ids(owner)
+                            .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?
+                            .into_iter().find_map(|(name, id)|
+                                (name == field).then_some(id)
+                            ).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                        // 必須在舊 ResourceId 真釋放後才綁定新身分。
+                        events.push(PrivateScalarCallEvent::CopyStructResourceOwnerBound {
+                            declaration: id, field: field.to_owned(), resource_id,
+                        });
+                        events.push(PrivateScalarCallEvent::CopyStructStrFieldAssigned(
+                            id, field.to_owned(), resource_id,
+                        ));
+                    }
                     PrivateScalarTask::WriteCopyStructInt(id, owner, field) => {
                         let value = values.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
