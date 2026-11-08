@@ -1540,7 +1540,13 @@ impl PreparedPrivateScalarCall {
                 "bool" => ScalarKind::Bool,
                 // 使用 P16 原資源欄位與同一 OwnedStrRuntime 真帳；
                 // 仍拒絕巢狀結構／容器等未核准資源語意。
-                "str" => ScalarKind::Str,
+                // 第一批只接通不可寫的 str 欄位：原 P16 持有完整
+                // UTF-8 所有權，但一般函式內可寫欄位的原子替換、
+                // 借用／跨 frame 轉交尚未與共同帳簿完整驗證。
+                "str" if field.immutable => ScalarKind::Str,
+                "str" => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構 var str 欄位尚未與共同資源替換／退出帳安全合流",
+                )),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀資源尚未接入原 Checker／P16 共同退出帳",
                 )),
