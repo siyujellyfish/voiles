@@ -1826,6 +1826,22 @@ enum PrivateScalarTask<'a> {
 }
 
 impl PreparedPrivateScalarCall {
+    /// V7／E5：必須由真動態 BorrowSafety 與仍被父呼叫持有的
+    /// imported BorrowFact 同時證明空集合，才准啟動已核准 await。
+    /// 此守門本身不簽票據或產生虛假的 ResourceId。
+    fn check_await_safe_point(
+        tracker: &crate::borrow_safety::BorrowSafety,
+        imported: &[(crate::borrow_safety::BorrowTicket, BorrowFact)],
+    ) -> Result<(), PrivateScalarCallRuntimeError> {
+        if !imported.is_empty()
+            || tracker.verify_static_snapshot(std::iter::empty()).is_err() {
+            return Err(PrivateScalarCallRuntimeError::Borrow(
+                crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
+            ));
+        }
+        Ok(())
+    }
+
     /// 只抄錄已由真 OwnedStrRuntime 完成的 ResourceId 事件，
     /// 各個動態函式退出、局部離域、故障回滾均與 Copyable 事件同序。
     /// 呼叫期間的 BorrowTicket 屬直接呼叫者 tracker；真正被呼叫端離域時
@@ -4103,14 +4119,9 @@ impl PreparedPrivateScalarCall {
                             let parent = frames.last().ok_or(
                                 PrivateScalarCallRuntimeError::StateMismatch,
                             )?;
-                            if !parent.incoming_borrows.is_empty()
-                                || parent.borrow_tracker.verify_static_snapshot(
-                                    std::iter::empty(),
-                                ).is_err() {
-                                return Err(PrivateScalarCallRuntimeError::Borrow(
-                                    crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
-                                ));
-                            }
+                            Self::check_await_safe_point(
+                                &parent.borrow_tracker, &parent.incoming_borrows,
+                            )?;
                         }
                         completed_arguments.truncate(completed_arguments.len() - argc);
                         if awaited {
@@ -5316,44 +5327,53 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v7_e5_跨函式帶入未歸還str票據阻止子async啟動且安全回滾() {
+    fn g18_v7_e5_跨函式借用來源由原Checker拒絕且真票據守門同樣拒絕() {
         let src = "async fn ready()->int{\nreturn 4\n}\nfn wrapper(source:str)->int{\nreturn await ready()\n}\nfn main()->int{\nvar source:str = \"真資源🪼\"\nreturn wrapper(source)\n}\n";
-        let plan = checked(src);
-        let out = plan.execute().unwrap();
-        assert!(matches!(out.result,
+        // Checker 在 wrapper 獨立檢查階段已看見未證明歸還的
+        // str 參數借用，故不能假裝此來源可進入真執行器。
+        match PreparedPrivateScalarCall::prepare(src) {
+            Err(PrivateScalarCallPrepareError::Check(problem)) => {
+                assert!(problem.message.contains("VB15-01-A"));
+            }
+            _ => panic!("原 Checker 須比 runtime 更早拒絕跨等待借用"),
+        }
+        let fact = BorrowFact::new(DeclarationId(803), BorrowKind::SharedRead);
+        let mut tracker = crate::borrow_safety::BorrowSafety::new();
+        let ticket = tracker.acquire(fact.source, fact.kind).unwrap();
+        assert_eq!(PreparedPrivateScalarCall::check_await_safe_point(&tracker, &[]),
             Err(PrivateScalarCallRuntimeError::Borrow(
-                crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed
-            ))));
-        assert!(out.has_balanced_frame_trace());
-        assert!(out.events.iter().any(|e| matches!(
-            e, PrivateScalarCallEvent::LoanReturned(_)
+                crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
+            )));
+        // 另一種真正來源：本框架 tracker 即使沒有借用，
+        // 上一個動態框架傳入而尚未歸還的票據仍不可越過 await。
+        let empty = crate::borrow_safety::BorrowSafety::new();
+        assert_eq!(PreparedPrivateScalarCall::check_await_safe_point(
+            &empty, &[(ticket, fact)],
+        ), Err(PrivateScalarCallRuntimeError::Borrow(
+            crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
         )));
-        assert!(out.events.iter().any(|e| matches!(
-            e, PrivateScalarCallEvent::UnwindStarted
-        )));
-        assert!(!out.events.iter().any(|e| matches!(
-            e, PrivateScalarCallEvent::FunctionEntered(name)
-                if name == "ready"
-        )));
-        assert!(!out.events.iter().any(|e| matches!(
-            e, PrivateScalarCallEvent::AwaitSafePoint(_)
-        )));
+        tracker.release(ticket).unwrap();
+        assert!(PreparedPrivateScalarCall::check_await_safe_point(
+            &tracker, &[],
+        ).is_ok());
     }
 
     #[test]
-    fn g18_v7_e5_同資源明確move交給父框架時直接await不會假裝仍有借用() {
-        let src = "async fn ready()->int{\nreturn 4\n}\nfn wrapper(source:str)->int{\nreturn await ready()\n}\nfn main()->int{\nvar source:str = \"真移交🪼\"\nreturn wrapper(source.move())\n}\n";
+    fn g18_v7_e5_真正str_move直接await不冒充借用且資源唯一清理() {
+        let src = "async fn consume(value:str)->int{\nreturn 4\n}\nfn main()->int{\nvar source:str = \"真移交🪼\"\nreturn await consume(source.move())\n}\n";
         let plan = checked(src);
         let out = plan.execute().unwrap();
         assert_eq!(out.result, Ok(4));
         assert!(out.has_balanced_frame_trace());
         assert_eq!(out.events.iter().filter(|e| matches!(
-            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "ready"
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "consume"
         )).count(), 1);
-        let releases = out.resource_events.iter().filter(|e| matches!(
+        assert_eq!(out.resource_events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Created(_)
+        )).count(), 1);
+        assert_eq!(out.resource_events.iter().filter(|e| matches!(
             e, crate::owned_str_runtime::ResourceEvent::Released(_)
-        )).count();
-        assert_eq!(releases, 1);
+        )).count(), 1);
         assert!(plan.audit_graph_outcome(out).is_ok());
     }
 
