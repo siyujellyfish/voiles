@@ -1197,10 +1197,11 @@ impl PrivateScalarBranchAction {
                 expr.collect_calls(calls),
             Self::While { body, .. } | Self::ForRange { body, .. } =>
                 body.collect_calls(calls),
+            Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
             Self::AssignBool { .. } | Self::AssignCopyStructBool { .. }
                 | Self::DeclareBool { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::DeclareCopyStruct { .. } | Self::MoveCopyStruct { .. }
+                | Self::MoveCopyStruct { .. }
                 | Self::AssignStr { .. } | Self::Break | Self::Continue => {}
         }
     }
@@ -1268,6 +1269,9 @@ enum PrivateScalarCopyStructSeed {
     /// 具名純 int 欄位支援原 Checker TypedHIR 的動態加減／括號，
     /// 僅限無 Call 的純值表達式，不能於建構前重播靜態字面值。
     IntArithmetic(Box<PrivateScalarReturnExpr>),
+    /// 具名 int RHS 以原 Checker 已編譯的普通函式顯式工作圖求值，
+    /// 一律等返回且完成借用／資源退出後才交付 P16 真建構。
+    IntCall(Box<PrivateScalarReturnExpr>),
     IntField { declaration: DeclarationId, owner: String, field: String },
     BoolField { declaration: DeclarationId, owner: String, field: String },
 }
@@ -1276,8 +1280,8 @@ impl PrivateScalarCopyStructSeed {
         use crate::mixed_struct_runtime::ScalarKind;
         match self {
             Self::Static(value) => value.kind(),
-            Self::IntBound(_) | Self::IntArithmetic(_) | Self::IntField { .. } =>
-                ScalarKind::Int,
+            Self::IntBound(_) | Self::IntArithmetic(_) | Self::IntCall(_)
+                | Self::IntField { .. } => ScalarKind::Int,
             Self::BoolBound(_) | Self::BoolField { .. } => ScalarKind::Bool,
         }
     }
@@ -1295,6 +1299,7 @@ impl PrivateScalarCopyStructSeed {
             Self::BoolBound(id) => frame.bool_values.get(id).copied()
                 .map(ApprovedSeed::Bool)
                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::IntCall(_) => Err(PrivateScalarCallRuntimeError::StateMismatch),
             Self::IntArithmetic(expr) => {
                 // 此局部純值 evaluator 不另建普通函式呼叫框架。
                 // 函式 Call 已在 compile 階段保守拒絕；依原 Checker
@@ -1397,6 +1402,12 @@ impl PrivateScalarCopyStructSeed {
             }
         }
     }
+
+    fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
+        if let Self::IntCall(expr) = self {
+            expr.collect_calls(calls);
+        }
+    }
 }
 
 /// V1／F4：原 Checker 唯一結構型別及 P16 VB16 預設／具名欄位
@@ -1405,6 +1416,13 @@ impl PrivateScalarCopyStructSeed {
 struct PrivateScalarCopyStructPlan {
     fields: Vec<(String, crate::mixed_struct_runtime::ScalarKind, Option<ApprovedSeed>, bool)>,
     named: Vec<(String, PrivateScalarCopyStructSeed)>,
+}
+impl PrivateScalarCopyStructPlan {
+    fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
+        for (_, source) in &self.named {
+            source.collect_calls(calls);
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1445,10 +1463,11 @@ impl PrivateScalarLocalStep {
                 | Self::AssignCopyStructInt { value, .. } => value.collect_calls(calls),
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
+            Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
             Self::DeclareBool { .. } | Self::AssignBool { .. }
                 | Self::AssignCopyStructBool { .. } | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::DeclareCopyStruct { .. } | Self::MoveCopyStruct { .. }
+                | Self::MoveCopyStruct { .. }
                 | Self::AssignStr { .. } => {}
         }
     }
@@ -1797,22 +1816,22 @@ impl PreparedPrivateScalarCall {
                         declaration, owner, field,
                     }
                 }
-                // 來源包括帶括號的原 Checker int 名稱／欄位及
-                // 多層有序加減；以與函式返回相同的 TypedHIR 編譯，
-                // 但不准在 P16 建構器中自行呼叫其他函式。
+                // 具名 int 算式與原 Checker 具名函式皆使用已簽發的
+                // TypedHIR。含 Call 只能經同一動態函式堆疊實際執行，
+                // 不能再在 P16 建構器中另行求值或繞過資源退出。
                 TermKind::BinaryInt(_) | TermKind::Group(_)
+                    | TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)
                     if *kind == ScalarKind::Int => {
                     let expression = PrivateScalarReturnExpr::from_checked_bindings(
                         term, bindings, verified,
                     )?;
                     let mut calls = Vec::new();
                     expression.collect_calls(&mut calls);
-                    if !calls.is_empty() {
-                        return Err(PrivateScalarCallPrepareError::Unsupported(
-                            "具名 int 算式內函式呼叫尚未接入同一建構工作圖",
-                        ));
+                    if calls.is_empty() {
+                        PrivateScalarCopyStructSeed::IntArithmetic(Box::new(expression))
+                    } else {
+                        PrivateScalarCopyStructSeed::IntCall(Box::new(expression))
                     }
-                    PrivateScalarCopyStructSeed::IntArithmetic(Box::new(expression))
                 }
                 _ => PrivateScalarCopyStructSeed::Static(
                     approved_seed(term, verified).map_err(|_|
