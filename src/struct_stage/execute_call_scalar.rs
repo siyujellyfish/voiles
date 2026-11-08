@@ -7756,6 +7756,98 @@ mod g18_private_scalar_call_tests {
     }
 
 
+    // R02：跨框架同名的 str 局部是不同 Checker DeclarationId；
+    // 真資源核心必保留原本詞彙身分，不得因文字同名交錯釋放。
+    #[test]
+    fn g18_r02_父子函式同名str各自建立並依框架反向釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(n:int)->int{\nvar owner:str = \"子層🪼\"\nreturn n+2\n}\nfn mid(n:int)->int{\nvar owner:str = \"父層🪼\"\nreturn leaf(n)\n}\nfn main()->int{\nreturn mid(4)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ResourceOwnerBound(_, _)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nvar spare:str = \"葉層\"\nreturn n+1\n}\nfn mid(item:str,n:int)->int{\nvar spare:str = \"中層\"\nreturn leaf(item.move(),n)\n}\nfn main()->int{\nvar original:str = \"根🪼\"\nreturn mid(original.move(),3)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Moved(1), R::Created(2),
+            R::Moved(1), R::Created(3), R::Released(3),
+            R::Released(1), R::Released(2),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ResourceTransferred { resource_id: 1, .. }
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn inspect(item:str,n:int)->int{\nvar owner:str = \"子層獨立\"\nreturn n+1\n}\nfn main()->int{\nconst owner:str = \"父層仍在借用\"\nreturn inspect(owner,7)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::ResourceOwnerBound(_, 2)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_r03_子框架同名str後溢位必先釋放子層再清理父層() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(n:int)->int{\nvar owner:str = \"子層錯誤\"\nreturn n+9223372036854775807\n}\nfn mid(n:int)->int{\nvar owner:str = \"父層持有\"\nreturn leaf(n)\n}\nfn main()->int{\nreturn mid(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_)
+        )));
+    }
+
+    #[test]
+    fn g18_r02_重入同一葉函式的同名str每次重新配置且不污染父框架() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(n:int)->int{\nvar owner:str = \"每次不同id\"\nreturn n+1\n}\nfn mid(n:int)->int{\nvar owner:str = \"父層仍持有\"\nvar first:int = leaf(n)\nvar second:int = leaf(first)\nreturn second\n}\nfn main()->int{\nreturn mid(1)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2),
+            R::Created(3), R::Released(3), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "leaf"
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_r02_借用str參數不得因子函式可見同名文字擅自move() {
+        let src = "fn leaf(item:str)->int{\nreturn 1\n}\nfn mid(item:str)->int{\nreturn leaf(item.move())\n}\nfn main()->int{\nvar owner:str = \"不可轉借\"\nreturn mid(owner)\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))
+                | Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+
 }
 
 
