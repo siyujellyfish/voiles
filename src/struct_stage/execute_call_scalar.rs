@@ -111,6 +111,9 @@ impl PrivateScalarCallOutcome {
         }
         struct TraceFrame {
             name: Option<String>,
+            /// 每次真正進入函式時，原 Checker 的參數宣告身分只能綁定一次；
+            /// int／bool／str 借用及 str Move 共用此欄，遞迴各幀獨立。
+            bound_parameters: std::collections::BTreeSet<DeclarationId>,
             locals: Vec<PrivateScalarLocalBinding>,
             moved_copy_struct_sources: std::collections::BTreeSet<DeclarationId>,
             resource_ids: std::collections::HashSet<u64>,
@@ -137,7 +140,8 @@ impl PrivateScalarCallOutcome {
             returned: bool,
         }
         let mut frames = vec![TraceFrame {
-            name: None, locals: Vec::new(),
+            name: None, bound_parameters: std::collections::BTreeSet::new(),
+            locals: Vec::new(),
             moved_copy_struct_sources: std::collections::BTreeSet::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
@@ -197,7 +201,9 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
-                        name: Some(name.clone()), locals: Vec::new(),
+                        name: Some(name.clone()),
+                        bound_parameters: std::collections::BTreeSet::new(),
+                        locals: Vec::new(),
                         moved_copy_struct_sources: std::collections::BTreeSet::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
@@ -211,9 +217,13 @@ impl PrivateScalarCallOutcome {
             imported_loans: Vec::new(), returned: false,
                     });
                 }
-                PrivateScalarCallEvent::ParameterBound(..)
-                    | PrivateScalarCallEvent::BoolParameterBound(..) => {
-                    if frames.last().is_none_or(|f| f.name.is_none() || f.returned) {
+                PrivateScalarCallEvent::ParameterBound(id, _)
+                    | PrivateScalarCallEvent::BoolParameterBound(id, _) => {
+                    // 兩種 Copyable 參數共用同一原 Checker DeclarationId 空間。
+                    // 重播相同參數、冒充另一型別，即使框架數與資源帳平衡也拒絕。
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.name.is_none() || frame.returned
+                        || !frame.bound_parameters.insert(*id) {
                         return false;
                     }
                 }
@@ -242,7 +252,7 @@ impl PrivateScalarCallOutcome {
                             *resource_id, (*target, false),
                         ).is_some() { return false; }
                 }
-                PrivateScalarCallEvent::BorrowParameterBound(_, fact) => {
+                PrivateScalarCallEvent::BorrowParameterBound(id, fact) => {
                     if frames.len() <= 1 { return false; }
                     let last = frames.len() - 1;
                     let (older, current) = frames.split_at_mut(last);
@@ -254,6 +264,7 @@ impl PrivateScalarCallOutcome {
                             && !child.imported_loans.contains(loan)) else {
                         return false;
                     };
+                    if !child.bound_parameters.insert(*id) { return false; }
                     child.imported_loans.push(ticket);
                 }
                 PrivateScalarCallEvent::LocalDeclaredEmpty(id) => {
@@ -573,7 +584,12 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                     if let Some((target, moved)) = frame.pending_transfers.get(resource_id) {
-                        if target != declaration || !moved { return false; }
+                        // str Move 參數只有原本簽發的目標 ID 能取得資源；
+                        // 並且不得與同框架 int／bool／Borrow 參數共用 ID。
+                        if frame.name.is_none() || target != declaration || !moved
+                            || !frame.bound_parameters.insert(*declaration) {
+                            return false;
+                        }
                         frame.pending_transfers.remove(resource_id);
                     }
                     frame.owner_resources.insert(*declaration, *resource_id);
@@ -5081,6 +5097,109 @@ mod g18_private_scalar_call_tests {
 
     fn literal_src() -> &'static str {
         "fn main()->int{\nreturn forward(7)\n}\nfn forward(value:int)->int{\nreturn value\n}\n"
+    }
+
+    // V1-F2／R07：不變更 Checker 型別決策，只要求同框架
+    // int、bool、str 借用／Move 都使用唯一的原 DeclarationId。
+    #[test]
+    fn g18_v1_f2_混合int_bool參數合法且遞迴重入各有獨立身分() {
+        let src = "fn alpha(n:int,flag:bool)->int{\nif(flag){return beta(n,false)}\nreturn n\n}\nfn beta(n:int,flag:bool)->int{\nreturn alpha(n,flag)\n}\nfn main()->int{\nreturn alpha(7,true)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::ParameterBound(..)
+                | PrivateScalarCallEvent::BoolParameterBound(..)
+        )).count(), 6);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(_)
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_v1_f2_整數參數重複綁定即使原結果正確也拒絕() {
+        let src = "fn identity(value:int)->int{\nreturn value\n}\nfn main()->int{\nreturn identity(9)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        let index = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::ParameterBound(..)
+        )).expect("原 Checker 的唯一整數參數");
+        let forged = out.events[index].clone();
+        out.events.insert(index + 1, forged);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v1_f2_布林參數重播與冒充int同身分一律拒絕() {
+        let src = "fn pick(flag:bool,n:int)->int{\nif(flag){return n+1}\nreturn n\n}\nfn main()->int{\nreturn pick(true,4)\n}\n";
+        let baseline = checked(src).execute().unwrap();
+        assert_eq!(baseline.result, Ok(5));
+        assert!(baseline.has_balanced_frame_trace());
+        let index = baseline.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::BoolParameterBound(..)
+        )).expect("原 Checker bool 參數");
+        let mut replay = checked(src).execute().unwrap();
+        replay.events.insert(index + 1, replay.events[index].clone());
+        assert!(!replay.has_balanced_frame_trace());
+        let mut spoof = baseline;
+        let id = match spoof.events[index] {
+            PrivateScalarCallEvent::BoolParameterBound(id, _) => id,
+            _ => unreachable!("已確認 bool 參數"),
+        };
+        spoof.events.insert(index + 1,
+            PrivateScalarCallEvent::ParameterBound(id, 8));
+        assert!(!spoof.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f2_借用str參數不可偽造已存在的int宣告身分() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst owner:str = \"真借用🪼\"\nreturn inspect(owner,3)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let int_id = out.events.iter().find_map(|event| match event {
+            PrivateScalarCallEvent::ParameterBound(id, _) => Some(*id),
+            _ => None,
+        }).expect("真整數參數");
+        let borrow = out.events.iter_mut().find_map(|event| match event {
+            PrivateScalarCallEvent::BorrowParameterBound(id, _) => Some(id),
+            _ => None,
+        }).expect("真 str 借用參數");
+        *borrow = int_id;
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_v1_f2_跨框架str移交不可重綁另一個int參數身分() {
+        let src = "fn inspect(item:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nvar owner:str = \"真移交🪼\"\nreturn inspect(owner.move(),4)\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        let int_id = out.events.iter().find_map(|event| match event {
+            PrivateScalarCallEvent::ParameterBound(id, _) => Some(*id),
+            _ => None,
+        }).expect("真整數參數");
+        for event in &mut out.events {
+            if let PrivateScalarCallEvent::ResourceTransferred { target, .. } = event {
+                *target = int_id;
+            }
+        }
+        let transferred = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::ResourceTransferred { .. }
+        )).expect("真正跨框架移交");
+        let owned = out.events.iter_mut().skip(transferred + 1).find_map(|event| match event {
+            PrivateScalarCallEvent::ResourceOwnerBound(id, _) => Some(id),
+            _ => None,
+        }).expect("移交後真正子框架資源綁定");
+        *owned = int_id;
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
     }
 
     #[test]
