@@ -1216,6 +1216,33 @@ impl PreparedPrivateScalarCall {
         Ok(())
     }
 
+    /// R05：錯誤回滾依目前最內層 frame 逐層歸還尚未真正
+    /// EnterCall 的實參票據。單一 completed_arguments 可能同時
+    /// 保存外層尚未 Enter 的票據，與內層已 Enter 函式的票據；
+    /// 禁止在內層退出前先釋放外層來源，否則逆序清理會倒置。
+    /// 僅處理本 frame 追蹤器簽發的票據，不改動其他活躍 frame。
+    fn return_pending_borrows_in_frame(
+        frame: &mut PrivateScalarActiveFrame,
+        pending: &mut Vec<crate::borrow_safety::BorrowTicket>,
+        events: &mut Vec<PrivateScalarCallEvent>,
+    ) -> Result<(), PrivateScalarCallRuntimeError> {
+        let mut index = 0;
+        while index < pending.len() {
+            let ticket = pending[index];
+            if frame.borrow_tracker.check_ticket_access(
+                ticket, BorrowKind::SharedRead,
+            ).is_ok() {
+                frame.borrow_tracker.release(ticket)
+                    .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                events.push(PrivateScalarCallEvent::LoanReturned(ticket));
+                pending.remove(index);
+            } else {
+                index += 1;
+            }
+        }
+        Ok(())
+    }
+
     fn record_owned_resources(
         resources: &crate::owned_str_runtime::OwnedStrRuntime,
         cursor: &mut usize,
@@ -2734,24 +2761,22 @@ impl PreparedPrivateScalarCall {
         })();
         if result.is_err() {
             events.push(PrivateScalarCallEvent::UnwindStarted);
-            // 任何實參已取得票據而父 Call 尚未真正進入時，失敗路徑
-            // 必先從簽發者 tracker 歸還，不能只在函式退出清除參數。
-            for pending in completed_arguments.iter().rev() {
-                if let PrivateScalarEvaluatedArgument::Borrow { ticket, .. } = pending {
-                    let owner = frames.iter_mut().rev().find(|frame|
-                        frame.borrow_tracker.check_ticket_access(
-                            *ticket, BorrowKind::SharedRead,
-                        ).is_ok()
-                    ).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                    owner.borrow_tracker.release(*ticket)
-                        .map_err(PrivateScalarCallRuntimeError::Borrow)?;
-                    events.push(PrivateScalarCallEvent::LoanReturned(*ticket));
-                }
-            }
-            completed_arguments.clear();
+            // 先保留 pending 票據的逆序清單；它們可能分屬多個
+            // 已進入的呼叫者框架。外層 Call 尚未 Enter 時，不得
+            // 在內層失敗 frame 結束之前錯誤先還外層票據。
+            let mut pending_loans = completed_arguments.iter().rev()
+                .filter_map(|arg| match arg {
+                    PrivateScalarEvaluatedArgument::Borrow { ticket, .. } => Some(*ticket),
+                    _ => None,
+                }).collect::<Vec<_>>();
             // 執行期預算／溢位／狀態錯誤皆不得偽裝成 return。
-            // 逐層清除已真正進入的參數框架，不退出未曾進入的函式。
+            // 每層先還本層尚未 Enter 的參數借用，再歸還該
+            // 已進入 frame 的 incoming 票據，最後才釋放資源。
             while frames.len() > 1 {
+                Self::return_pending_borrows_in_frame(
+                    frames.last_mut().expect("存在內層執行框架"),
+                    &mut pending_loans, events,
+                )?;
                 let mut frame = frames.pop().expect("已進入的子框架");
                 let parent = frames.last_mut().ok_or(
                     PrivateScalarCallRuntimeError::StateMismatch,
@@ -2788,6 +2813,17 @@ impl PreparedPrivateScalarCall {
         // 直接 main→被呼叫者的真框架保存在最底層，亦必須在
         // 正常返回、注入故障或預算耗盡後按完成順序逆序離域。
         if let Some(root) = frames.first_mut() {
+            if result.is_err() {
+                // 所有內層框架已正式失敗退出，才可歸還根框架
+                // 尚未進入外層 Call 的票據；不得默默遺漏偽造來源。
+                Self::return_pending_borrows_in_frame(
+                    root, &mut pending_loans, events,
+                )?;
+                if !pending_loans.is_empty() {
+                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                }
+                completed_arguments.clear();
+            }
             for entry in root.initialized_order.iter().rev() {
                 match entry {
                     PrivateScalarLocalBinding::Int(id) =>
@@ -8213,6 +8249,94 @@ mod g18_private_scalar_call_tests {
         ).unwrap();
     }
 
+
+
+    // R05：外層未 Enter 的借用票據不能先於正在退出的內層
+    // 借用／資源返還。只有真正已進入的 frame 按由內向外順序卸責。
+    #[test]
+    fn g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(s:str,n:int)->int{\nvar local:str = \"子框架🪼\"\nreturn n+9223372036854775807\n}\nfn parent(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst outer:str = \"外票\"\nconst inner:str = \"內票\"\nreturn parent(outer,leaf(inner,1))\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Created(3),
+            R::Released(3), R::Released(2), R::Released(1),
+        ]);
+        let acquired = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanAcquired(ticket) => Some(*ticket),
+            _ => None,
+        }).collect::<Vec<_>>();
+        let returned = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::LoanReturned(ticket) => Some(*ticket),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(acquired.len(), 2);
+        assert_eq!(returned, acquired.into_iter().rev().collect::<Vec<_>>());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "parent"
+        )));
+    }
+
+    #[test]
+    fn g18_r05_內層真move溢位先清理子資源外層待借用才歸還() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "fn leaf(item:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn parent(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst outer:str = \"外票\"\nvar inner:str = \"移動🪼\"\nreturn parent(outer,leaf(inner.move(),1))\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Moved(2),
+            R::Released(2), R::Released(1),
+        ]);
+        let child_exit = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionExited {
+                name, returned: false,
+            } if name == "leaf"
+        )).unwrap();
+        let loan_returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::LoanReturned(_)
+        )).unwrap();
+        assert!(child_exit < loan_returned);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "parent"
+        )));
+    }
+
+    #[test]
+    fn g18_r05_巢狀回滾交換內外票據歸還順序須拒絕() {
+        let src = "fn leaf(s:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn parent(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst outer:str = \"外\"\nconst inner:str = \"內\"\nreturn parent(outer,leaf(inner,1))\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let returned = out.events.iter().enumerate().filter_map(|(index, event)|
+            matches!(event, PrivateScalarCallEvent::LoanReturned(_)).then_some(index)
+        ).collect::<Vec<_>>();
+        assert_eq!(returned.len(), 2);
+        out.events.swap(returned[0], returned[1]);
+        assert!(!out.has_balanced_frame_trace());
+        assert!(matches!(PreparedPrivateScalarCall::audit_outcome(out),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
+
+    #[test]
+    fn g18_r05_不在任何框架內的偽造待歸票不得掩蓋溢位() {
+        let src = "fn leaf(s:str,n:int)->int{\nreturn n+9223372036854775807\n}\nfn parent(s:str,n:int)->int{\nreturn n\n}\nfn main()->int{\nconst outer:str = \"外\"\nconst inner:str = \"內\"\nreturn parent(outer,leaf(inner,1))\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        // 偽造歸票即使附在正式 UnwindStarted 後也沒有真簽發來源，
+        // 應由共用票據及來源雙帳同時拒絕。
+        let token = out.events.iter().find_map(|event| match event {
+            PrivateScalarCallEvent::LoanReturned(ticket) => Some(*ticket),
+            _ => None,
+        }).expect("必有真內層票據");
+        let unwind = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).unwrap();
+        out.events.insert(unwind + 1, PrivateScalarCallEvent::LoanReturned(token));
+        assert!(!out.has_balanced_frame_trace());
+    }
 
 
 }
