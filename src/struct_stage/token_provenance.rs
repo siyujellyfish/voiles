@@ -48,6 +48,15 @@ fn verified_private_token_roles(
                         Some(value.node_span())) {
                         return false;
                     }
+                } else if tokens.binary_search_by_key(
+                    &value.start, |token| token.start,
+                ).ok().and_then(|index| tokens.get(index).zip(tokens.get(index + 1)))
+                    .is_some_and(|(prefix, next)|
+                        matches!(&prefix.kind, TokenKind::Name(word) if word == "await")
+                            && matches!(next.kind, TokenKind::Name(_))) {
+                    // 即使有人將已解析 await Call 的 awaited 身分篡改為 false，
+                    // 原相鄰 token 仍足以證明前綴不得冒充同步呼叫。
+                    return false;
                 }
                 call.arguments.iter().all(|arg| term(arg, tokens, audit))
             }
