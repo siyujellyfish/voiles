@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百七十六項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百八十二項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -58,6 +58,12 @@ from pathlib import Path
     "g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
     "g18_v1_f4_欄位錯誤型別或不存在原Checker即拒絕",
     "g18_v1_f4_真欄位編譯身分遭篡改執行前必拒絕",
+    "g18_v1_f4_原Checker純結構明確move保留唯一真P16持有者",
+    "g18_v1_f4_分支原Checker結構move入內層後真離域不假建構",
+    "g18_v1_f4_已移走的結構來源再讀必由原Checker拒絕",
+    "g18_v1_f4_結構move來源身分竄改即使事件數相同也須拒絕",
+    "g18_v1_f4_含str結構move仍不得無證合併雙資源帳",
+    "g18_v1_f4_結構move後真算術溢位仍必逐框架逆序離域",
     "g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
     "g18_v1_f4_未選分支純結構與資源均零建構",
     "g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
