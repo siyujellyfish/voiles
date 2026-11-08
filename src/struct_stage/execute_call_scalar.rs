@@ -2880,33 +2880,33 @@ impl PreparedPrivateScalarCall {
                         }
                         match initializer {
                             PrivateScalarCopyStructInitializer::Construct(plan) => {
-                            // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
-                            let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
-                                crate::mixed_struct_runtime::MixedFieldSpec {
-                                    name: field, kind: *kind,
-                                    default: default.as_ref().map(ApprovedSeed::runtime),
-                                    immutable: *immutable,
-                                }
-                            ).collect::<Vec<_>>();
-                            // 僅在動態執行真正抵達宣告時讀本 frame 純值。
-                            // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
-                            // 皆為無副作用 int/bool 讀取，P16 仍控制後續
-                            // 具名書寫順序及覆蓋預設、溢位等原安全語意。
-                            let named_values = plan.named.iter().map(|(field, source)|
-                                source.evaluate(frame).map(|value| (field.as_str(), value))
-                            ).collect::<Result<Vec<_>, _>>()?;
-                            let named = named_values.iter().map(|(field, value)|
-                                crate::mixed_struct_runtime::NamedMixed {
-                                    field, value: value.runtime(),
-                                }
-                            ).collect::<Vec<_>>();
-                            copy_structs.construct(name, &fields, &named, None).map_err(|error|
-                                match error {
-                                    crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
-                                        PrivateScalarCallRuntimeError::IntegerOverflow,
-                                    _ => PrivateScalarCallRuntimeError::StateMismatch,
-                                },
-                            )?;
+                                // 原 P16 VB16 真求值：僅當工作堆疊抵達此位置才建構。
+                                let fields = plan.fields.iter().map(|(field, kind, default, immutable)|
+                                    crate::mixed_struct_runtime::MixedFieldSpec {
+                                        name: field, kind: *kind,
+                                        default: default.as_ref().map(ApprovedSeed::runtime),
+                                        immutable: *immutable,
+                                    }
+                                ).collect::<Vec<_>>();
+                                // 僅在動態執行真正抵達宣告時讀本 frame 純值。
+                                // 每個名稱已由 Checker 的 HIR 與 DeclarationId 證明；
+                                // 皆為無副作用 int/bool 讀取，P16 仍控制後續
+                                // 具名書寫順序及覆蓋預設、溢位等原安全語意。
+                                let named_values = plan.named.iter().map(|(field, source)|
+                                    source.evaluate(frame).map(|value| (field.as_str(), value))
+                                ).collect::<Result<Vec<_>, _>>()?;
+                                let named = named_values.iter().map(|(field, value)|
+                                    crate::mixed_struct_runtime::NamedMixed {
+                                        field, value: value.runtime(),
+                                    }
+                                ).collect::<Vec<_>>();
+                                copy_structs.construct(name, &fields, &named, None).map_err(|error|
+                                    match error {
+                                        crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                            PrivateScalarCallRuntimeError::IntegerOverflow,
+                                        _ => PrivateScalarCallRuntimeError::StateMismatch,
+                                    },
+                                )?;
                                 events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
                             }
                             PrivateScalarCopyStructInitializer::Move { source, declaration } => {
@@ -9338,6 +9338,86 @@ mod g18_private_scalar_call_tests {
         };
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    // V1／F4：真正 Checker .move() 不以新建結構假事件冒充 P16 轉交。
+    #[test]
+    fn g18_v1_f4_原Checker純結構明確move保留唯一真P16持有者() {
+        let src = "struct Meter{\nvar count:int = 3\nvar ready:bool = true\n}\nfn run()->int{\nvar source:Meter = Meter(count=9)\nvar target:Meter = source.move()\nif(target.ready){\nreturn target.count\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_分支原Checker結構move入內層後真離域不假建構() {
+        let src = "struct Meter{\nvar count:int = 3\n}\nfn run()->int{\nvar source:Meter = Meter()\nif(true){\nvar target:Meter = source.move()\ntarget.count = 11\n}\nreturn 7\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_已移走的結構來源再讀必由原Checker拒絕() {
+        let src = "struct Meter{\nvar count:int = 3\n}\nfn run()->int{\nvar source:Meter = Meter()\nvar target:Meter = source.move()\nreturn source.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_結構move來源身分竄改即使事件數相同也須拒絕() {
+        let src = "struct Meter{\nvar count:int = 3\nvar ready:bool = true\n}\nfn run()->int{\nvar source:Meter = Meter(count=9)\nvar target:Meter = source.move()\nif(target.ready){\nreturn target.count\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert!(out.has_balanced_frame_trace());
+        let relocation = out.events.iter_mut().find(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).expect("同一原 Checker 真 move 事件");
+        if let PrivateScalarCallEvent::CopyStructRelocated { source, .. } = relocation {
+            *source = DeclarationId(0);
+        }
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_含str結構move仍不得無證合併雙資源帳() {
+        let src = "struct Packet{\nvar text:str = \"保留🪼\"\n}\nfn run()->int{\nvar source:Packet = Packet()\nvar target:Packet = source.move()\nreturn 4\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_結構move後真算術溢位仍必逐框架逆序離域() {
+        let src = "struct Meter{\nvar count:int = 7\n}\nfn run()->int{\nvar source:Meter = Meter()\nvar target:Meter = source.move()\nreturn 9223372036854775807+1\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructRelocated { .. }
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
     }
 
     #[test]
