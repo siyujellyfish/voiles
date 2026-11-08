@@ -2759,12 +2759,15 @@ impl PreparedPrivateScalarCall {
             }
             Ok(values[0])
         })();
+        // 回滾借用帳須延續到根框架的最後資源清理階段；
+        // 成功路徑維持空清單，不改動既有真函式返回語意。
+        let mut pending_loans = Vec::new();
         if result.is_err() {
             events.push(PrivateScalarCallEvent::UnwindStarted);
             // 先保留 pending 票據的逆序清單；它們可能分屬多個
             // 已進入的呼叫者框架。外層 Call 尚未 Enter 時，不得
             // 在內層失敗 frame 結束之前錯誤先還外層票據。
-            let mut pending_loans = completed_arguments.iter().rev()
+            pending_loans = completed_arguments.iter().rev()
                 .filter_map(|arg| match arg {
                     PrivateScalarEvaluatedArgument::Borrow { ticket, .. } => Some(*ticket),
                     _ => None,
