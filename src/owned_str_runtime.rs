@@ -58,6 +58,9 @@ pub(crate) struct OwnedUtf8 {
 
 impl OwnedUtf8 {
     pub(crate) fn text(&self) -> &str { &self.text }
+    /// G18／V1-F4：唯讀實際配置的唯一 ResourceId，供 P16
+    /// 結構欄位身分與普通函式同一退出帳交叉稽核；絕不配置或複製。
+    pub(crate) fn resource_id(&self) -> u64 { self.id }
 }
 
 #[derive(Debug)]

@@ -50,6 +50,9 @@ enum PrivateScalarCallEvent {
     /// P16 真 move_whole，原值只轉交新持有者，不複製也不建立資源。
     CopyStructMovedBound { source: DeclarationId, target: DeclarationId },
     CopyStructScopeEnded(DeclarationId),
+    /// 原 P16 真 OwnedUtf8 欄位的來源宣告、欄位與 ResourceId
+    /// 三重身分；只有實際完成建構後才能發出，不新造資源事件。
+    CopyStructResourceOwnerBound { declaration: DeclarationId, field: String, resource_id: u64 },
     /// 原 Checker 已核准的可寫結構 int 欄位，真 P16 持有者更新後才記錄。
     CopyStructIntFieldAssigned(DeclarationId, String, i64),
     /// 唯有 P16 真 bool 欄位更新後才發出的原 Checker 同源事件。
@@ -110,6 +113,9 @@ impl PrivateScalarCallOutcome {
             moved_copy_struct_sources: std::collections::BTreeSet<DeclarationId>,
             resource_ids: std::collections::HashSet<u64>,
             owner_resources: BTreeMap<DeclarationId, u64>,
+            /// 結構的各個原 Checker str 欄位各持有唯一真資源，
+            /// 不把同一結構的多欄位塞進單純 DeclarationId 帳。
+            struct_owner_resources: BTreeMap<(DeclarationId, String), u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
             pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
@@ -124,6 +130,7 @@ impl PrivateScalarCallOutcome {
             moved_copy_struct_sources: std::collections::BTreeSet::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
+            struct_owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -163,6 +170,7 @@ impl PrivateScalarCallOutcome {
                         moved_copy_struct_sources: std::collections::BTreeSet::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
+            struct_owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -279,6 +287,25 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*target));
+                }
+                PrivateScalarCallEvent::CopyStructResourceOwnerBound {
+                    declaration, field, resource_id,
+                } => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || field.is_empty()
+                        || !frame.resource_ids.contains(resource_id)
+                        || !frame.locals.iter().any(|entry| matches!(
+                            entry, PrivateScalarLocalBinding::CopyStruct(id) if id == declaration
+                        ))
+                        || frame.moved_copy_struct_sources.contains(declaration)
+                        || frame.owner_resources.values().any(|id| id == resource_id)
+                        || frame.struct_owner_resources.values().any(|id| id == resource_id)
+                        || frame.struct_owner_resources.contains_key(&(*declaration, field.clone())) {
+                        return false;
+                    }
+                    frame.struct_owner_resources.insert(
+                        (*declaration, field.clone()), *resource_id,
+                    );
                 }
                 PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
@@ -413,11 +440,20 @@ impl PrivateScalarCallOutcome {
                             } else { false }
                         }
                         crate::owned_str_runtime::ResourceEvent::Released(id) => {
-                            let former = frame.owner_resources.iter().find_map(|(owner, held)|
+                            let scalar = frame.owner_resources.iter().find_map(|(owner, held)|
                                 (held == id).then_some(*owner));
-                            frame.resource_ids.remove(id)
-                                && former.is_some_and(|owner|
-                                    frame.owner_resources.remove(&owner) == Some(*id))
+                            let structure = frame.struct_owner_resources.iter()
+                                .find_map(|(owner, held)| (held == id).then_some(owner.clone()));
+                            // 結構的 P16 OwnedUtf8 必須與原宣告、真欄位的
+                            // ResourceId 一對一；不能由另一個存活持有者替釋放。
+                            let bound = if let Some(owner) = scalar {
+                                frame.owner_resources.remove(&owner) == Some(*id)
+                            } else if let Some(owner) = structure {
+                                frame.struct_owner_resources.remove(&owner) == Some(*id)
+                            } else {
+                                false
+                            };
+                            frame.resource_ids.remove(id) && bound
                         }
                     };
                     if !valid { return false; }
@@ -427,7 +463,8 @@ impl PrivateScalarCallOutcome {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || !frame.resource_ids.contains(resource_id)
                         || frame.owner_resources.contains_key(declaration)
-                        || frame.owner_resources.values().any(|held| held == resource_id) {
+                        || frame.owner_resources.values().any(|held| held == resource_id)
+                        || frame.struct_owner_resources.values().any(|held| held == resource_id) {
                         return false;
                     }
                     if let Some((target, moved)) = frame.pending_transfers.get(resource_id) {
@@ -454,6 +491,7 @@ impl PrivateScalarCallOutcome {
                         || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
                         || !frame.moved_copy_struct_sources.is_empty()
                         || !frame.owner_resources.is_empty()
+                        || !frame.struct_owner_resources.is_empty()
                         || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
                         || frames.last().is_none_or(|parent|
@@ -604,7 +642,7 @@ impl PrivateScalarReturnExpr {
                 if !definition.fields.iter().any(|candidate|
                     candidate.name == *field && candidate.ty == "int")
                     || !definition.fields.iter().all(|candidate|
-                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                        matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
                     || !verified.tokens.iter().any(|token|
                         token.start == span.start
                             && matches!(&token.kind, TokenKind::Name(found) if found == owner))
@@ -1065,7 +1103,7 @@ impl PrivateScalarBoolExpr {
                 if !definition.fields.iter().any(|candidate|
                         candidate.name == *field && candidate.ty == "bool")
                     || !definition.fields.iter().all(|candidate|
-                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                        matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
                     || !verified.tokens.iter().any(|token|
                         token.start == span.start
                             && matches!(&token.kind, TokenKind::Name(found) if found == owner))
@@ -1677,6 +1715,19 @@ impl PreparedPrivateScalarCall {
         *cursor = current.len();
     }
 
+    /// 在單一詞彙層同時讓 scalar str 與含 str 的 struct
+    /// 交錯完成初始化，現有兩種局部離域序列尚不能證明
+    /// 跨類別的全域逆序；第一批僅接通不交錯的可證子集。
+    fn current_scope_has_str_struct(
+        frame: &PrivateScalarActiveFrame,
+        structs: &crate::mixed_struct_runtime::MixedStructRuntime,
+    ) -> bool {
+        frame.copy_struct_scopes.last().is_some_and(|scope| {
+            scope.iter().any(|(_, name)|
+                structs.has_str_resource(name).unwrap_or(true))
+        })
+    }
+
     /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
     /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
     fn checked_str_initializer(
@@ -1731,8 +1782,17 @@ impl PreparedPrivateScalarCall {
             let kind = match field.ty.as_str() {
                 "int" => ScalarKind::Int,
                 "bool" => ScalarKind::Bool,
+                // 使用 P16 原資源欄位與同一 OwnedStrRuntime 真帳；
+                // 仍拒絕巢狀結構／容器等未核准資源語意。
+                // 第一批只接通不可寫的 str 欄位：原 P16 持有完整
+                // UTF-8 所有權，但一般函式內可寫欄位的原子替換、
+                // 借用／跨 frame 轉交尚未與共同帳簿完整驗證。
+                "str" if field.immutable => ScalarKind::Str,
+                "str" => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構 var str 欄位尚未與共同資源替換／退出帳安全合流",
+                )),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "結構局部 str／巢狀資源尚未接入共同資源退出帳",
+                    "巢狀資源尚未接入原 Checker／P16 共同退出帳",
                 )),
             };
             let overridden = named.iter().any(|(key, _)| key == &field.name);
@@ -1938,7 +1998,7 @@ impl PreparedPrivateScalarCall {
         )?;
         if !fact.mutable || member.immutable || member.ty != "int"
             || !definition.fields.iter().all(|candidate|
-                matches!(candidate.ty.as_str(), "int" | "bool"))
+                matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
             || !verified.tokens.iter().any(|token|
                 token.start == statement.start
                     && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
@@ -1982,7 +2042,7 @@ impl PreparedPrivateScalarCall {
         )?;
         if !fact.mutable || member.immutable || member.ty != "bool"
             || !definition.fields.iter().all(|candidate|
-                matches!(candidate.ty.as_str(), "int" | "bool"))
+                matches!(candidate.ty.as_str(), "int" | "bool" | "str"))
             || !verified.tokens.iter().any(|token|
                 token.start == statement.start
                     && matches!(&token.kind, TokenKind::Name(found) if found == receiver))
@@ -3178,6 +3238,14 @@ impl PreparedPrivateScalarCall {
                             scope.iter().any(|(_, known)| known == name)) {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
+                        // 含真 UTF-8 的結構與普通 str 在同一詞彙層交錯時，
+                        // 目前不具跨類別 LIFO 證明，必須在真建構前拒絕。
+                        if plan.fields.iter().any(|(_, kind, _, _)|
+                            *kind == crate::mixed_struct_runtime::ScalarKind::Str)
+                            && frame.str_owner_scopes.last().is_none_or(|scope|
+                                !scope.is_empty()) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         let named_values = pending_copy_structs.pop().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -3201,13 +3269,17 @@ impl PreparedPrivateScalarCall {
                                 field, value: value.runtime(),
                             }
                         ).collect::<Vec<_>>();
-                        copy_structs.construct(name, &fields, &named, None).map_err(|error|
-                            match error {
-                                crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
-                                    PrivateScalarCallRuntimeError::IntegerOverflow,
-                                _ => PrivateScalarCallRuntimeError::StateMismatch,
-                            },
-                        )?;
+                        let built = copy_structs.construct_with_shared_ledger(
+                            &mut resources, name, &fields, &named, None,
+                        );
+                        // 即使原 P16 真具名／預設求值中途溢位，
+                        // Created→Released 也要從同一資源帳真實留下。
+                        Self::record_owned_resources(&resources, &mut resource_cursor, events);
+                        built.map_err(|error| match error {
+                            crate::mixed_struct_runtime::MixedError::EvaluationFailed(_) =>
+                                PrivateScalarCallRuntimeError::IntegerOverflow,
+                            _ => PrivateScalarCallRuntimeError::StateMismatch,
+                        })?;
                         if !copy_structs.events().is_empty() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -3216,11 +3288,23 @@ impl PreparedPrivateScalarCall {
                         )?.push((id, name.to_owned()));
                         frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
                         events.push(PrivateScalarCallEvent::CopyStructConstructed(id));
+                        // 只取 P16 真建構後唯一 OwnedUtf8 欄位的 ResourceId，
+                        // 不以文字或模擬配置補造 Created／Moved／Released。
+                        for (field, resource_id) in copy_structs.field_resource_ids(name)
+                            .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?
+                        {
+                            events.push(PrivateScalarCallEvent::CopyStructResourceOwnerBound {
+                                declaration: id, field, resource_id,
+                            });
+                        }
                     }
                     PrivateScalarTask::DeclareEmptyStr(id, name, mutable) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         // 詞彙持有者可先存在，但沒有 UTF-8 資源。
                         // 真值只會在後續原 Checker 授權的 assign 建立。
                         resources.declare_empty(name, mutable).map_err(
@@ -3234,6 +3318,9 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if let PrivateScalarStrInitializer::Move {
                             source, declaration,
                         } = initializer {
@@ -3403,7 +3490,7 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.copy_struct_scopes.pop();
                         resources.leave_scope().map_err(PrivateScalarCallRuntimeError::Resource)?;
-                        copy_structs.leave_scope().map_err(|_|
+                        copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
@@ -3457,7 +3544,7 @@ impl PreparedPrivateScalarCall {
                                         resources.leave_scope().map_err(
                                             PrivateScalarCallRuntimeError::Resource,
                                         )?;
-                                        copy_structs.leave_scope().map_err(|_|
+                                        copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                                             PrivateScalarCallRuntimeError::StateMismatch,
                                         )?;
                                         Self::record_owned_resources(
@@ -3830,7 +3917,7 @@ impl PreparedPrivateScalarCall {
                             resources.leave_scope().map_err(
                                 PrivateScalarCallRuntimeError::Resource,
                             )?;
-                            copy_structs.leave_scope().map_err(|_|
+                            copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                                 PrivateScalarCallRuntimeError::StateMismatch,
                             )?;
                         }
@@ -3901,7 +3988,7 @@ impl PreparedPrivateScalarCall {
                     resources.leave_scope().map_err(
                         PrivateScalarCallRuntimeError::Resource,
                     )?;
-                    copy_structs.leave_scope().map_err(|_|
+                    copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                         PrivateScalarCallRuntimeError::StateMismatch,
                     )?;
                 }
@@ -3953,7 +4040,7 @@ impl PreparedPrivateScalarCall {
                 resources.leave_scope().map_err(
                     PrivateScalarCallRuntimeError::Resource,
                 )?;
-                copy_structs.leave_scope().map_err(|_|
+                copy_structs.leave_scope_with_shared_ledger(&mut resources).map_err(|_|
                     PrivateScalarCallRuntimeError::StateMismatch,
                 )?;
             }
@@ -10239,6 +10326,146 @@ mod g18_private_scalar_call_tests {
         };
         assert!(matches!(plan.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    // V1-F4：原 Checker 核准 const str 結構的真正 UTF-8 所有權，
+    // 同一 OwnedStrRuntime 帳中按建構先後配置 ResourceId。
+    #[test]
+    fn g18_v1_f4_conststr具名int函式真返回後才建立資源結構() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 0\nconst label:str = \"真資源🪼\"\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nvar item:Archive = Archive(count=plus(6))\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let inner_return = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(7)
+        )).expect("真 plus 返回");
+        let constructed = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).expect("真 P16 結構建立");
+        assert!(inner_return < constructed);
+    }
+
+    #[test]
+    fn g18_v1_f4_單一結構兩個conststr欄位唯一id各自逆序釋放() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nconst first:str = \"甲\"\nconst second:str = \"乙🪼\"\nvar count:int = 2\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructResourceOwnerBound { .. }
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_結構欄位resourceid竄改不能通過同一退出稽核() {
+        let src = "struct Archive{\nvar count:int = 3\nconst label:str = \"真身分\"\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        let link = out.events.iter_mut().find_map(|event| match event {
+            PrivateScalarCallEvent::CopyStructResourceOwnerBound { resource_id, .. } =>
+                Some(resource_id),
+            _ => None,
+        }).expect("真結構字串 ResourceId 連結");
+        *link = 999;
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr結構共用唯一真resourceid與逆序退出() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"繁體🪼\"\n}\nfn idle()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_兩個conststr結構唯一id按完成反序清理() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"預設\"\n}\nfn idle()->int{\nvar first:Archive = Archive(label=\"甲🪼\")\nvar second:Archive = Archive(label=\"乙🪼\")\nreturn first.count+second.count\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(14));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Created(2),
+            crate::owned_str_runtime::ResourceEvent::Released(2),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_conststr結構建立後整數溢位應釋放真資源() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"錯誤清理🪼\"\n}\nfn idle()->int{\nvar item:Archive = Archive()\nreturn item.count+9223372036854775807\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_未選分支conststr結構零建立零清理() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"不可達🪼\"\n}\nfn chosen()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn chosen()\n}\nreturn 4\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "chosen"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f4_跨兩函式conststr結構各用獨立resourceid() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"重入🪼\"\n}\nfn first()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn second()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn first()+second()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(14));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+            crate::owned_str_runtime::ResourceEvent::Created(2),
+            crate::owned_str_runtime::ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_同層普通str與含str結構交錯安全拒絕且資源回收() {
+        let src = "struct Archive{\nvar count:int = 7\nconst label:str = \"安全限制\"\n}\nfn idle()->int{\nvar title:str = \"先建立🪼\"\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StateMismatch));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, vec![
+            crate::owned_str_runtime::ResourceEvent::Created(1),
+            crate::owned_str_runtime::ResourceEvent::Released(1),
+        ]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
     }
 
     #[test]
