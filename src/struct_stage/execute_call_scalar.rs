@@ -713,25 +713,58 @@ impl PrivateScalarReturnExpr {
         }
     }
 
-    /// R01～R03：只遍歷原 Parser 取得的來源 AST，找出在已核准
-    /// 真 CFG 裡可能被選中的第一個具名呼叫。這只是建立函式圖的
-    /// 靜態目錄：不猜測選中的分支、不提前執行呼叫；各控制邊
-    /// 必須仍經原 Checker TypedHIR 和動態工作堆疊守門。
+    /// V1／F4：這兩類控制邊在原 Parser 中已有確定的常值形狀，
+    /// 原 Checker 又已完整核准整個來源。只有可直接證明零迭代
+    /// 才能略過其本體呼叫；動態條件與未知整數範圍絕不猜測。
+    fn definitely_false_condition(term: &Term) -> bool {
+        match &term.kind {
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(false)) => true,
+            TermKind::Group(inner) => Self::definitely_false_condition(inner),
+            _ => false,
+        }
+    }
+
+    fn definitely_empty_range(lower: &str, upper: &str) -> bool {
+        match (
+            crate::syntax_shared::integer_i64(lower),
+            crate::syntax_shared::integer_i64(upper),
+        ) {
+            (Ok(start), Ok(end)) => start >= end,
+            _ => false,
+        }
+    }
+
+    /// R01～R03／V1：只遍歷原 Parser／Checker 已核准且可能執行的來源
+    /// AST。此處是靜態候選圖，不提前求值或選擇一般 if 分支。
+    /// 原始常值已證的零迭代與無條件 break／continue 後綴不屬
+    /// 真工作計畫，不能因其中有尚未接通的 callee 錯拒主路徑。
     fn first_source_call_in_statements(statements: &[Stmt]) -> Option<&str> {
-        statements.iter().find_map(|statement| match &statement.kind {
-            StmtKind::Declare(owner) => owner.initializer.as_ref()
-                .and_then(Self::first_source_call),
-            StmtKind::Assign(assignment) =>
-                Self::first_source_call(&assignment.expression),
-            StmtKind::Return(ret) => Self::first_source_call(&ret.expression),
-            StmtKind::If { branch, no } =>
-                Self::first_source_call_in_statements(&branch.body)
-                    .or_else(|| no.as_ref().and_then(|other|
-                        Self::first_source_call_in_statements(other))),
-            StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } =>
-                Self::first_source_call_in_statements(&body.statements),
-            _ => None,
-        })
+        for statement in statements {
+            let found = match &statement.kind {
+                StmtKind::Declare(owner) => owner.initializer.as_ref()
+                    .and_then(Self::first_source_call),
+                StmtKind::Assign(assignment) =>
+                    Self::first_source_call(&assignment.expression),
+                StmtKind::Return(ret) => Self::first_source_call(&ret.expression),
+                StmtKind::If { branch, no } =>
+                    Self::first_source_call_in_statements(&branch.body)
+                        .or_else(|| no.as_ref().and_then(|other|
+                            Self::first_source_call_in_statements(other))),
+                StmtKind::While { condition, body } if
+                    !Self::definitely_false_condition(condition) =>
+                    Self::first_source_call_in_statements(&body.statements),
+                StmtKind::ForRange { lower, upper, body, .. } if
+                    !Self::definitely_empty_range(lower, upper) =>
+                    Self::first_source_call_in_statements(&body.statements),
+                _ => None,
+            };
+            if found.is_some() { return found; }
+            if matches!(&statement.kind, StmtKind::Return(_)
+                | StmtKind::Break | StmtKind::Continue) {
+                break;
+            }
+        }
+        None
     }
 
     /// R01：由原 Parser AST 收集全部可能的具名函式呼叫，包含
@@ -779,12 +812,25 @@ impl PrivateScalarReturnExpr {
                     }
                 }
                 StmtKind::While { condition, body } => {
+                    // 原 Checker／Parser 已證靜態 false 時，真 Runtime
+                    // 不建立任何迭代框架；不能強迫該本體的函式進圖。
                     Self::collect_source_calls_in_term(condition, names);
-                    Self::collect_source_calls_in_statements(&body.statements, names);
+                    if !Self::definitely_false_condition(condition) {
+                        Self::collect_source_calls_in_statements(&body.statements, names);
+                    }
                 }
-                StmtKind::ForRange { body, .. } =>
-                    Self::collect_source_calls_in_statements(&body.statements, names),
+                StmtKind::ForRange { lower, upper, body, .. } => {
+                    if !Self::definitely_empty_range(lower, upper) {
+                        Self::collect_source_calls_in_statements(&body.statements, names);
+                    }
+                }
                 _ => {}
+            }
+            // 真來源直接 break／continue／return 後方沒有可執行
+            // HIR 與呼叫事件；不擅自推定條件式內的控制轉移。
+            if matches!(&statement.kind,
+                StmtKind::Break | StmtKind::Continue | StmtKind::Return(_)) {
+                break;
             }
         }
     }
@@ -8048,6 +8094,51 @@ mod g18_private_scalar_call_tests {
         assert!(!out.events.iter().any(|e| matches!(
             e, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
         )));
+    }
+
+    // V1／F4：原 Checker 合法的零迭代本體不在執行圖內。
+    // 只可以略過真正不可達的 work；有正迭代的結構局部仍須拒絕。
+    #[test]
+    fn g18_v1_原checker空for本體結構函式不污染可達呼叫閉包() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..0{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let prepared = checked(src);
+        assert!(!prepared.nested_callees.iter().any(|c| c.name == "idle"));
+        let result = prepared.execute().unwrap();
+        assert_eq!(result.result, Ok(7));
+        assert!(result.has_balanced_frame_trace());
+        assert!(!result.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_原checker_false_while結構函式不污染可達呼叫閉包() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nwhile(false){\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let prepared = checked(src);
+        assert!(!prepared.nested_callees.iter().any(|c| c.name == "idle"));
+        let result = prepared.execute().unwrap();
+        assert_eq!(result.result, Ok(7));
+        assert!(result.has_balanced_frame_trace());
+        assert!(!result.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+    }
+
+    #[test]
+    fn g18_v1_正迭代for可達結構函式仍須保守拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    }
+
+    #[test]
+    fn g18_v1_空迭代閉包被竄改新增可達目標須零執行拒絕() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..0{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let mut prepared = checked(src);
+        assert_eq!(prepared.execute().unwrap().result, Ok(7));
+        prepared.nested_callees.clear();
+        assert!(matches!(prepared.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
 
     #[test]

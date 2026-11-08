@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_正迭代for可達結構函式仍須保守拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_空迭代閉包被竄改新增可達目標須零執行拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式兩葉return後不可達結構函式不污染圖",
         "struct_stage::g18_private_scalar_call_tests::g18_r03_多層普通函式選false真返回不能進不可達tail",
         "struct_stage::g18_private_scalar_call_tests::g18_r04_普通函式提前return真str借用不可達結構零資源",
@@ -198,6 +202,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_正迭代for可達結構函式仍須保守拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_空迭代閉包被竄改新增可達目標須零執行拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_父子函式同名str各自建立並依框架反向釋放",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
         "struct_stage::g18_private_scalar_call_tests::g18_r02_借用中的父框架str與子框架新同名局部不能互相冒充",
@@ -614,6 +622,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker空for本體結構函式不污染可達呼叫閉包",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_原checker_false_while結構函式不污染可達呼叫閉包",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_正迭代for可達結構函式仍須保守拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_空迭代閉包被竄改新增可達目標須零執行拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
         "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
