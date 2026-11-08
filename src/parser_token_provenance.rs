@@ -40,7 +40,7 @@ pub(crate) fn verified_public_token_roles(
             };
             crate::syntax_shared::checked_function_header_tokens(
                 fun.start, fun.end, fun.body.start,
-                &fun.name, result_type, tokens, &mut audit,
+                &fun.name, result_type, fun.is_async, tokens, &mut audit,
             ) && block(&fun.body, tokens, &mut audit)
         }
         Item::Binding(value) => {

@@ -365,7 +365,7 @@ impl Parser<'_> {
             if self.keyword("struct") || self.keyword("share") {
                 return Err(self.syntax("結構內不可宣告巢狀 struct 或 share 欄位"));
             }
-            if self.keyword("fn") {
+            if self.keyword("fn") || self.keyword("async") {
                 let fun = self.function()?;
                 // S20 已允許依參數簽章區分同名方法，但欄位與方法
                 // 仍共用名稱空間：若先前只見過同名方法可保留，
@@ -430,7 +430,7 @@ impl Parser<'_> {
                 if structs.insert(name, def).is_some() {
                     return Err(self.syntax("不得重複宣告相同結構型別"));
                 }
-            } else if self.keyword("fn") {
+            } else if self.keyword("fn") || self.keyword("async") {
                 let fun = self.function()?;
                 if !function_names.insert(fun.name.clone()) {
                     return Err(self.syntax("不得重複宣告函式名稱"));
@@ -692,8 +692,19 @@ impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
     type Body = crate::syntax_shared::ParsedBlock<Stmt>;
 
     fn begin_function(&mut self) -> Result<usize, Diagnostic> {
+        // S17／V7：僅私有 Lexer／Parser 接受原本核准的 async fn 前綴。
+        // 公開 P01 Parser 不變；async 身分必須進入共同 AST。
+        let start = self.tok().start;
+        let async_prefix = self.keyword("async");
+        if async_prefix { self.cursor += 1; }
         crate::syntax_shared::take_keyword(self.tokens, &mut self.cursor, "fn")
-            .ok_or_else(|| self.syntax("函式必須以 fn 宣告"))
+            .ok_or_else(|| self.syntax("async 後或函式起點必須有 fn"))?;
+        Ok(start)
+    }
+    fn function_is_async(&self) -> bool {
+        self.cursor >= 2
+            && matches!(&self.tokens[self.cursor - 2].kind,
+                TokenKind::Keyword(word) if word == "async")
     }
     fn function_name(&mut self) -> Result<String, Diagnostic> { self.name() }
     fn function_left_paren(&mut self) -> Result<(), Diagnostic> {

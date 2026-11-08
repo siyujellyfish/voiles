@@ -132,3 +132,75 @@ mod g18_private_method_overload_tests {
         assert_eq!(definition.methods_named("read").count(), 1);
     }
 }
+
+
+#[cfg(test)]
+mod g18_v7_async_source_identity_tests {
+    use super::*;
+
+    fn approved(text: &str) -> VerifiedPrivateSource {
+        verify_source_with_ability(
+            text, crate::ownership_policy::approved_leaf_copy_permission,
+        ).expect("已核准 async 宣告但未調用的來源應由真 Checker 接受")
+    }
+
+    #[test]
+    fn v7_a1_真私有_parser_保留函式與方法的_async_來源身分() {
+        let src = "struct Counter{\nvar n:int = 1\nasync fn read()->int{\nreturn self.n\n}\nfn plain()->int{\nreturn self.n\n}\n}\nasync fn worker()->int{\nreturn 5\n}\nfn main()->int{\nreturn 0\n}\n";
+        let verified = approved(src);
+        let methods = &verified.structs["Counter"].methods;
+        assert!(methods[0].is_async);
+        assert!(!methods[1].is_async);
+        assert_eq!(&src[methods[0].start..methods[0].start + 5], "async");
+        assert!(verified.functions.iter().find(|f| f.name == "worker").unwrap().is_async);
+        assert!(!verified.functions.iter().find(|f| f.name == "main").unwrap().is_async);
+        assert!(verified_private_source_tokens(
+            src, &verified.tokens, &verified.structs, &verified.functions));
+    }
+
+    #[test]
+    fn v7_a1_變造_ast_async_旗標不能通過原_lexer_來源防偽() {
+        let src = "struct Counter{\nvar n:int = 1\nasync fn read()->int{\nreturn self.n\n}\n}\nfn main()->int{\nreturn 0\n}\n";
+        let mut verified = approved(src);
+        verified.structs.get_mut("Counter").unwrap().methods[0].is_async = false;
+        assert!(!verified_private_source_tokens(
+            src, &verified.tokens, &verified.structs, &verified.functions));
+    }
+
+    #[test]
+    fn v7_a1_不經_await_不得同步執行_async_方法或普通函式() {
+        let examples = [
+            "struct Counter{\nvar n:int = 1\nasync fn read()->int{\nreturn self.n\n}\n}\nfn main()->int{\nconst c:Counter = Counter()\nreturn c.read()\n}\n",
+            "async fn worker()->int{\nreturn 5\n}\nfn main()->int{\nreturn worker()\n}\n",
+        ];
+        for src in examples {
+            let problem = verify_source_with_ability(
+                src, crate::ownership_policy::approved_leaf_copy_permission,
+            ).err().expect("async 不得提前用同步值通道執行");
+            assert_eq!(problem.kind, DiagnosticKind::Static);
+            assert!(problem.message.contains("V7"), "{}", problem.message);
+        }
+    }
+
+    #[test]
+    fn v7_a1_公開入口與未定義_async_main_都不可繞過原安全門檻() {
+        let async_main = "async fn main()->int{\nreturn 2\n}\n";
+        let problem = verify_source_with_ability(
+            async_main, crate::ownership_policy::approved_leaf_copy_permission,
+        ).err().expect("非同步 main 目前尚不可建立公開入口");
+        assert_eq!(problem.kind, DiagnosticKind::Static);
+        let source = crate::source::Source::new(async_main.as_bytes().to_vec());
+        let tokens = crate::lexer::scan(&source);
+        let error = crate::parser::parse(&source, &tokens.tokens)
+            .err().expect("公開 MVP-A 文法不可因私有 async 而放寬");
+        assert_eq!(error.kind, DiagnosticKind::Syntax);
+    }
+
+    #[test]
+    fn v7_a1_原有同步_method_和函式呼叫保持合法() {
+        let src = "struct Counter{\nvar n:int = 1\nfn read()->int{\nreturn self.n\n}\n}\nfn get()->int{\nreturn 6\n}\nfn main()->int{\nconst c:Counter = Counter()\nreturn c.read()\n}\n";
+        let verified = approved(src);
+        assert!(verified.structs["Counter"].methods.iter().all(|m| !m.is_async));
+        assert!(verified.functions.iter().all(|f| !f.is_async));
+    }
+}

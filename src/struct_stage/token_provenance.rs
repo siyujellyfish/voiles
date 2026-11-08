@@ -51,7 +51,7 @@ fn verified_private_token_roles(
     ) -> bool {
         crate::syntax_shared::checked_function_header_tokens(
             fun.start, fun.end, fun.body.start,
-            &fun.name, &fun.result_ty, tokens, audit,
+            &fun.name, &fun.result_ty, fun.is_async, tokens, audit,
         ) && fun.params.iter().all(|parameter| {
             audit.record(NodeRole::Parameter, parameter.declaration_span,
                 Some(NodeSpan::new(fun.start, fun.end)))

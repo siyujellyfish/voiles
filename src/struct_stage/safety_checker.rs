@@ -641,6 +641,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 // Copyable 的獨立引數交給它，且回傳也須已核准 Copyable。
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("方法呼叫不存在的一般函式", term))?;
+                if function.is_async {
+                    return Err(self.error("V7：async 普通函式不可當作同步方法值", term));
+                }
                 if function.params.len() != args.len() {
                     return Err(self.error("方法內函式引數數量不符", term));
                 }
@@ -670,6 +673,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     ZeroArgResolution::Missing => return Err(self.error(
                         "方法內零參數函式不存在", term)),
                 };
+                if function.is_async {
+                    return Err(self.error("V7：未經 await 的 async 零參數函式不可求值", term));
+                }
                 if !function.params.is_empty() {
                     return Err(self.error("方法內零參數函式實際需傳入引數", term));
                 }
@@ -746,6 +752,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         };
         if let Some((name, args)) = ordinary_call {
             if let Some(function) = self.find_function(name) {
+                if function.is_async {
+                    return Err(self.error("V7：async 函式不可作同步方法資源回傳", term));
+                }
                 if function.result_ty == "str" {
                     if function.params.len() != args.len() {
                         return Err(self.error("方法資源回傳的函式引數數量不符", term));
@@ -1271,6 +1280,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                     }
                 };
+                // E1-A：未經直接 await 的同步表達式不得執行
+                // async 方法本體或提前取得其回傳值；後續專用
+                // await 來源另行接通，不繞過既有 BorrowFact 安全。
+                if method.is_async {
+                    return Err(self.error(
+                        "V7：async 方法需要已核准的直接 await 執行路徑", term,
+                    ));
+                }
                 let mode = self.check_method(&owner_type, method)?;
                 if method.params.len() != args.len() {
                     return Err(self.error("P13：方法引數數量不符", term));
@@ -1391,6 +1408,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let args = &call.arguments;
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
+                if function.is_async {
+                    return Err(self.error(
+                        "V7：async 函式不得以同步呼叫冒稱已執行，須有直接 await", term,
+                    ));
+                }
                 if function.params.len() != args.len() {
                     return Err(self.error("P13：函式引數數量不符", term));
                 }
@@ -1481,6 +1503,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         self.evaluate_struct_constructor(name, &[], term, vars),
                     ZeroArgResolution::Function(function) if !function.params.is_empty() =>
                         Err(self.error("P13：函式引數數量不符", term)),
+                    ZeroArgResolution::Function(function) if function.is_async =>
+                        Err(self.error("V7：async 零參數函式須由直接 await 驅動", term)),
                     ZeroArgResolution::Function(function) =>
                         Ok((function.result_ty.clone(), true)),
                     ZeroArgResolution::Missing =>
@@ -2347,6 +2371,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             if !seen.insert(function.name.as_str()) {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
                     message: "P13：函式名稱重複，呼叫簽章不唯一".into(), span: None });
+            }
+            if function.name == "main" && function.is_async {
+                return Err(Diagnostic { kind: DiagnosticKind::Static,
+                    message: "V7：非同步 main 入口尚未有正式驅動契約".into(),
+                    span: Some(self.source.span(function.start, function.end)) });
             }
             if function.name == "main" && !function.params.is_empty() {
                 return Err(Diagnostic { kind: DiagnosticKind::Static,
