@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四百七十九項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的四百八十三項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -151,6 +151,10 @@ from pathlib import Path
     "g18_v1_f4_具名varstr和conststr交錯仍共用唯一resourceid",
     "g18_v1_f4_具名varstr結構完成前先等待int函式真返回",
     "g18_v1_f4_具名varstr建立後溢位仍須單一真資源回收",
+    "g18_v1_f4_兩個未覆蓋varstr預設依宣告次序建立並逆序釋放",
+    "g18_v1_f4_具名str覆蓋預設與另一varstr預設只建立兩筆真資源",
+    "g18_v1_f4_建立預設varstr後真整數溢位必回滾唯一資源",
+    "g18_v1_f4_真預設str建構函式編譯計畫被刪除須零執行拒絕",
     "g18_v1_f4_未具名varstr預設由p16真建立與釋放",
     "g18_v1_f4_conststr具名int函式真返回後才建立資源結構",
     "g18_v1_f4_單一結構兩個conststr欄位唯一id各自逆序釋放",
