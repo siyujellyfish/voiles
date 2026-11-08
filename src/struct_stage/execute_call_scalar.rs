@@ -9662,6 +9662,81 @@ mod g18_private_scalar_call_tests {
     // 同一顯式工作堆疊執行，所有 RHS 完成後 P16 才能原子建構。
     // V1／F2×F4：具名建構中的真普通函式可借用／移動 str，
     // 但 ResourceId／BorrowTicket 一律先完成原函式退出才允許 P16 建構。
+    // V1／F3×F4：同一 Checker 已編譯 Call 不得因 for/while 反向邊
+    // 被提前執行；每輪完整 P16 作用域、借用票據獨立反向歸還。
+    #[test]
+    fn g18_v1_f3_f4_具名函式for三輪建構並continue逐輪反序離域() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nvar sum:int = 0\nfor i in 0..3{\nvar note:Meter = Meter(count=plus(i))\nsum = sum+note.count\ncontinue\n}\nreturn sum\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "plus"
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 3);
+    }
+
+    #[test]
+    fn g18_v1_f3_f4_具名函式while真回邊只執行動態首輪() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nvar value:int = 0\nvar active:bool = true\nwhile(active){\nvar note:Meter = Meter(count=plus(value))\nvalue = note.count\nactive = false\n}\nreturn value\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "plus"
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f3_f4_空for具名callee與P16資源均零效果() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nfor i in 0..0{\nvar note:Meter = Meter(count=plus(i))\n}\nreturn 5\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "plus"
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )));
+    }
+
+    #[test]
+    fn g18_v1_f3_f4_具名函式for每輪真借同一str但P16按輪獨立() {
+        let source = "struct Meter{\nvar count:int = 0\n}\nfn plus(item:str,x:int)->int{\nreturn x+1\n}\nfn run()->int{\nconst owner:str = \"逐輪借用🪼\"\nvar sum:int = 0\nfor i in 0..2{\nvar note:Meter = Meter(count=plus(owner,i))\nsum = sum+note.count\n}\nreturn sum\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(source).execute().unwrap();
+        use crate::owned_str_runtime::ResourceEvent as R;
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanAcquired(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::LoanReturned(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
     #[test]
     fn g18_v1_f2_f4_具名呼叫借str真票據先歸還後建構且資源唯一() {
         let src = "struct Meter{\nvar count:int = 0\n}\nfn inspect(item:str,n:int)->int{\nreturn n+1\n}\nfn build()->int{\nconst owner:str = \"原資料🪼\"\nvar note:Meter = Meter(count=inspect(owner,4))\nreturn note.count\n}\nfn main()->int{\nreturn build()\n}\n";
