@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百零七項 Rust 正反 Gate。"""
+"""G18／P18.1、P18.4 正式私有 Checker Copyable int 參數真框架的三百一十一項 Rust 正反 Gate。"""
 
 from __future__ import annotations
 
@@ -10,6 +10,10 @@ import sys
 from pathlib import Path
 
 案例 = (
+    "g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
+    "g18_r05_內層真move溢位先清理子資源外層待借用才歸還",
+    "g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
+    "g18_r05_不在任何框架內的偽造待歸票不得掩蓋溢位",
     "g18_r05_巢狀函式子集歸票不能提前解除外層活躍票據",
     "g18_r05_子集歸票靜態來源失配必原子拒絕保留所有票據",
     "g18_r05_子集重複票據不得部分歸還其餘合法借用",
