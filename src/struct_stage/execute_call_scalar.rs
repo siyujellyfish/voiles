@@ -9955,6 +9955,54 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
+    fn g18_v1_f4_bool括號預設真值由P16建構後讀取() {
+        let src = "struct Meter{\nvar enabled:bool = (true)\n}\nfn run()->int{\nvar note:Meter = Meter()\nif(note.enabled){\nreturn 10\n}\nreturn 1\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_bool雙重括號預設與具名覆蓋不錯置() {
+        let src = "struct Meter{\nvar enabled:bool = ((false))\n}\nfn run()->int{\nvar first:Meter = Meter()\nvar second:Meter = Meter(enabled=true)\nif(first.enabled){\nreturn 1\n}\nif(second.enabled){\nreturn 6\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_bool括號預設錯型別原Checker拒絕() {
+        let src = "struct Meter{\nvar enabled:bool = (1)\n}\nfn run()->int{\nvar note:Meter = Meter()\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_bool括號預設計畫變造不許偽造欄位() {
+        let src = "struct Meter{\nvar enabled:bool = (true)\n}\nfn run()->int{\nvar note:Meter = Meter()\nif(note.enabled){\nreturn 4\n}\nreturn 0\n}\nfn main()->int{\nreturn run()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(4));
+        let default = plan.root_local_steps.iter_mut().find_map(|step| match step {
+            PrivateScalarLocalStep::DeclareCopyStruct { plan, .. } =>
+                plan.fields.iter_mut().find(|(field, _, _, _)| field == "enabled")
+                    .map(|(_, _, seed, _)| seed),
+            _ => None,
+        }).expect("原 P16 bool 預設來源");
+        assert!(matches!(default, Some(ApprovedSeed::Bool(true))));
+        *default = Some(ApprovedSeed::Bool(false));
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
+    #[test]
     fn g18_v1_f4_具名bool括號讀取更新後局部真值() {
         let src = "struct Meter{\nvar enabled:bool = false\n}\nfn run()->int{\nvar flag:bool = false\nflag = true\nvar note:Meter = Meter(enabled=(flag))\nif(note.enabled){\nreturn 9\n}\nreturn 1\n}\nfn main()->int{\nreturn run()\n}\n";
         let out = checked(src).execute().unwrap();
