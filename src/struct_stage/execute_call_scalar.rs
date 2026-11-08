@@ -1758,9 +1758,10 @@ impl PreparedPrivateScalarCall {
         })
     }
 
-    /// V1／F4：只交付原 Checker 已接受、P16 真能建構的無資源
-    /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
-    /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
+    /// V1／F4：交付原 Checker 已接受、P16 可真建構的 int／bool
+    /// 與受限 str 結構局部；原 VB16 具名覆蓋及預設來源各自核對。
+    /// 僅已證共用 OwnedStrRuntime 的資源字面欄位可執行，
+    /// 未覆蓋 var str／巢狀資源／非 Copyable Move 仍保守拒絕。
     fn checked_copy_struct(
         name: &str, ty: &str, term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -1779,23 +1780,22 @@ impl PreparedPrivateScalarCall {
         };
         let mut fields = Vec::new();
         for field in &definition.fields {
+            let overridden = named.iter().any(|(key, _)| key == &field.name);
             let kind = match field.ty.as_str() {
                 "int" => ScalarKind::Int,
                 "bool" => ScalarKind::Bool,
-                // 使用 P16 原資源欄位與同一 OwnedStrRuntime 真帳；
-                // 仍拒絕巢狀結構／容器等未核准資源語意。
-                // 第一批只接通不可寫的 str 欄位：原 P16 持有完整
-                // UTF-8 所有權，但一般函式內可寫欄位的原子替換、
-                // 借用／跨 frame 轉交尚未與共同帳簿完整驗證。
-                "str" if field.immutable => ScalarKind::Str,
+                // 唯有原 Checker 已接受、且本次真正提供具名字面來源
+                // 的可寫 str 欄位，才交給 P16 真 UTF-8 資源計畫。
+                // 未覆蓋的 var str 預設與欄位後續替換仍缺少專項共帳
+                // 證據，維持原 V0 保守拒絕，不能讓舊負例提前轉正。
+                "str" if field.immutable || overridden => ScalarKind::Str,
                 "str" => return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "結構 var str 欄位尚未與共同資源替換／退出帳安全合流",
+                    "結構 var str 尚未提供具名來源，預設資源欄位仍未驗收",
                 )),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀資源尚未接入原 Checker／P16 共同退出帳",
                 )),
             };
-            let overridden = named.iter().any(|(key, _)| key == &field.name);
             let default = if overridden {
                 field.default.as_ref().map(|_| ApprovedSeed::Skipped(kind))
             } else {
@@ -10410,6 +10410,80 @@ mod g18_private_scalar_call_tests {
         assert_eq!(out.resource_events, [
             R::Created(1), R::Created(2), R::Released(2), R::Released(1),
         ]);
+    }
+
+    // V1-F4：原 Checker 准許的具名 var str 字面值，與不可寫
+    // str 欄位使用 P16 同一真 OwnedUtf8 資源帳，不放行預設 var str。
+    #[test]
+    fn g18_v1_f4_具名varstr欄位以真utf8覆蓋未執行預設() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar count:int = 7\nvar data:str = \"未選預設\"\n}\nfn run()->int{\nvar item:Archive = Archive(data=\"具名🪼\")\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::CopyStructResourceOwnerBound { field, resource_id: 1, .. }
+                if field == "data"
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_雙具名varstr欄位由同一真帳逆序離域() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar first:str = \"預設甲\"\nvar second:str = \"預設乙\"\nvar count:int = 2\n}\nfn run()->int{\nvar item:Archive = Archive(first=\"甲🪼\",second=\"乙🪼\")\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr和conststr交錯仍共用唯一resourceid() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nconst header:str = \"固定\"\nvar body:str = \"舊值\"\nvar count:int = 3\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"新值\")\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(3));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [
+            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr結構完成前先等待int函式真返回() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"未選\"\nvar count:int = 1\n}\nfn increase(x:int)->int{\nreturn x+1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"動態🪼\",count=increase(5))\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        let returned = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(6)
+        )).expect("具名 int 的真函式已返回");
+        let constructed = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).expect("P16 真建構");
+        assert!(returned < constructed);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名varstr建立後溢位仍須單一真資源回收() {
+        use crate::owned_str_runtime::ResourceEvent as R;
+        let src = "struct Archive{\nvar body:str = \"預設\"\nvar count:int = 1\n}\nfn run()->int{\nvar item:Archive = Archive(body=\"回滾🪼\")\nreturn item.count+9223372036854775807\n}\nfn main()->int{\nreturn run()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+    }
+
+    #[test]
+    fn g18_v1_f4_未具名varstr預設仍須保留v0保守拒絕() {
+        let src = "struct Archive{\nvar body:str = \"未授權預設\"\nvar count:int = 2\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
     }
 
     #[test]
