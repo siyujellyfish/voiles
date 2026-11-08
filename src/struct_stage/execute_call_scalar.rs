@@ -9174,6 +9174,19 @@ mod g18_private_scalar_call_tests {
         assert_eq!(out.events.iter().filter(|e| matches!(
             e, PrivateScalarCallEvent::CopyStructMovedBound { .. }
         )).count(), 1);
+        // Checker 接受但實際沒選到的同一條控制路徑，
+        // 不得提前發出 MoveBound 或少清理來源結構。
+        let not_selected = src.replace("route(true)", "route(false)");
+        let skipped = checked(&not_selected).execute().unwrap();
+        assert_eq!(skipped.result, Ok(2));
+        assert!(skipped.has_balanced_frame_trace());
+        assert!(skipped.resource_events.is_empty());
+        assert!(!skipped.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructMovedBound { .. }
+        )));
+        assert_eq!(skipped.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
     }
 
     #[test]
