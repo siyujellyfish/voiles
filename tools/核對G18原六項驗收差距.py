@@ -19,6 +19,9 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool同結構兩欄位真讀再寫保留求值順序",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break聯合反向邊",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位寫入後if重新讀取最新值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位while首輪更新後反向邊真結束",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位只有選中分支真更新",
@@ -248,6 +251,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool同結構兩欄位真讀再寫保留求值順序",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break聯合反向邊",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位寫入後if重新讀取最新值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位while首輪更新後反向邊真結束",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位只有選中分支真更新",
@@ -724,6 +730,9 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool同結構兩欄位真讀再寫保留求值順序",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break聯合反向邊",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位寫入後if重新讀取最新值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位while首輪更新後反向邊真結束",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位只有選中分支真更新",
