@@ -493,6 +493,8 @@ enum PrivateScalarReturnExpr {
     /// 不可達 expression。只有遭執行到才回報狀態錯誤，絕不造假 int。
     Unreachable,
     Parameter(DeclarationId),
+    /// 原 Checker 合法 Copyable int 欄位，執行時只能讀真 P16 結構持有者。
+    CopyStructIntField { declaration: DeclarationId, owner: String, field: String },
     Constant(i64),
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
@@ -545,6 +547,39 @@ impl PrivateScalarReturnExpr {
                     ));
                 }
                 Ok(Self::Parameter(id))
+            }
+            TermKind::FieldRead(owner, field) => {
+                let declaration = *bindings.get(owner).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "結構欄位讀取缺少本函式原 Checker DeclarationId",
+                    ),
+                )?;
+                let fact = verified.plan.declarations.typed_declaration(declaration)
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                        "結構欄位讀取缺少原 Checker 具型別宣告",
+                    ))?;
+                let definition = verified.structs.get(fact.ty).ok_or(
+                    PrivateScalarCallPrepareError::Unsupported(
+                        "結構欄位讀取持有者非原 Checker 結構型別",
+                    ),
+                )?;
+                if !definition.fields.iter().any(|candidate|
+                    candidate.name == *field && candidate.ty == "int")
+                    || !definition.fields.iter().all(|candidate|
+                        matches!(candidate.ty.as_str(), "int" | "bool"))
+                    || !verified.tokens.iter().any(|token|
+                        token.start == span.start
+                            && matches!(&token.kind, TokenKind::Name(found) if found == owner))
+                    || !verified.tokens.iter().any(|token|
+                        token.end == span.end
+                            && matches!(&token.kind, TokenKind::Name(found) if found == field)) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "結構 int 欄位缺少同源 Copyable 型別／Lexer 欄位身分",
+                    ));
+                }
+                Ok(Self::CopyStructIntField {
+                    declaration, owner: owner.clone(), field: field.clone(),
+                })
             }
             TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
                 if !verified.tokens.iter().any(|token|
@@ -867,7 +902,8 @@ impl PrivateScalarReturnExpr {
             Self::Subtraction(left, right) => left.evaluate(frame)?
                 .checked_sub(right.evaluate(frame)?)
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
-            Self::Call { .. } | Self::Unreachable =>
+            // 不准從只有 int slot 的舊純值捷徑假造結構欄位常數。
+            Self::CopyStructIntField { .. } | Self::Call { .. } | Self::Unreachable =>
                 Err(PrivateScalarCallRuntimeError::StateMismatch),
         }
     }
@@ -882,7 +918,8 @@ impl PrivateScalarReturnExpr {
                 left.collect_calls(calls);
                 right.collect_calls(calls);
             }
-            Self::Parameter(_) | Self::Constant(_) | Self::Unreachable => {}
+            Self::Parameter(_) | Self::CopyStructIntField { .. }
+                | Self::Constant(_) | Self::Unreachable => {}
         }
     }
 }
@@ -2172,6 +2209,25 @@ impl PreparedPrivateScalarCall {
                             values.push(value);
                         }
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
+                        PrivateScalarReturnExpr::CopyStructIntField {
+                            declaration, owner, field,
+                        } => {
+                            let frame = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            if !frame.copy_struct_scopes.iter().rev().flatten()
+                                .any(|(id, known)| id == declaration && known == owner) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            let observed = copy_structs.field(owner, field).map_err(|_|
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let crate::mixed_struct_runtime::Observed::Int(number) = observed
+                            else {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            };
+                            values.push(number);
+                        }
                         PrivateScalarReturnExpr::Unreachable =>
                             return Err(PrivateScalarCallRuntimeError::StateMismatch),
                         PrivateScalarReturnExpr::Addition(left, right) => {
@@ -8302,6 +8358,65 @@ mod g18_private_scalar_call_tests {
 
     // V1／F4：以下均由原 Parser／Checker 已核准的真來源出發，
     // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
+    #[test]
+    fn g18_v1_f4_真P16結構int欄位讀取而非硬編預設值() {
+        let src = "struct Meter{\nvar count:int = 7\nvar flag:bool = true\n}\nfn getter()->int{\nvar note:Meter = Meter()\nreturn note.count+3\n}\nfn main()->int{\nreturn getter()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(10));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設() {
+        let src = "struct Meter{\nvar count:int = 9223372036854775807+1\n}\nfn getter()->int{\nvar note:Meter = Meter(count=9)\nreturn note.count\n}\nfn main()->int{\nreturn getter()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值() {
+        let src = "struct Meter{\nvar count:int = 1\n}\nfn first()->int{\nvar note:Meter = Meter(count=4)\nreturn note.count\n}\nfn second()->int{\nvar note:Meter = Meter(count=9)\nreturn note.count\n}\nfn main()->int{\nreturn first()+second()\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(13));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f4_欄位錯誤型別或不存在原Checker即拒絕() {
+        let invalid_type = "struct Meter{\nvar flag:bool = true\n}\nfn getter()->int{\nvar note:Meter = Meter()\nreturn note.flag\n}\nfn main()->int{\nreturn getter()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(invalid_type),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let missing = "struct Meter{\nvar count:int = 7\n}\nfn getter()->int{\nvar note:Meter = Meter()\nreturn note.unknown\n}\nfn main()->int{\nreturn getter()\n}\n";
+        assert!(matches!(PreparedPrivateScalarCall::prepare(missing),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn g18_v1_f4_真欄位編譯身分遭篡改執行前必拒絕() {
+        let src = "struct Meter{\nvar count:int = 7\n}\nfn getter()->int{\nvar note:Meter = Meter()\nreturn note.count\n}\nfn main()->int{\nreturn getter()\n}\n";
+        let mut plan = checked(src);
+        assert_eq!(plan.execute().unwrap().result, Ok(7));
+        plan.return_expr = PrivateScalarReturnExpr::CopyStructIntField {
+            declaration: DeclarationId(0),
+            owner: "note".to_owned(), field: "count".to_owned(),
+        };
+        assert!(matches!(plan.execute(),
+            Err(PrivateScalarCallPrepareError::SourceChanged)));
+    }
+
     #[test]
     fn g18_v1_f4_原v0可達純int結構局部真建構並反序離域() {
         let src = "struct Archive{\nvar count:int = 7\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";

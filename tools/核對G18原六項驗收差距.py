@@ -19,6 +19,11 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_欄位錯誤型別或不存在原Checker即拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真欄位編譯身分遭篡改執行前必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
@@ -489,6 +494,11 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_欄位錯誤型別或不存在原Checker即拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真欄位編譯身分遭篡改執行前必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
@@ -658,6 +668,11 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_欄位錯誤型別或不存在原Checker即拒絕",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真欄位編譯身分遭篡改執行前必拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_原v0可達純int結構局部真建構並反序離域",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_未選分支純結構與資源均零建構",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_純結構建構後int溢位逐框架離域不留資源",
