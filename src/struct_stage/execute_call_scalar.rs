@@ -44,6 +44,10 @@ enum PrivateScalarCallEvent {
     BoolInitialized(DeclarationId, bool),
     BoolAssigned(DeclarationId, bool),
     BoolScopeEnded(DeclarationId),
+    /// V1／F4：原 Checker 合法、P16 MixedStructRuntime 真建構
+    /// 的純 Copyable int／bool 結構局部；不偽造 UTF-8 ResourceId。
+    CopyStructConstructed(DeclarationId),
+    CopyStructScopeEnded(DeclarationId),
     /// 只有執行時真正到達的 if 條件才可記錄求值結果。
     ConditionalChecked(bool),
     /// 非資源釋放：只表示 int 區域宣告已離開真動態作用域。
@@ -131,6 +135,7 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::LoanReturned(_)
                     | PrivateScalarCallEvent::LocalScopeEnded(_)
                     | PrivateScalarCallEvent::BoolScopeEnded(_)
+                    | PrivateScalarCallEvent::CopyStructScopeEnded(_)
                     | PrivateScalarCallEvent::LocalScopeEndedEmpty(_)
                     | PrivateScalarCallEvent::BoolScopeEndedEmpty(_)
                     | PrivateScalarCallEvent::OwnedResource(
@@ -244,6 +249,19 @@ impl PrivateScalarCallOutcome {
                     } else {
                         frame.locals.push(PrivateScalarLocalBinding::Bool(*id));
                     }
+                }
+                PrivateScalarCallEvent::CopyStructConstructed(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned || frame.locals.iter().any(|entry|
+                        matches!(entry, PrivateScalarLocalBinding::CopyStruct(old) if old == id)
+                    ) { return false; }
+                    frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*id));
+                }
+                PrivateScalarCallEvent::CopyStructScopeEnded(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if !matches!(frame.locals.pop(),
+                        Some(PrivateScalarLocalBinding::CopyStruct(previous))
+                            if previous == *id) { return false; }
                 }
                 PrivateScalarCallEvent::LocalAssigned(id, _) => {
                     if frames.last().is_none_or(|frame| frame.returned
@@ -427,13 +445,15 @@ impl PrivateScalarCallOutcome {
                 | PrivateScalarCallEvent::BoolDeclaredEmpty(id) =>
                 Some(PrivateSharedCallExitEvent::LocalDeclaredEmpty(*id)),
             PrivateScalarCallEvent::LocalInitialized(id, _)
-                | PrivateScalarCallEvent::BoolInitialized(id, _) =>
+                | PrivateScalarCallEvent::BoolInitialized(id, _)
+                | PrivateScalarCallEvent::CopyStructConstructed(id) =>
                 Some(PrivateSharedCallExitEvent::LocalInitialized(*id)),
             PrivateScalarCallEvent::LocalAssigned(id, _)
                 | PrivateScalarCallEvent::BoolAssigned(id, _) =>
                 Some(PrivateSharedCallExitEvent::LocalAssigned(*id)),
             PrivateScalarCallEvent::LocalScopeEnded(id)
-                | PrivateScalarCallEvent::BoolScopeEnded(id) =>
+                | PrivateScalarCallEvent::BoolScopeEnded(id)
+                | PrivateScalarCallEvent::CopyStructScopeEnded(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEnded(*id)),
             PrivateScalarCallEvent::LocalScopeEndedEmpty(id)
                 | PrivateScalarCallEvent::BoolScopeEndedEmpty(id) =>
@@ -994,6 +1014,9 @@ enum PrivateScalarBranchAction {
     },
     /// str 詞彙持有者存在，但尚無 ResourceId／UTF-8 緩衝區。
     DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
+    DeclareCopyStruct {
+        declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
+    },
     /// 真 Parser 巢狀 If，沿用相同 Checker bool 條件與作用域安全證據。
     NestedIf(Box<PrivateScalarEarlyIf>),
     Return(PrivateScalarReturnExpr),
@@ -1027,7 +1050,7 @@ impl PrivateScalarBranchAction {
             Self::AssignBool { .. } | Self::DeclareBool { .. }
                 | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::AssignStr { .. }
+                | Self::DeclareCopyStruct { .. } | Self::AssignStr { .. }
                 | Self::Break | Self::Continue => {}
         }
     }
@@ -1041,7 +1064,8 @@ impl PrivateScalarBranchAction {
             Self::AssignInt { .. } | Self::AssignBool { .. }
                 | Self::AssignStr { .. } | Self::DeclareInt { .. }
                 | Self::DeclareBool { .. } | Self::DeclareStr { .. }
-                | Self::DeclareEmptyStr { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
+                | Self::DeclareEmptyStr { .. } | Self::DeclareCopyStruct { .. }
+                | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::While { .. } | Self::ForRange { .. }
                 | Self::Break | Self::Continue => false,
         }
@@ -1083,6 +1107,14 @@ impl PrivateScalarEarlyIf {
     }
 }
 
+/// V1／F4：原 Checker 唯一結構型別及 P16 VB16 預設／具名欄位
+/// 來源工作計畫；只接通無 str 資源的 int／bool 欄位。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateScalarCopyStructPlan {
+    fields: Vec<(String, crate::mixed_struct_runtime::ScalarKind, Option<ApprovedSeed>, bool)>,
+    named: Vec<(String, ApprovedSeed)>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarLocalStep {
     Declare(PrivateScalarLocalInit),
@@ -1092,6 +1124,9 @@ enum PrivateScalarLocalStep {
     DeclareBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
     DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
+    DeclareCopyStruct {
+        declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
+    },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
     EarlyReturn(PrivateScalarEarlyIf),
@@ -1108,7 +1143,7 @@ impl PrivateScalarLocalStep {
             Self::DeclareBool { .. } | Self::AssignBool { .. }
                 | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::AssignStr { .. } => {}
+                | Self::DeclareCopyStruct { .. } | Self::AssignStr { .. } => {}
         }
     }
 }
@@ -1177,6 +1212,7 @@ enum PrivateScalarLocalBinding {
     Bool(DeclarationId),
     UninitializedInt(DeclarationId),
     UninitializedBool(DeclarationId),
+    CopyStruct(DeclarationId),
 }
 
 struct PrivateScalarActiveFrame {
@@ -1189,6 +1225,8 @@ struct PrivateScalarActiveFrame {
     resource_scopes: usize,
     /// 每一詞彙層原 Checker 的真 str 宣告身分。
     str_owner_scopes: Vec<Vec<(DeclarationId, String)>>,
+    /// 由 P16 MixedStructRuntime 持有真正結構值，本表只對帳來源身分。
+    copy_struct_scopes: Vec<Vec<(DeclarationId, String)>>,
     borrow_tracker: crate::borrow_safety::BorrowSafety,
     incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
 }
@@ -1223,6 +1261,7 @@ enum PrivateScalarTask<'a> {
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
+    DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
@@ -1331,6 +1370,72 @@ impl PreparedPrivateScalarCall {
         })
     }
 
+    /// V1／F4：只交付原 Checker 已接受、P16 真能建構的無資源
+    /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
+    /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
+    fn checked_copy_struct(
+        name: &str, ty: &str, term: &Term, verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarCopyStructPlan, PrivateScalarCallPrepareError> {
+        use crate::mixed_struct_runtime::ScalarKind;
+        let definition = verified.structs.get(ty).ok_or(
+            PrivateScalarCallPrepareError::Unsupported("結構局部缺少原 Checker 型別"),
+        )?;
+        let named: &[(String, Term)] = match &term.kind {
+            TermKind::Construct(found, supplied) if found == ty => supplied,
+            TermKind::UnresolvedZeroArgs(found) if found == ty => &[],
+            _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                "結構局部必須是原 Parser／Checker 真建立式",
+            )),
+        };
+        let mut fields = Vec::new();
+        for field in &definition.fields {
+            let kind = match field.ty.as_str() {
+                "int" => ScalarKind::Int,
+                "bool" => ScalarKind::Bool,
+                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部 str／巢狀資源尚未接入共同資源退出帳",
+                )),
+            };
+            let overridden = named.iter().any(|(key, _)| key == &field.name);
+            let default = if overridden {
+                field.default.as_ref().map(|_| ApprovedSeed::Skipped(kind))
+            } else {
+                field.default.as_ref().map(|seed| approved_seed(seed, verified)
+                    .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                        "結構局部預設值缺少原 P16 Checker 核准來源",
+                    ))).transpose()?
+            };
+            if default.as_ref().is_some_and(|seed| seed.kind() != kind) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部預設值和原 Checker 型別不一致",
+                ));
+            }
+            fields.push((field.name.clone(), kind, default, field.immutable));
+        }
+        let mut supplied = Vec::new();
+        for (field_name, term) in named {
+            let (_, kind, _, _) = fields.iter().find(|(key, _, _, _)| key == field_name)
+                .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部具名欄位不在原 Checker 型別中",
+                ))?;
+            let seed = approved_seed(term, verified).map_err(|_|
+                PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部具名值缺少原 P16 Checker 核准來源",
+                ),
+            )?;
+            if seed.kind() != *kind || supplied.iter().any(|(key, _)| key == field_name) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "結構局部具名型別不一致或重複",
+                ));
+            }
+            supplied.push((field_name.clone(), seed));
+        }
+        // 不以字面相同的使用者變數取代原 Checker DeclarationId；
+        // caller 另在真正 Declare 節點核對 id、型別與可變性。
+        let _ = name;
+        Ok(PrivateScalarCopyStructPlan { fields, named: supplied })
+    }
+
     /// R02／R04：同一真 Checker 已認可的可寫 str 左值及字串右值。
     /// 不靠 runtime 名稱推論 DeclarationId；不接受隱含複製或自身移動。
     fn checked_str_assignment(
@@ -1367,7 +1472,8 @@ impl PreparedPrivateScalarCall {
                 | PrivateScalarBranchAction::DeclareEmptyInt { .. }
                 | PrivateScalarBranchAction::DeclareEmptyBool { .. }
                 | PrivateScalarBranchAction::DeclareStr { .. }
-                | PrivateScalarBranchAction::DeclareEmptyStr { .. } =>
+                | PrivateScalarBranchAction::DeclareEmptyStr { .. }
+                | PrivateScalarBranchAction::DeclareCopyStruct { .. } =>
                     PrivateScalarBranchAction::Scoped(vec![action]),
             other => other,
         }
