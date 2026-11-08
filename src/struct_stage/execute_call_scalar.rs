@@ -558,7 +558,7 @@ impl PrivateScalarReturnExpr {
                     .ok_or(PrivateScalarCallPrepareError::Unsupported(
                         "結構欄位讀取缺少原 Checker 具型別宣告",
                     ))?;
-                let definition = verified.structs.get(&fact.ty).ok_or(
+                let definition = verified.structs.get(fact.ty).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
                         "結構欄位讀取持有者非原 Checker 結構型別",
                     ),
