@@ -19,6 +19,10 @@ from pathlib import Path
 # 不以靜態 CFG 或模型模擬結果冒充動態已經走過的路徑。
 證據 = {
     "P18.1": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位非法const及錯型別必原Checker拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位寫入後if重新讀取最新值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位while首輪更新後反向邊真結束",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位只有選中分支真更新",
@@ -248,6 +252,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_錯誤實參型別及缺少參數在正式_checker_先拒絕",
     ),
     "P18.2": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位非法const及錯型別必原Checker拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位寫入後if重新讀取最新值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位while首輪更新後反向邊真結束",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位只有選中分支真更新",
@@ -540,6 +548,10 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位非法const及錯型別必原Checker拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_真P16結構int欄位讀取而非硬編預設值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_具名覆蓋保留真欄位來源不執行錯誤預設",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f4_同名Copyable結構跨兩次函式呼叫不錯用欄位值",
@@ -724,6 +736,10 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
+        "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位非法const及錯型別必原Checker拒絕",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位寫入後if重新讀取最新值",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位while首輪更新後反向邊真結束",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool結構欄位只有選中分支真更新",
