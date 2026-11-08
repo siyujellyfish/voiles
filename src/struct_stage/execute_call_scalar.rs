@@ -2472,7 +2472,8 @@ impl PreparedPrivateScalarCall {
                 PrivateScalarLocalStep::DeclareCopyStruct {
                     declaration, name, initializer,
                 } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
-                    *declaration, name, initializer
+                    *declaration, name, initializer,
+                )),
                 PrivateScalarLocalStep::AssignStr {
                     declaration, name, initializer,
                 } => tasks.push(PrivateScalarTask::AssignStr(*declaration, name, initializer)),
@@ -3111,7 +3112,8 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarBranchAction::DeclareCopyStruct {
                             declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
-                            *declaration, name, initializer
+                            *declaration, name, initializer,
+                        )),
                         PrivateScalarBranchAction::AssignStr {
                             declaration, name, initializer,
                         } => tasks.push(PrivateScalarTask::AssignStr(
@@ -3362,7 +3364,8 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarLocalStep::DeclareCopyStruct {
                                     declaration, name, initializer,
                                 } => tasks.push(PrivateScalarTask::DeclareCopyStruct(
-                                    *declaration, name, initializer
+                                    *declaration, name, initializer,
+                                )),
                                 PrivateScalarLocalStep::AssignStr {
                                     declaration, name, initializer,
                                 } => tasks.push(PrivateScalarTask::AssignStr(
