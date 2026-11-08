@@ -107,7 +107,7 @@ impl PrivateScalarCallOutcome {
         struct TraceFrame {
             name: Option<String>,
             locals: Vec<PrivateScalarLocalBinding>,
-            moved_copy_structs: std::collections::HashSet<DeclarationId>,
+            moved_copy_structs: std::collections::BTreeSet<DeclarationId>,
             resource_ids: std::collections::HashSet<u64>,
             owner_resources: BTreeMap<DeclarationId, u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
@@ -121,7 +121,7 @@ impl PrivateScalarCallOutcome {
         }
         let mut frames = vec![TraceFrame {
             name: None, locals: Vec::new(),
-            moved_copy_structs: std::collections::HashSet::new(),
+            moved_copy_structs: std::collections::BTreeSet::new(),
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
@@ -160,7 +160,7 @@ impl PrivateScalarCallOutcome {
                     if unwinding || frames.last().is_none_or(|f| f.returned) { return false; }
                     frames.push(TraceFrame {
                         name: Some(name.clone()), locals: Vec::new(),
-                        moved_copy_structs: std::collections::HashSet::new(),
+                        moved_copy_structs: std::collections::BTreeSet::new(),
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             pending_transfers: BTreeMap::new(),
@@ -1281,7 +1281,7 @@ enum PrivateScalarLocalStep {
     DeclareStr { declaration: DeclarationId, name: String, mutable: bool, initializer: PrivateScalarStrInitializer },
     DeclareEmptyStr { declaration: DeclarationId, name: String, mutable: bool },
     DeclareCopyStruct {
-        declaration: DeclarationId, name: String, plan: PrivateScalarCopyStructPlan,
+        declaration: DeclarationId, name: String, initializer: PrivateScalarCopyStructInitializer,
     },
     AssignBool { declaration: DeclarationId, value: PrivateScalarBoolExpr },
     AssignStr { declaration: DeclarationId, name: String, initializer: PrivateScalarStrInitializer },
