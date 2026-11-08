@@ -8358,6 +8358,62 @@ mod g18_private_scalar_call_tests {
 
     // V1／F4：以下均由原 Parser／Checker 已核准的真來源出發，
     // 只有無 str 欄位的結構才交給 P16 MixedStructRuntime 真執行。
+    // V1／R01：用與原 Checker 同源的真正 main→函式工作圖驗證
+    // Copyable 結構欄位在呼叫實參、賦值、跨框架與故障退出的順序。
+    #[test]
+    fn g18_v1_f1_f3_main結構欄位作為真函式實參依動態值求出() {
+        let src = "struct Archive{\nvar count:int = 7\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn main()->int{\nvar note:Archive = Archive(count=8)\nreturn plus(note.count)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_v1_f1_f3_main結構欄位函式初始化賦值與返回有序執行() {
+        let src = "struct Archive{\nvar count:int = 5\n}\nfn plus(x:int)->int{\nreturn x+2\n}\nfn main()->int{\nvar note:Archive = Archive()\nvar result:int = 0\nresult = plus(note.count)\nreturn result\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v1_f1_f3_父子同名結構幀中讀欄位恢復父值不串位() {
+        let src = "struct Archive{\nvar count:int = 1\n}\nfn leaf(x:int)->int{\nreturn x+1\n}\nfn mid()->int{\nvar note:Archive = Archive(count=9)\nreturn leaf(note.count)\n}\nfn main()->int{\nvar note:Archive = Archive(count=3)\nreturn mid()+leaf(note.count)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Ok(14));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 2);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v1_f1_f3_被呼叫者溢位先退出後清理main真結構() {
+        let src = "struct Archive{\nvar count:int = 9223372036854775807\n}\nfn plus(x:int)->int{\nreturn x+1\n}\nfn main()->int{\nvar note:Archive = Archive()\nreturn plus(note.count)\n}\n";
+        let out = checked(src).execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.is_empty());
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructConstructed(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::CopyStructScopeEnded(_)
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted
+        )).count(), 1);
+    }
+
     #[test]
     fn g18_v1_f4_真P16結構int欄位讀取而非硬編預設值() {
         let src = "struct Meter{\nvar count:int = 7\nvar flag:bool = true\n}\nfn getter()->int{\nvar note:Meter = Meter()\nreturn note.count+3\n}\nfn main()->int{\nreturn getter()\n}\n";
