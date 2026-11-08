@@ -1758,9 +1758,10 @@ impl PreparedPrivateScalarCall {
         })
     }
 
-    /// V1／F4：只交付原 Checker 已接受、P16 真能建構的無資源
-    /// Copyable 結構局部；具名覆蓋與預設值由原 VB16 求值計畫核對，
-    /// 任何 str／巢狀結構先保守 Unsupported，不合併雙資源帳簿。
+    /// V1／F4：交付原 Checker 已接受、P16 可真建構的 int／bool
+    /// 與受限 str 結構局部；原 VB16 具名覆蓋及預設來源各自核對。
+    /// 僅已證共用 OwnedStrRuntime 的資源字面欄位可執行，
+    /// 未覆蓋 var str／巢狀資源／非 Copyable Move 仍保守拒絕。
     fn checked_copy_struct(
         name: &str, ty: &str, term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -1779,23 +1780,22 @@ impl PreparedPrivateScalarCall {
         };
         let mut fields = Vec::new();
         for field in &definition.fields {
+            let overridden = named.iter().any(|(key, _)| key == &field.name);
             let kind = match field.ty.as_str() {
                 "int" => ScalarKind::Int,
                 "bool" => ScalarKind::Bool,
-                // 使用 P16 原資源欄位與同一 OwnedStrRuntime 真帳；
-                // 仍拒絕巢狀結構／容器等未核准資源語意。
-                // 第一批只接通不可寫的 str 欄位：原 P16 持有完整
-                // UTF-8 所有權，但一般函式內可寫欄位的原子替換、
-                // 借用／跨 frame 轉交尚未與共同帳簿完整驗證。
-                "str" if field.immutable => ScalarKind::Str,
+                // 唯有原 Checker 已接受、且本次真正提供具名字面來源
+                // 的可寫 str 欄位，才交給 P16 真 UTF-8 資源計畫。
+                // 未覆蓋的 var str 預設與欄位後續替換仍缺少專項共帳
+                // 證據，維持原 V0 保守拒絕，不能讓舊負例提前轉正。
+                "str" if field.immutable || overridden => ScalarKind::Str,
                 "str" => return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "結構 var str 欄位尚未與共同資源替換／退出帳安全合流",
+                    "結構 var str 尚未提供具名來源，預設資源欄位仍未驗收",
                 )),
                 _ => return Err(PrivateScalarCallPrepareError::Unsupported(
                     "巢狀資源尚未接入原 Checker／P16 共同退出帳",
                 )),
             };
-            let overridden = named.iter().any(|(key, _)| key == &field.name);
             let default = if overridden {
                 field.default.as_ref().map(|_| ApprovedSeed::Skipped(kind))
             } else {
