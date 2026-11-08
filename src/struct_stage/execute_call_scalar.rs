@@ -118,6 +118,9 @@ impl PrivateScalarCallOutcome {
             /// 結構的各個原 Checker str 欄位各持有唯一真資源，
             /// 不把同一結構的多欄位塞進單純 DeclarationId 帳。
             struct_owner_resources: BTreeMap<(DeclarationId, String), u64>,
+            /// 整筆結構 .move() 的每個真正 UTF-8 資源都須在
+            /// 下一筆動態事件前逐一看到唯一 Moved(id)。
+            pending_struct_moves: std::collections::BTreeSet<u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
             pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
@@ -133,6 +136,7 @@ impl PrivateScalarCallOutcome {
             resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             struct_owner_resources: BTreeMap::new(),
+            pending_struct_moves: std::collections::BTreeSet::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -145,6 +149,16 @@ impl PrivateScalarCallOutcome {
         let mut returned_imported_loans =
             Vec::<crate::borrow_safety::BorrowTicket>::new();
         for event in &self.events {
+            // 結構整筆 Move 先更新原/目標宣告身分，再逐筆接收
+            // 同一 OwnedStrRuntime 真的 Moved；少記、插入別的事件
+            // 或把某個 ResourceId 偽造為已交接都須立即拒絕。
+            if frames.last().is_some_and(|frame|
+                !frame.pending_struct_moves.is_empty()
+                    && !matches!(event,
+                        PrivateScalarCallEvent::OwnedResource(
+                            crate::owned_str_runtime::ResourceEvent::Moved(id)
+                        ) if frame.pending_struct_moves.contains(id))
+            ) { return false; }
             // 一旦真執行期失敗並開始回滾，後續只能歸還借用、
             // 撤除純值局部、釋放 OwnedStr 與失敗函式離域；
             // 新的求值／綁定／配置／轉移均不應在失敗後復活。
@@ -173,6 +187,7 @@ impl PrivateScalarCallOutcome {
                         resource_ids: std::collections::HashSet::new(),
             owner_resources: BTreeMap::new(),
             struct_owner_resources: BTreeMap::new(),
+            pending_struct_moves: std::collections::BTreeSet::new(),
             pending_transfers: BTreeMap::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
@@ -287,6 +302,30 @@ impl PrivateScalarCallOutcome {
                         ))
                         || !frame.moved_copy_struct_sources.insert(*source) {
                         return false;
+                    }
+                    // 原 ResourceId 隨同一次完整結構持有者轉交；
+                    // 只有真 P16 move_whole_with_shared_ledger 後續產生
+                    // 對應 Moved 事件才算資源交接完成，不能複製。
+                    let transferred = frame.struct_owner_resources.iter()
+                        .filter_map(|((owner, field), id)|
+                            (owner == source).then_some((field.clone(), *id))
+                        ).collect::<Vec<_>>();
+                    if transferred.iter().any(|(field, id)|
+                        !frame.resource_ids.contains(id)
+                            || frame.pending_struct_moves.contains(id)
+                            || frame.struct_owner_resources
+                                .contains_key(&(*target, field.clone()))) {
+                        return false;
+                    }
+                    for (field, id) in transferred {
+                        if frame.struct_owner_resources.remove(&(*source, field.clone()))
+                            != Some(id)
+                            || frame.struct_owner_resources.insert(
+                                (*target, field), id,
+                            ).is_some()
+                            || !frame.pending_struct_moves.insert(id) {
+                            return false;
+                        }
                     }
                     frame.locals.push(PrivateScalarLocalBinding::CopyStruct(*target));
                 }
@@ -436,10 +475,17 @@ impl PrivateScalarCallOutcome {
                         crate::owned_str_runtime::ResourceEvent::Moved(id)
                             | crate::owned_str_runtime::ResourceEvent::Returned(id) => {
                             if !frame.returned && frame.resource_ids.contains(id) {
-                                if let Some((_, observed)) = frame.pending_transfers.get_mut(id) {
+                                if matches!(resource,
+                                    crate::owned_str_runtime::ResourceEvent::Moved(_))
+                                    && frame.pending_struct_moves.remove(id) {
+                                    // 此 ResourceId 的唯一結構欄位已由
+                                    // CopyStructMovedBound 改屬目標；現在真 Moved 確認。
+                                    true
+                                } else if let Some((_, observed)) =
+                                    frame.pending_transfers.get_mut(id) {
                                     if *observed { false } else { *observed = true; true }
                                 } else {
-                                    // 同框架所有權移動：撤銷原 DeclarationId。
+                                    // 同框架一般 str 所有權移動：撤銷原 DeclarationId。
                                     let former = frame.owner_resources.iter().find_map(|(owner, held)|
                                         (held == id).then_some(*owner));
                                     former.is_some_and(|owner|
@@ -500,6 +546,7 @@ impl PrivateScalarCallOutcome {
                         || !frame.moved_copy_struct_sources.is_empty()
                         || !frame.owner_resources.is_empty()
                         || !frame.struct_owner_resources.is_empty()
+                        || !frame.pending_struct_moves.is_empty()
                         || !frame.pending_transfers.is_empty()
                         || !frame.loan_resources.is_empty()
                         || frames.last().is_none_or(|parent|
@@ -556,6 +603,7 @@ impl PrivateScalarCallOutcome {
         frames.len() == 1 && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
+            && frames[0].pending_struct_moves.is_empty()
             && frames[0].moved_copy_struct_sources.is_empty()
             && frames[0].pending_transfers.is_empty()
             && frames[0].loans.is_empty()
@@ -1974,7 +2022,8 @@ impl PreparedPrivateScalarCall {
             ),
         )?;
         if !definition.fields.iter().all(|field|
-                matches!(field.ty.as_str(), "int" | "bool"))
+                matches!(field.ty.as_str(), "int" | "bool")
+                    || field.ty == "str" && field.immutable)
             || source == target || source_name == target_name
             || !verified.plan.declarations.matches(target, ty, mutable)
             || !verified.plan.declarations.typed_declaration(source)
@@ -3302,9 +3351,9 @@ impl PreparedPrivateScalarCall {
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         // P16 對真持有的完整實例移動；舊 Slot 原位失效，
                         // 目標接管唯一值，不重建欄位、不生成假 ResourceId。
-                        copy_structs.move_whole(source_name, name).map_err(|_|
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
+                        copy_structs.move_whole_with_shared_ledger(
+                            &mut resources, source_name, name,
+                        ).map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
                         if !copy_structs.events().is_empty() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
@@ -3312,9 +3361,15 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?.push((id, name.to_owned()));
                         frame.initialized_order.push(PrivateScalarLocalBinding::CopyStruct(id));
+                        // 確認原 Checker 的純值結構身分先原子轉交，
+                        // 隨後才記錄 P16 共帳真發出的每筆 Moved(id)。
+                        // 事件稽核要求它們相鄰、數量及 ID 完全一致。
                         events.push(PrivateScalarCallEvent::CopyStructMovedBound {
                             source, target: id,
                         });
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
+                        );
                     }
                     PrivateScalarTask::DeclareCopyStruct(id, name, plan) => {
                         let frame = frames.last().ok_or(
