@@ -10576,19 +10576,25 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_f4_可寫str資源結構整筆move仍須保守拒絕() {
-        // 沒有具名 var str 初始化的舊 V0 來源仍須阻擋，
-        // 不能因具名欄位共享帳合法而擴權所有預設路徑。
-        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_f4_可寫str預設結構整筆move維持唯一resourceid() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Moved(1), R::Released(1)]);
+
     }
 
     #[test]
-    fn g18_v1_f4_含str欄位的整筆move無共同資源帳仍必保守拒絕() {
-        let src = "struct Marker{\nvar count:int = 6\nvar data:str = \"安全\"\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+    fn g18_v1_f4_無str預設的部分初始化整筆move仍保守拒絕() {
+        // 原 Checker 尚未證明未初始化 var str 的整筆結構 Move 可安全執行。
+                let src = "struct Marker{\nvar count:int = 6\nvar data:str\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
         assert!(matches!(PreparedPrivateScalarCall::prepare(src),
             Err(PrivateScalarCallPrepareError::Unsupported(_))));
+
     }
 
     #[test]
@@ -11699,10 +11705,16 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_f4_未具名varstr預設仍須保留v0保守拒絕() {
-        let src = "struct Archive{\nvar body:str = \"未授權預設\"\nvar count:int = 2\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_f4_未具名varstr預設由p16真建立與釋放() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar body:str = \"未授權預設\"\nvar count:int = 2\n}\nfn run()->int{\nvar item:Archive = Archive()\nreturn item.count\n}\nfn main()->int{\nreturn run()\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+
     }
 
     #[test]
@@ -11897,17 +11909,32 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_f4_含str欄位仍由原Checker後保守拒絕不得雙帳冒充() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"保留🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn main()->int{\nreturn idle()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_f4_可達普通函式真建立預設str不虛構雙帳() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"保留🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(99));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+
     }
 
     #[test]
-    fn g18_r01_main可達不支援的結構函式仍不可偷略過() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_r01_main可達預設str結構函式真正執行() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar record:Archive = Archive()\nreturn 91\n}\nfn main()->int{\nreturn idle()\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(91));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )).count(), 1);
+
     }
 
     #[test]
@@ -12044,10 +12071,19 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_正迭代for可達結構函式仍須保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_正迭代for真呼叫預設str結構函式() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route()->int{\nfor i in 0..1{\nvar result:int = idle()\n}\nreturn good()\n}\nfn main()->int{\nreturn route()\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )).count(), 1);
+
     }
 
     #[test]
@@ -12100,10 +12136,19 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_main真迭代可達的結構函式不可藉呼叫圖略過() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_main真迭代可達結構函式實際進框架() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar local:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn main()->int{\nfor i in 0..1{\nvar phantom:int = idle()\n}\nreturn good()\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )).count(), 1);
+
     }
 
     #[test]
@@ -12139,10 +12184,19 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_頂層非全葉返回仍不得忽略可達結構局部() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_頂層非全葉返回仍真執行可達str結構局部() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nconst live:int = idle()\nreturn live\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(99));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )).count(), 1);
+
     }
 
     #[test]
@@ -12184,20 +12238,35 @@ mod g18_private_scalar_call_tests {
     }
 
     #[test]
-    fn g18_v1_未知條件的可達結構函式仍須在prepare保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
-        // route(false) 並不能靜態推得所有可能的動態路徑；
-        // 含 str 資源尚未經共同帳簿證明、但仍可由 flag=true 走到的
-        // 含 str 之結構建構必須保持 Unsupported，不可靠傳入常值預測執行分支。
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_v1_未知條件編譯所有可達str來源而只執行選中邊() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar x:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 6\n}\nfn route(flag:bool)->int{\nif(flag){\nvar value:int = idle()\nreturn value\n}\nreturn good()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, []);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )));
+
     }
 
     #[test]
-    fn g18_r01_真正可達的結構局部函式仍須保守拒絕() {
-        let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+    fn g18_r01_原v0可達預設str結構函式真返回() {
+        // 原 Parser／Checker 真來源在 P16 同一 OwnedStr ledger 上執行。
+        use crate::owned_str_runtime::ResourceEvent as R;
+                let src = "struct Archive{\nvar count:int = 7\nvar resource:str = \"待整合🪼\"\n}\nfn idle()->int{\nvar r:Archive = Archive()\nreturn 99\n}\nfn good()->int{\nreturn 7\n}\nfn route(flag:bool)->int{\nif(flag){\nreturn good()\n}\nreturn idle()\n}\nfn main()->int{\nreturn route(false)\n}\n";
+        let prepared = checked(src);
+        let out = prepared.execute().unwrap();
+        assert_eq!(out.result, Ok(99));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
+        assert_eq!(out.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "idle"
+        )).count(), 1);
+
     }
 
     #[test]
