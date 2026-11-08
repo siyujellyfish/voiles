@@ -10590,10 +10590,12 @@ mod g18_private_scalar_call_tests {
 
     #[test]
     fn g18_v1_f4_無str預設的部分初始化整筆move仍保守拒絕() {
-        // 原 Checker 尚未證明未初始化 var str 的整筆結構 Move 可安全執行。
-                let src = "struct Marker{\nvar count:int = 6\nvar data:str\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
-        assert!(matches!(PreparedPrivateScalarCall::prepare(src),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        // 真 Checker 先拒絕未初始化 var str 整筆 Move，
+        // 不能為了命中 Runtime Unsupported 降低靜態安全標準。
+        let src = "struct Marker{\nvar count:int = 6\nvar data:str\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
+        let result = PreparedPrivateScalarCall::prepare(src);
+        assert!(matches!(result, Err(PrivateScalarCallPrepareError::Check(_))),
+            "原 Checker 須先拒絕不完整來源：{result:?}");
 
     }
 
