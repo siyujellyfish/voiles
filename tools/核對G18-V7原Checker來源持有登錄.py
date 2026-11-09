@@ -11,7 +11,7 @@ from pathlib import Path
 前綴 = "struct_stage::g18_v7_checked_program_catalog_tests::"
 案例 = (
     "g18_v7_a1_原Checker來源由登錄持有且FIFO續行引用同一真計畫身分",
-    "g18_v7_a1_登錄前靜態非法來源及不支援續行的真Checker形狀零身分消耗",
+    "g18_v7_a1_靜態非法來源零身分消耗且原Checker合法bool動態圖完整保留",
     "g18_v7_e2_未知來源登錄ID不得消耗FIFO工作身分或其他已核准佇列",
     "g18_v7_e2_同一份原Checker登錄來源可產生兩份相互獨立的真續行",
     "g18_v7_e3_登錄來源真溢位及取消分別沿原Runtime清理不偽造成功",
