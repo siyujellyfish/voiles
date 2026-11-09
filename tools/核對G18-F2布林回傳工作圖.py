@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／F2 bool-return 可達來源的原 Checker→真 Runtime 六項嚴格 Gate。"""
+"""G18／F2 bool-return 可達來源的原 Checker→真 Runtime 七項嚴格 Gate。"""
 from __future__ import annotations
 import argparse
 from pathlib import Path
@@ -16,6 +16,7 @@ CASES = (
     "f2_bool_return_兩層bool實參函式由真工作棧逐層退出",
     "f2_bool_return_父函式字串借用在bool子工作結束後安全歸還",
     "f2_bool_return_不得冒用整數返回或竄改bool函式原始計畫",
+    "f2_bool_return_篡改返回事件的布林整數型別即使框架平衡也拒絕",
 )
 
 def main() -> int:
@@ -44,7 +45,7 @@ def main() -> int:
                 raise ValueError(f"bool-return 真測試 {n}/{len(CASES)} 失敗：{case}\n"
                     + combined[-2400:])
             print(f"F2 bool-return {n}/{len(CASES)}：{case}（通過）")
-        print("F2 bool-return 六項來源真實通過；F2 全部合法 bool 控制圖／返回仍不得標 Closed")
+        print("F2 bool-return 七項來源真實通過；F2 全部合法 bool 控制圖／返回仍不得標 Closed")
         return 0
     except (OSError, ValueError) as err:
         print("G18 F2 bool-return Gate 失敗：" + str(err), file=sys.stderr)
