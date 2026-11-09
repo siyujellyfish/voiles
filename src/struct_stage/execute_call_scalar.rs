@@ -5634,6 +5634,175 @@ impl PrivateCheckedDeferredAwaitQueue {
 
 
 
+
+#[cfg(test)]
+mod g18_v7_real_graph_checkpoint_tests {
+    use super::*;
+
+    fn checked(src: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(src).unwrap()
+    }
+
+    #[test]
+    fn g18_v7_e2_原私有函式真UTF8資源與顯式工作棧跨Rust呼叫暫停後原點恢復() {
+        let plan = checked(concat!(
+            "async fn ready(n:int)->int{ return n+1 }\n",
+            "fn wrapper()->int{\n",
+            "var hold:str = \"父框架已執行🪼\"\n",
+            "return await ready(6)\n}\n",
+            "fn main()->int{ return wrapper() }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("ready"));
+        assert_eq!(live.retained_frames(), 2);
+        assert!(matches!(live.retained_resources(), [
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ]));
+        assert!(live.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "wrapper",
+        )));
+        assert!(!live.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_),
+        )));
+        assert!(live.result().is_none());
+
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        let out = live.result().unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert!(matches!(out.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "wrapper"
+        )).count(), 1);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "ready"
+        )).count(), 1);
+        assert_eq!(live.retained_frames(), 0);
+        assert_eq!(live.pending_await(), None);
+        assert!(plan.audit_graph_outcome(PrivateScalarCallOutcome {
+            result: out.result.clone(), events: out.events.clone(),
+            resource_events: out.resource_events.clone(),
+            parameter_slots_after_exit: out.parameter_slots_after_exit,
+        }).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e2_原Checker兩個真await可跨三次呼叫從不同指令位置接續() {
+        let plan = checked(concat!(
+            "async fn left(n:int)->int{ return n+1 }\n",
+            "async fn right(n:int)->int{ return n+2 }\n",
+            "fn main()->int{ return await left(2)+await right(3) }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("left"));
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("right"));
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        let out = live.result().unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert!(out.has_balanced_frame_trace());
+        let awaited = out.events.iter().filter_map(|e| match e {
+            PrivateScalarCallEvent::AwaitSafePoint(name) => Some(name.as_str()),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert_eq!(awaited, ["left", "right"]);
+        assert_eq!(live.poll().err(), Some(
+            PrivateScalarCallPrepareError::Unsupported(
+                "已結束的私有工作不得重複 poll",
+            ),
+        ));
+    }
+
+    #[test]
+    fn g18_v7_e2_私有真框架暫停後能先執行另一工作再喚醒原工作() {
+        let first = checked(concat!(
+            "async fn ready()->int{ return 13 }\n",
+            "fn main()->int{ return await ready() }\n",
+        ));
+        let second = checked(concat!(
+            "async fn other()->int{ return 21 }\n",
+            "fn main()->int{ return await other() }\n",
+        ));
+        let mut one = PrivateScalarGraphContinuation::new(&first).unwrap();
+        let mut two = PrivateScalarGraphContinuation::new(&second).unwrap();
+        assert_eq!(one.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(two.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(two.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        assert_eq!(two.result().unwrap().result, Ok(21));
+        assert!(one.result().is_none());
+        assert_eq!(one.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        assert_eq!(one.result().unwrap().result, Ok(13));
+        assert!(one.result().unwrap().has_balanced_frame_trace());
+        assert!(two.result().unwrap().has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v7_e2_真私有await暫停後溢位仍只清理原P16資源不虛構返回() {
+        let plan = checked(concat!(
+            "async fn over(n:int)->int{ return n+1 }\n",
+            "fn main()->int{\n",
+            "var hold:str = \"原框架錯誤也須釋放🪼\"\n",
+            "return await over(9223372036854775807)\n}\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert!(matches!(live.retained_resources(), [
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ]));
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        let out = live.result().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_),
+        )));
+        assert!(matches!(out.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+    }
+
+    #[test]
+    fn g18_v7_e2_同步原Checker工作不產生虛假的可暫停await() {
+        let plan = checked(concat!(
+            "fn forward(n:int)->int{ return n+4 }\n",
+            "fn main()->int{ return forward(2) }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        assert_eq!(live.result().unwrap().result, Ok(6));
+        assert_eq!(live.pending_await(), None);
+        assert!(!live.result().unwrap().events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_),
+        )));
+    }
+
+    #[test]
+    fn g18_v7_e2_原Checker未授權跨await借用不能建立動態續行() {
+        let source = concat!(
+            "async fn ready()->int{ return 4 }\n",
+            "fn wrapper(source:str)->int{ return await ready() }\n",
+            "fn main()->int{\n",
+            "var source:str = \"仍有效🪼\"\n",
+            "return wrapper(source)\n}\n",
+        );
+        match PreparedPrivateScalarCall::prepare(source) {
+            Err(PrivateScalarCallPrepareError::Check(problem)) => {
+                assert!(problem.message.contains("VB15-01-A"));
+            }
+            _ => panic!("原 Checker 必須先拒絕，不能建立真續行"),
+        }
+    }
+}
+
 #[cfg(test)]
 mod g18_v7_ancestor_borrow_tests {
     use super::*;
