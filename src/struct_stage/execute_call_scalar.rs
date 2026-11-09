@@ -6087,8 +6087,8 @@ mod g18_v7_terminal_task_retirement_tests {
         ] if a == b));
         assert_eq!(queue.jobs.len(), 0);
         assert_eq!(queue.status(success), None);
-        assert_eq!(queue.retire_terminal(success),
-            Err(PrivateScalarCooperativeError::UnknownTask));
+        assert!(matches!(queue.retire_terminal(success),
+            Err(PrivateScalarCooperativeError::UnknownTask)));
         assert_eq!(queue.drive_order().len(), 3);
         let fresh = queue.submit(&plan).unwrap();
         assert_eq!(fresh, failed + 1);
@@ -6101,12 +6101,12 @@ mod g18_v7_terminal_task_retirement_tests {
         let mut queue = PrivateScalarCooperativeQueue::new();
         let suspended = queue.submit(&plan).unwrap();
         let prepared = queue.submit(&plan).unwrap();
-        assert_eq!(queue.retire_terminal(prepared),
-            Err(PrivateScalarCooperativeError::WrongState));
+        assert!(matches!(queue.retire_terminal(prepared),
+            Err(PrivateScalarCooperativeError::WrongState)));
         assert_eq!(queue.drive_one().unwrap(),
             Some((suspended, PrivateScalarGraphPoll::Suspended)));
-        assert_eq!(queue.retire_terminal(suspended),
-            Err(PrivateScalarCooperativeError::WrongState));
+        assert!(matches!(queue.retire_terminal(suspended),
+            Err(PrivateScalarCooperativeError::WrongState)));
         assert_eq!(queue.ready_ids(), [prepared]);
         queue.cancel(suspended).unwrap();
         queue.cancel(prepared).unwrap();
@@ -6138,8 +6138,8 @@ mod g18_v7_terminal_task_retirement_tests {
         // Failed 標籤不得冒充已產生成功／失敗退出帳。
         queue.jobs.get_mut(&id).unwrap().continuation.status =
             PrivateDeferredAwaitStatus::Failed;
-        assert_eq!(queue.retire_terminal(id),
-            Err(PrivateScalarCooperativeError::Engine));
+        assert!(matches!(queue.retire_terminal(id),
+            Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(queue.ready_ids(), [id]);
         assert_eq!(queue.jobs.len(), 1);
         assert!(queue.outcome(id).is_none());
