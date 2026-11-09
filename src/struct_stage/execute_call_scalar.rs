@@ -83,6 +83,8 @@ enum PrivateScalarCallEvent {
     UnwindStarted,
     BorrowParameterBound(DeclarationId, BorrowFact),
     Returned(i64),
+    /// F2：已由原 Checker 確認 bool 的真正返回，不把 0/1 當成 int 返回。
+    BoolReturned(bool),
     FunctionExited { name: String, returned: bool },
 }
 
@@ -618,7 +620,8 @@ impl PrivateScalarCallOutcome {
                     }
                     frame.owner_resources.insert(*declaration, *resource_id);
                 }
-                PrivateScalarCallEvent::Returned(_) => {
+                PrivateScalarCallEvent::Returned(_)
+                | PrivateScalarCallEvent::BoolReturned(_) => {
                     if unwinding { return false; }
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.name.is_none() || frame.returned { return false; }
@@ -682,7 +685,8 @@ impl PrivateScalarCallOutcome {
             PrivateScalarCallEvent::LocalScopeEndedEmpty(id)
                 | PrivateScalarCallEvent::BoolScopeEndedEmpty(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEndedEmpty(*id)),
-            PrivateScalarCallEvent::Returned(_) =>
+            PrivateScalarCallEvent::Returned(_)
+            | PrivateScalarCallEvent::BoolReturned(_) =>
                 Some(PrivateSharedCallExitEvent::Returned),
             PrivateScalarCallEvent::UnwindStarted =>
                 Some(PrivateSharedCallExitEvent::UnwindStarted),
@@ -724,6 +728,8 @@ enum PrivateScalarReturnExpr {
     /// 原 Checker 合法 Copyable int 欄位，執行時只能讀真 P16 結構持有者。
     CopyStructIntField { declaration: DeclarationId, owner: String, field: String },
     Constant(i64),
+    /// F2：僅由已驗證 bool 函式的直接 return 建立；非 int 算式來源。
+    BoolValue(Box<PrivateScalarBoolExpr>),
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
     /// 原 Checker 唯一具名函式與已驗證 int 實參；真正呼叫會進入新框架。
@@ -914,7 +920,8 @@ impl PrivateScalarReturnExpr {
                         }
                     } else if parameter.ty == "bool" {
                         PrivateScalarCallArgument::Bool(
-                            PrivateScalarBoolExpr::from_checked(argument, bindings, verified)?,
+                            PrivateScalarBoolExpr::from_checked_call_argument(
+                                argument, bindings, verified)?,
                         )
                     } else {
                         PrivateScalarCallArgument::Int(
@@ -1141,7 +1148,8 @@ impl PrivateScalarReturnExpr {
                 .checked_sub(right.evaluate(frame)?)
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
             // 不准從只有 int slot 的舊純值捷徑假造結構欄位常數。
-            Self::CopyStructIntField { .. } | Self::Call { .. } | Self::Unreachable =>
+            Self::CopyStructIntField { .. } | Self::Call { .. }
+            | Self::BoolValue(..) | Self::Unreachable =>
                 Err(PrivateScalarCallRuntimeError::StateMismatch),
         }
     }
@@ -1156,6 +1164,7 @@ impl PrivateScalarReturnExpr {
                 left.collect_calls(calls);
                 right.collect_calls(calls);
             }
+            Self::BoolValue(expr) => expr.collect_calls(calls),
             Self::Parameter(_) | Self::CopyStructIntField { .. }
                 | Self::Constant(_) | Self::Unreachable => {}
         }
@@ -1182,7 +1191,11 @@ enum PrivateScalarCallArgument {
 
 impl PrivateScalarCallArgument {
     fn collect_calls<'a>(&'a self, output: &mut Vec<&'a str>) {
-        if let Self::Int(expr) = self { expr.collect_calls(output); }
+        match self {
+            Self::Int(expr) => expr.collect_calls(output),
+            Self::Bool(expr) => expr.collect_calls(output),
+            Self::BorrowStr { .. } | Self::MoveStr { .. } => {}
+        }
     }
 }
 
@@ -1192,6 +1205,9 @@ impl PrivateScalarCallArgument {
 enum PrivateScalarBoolExpr {
     Constant(bool),
     Bound(DeclarationId),
+    /// 只有作為已核准 bool 實參才編譯此同步函式結果；
+    /// 不讓布林函式的 i64 暫存值流入 int 表達式。
+    Call { name: String, arguments: Vec<PrivateScalarCallArgument> },
     /// 原 Checker 唯一 Copyable bool 欄位，從目前 P16 真結構執行期讀值。
     CopyStructBoolField { declaration: DeclarationId, owner: String, field: String },
 }
@@ -1299,6 +1315,84 @@ impl PrivateScalarBoolExpr {
         }
     }
 
+    /// F2：原 Parser/Checker 的 bool 函式可作 bool 形式參數值。
+    /// 本子批只允許同步、每項 bool 型別的引數；其它合法函式形狀
+    /// 仍保守 Unsupported，不繞過原 Checker，也不猜測整數轉 bool。
+    fn from_checked_call_argument(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
+        let span = term.node_span();
+        if verified.plan.scalar_hir.expression(span)
+            .is_none_or(|fact| fact.ty != crate::common_ir::ScalarType::Bool) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "bool 實參沒有原 Checker TypedHIR",
+            ));
+        }
+        match &term.kind {
+            TermKind::Group(inner) => {
+                if !verified.tokens.iter().any(|t| t.start == span.start
+                    && matches!(t.kind, TokenKind::Symbol('(')))
+                    || !verified.tokens.iter().any(|t| t.end == span.end
+                        && matches!(t.kind, TokenKind::Symbol(')'))) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "bool 函式實參括號缺少原 Lexer 來源",
+                    ));
+                }
+                Self::from_checked_call_argument(inner, bindings, verified)
+            }
+            TermKind::Call(call) => {
+                if call.awaited { return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "bool async 返回尚需等待型別與安全點驗收",
+                )); }
+                Self::checked_sync_call(&call.name, &call.arguments, span,
+                    bindings, verified)
+            }
+            TermKind::UnresolvedZeroArgs(name) => {
+                if verified.structs.contains_key(name) {
+                    return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "零參數結構與 bool 函式呼叫不可混同",
+                    ));
+                }
+                Self::checked_sync_call(name, &[], span, bindings, verified)
+            }
+            _ => Self::from_checked(term, bindings, verified),
+        }
+    }
+
+    fn checked_sync_call(
+        name: &str, actual: &[Term], span: crate::common_ir::NodeSpan,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
+        let target = verified.functions.iter().find(|fun| fun.name == name)
+            .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                "bool 呼叫缺少原 Checker 函式宣告",
+            ))?;
+        if name == "main" || target.result_ty != "bool" || target.is_async
+            || target.params.len() != actual.len()
+            || target.params.iter().any(|param| param.ty != "bool")
+            || verified.plan.declarations.call_borrows_at(span)
+                .is_some_and(|facts| !facts.is_empty()) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "bool 呼叫只接通原 Checker 同步純 bool 形式參數與結果",
+            ));
+        }
+        let arguments = actual.iter().map(|argument|
+            Self::from_checked_call_argument(argument, bindings, verified)
+                .map(PrivateScalarCallArgument::Bool),
+        ).collect::<Result<Vec<_>, _>>()?;
+        Ok(Self::Call { name: name.to_owned(), arguments })
+    }
+
+    fn collect_calls<'a>(&'a self, output: &mut Vec<&'a str>) {
+        if let Self::Call { name, arguments } = self {
+            output.push(name);
+            for argument in arguments { argument.collect_calls(output); }
+        }
+    }
+
     /// 所有 bool 取值共用同一種真執行權威，不能在條件與實參各自
     /// 推定欄位初始常值；唯一 P16 持有者與本框架 DeclarationId
     /// 必須同時存在，未到達宣告則零讀取／零資源事件。
@@ -1309,6 +1403,7 @@ impl PrivateScalarBoolExpr {
     ) -> Result<bool, PrivateScalarCallRuntimeError> {
         match self {
             Self::Constant(value) => Ok(*value),
+            Self::Call { .. } => Err(PrivateScalarCallRuntimeError::StateMismatch),
             Self::Bound(id) => frame.bool_values.get(id).copied()
                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
             Self::CopyStructBoolField { declaration, owner, field } => {
@@ -1574,7 +1669,10 @@ impl PrivateScalarCopyStructSeed {
                             }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                             values.push(result);
                         }
+                        // 僅原 Checker int 欄位種子可進此純整數工作棧；
+                        // 不讓已核准 bool 返回以 0/1 偽裝 int 欄位值。
                         Work::Read(PrivateScalarReturnExpr::Call { .. }
+                            | PrivateScalarReturnExpr::BoolValue(..)
                             | PrivateScalarReturnExpr::Unreachable) =>
                             return Err(PrivateScalarCallRuntimeError::StateMismatch),
                     }
@@ -2811,6 +2909,25 @@ impl PreparedPrivateScalarCall {
                 "普通函式最後一筆必須是真 Checker 核准的 return",
             ));
         };
+        // F2：bool 型別由原 Checker 返回宣告及 TypedHIR 雙重核准。
+        // 此次只接通沒有前置語句的真布林 leaf；後續 bool 控制圖
+        // 需另一批型別化工作棧證據，不能將合法來源默默變成 int。
+        if function.result_ty == "bool" {
+            if !prefix.is_empty() {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "bool 返回函式的前置局部／控制圖尚未完整驗收",
+                ));
+            }
+            let bindings = function.params.iter().map(|param|
+                (param.name.clone(), DeclarationId(param.declaration_start))
+            ).collect::<BTreeMap<_, _>>();
+            return Ok((Vec::new(), Vec::new(),
+                PrivateScalarReturnExpr::BoolValue(Box::new(
+                    PrivateScalarBoolExpr::from_checked(
+                        &ret.expression, &bindings, verified,
+                    )?,
+                )), ret.expression.node_span()));
+        }
         let mut bindings = function.params.iter().map(|param|
             (param.name.clone(), DeclarationId(param.declaration_start))
         ).collect::<BTreeMap<_, _>>();
@@ -3257,6 +3374,9 @@ impl PreparedPrivateScalarCall {
                             values.push(value);
                         }
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
+                        PrivateScalarReturnExpr::BoolValue(expr) => {
+                            tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                        }
                         PrivateScalarReturnExpr::CopyStructIntField {
                             declaration, owner, field,
                         } => {
@@ -3325,13 +3445,27 @@ impl PreparedPrivateScalarCall {
                         completed_arguments.push(PrivateScalarEvaluatedArgument::Int(value));
                     }
                     PrivateScalarTask::EvaluateBoolArgument(expr) => {
-                        let frame = frames.last().ok_or(
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
-                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
-                        // 0/1 僅為同一顯式工作堆疊中的暫態 bool 編碼；
-                        // 正式型別來自原 Checker 參數簽章，不能轉成 int slot。
-                        values.push(i64::from(value));
+                        if let PrivateScalarBoolExpr::Call { name, arguments } = expr {
+                            // 真 bool 子呼叫使用同一 LIFO EnterCall／ExitCall，
+                            // 不在 Rust 內遞迴求值或預先編碼假 int 結果。
+                            tasks.push(PrivateScalarTask::EnterCall(
+                                name, arguments, false, false,
+                            ));
+                            for argument in arguments.iter().rev() {
+                                let PrivateScalarCallArgument::Bool(value) = argument else {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                };
+                                tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                            }
+                        } else {
+                            let frame = frames.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let value = expr.evaluate_runtime(frame, &copy_structs)?;
+                            // 0/1 只作為 Bool 型別已核准後的臨時工作棧編碼。
+                            values.push(i64::from(value));
+                        }
                     }
                     PrivateScalarTask::RecordBoolArgument => {
                         let encoded = values.pop().ok_or(
@@ -4353,7 +4487,17 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         let mut frame = frames.pop().expect("真子框架仍存在");
-                        events.push(PrivateScalarCallEvent::Returned(value));
+                        let is_bool_return = self.verified.functions.iter()
+                            .find(|fun| fun.name == frame.name)
+                            .is_some_and(|fun| fun.result_ty == "bool");
+                        if is_bool_return {
+                            if !matches!(value, 0 | 1) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            events.push(PrivateScalarCallEvent::BoolReturned(value == 1));
+                        } else {
+                            events.push(PrivateScalarCallEvent::Returned(value));
+                        }
                         let parent = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -4700,7 +4844,7 @@ impl PreparedPrivateScalarCall {
                 // 只讓原 Checker/TypedHIR 通過的返回和語句出現在
                 // 工作計畫；任何未接通的真正可達合法形狀仍在此
                 // 受控 Unsupported，不可偷略過或擅自創造語意。
-                if function.result_ty != "int"
+                if !matches!(function.result_ty.as_str(), "int" | "bool")
                     || function.params.iter().any(|param|
                         !matches!(param.ty.as_str(), "int" | "bool" | "str"))
                     || function.body.statements.is_empty() {
@@ -4727,7 +4871,7 @@ impl PreparedPrivateScalarCall {
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name
                 && reachable.contains(&fun.name)) {
-            if function.result_ty != "int"
+            if !matches!(function.result_ty.as_str(), "int" | "bool")
                 || function.params.iter().any(|param|
                     !matches!(param.ty.as_str(), "int" | "bool" | "str"))
                 || function.body.statements.is_empty() {
@@ -5001,7 +5145,7 @@ impl PreparedPrivateScalarCall {
                     |(argument, parameter)| {
                         if parameter.ty == "bool" {
                             Ok(PrivateScalarCallArgument::Bool(
-                                PrivateScalarBoolExpr::from_checked(
+                                PrivateScalarBoolExpr::from_checked_call_argument(
                                     argument, &bindings, &verified,
                                 )?,
                             ))
@@ -5234,6 +5378,40 @@ impl PreparedPrivateScalarCall {
             }
         }
         if pending_await.is_some() {
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        // F2：同一真進退事件另核對原 Checker 所宣告的返回型別。
+        // R05 既有平衡守門不辨識 int/bool 的靜態簽章，故不得讓
+        // 一筆型別錯誤但數量平衡的 Returned／BoolReturned 假冒成功。
+        let mut return_types = Vec::<bool>::new();
+        for event in &outcome.events {
+            match event {
+                PrivateScalarCallEvent::FunctionEntered(name) => {
+                    let Some(function) = self.verified.functions.iter()
+                        .find(|fun| fun.name == *name) else {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    };
+                    return_types.push(function.result_ty == "bool");
+                }
+                PrivateScalarCallEvent::Returned(_) => {
+                    if return_types.last() != Some(&false) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                PrivateScalarCallEvent::BoolReturned(_) => {
+                    if return_types.last() != Some(&true) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                PrivateScalarCallEvent::FunctionExited { .. } => {
+                    if return_types.pop().is_none() {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !return_types.is_empty() {
             return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
         }
         // None 是先前已核准「直接 main 呼叫、純 int 實參」的

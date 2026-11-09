@@ -1394,3 +1394,7 @@ include!("struct_stage/g18_f1_obligation_tests.rs");
 // G18／P18.1-F2：原始混合參數真執行及正常／失敗資源責任矩陣。
 #[cfg(test)]
 include!("struct_stage/g18_f2_obligation_tests.rs");
+
+// G18／F2：原 Checker 真 bool 返回與 bool 實參使用同一動態進退帳。
+#[cfg(test)]
+include!("struct_stage/g18_f2_bool_return_tests.rs");
