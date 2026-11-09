@@ -5453,7 +5453,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             || !plan.main_dynamic_steps.is_empty()
             || !plan.main_dynamic_inits.is_empty()
             || plan.callee_parameter_ids.len()
-                != plan.parameter_id.zip(plan.argument).count()
+                != plan.parameter_id.zip(plan.argument).into_iter().count()
                     + plan.additional_arguments.len() {
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "私有快路續行限原 Checker 已核准的直接 Copyable int 呼叫",
@@ -5510,8 +5510,11 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             self.events.push(PrivateScalarCallEvent::FunctionEntered(
                 self.plan.callee_name.clone(),
             ));
-            for (id, value) in &initial_frame {
-                self.events.push(PrivateScalarCallEvent::ParameterBound(*id, *value));
+            for id in &self.plan.callee_parameter_ids {
+                let value = initial_frame.get(id).copied().ok_or(
+                    PrivateScalarCallPrepareError::RuntimeTraceMismatch,
+                )?;
+                self.events.push(PrivateScalarCallEvent::ParameterBound(*id, value));
             }
         }
         self.status = PrivateDeferredAwaitStatus::Running;
