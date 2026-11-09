@@ -12,9 +12,11 @@
   "rule": "每筆 primary_case 為不同義務的唯一主要可重現 Rust 真來源入口，不表示整條義務 Closed。非同步 A1/A2 待決不能以空正例充當 Passed。",
   "proven_gap": {
     "id": "F4",
-    "category": "CheckerAcceptedRuntimeUnsupported",
-    "case": "struct_stage::g18_private_scalar_call_tests::g18_r01_真正可達的結構局部函式仍須保守拒絕",
-    "meaning": "PreparedPrivateScalarCall::prepare(src) 返回 Unsupported 而非 Check，表示原 Checker 已接受、標量 evaluator 尚未連接本合法結構局部函式",
+    "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
+    "resolution": "ResolvedInV1DefaultVarStr",
+    "resolution_details": "歷史 2026-11-08 真錯拒在 V1-F4 新批已以原 Checker、P16 共用 OwnedStrRuntime 預設字串真執行修復；V0 義務清冊仍只記錄起點，F4 完整義務仍 OpenEngineering",
+    "case": "struct_stage::g18_private_scalar_call_tests::g18_r01_原v0可達預設str結構函式真返回",
+    "meaning": "歷史 V0 起點：PreparedPrivateScalarCall::prepare(src) 曾返回 Unsupported 而非 Check。現版本同源預設 var str 已由 P16 Shared Ledger 真執行，保留原錯拒的因果來源以追溯實際修復",
     "work_file": "src/struct_stage/execute_call_scalar.rs"
   },
   "obligations": [
