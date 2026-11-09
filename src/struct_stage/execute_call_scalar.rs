@@ -1825,6 +1825,23 @@ enum PrivateScalarTask<'a> {
     ExitCall,
 }
 
+/// V7／E2：原私有執行器真正動態工作堆疊的跨 Rust 呼叫保存物件。
+/// 全部來自原 Checker，持有同一 P16 OwnedStrRuntime／BorrowSafety 真身分。
+/// 帶來源生命週期的 task 參考只借用既有 PreparedPrivateScalarCall，
+/// 不建立自我參照的佇列、重新解析 AST 或轉移至其他執行緒。
+struct PrivateScalarGraphCheckpoint<'a> {
+    resources: crate::owned_str_runtime::OwnedStrRuntime,
+    copy_structs: crate::mixed_struct_runtime::MixedStructRuntime,
+    resource_cursor: usize,
+    frames: Vec<PrivateScalarActiveFrame>,
+    tasks: Vec<PrivateScalarTask<'a>>,
+    values: Vec<i64>,
+    completed_arguments: Vec<PrivateScalarEvaluatedArgument>,
+    pending_copy_structs: Vec<Vec<(String, ApprovedSeed)>>,
+    steps: usize,
+    awaiting_name: String,
+}
+
 impl PreparedPrivateScalarCall {
     /// V7／E5：必須由真動態 BorrowSafety 與仍被父呼叫持有的
     /// imported BorrowFact 同時證明空集合，才准啟動已核准 await。
@@ -3075,13 +3092,39 @@ impl PreparedPrivateScalarCall {
         budget: PrivateScalarExecutionBudget,
         fail_after_root_binding: bool,
         initial_local_steps: &'a [PrivateScalarLocalStep],
-        // E2-A：只能由真 Checker async Call 到達時觸發。
-        // 呼叫期間保留原顯式工作棧／P16 真資源；完成另一個已驗證
-        // 工作後，同一執行緒回到此真框架，不創造第二套 CFG。
-        mut await_scheduler: Option<&mut dyn FnMut(
+        await_scheduler: Option<&mut dyn FnMut(
             &str, &[crate::owned_str_runtime::ResourceEvent],
         )>,
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
+        let mut checkpoint = None;
+        self.evaluate_graph_driver(
+            expr, initial_frame, events, resource_events, budget,
+            fail_after_root_binding, initial_local_steps, await_scheduler,
+            &mut checkpoint, false,
+        )?.ok_or(PrivateScalarCallRuntimeError::StateMismatch)
+    }
+
+    /// 在完整原執行器的同一條動態執行路徑上封存與恢復。
+    /// allow_pause=false 維持原本同步結果／事件；true 只在原
+    /// Checked await 即將 EnterCall 時把「目前全部真堆疊」交回呼叫者。
+    fn evaluate_graph_driver<'a>(
+        &'a self,
+        expr: &'a PrivateScalarReturnExpr,
+        initial_frame: &BTreeMap<DeclarationId, i64>,
+        events: &mut Vec<PrivateScalarCallEvent>,
+        resource_events: &mut Vec<crate::owned_str_runtime::ResourceEvent>,
+        budget: PrivateScalarExecutionBudget,
+        fail_after_root_binding: bool,
+        initial_local_steps: &'a [PrivateScalarLocalStep],
+        mut await_scheduler: Option<&mut dyn FnMut(
+            &str, &[crate::owned_str_runtime::ResourceEvent],
+        )>,
+        checkpoint: &mut Option<PrivateScalarGraphCheckpoint<'a>>,
+        allow_pause: bool,
+    ) -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
+        let restored = checkpoint.take();
+        let mut resuming_current_await = restored.is_some();
+        let snapshot = restored.unwrap_or_else(|| {
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         // P16 MixedStructRuntime 的真建構與詞彙離域；本批拒絕任何 str 欄位。
         let mut copy_structs = crate::mixed_struct_runtime::MixedStructRuntime::new();
@@ -3173,8 +3216,19 @@ impl PreparedPrivateScalarCall {
         // 內層呼叫又建構結構時以同一 LIFO 棧保證順序。
         let mut pending_copy_structs = Vec::<Vec<(String, ApprovedSeed)>>::new();
         let mut steps = 0usize;
-        let result = (|| -> Result<i64, PrivateScalarCallRuntimeError> {
-            while let Some(task) = tasks.pop() {
+        PrivateScalarGraphCheckpoint {
+            resources, copy_structs, resource_cursor, frames, tasks, values,
+            completed_arguments, pending_copy_structs, steps, awaiting_name: String::new(),
+        }
+        });
+        let PrivateScalarGraphCheckpoint {
+            mut resources, mut copy_structs, mut resource_cursor,
+            mut frames, mut tasks, mut values, mut completed_arguments,
+            mut pending_copy_structs, mut steps, awaiting_name: _,
+        } = snapshot;
+        let mut paused_await = None::<String>;
+        let result = (|| -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
+            'graph: while let Some(task) = tasks.pop() {
                 // 記錄已完成的實參不是另一個 voiles 運算步驟；
                 // 即使下一運算會耗盡預算，仍保留先前已真求值的事件。
                 if !matches!(&task, PrivateScalarTask::RecordArgument
@@ -4149,6 +4203,18 @@ impl PreparedPrivateScalarCall {
                                 |frame| (&frame.borrow_tracker,
                                     frame.incoming_borrows.as_slice()),
                             ))?;
+                            // 尚未動到 P16 真資源／callee frame 或消耗本次實參。
+                            // 完整保存顯式工作堆疊、計數、值棧、真票據及
+                            // OwnedStrRuntime；下一次 poll 從同一 EnterCall 恢復。
+                            if allow_pause && !resuming_current_await {
+                                tasks.push(PrivateScalarTask::EnterCall(
+                                    name, argument_plans, is_root_call, awaited,
+                                ));
+                                steps -= 1; // 重開時才對本個真 EnterCall 計步
+                                paused_await = Some(name.to_owned());
+                                break 'graph;
+                            }
+                            resuming_current_await = false;
                         }
                         completed_arguments.truncate(completed_arguments.len() - argc);
                         if awaited {
@@ -4320,13 +4386,25 @@ impl PreparedPrivateScalarCall {
                     }
                 }
             }
+            if paused_await.is_some() {
+                return Ok(None);
+            }
             if frames.len() != 1 || values.len() != 1
                 || !completed_arguments.is_empty()
                 || !pending_copy_structs.is_empty() {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
             }
-            Ok(values[0])
+            Ok(Some(values[0]))
         })();
+        // 真正處於合法 await 邊時不觸發原工作圖的終止清理。
+        // 不回滾／重放任何已經產生的 ResourceEvent、函式進入或求值。
+        if let Some(awaiting_name) = paused_await {
+            *checkpoint = Some(PrivateScalarGraphCheckpoint {
+                resources, copy_structs, resource_cursor, frames, tasks, values,
+                completed_arguments, pending_copy_structs, steps, awaiting_name,
+            });
+            return Ok(None);
+        }
         // 回滾借用帳須延續到根框架的最後資源清理階段；
         // 成功路徑維持空清單，不改動既有真函式返回語意。
         let mut pending_loans = Vec::new();
