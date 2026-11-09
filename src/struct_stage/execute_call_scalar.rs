@@ -5957,6 +5957,213 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
 }
 
 
+
+#[cfg(test)]
+mod g18_v7_cumulative_budget_tests {
+    use super::*;
+
+    fn checked(source: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(source)
+            .expect("必須是原 Parser／Checker 核准來源，不藉新測試放寬文法")
+    }
+
+    fn owned_source() -> &'static str {
+        concat!(
+            "async fn ready(n:int)->int{ return n+1 }\n",
+            "fn wrapper()->int{\n",
+            "var hold:str = \"同一預算真持有者🪼\"\n",
+            "return await ready(7)\n",
+            "}\n",
+            "fn main()->int{ return wrapper() }\n",
+        )
+    }
+
+    #[test]
+    fn g18_v7_d1801_原真已執行工作跨await總步數不因wake重置() {
+        let plan = checked(owned_source());
+        let mut reference = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let consumed = reference.checkpoint.as_ref().unwrap().steps;
+        assert!(consumed > 0);
+        // 在原預先測得的「抵達 await 前」真正已執行步數上，
+        // 僅再允許一個 EnterCall；後續子函式真正步驟必受控拒絕。
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 128, max_steps: consumed + 1,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        assert_eq!(
+            queue.jobs[&id].continuation.checkpoint.as_ref().unwrap().steps,
+            consumed,
+        );
+        let before = queue.retained_resources(id).unwrap().to_vec();
+        assert!(matches!(before.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ]));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        let outcome = queue.outcome(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Failed));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "wrapper",
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v7_d1801_兩個真正await的第二個安全點與第三次poll仍共用總步數() {
+        let plan = checked(concat!(
+            "async fn first()->int{ return 2 }\n",
+            "async fn second()->int{ return 3 }\n",
+            "fn main()->int{\n",
+            "var hold:str = \"多安全點同一預算🪼\"\n",
+            "return await first()+await second()\n",
+            "}\n",
+        ));
+        let mut reference = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let first_steps = reference.checkpoint.as_ref().unwrap().steps;
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let second_steps = reference.checkpoint.as_ref().unwrap().steps;
+        assert!(second_steps > first_steps);
+
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 128, max_steps: second_steps + 1,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        assert_eq!(queue.pending_await(id), Some("second"));
+        assert_eq!(
+            queue.jobs[&id].continuation.checkpoint.as_ref().unwrap().steps,
+            second_steps,
+        );
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        let outcome = queue.outcome(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.resource_events));
+        assert_eq!(outcome.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "first",
+        )).count(), 1);
+        assert_eq!(queue.drive_order(), &[
+            (id, PrivateScalarGraphPoll::Suspended),
+            (id, PrivateScalarGraphPoll::Suspended),
+            (id, PrivateScalarGraphPoll::Completed),
+        ]);
+    }
+
+    #[test]
+    fn g18_v7_d1801_同一原Checker來源兩份FIFO工作各自獨立預算與資源帳() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(owned_source()).unwrap();
+        let plan = catalog.plan(program).unwrap();
+        let mut reference = PrivateScalarGraphContinuation::new(plan).unwrap();
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let steps = reference.checkpoint.as_ref().unwrap().steps;
+
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let limited = queue.submit_program_with_budget(
+            &catalog, program, PrivateScalarExecutionBudget {
+                max_call_frames: 128, max_steps: steps + 1,
+            },
+        ).unwrap();
+        let normal = queue.submit_program(&catalog, program).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((limited, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((normal, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(limited).unwrap();
+        queue.wake(normal).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((limited, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((normal, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(limited).unwrap().result,
+            Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert_eq!(queue.outcome(normal).unwrap().result, Ok(8));
+        for id in [limited, normal] {
+            let result = queue.outcome(id).unwrap();
+            assert!(result.has_balanced_frame_trace());
+            assert!(matches!(result.resource_events.as_slice(), [
+                crate::owned_str_runtime::ResourceEvent::Created(x),
+                crate::owned_str_runtime::ResourceEvent::Released(y),
+            ] if x == y));
+        }
+        assert_eq!(queue.ready_ids(), []);
+    }
+
+    #[test]
+    fn g18_v7_d1801_零環境預算與未知登錄身分不消耗FIFO工作ID() {
+        let plan = checked(owned_source());
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        let before = queue.ready_ids();
+        for budget in [
+            PrivateScalarExecutionBudget { max_call_frames: 0, max_steps: 100 },
+            PrivateScalarExecutionBudget { max_call_frames: 100, max_steps: 0 },
+        ] {
+            assert_eq!(queue.submit_with_budget(&plan, budget),
+                Err(PrivateScalarCooperativeError::Engine));
+            assert_eq!(queue.ready_ids(), before);
+            assert_eq!(queue.jobs.len(), 1);
+        }
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(owned_source()).unwrap();
+        assert_eq!(queue.submit_program_with_budget(
+            &catalog, program + 500, PrivateScalarExecutionBudget::default(),
+        ), Err(PrivateScalarCooperativeError::UnknownProgram));
+        assert_eq!(queue.ready_ids(), before);
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.drive_order(), &[
+            (id, PrivateScalarGraphPoll::Suspended),
+        ]);
+    }
+
+    #[test]
+    fn g18_v7_d1801_函式框架環境預算限制在真正await前拒絕且釋放父資源() {
+        let plan = checked(owned_source());
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 1, max_steps: 100_000,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        assert_eq!(queue.pending_await(id), None);
+        let outcome = queue.outcome(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(x),
+            crate::owned_str_runtime::ResourceEvent::Released(y),
+        ] if x == y));
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::AwaitSafePoint(_),
+        )));
+    }
+}
+
 #[cfg(test)]
 mod g18_v7_loop_body_await_checkpoint_tests {
     use super::*;
