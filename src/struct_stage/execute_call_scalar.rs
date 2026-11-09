@@ -6113,6 +6113,8 @@ mod g18_v7_cumulative_budget_tests {
     #[test]
     fn g18_v7_d1801_零環境預算與未知登錄身分不消耗FIFO工作ID() {
         let plan = checked(owned_source());
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(owned_source()).unwrap();
         let mut queue = PrivateScalarCooperativeQueue::new();
         let id = queue.submit(&plan).unwrap();
         let before = queue.ready_ids();
@@ -6125,8 +6127,6 @@ mod g18_v7_cumulative_budget_tests {
             assert_eq!(queue.ready_ids(), before);
             assert_eq!(queue.jobs.len(), 1);
         }
-        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
-        let program = catalog.prepare(owned_source()).unwrap();
         assert_eq!(queue.submit_program_with_budget(
             &catalog, program + 500, PrivateScalarExecutionBudget::default(),
         ), Err(PrivateScalarCooperativeError::UnknownProgram));
