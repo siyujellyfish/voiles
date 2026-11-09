@@ -1390,3 +1390,7 @@ include!("struct_stage/ir_projection.rs");
 // G18／P18.1-F1：原六項契約第一條函式圖獨立真執行正反矩陣。
 #[cfg(test)]
 include!("struct_stage/g18_f1_obligation_tests.rs");
+
+// G18／P18.1-F2：原始混合參數真執行及正常／失敗資源責任矩陣。
+#[cfg(test)]
+include!("struct_stage/g18_f2_obligation_tests.rs");
