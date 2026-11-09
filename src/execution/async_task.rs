@@ -364,16 +364,23 @@ impl AsyncSafePointFrames {
         Ok(())
     }
 
-    /// VB15-01-A：仍有效的任意借用票據不得跨 await 暫停點。
-    /// 必須先真的歸還票據，不能清空 Vec 偽裝安全。
-    fn suspend(&mut self) -> Result<(), AsyncSafePointError> {
-        if self.state != AsyncSafePointState::Running || self.frames.is_empty() {
-            return Err(AsyncSafePointError::WrongState);
-        }
+    /// VB15-01-A：不可只依「曾經在 suspend 時沒有票據」來允許
+    /// 後續恢復或取消。每次交付安全點都要重新驗證真正 HC14
+    /// tracker 與各動態框架的有效票據，拒絕時必須零狀態變更。
+    fn verify_no_live_borrows(&self) -> Result<(), AsyncSafePointError> {
         if self.frames.iter().any(|frame| !frame.is_empty())
             || self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
             return Err(AsyncSafePointError::ActiveBorrowAcrossAwait);
         }
+        Ok(())
+    }
+
+    /// VB15-01-A：仍有效的任意真票據不得跨 await 暫停點。
+    fn suspend(&mut self) -> Result<(), AsyncSafePointError> {
+        if self.state != AsyncSafePointState::Running || self.frames.is_empty() {
+            return Err(AsyncSafePointError::WrongState);
+        }
+        self.verify_no_live_borrows()?;
         self.state = AsyncSafePointState::Suspended;
         Ok(())
     }
@@ -384,6 +391,8 @@ impl AsyncSafePointFrames {
             || self.pending_verified_await.is_some() {
             return Err(AsyncSafePointError::WrongState);
         }
+        // 防止暫停之後再加入的有效 HC14 票據被繞過。
+        self.verify_no_live_borrows()?;
         self.state = AsyncSafePointState::Running;
         Ok(())
     }
@@ -446,10 +455,7 @@ impl AsyncSafePointFrames {
             || self.pending_verified_await.is_some() {
             return Err(AsyncSafePointError::WrongState);
         }
-        if self.frames.iter().any(|frame| !frame.is_empty())
-            || self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
-            return Err(AsyncSafePointError::ActiveBorrowAcrossAwait);
-        }
+        self.verify_no_live_borrows()?;
         self.unwind_frames(AsyncSafePointState::Cancelled, false)
     }
 
@@ -547,6 +553,9 @@ impl AsyncSafePointFrames {
     ) -> Result<AsyncSafePointSettlement, AsyncSafePointError> {
         self.verify_pending_task(session, task)?;
         Self::verify_suspended_task(session, task)?;
+        // 上一次 suspend 時的快照不足以證明現在的等待者無有效票據。
+        // 未通過前不能解除綁定，亦不能把 CheckedTask 重設為 Prepared。
+        self.verify_no_live_borrows()?;
         self.pending_verified_await = None;
         self.resume()?;
         session.tasks.get_mut(&task).expect("仍保留原核准工作").status =
@@ -570,6 +579,9 @@ impl AsyncSafePointFrames {
         &mut self, session: &mut DirectAwaitSession, task: u64,
     ) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
         self.verify_pending_task(session, task)?;
+        // 必須先證明取消框架可安全退場，再消耗尚未啟動的真正工作。
+        // 失敗時保持 session.Suspended／pending 身分／ResourceId 全部不變。
+        self.verify_no_live_borrows()?;
         match session.status(task) {
             Some(DirectAwaitStatus::Suspended) =>
                 session.cancel_before_start(task).map_err(AsyncSafePointError::DirectAwait)?,
@@ -1091,4 +1103,118 @@ mod v7_a2_safe_point_tests {
         assert!(session.execution_order().is_empty());
     }
 
+
+    #[test]
+    fn v7_a2_喚醒前等待者新增真票據不得繞過VB15且狀態原子保留() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 31 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("持有", "待恢復🪼").unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
+        // 動態追蹤器有真正票據，即使未加入框架清單也不能被誤判為空。
+        let ticket = frames.loans.acquire(
+            DeclarationId(901), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(frames.wake_verified_await(&mut session, id).err(),
+            Some(AsyncSafePointError::ActiveBorrowAcrossAwait));
+        assert_eq!(frames.state, AsyncSafePointState::Suspended);
+        assert!(frames.pending_verified_await.is_some());
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Suspended));
+        assert!(session.execution_order().is_empty());
+        assert_eq!(frames.resources.resource_id("持有"), Ok(resource));
+        frames.loans.release(ticket).unwrap();
+        let AsyncSafePointSettlement::Succeeded { value, evidence } =
+            frames.wake_verified_await(&mut session, id).unwrap() else {
+                panic!("真票據歸還後才應恢復成功");
+            };
+        assert_eq!(value, Value::Int(31));
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(session.execution_order(), &[id]);
+    }
+
+    #[test]
+    fn v7_a2_取消前等待者真票據未還不得提前消耗工作及持有者() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 32 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("本體", "不能提前釋放").unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
+        let ticket = frames.loans.acquire(
+            DeclarationId(902), BorrowKind::ExclusiveWrite,
+        ).unwrap();
+        assert_eq!(frames.cancel_verified_await(&mut session, id).err(),
+            Some(AsyncSafePointError::ActiveBorrowAcrossAwait));
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Suspended));
+        assert!(session.tasks.get(&id).unwrap().plan.is_some());
+        assert!(session.execution_order().is_empty());
+        assert_eq!(frames.state, AsyncSafePointState::Suspended);
+        assert!(frames.pending_verified_await.is_some());
+        assert_eq!(frames.resources.resource_id("本體"), Ok(resource));
+        frames.loans.release(ticket).unwrap();
+        let evidence = frames.cancel_verified_await(&mut session, id).unwrap();
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Cancelled));
+        assert!(session.tasks.get(&id).unwrap().plan.is_none());
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert!(session.execution_order().is_empty());
+    }
+
+    #[test]
+    fn v7_a2_普通resume亦須重新核對暫停後加入的真正票據() {
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("原", "資源🪼").unwrap();
+        frames.suspend().unwrap();
+        let ticket = frames.loans.acquire(
+            DeclarationId(903), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(frames.resume(), Err(AsyncSafePointError::ActiveBorrowAcrossAwait));
+        assert_eq!(frames.state, AsyncSafePointState::Suspended);
+        assert_eq!(frames.resources.resource_id("原"), Ok(resource));
+        frames.loans.release(ticket).unwrap();
+        frames.resume().unwrap();
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        frames.suspend().unwrap();
+        let evidence = frames.cancel_suspended().unwrap();
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+    }
+
+    #[test]
+    fn v7_a2_暫停期間框架清單仍有真BorrowFact應禁止取消和喚醒() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(
+            b"fn main()->int{ return 33 }".to_vec(), ExecutionBudget::default(),
+        ).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("清單", "同一持有者").unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
+        let fact = BorrowFact::new(DeclarationId(904), BorrowKind::SharedRead);
+        let ticket = frames.loans.acquire(fact.source, fact.kind).unwrap();
+        frames.frames.last_mut().unwrap().push((ticket, fact));
+        assert_eq!(frames.cancel_verified_await(&mut session, id).err(),
+            Some(AsyncSafePointError::ActiveBorrowAcrossAwait));
+        assert_eq!(frames.wake_verified_await(&mut session, id).err(),
+            Some(AsyncSafePointError::ActiveBorrowAcrossAwait));
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Suspended));
+        assert_eq!(frames.resources.resource_id("清單"), Ok(resource));
+        frames.loans.finish_selected_verified(&[ticket], &[fact]).unwrap();
+        frames.frames.last_mut().unwrap().pop();
+        let evidence = frames.cancel_verified_await(&mut session, id).unwrap();
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert!(session.execution_order().is_empty());
+    }
 }
