@@ -5711,10 +5711,10 @@ mod g18_v7_real_graph_checkpoint_tests {
             _ => None,
         }).collect::<Vec<_>>();
         assert_eq!(awaited, ["left", "right"]);
-        assert_eq!(live.poll().err(), Some(
-            PrivateScalarCallPrepareError::Unsupported(
+        assert!(matches!(live.poll(),
+            Err(PrivateScalarCallPrepareError::Unsupported(
                 "已結束的私有工作不得重複 poll",
-            ),
+            )),
         ));
     }
 
