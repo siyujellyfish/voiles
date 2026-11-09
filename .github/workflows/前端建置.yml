@@ -190,6 +190,9 @@ jobs:
       - name: G18 V7 E3 真 FIFO 整批安全關閉與遞迴 for while 八項正反 Gate
         run: python3 tools/核對G18-V7整批真框架安全關閉.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 V7 E2/E3 原 for/while 本體 await 真工作圖續行與取消四項 Gate
+        run: python3 tools/核對G18-V7迴圈本體真等待續行.py --test-bin target/p02/p04_source_internal
+
 
       - name: G18 V1 R06 方法var int重賦值六十一項正反 Gate
         run: python3 tools/核對G18-R06跨執行器正反矩陣.py --test-bin target/p02/p04_source_internal

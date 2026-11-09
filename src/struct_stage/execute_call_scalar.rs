@@ -5917,6 +5917,192 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     }
 }
 
+
+#[cfg(test)]
+mod g18_v7_loop_body_await_checkpoint_tests {
+    use super::*;
+
+    fn checked(source: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(source)
+            .expect("必須為原 Lexer／Parser／Checker 已核准的原有 await／迴圈組合")
+    }
+
+    fn for_source() -> &'static str {
+        concat!(
+            "async fn tick(n:int)->int{ return n+1 }\n",
+            "fn worker()->int{\n",
+            "var total:int = 0\n",
+            "for i in 0..3{\n",
+            "var local:str = \"每輪真資源🪼\"\n",
+            "total = total+await tick(i)\n",
+            "}\n",
+            "return total\n",
+            "}\n",
+            "fn main()->int{ return worker()+0 }\n",
+        )
+    }
+
+    #[test]
+    fn g18_v7_e2_原Checker_for迴圈本體三次真await逐輪checkpoint而不重複建立資源() {
+        let plan = checked(for_source());
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        for iteration in 0..3 {
+            assert_eq!(queue.drive_one().unwrap(), Some((
+                id, PrivateScalarGraphPoll::Suspended,
+            )));
+            assert_eq!(queue.pending_await(id), Some("tick"));
+            let events = queue.retained_resources(id).unwrap();
+            assert_eq!(events.iter().filter(|e| matches!(
+                e, crate::owned_str_runtime::ResourceEvent::Created(_),
+            )).count(), iteration + 1);
+            assert_eq!(events.iter().filter(|e| matches!(
+                e, crate::owned_str_runtime::ResourceEvent::Released(_),
+            )).count(), iteration);
+            assert_eq!(queue.drive_one().unwrap(), None);
+            queue.wake(id).unwrap();
+        }
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        let out = queue.outcome(id).unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&out.resource_events));
+        assert_eq!(out.resource_events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Created(_),
+        )).count(), 3);
+        assert_eq!(out.resource_events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Released(_),
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "tick",
+        )).count(), 3);
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "worker",
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v7_e3_for真第二輪await取消只清理當前局部而不重建前輪() {
+        let plan = checked(for_source());
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        let before = queue.retained_resources(id).unwrap();
+        assert_eq!(before.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Created(_),
+        )).count(), 2);
+        assert_eq!(before.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Released(_),
+        )).count(), 1);
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        let evidence = queue.cancellation(id).unwrap();
+        assert!(crate::owned_str_runtime::event_trace_balanced(&evidence.resource_events));
+        assert_eq!(evidence.resource_events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Created(_),
+        )).count(), 2);
+        assert_eq!(evidence.resource_events.iter().filter(|e| matches!(
+            e, crate::owned_str_runtime::ResourceEvent::Released(_),
+        )).count(), 2);
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "tick",
+        )).count(), 1);
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "tick",
+        )).count(), 1);
+        assert!(queue.drive_order().iter().all(|(task, _)| *task == id));
+    }
+
+    #[test]
+    fn g18_v7_e2_原Checker_while本體await後continue真局部資源不重建() {
+        let plan = checked(concat!(
+            "async fn next(n:int)->int{ return n+2 }\n",
+            "fn worker()->int{\n",
+            "var total:int = 4\n",
+            "var active:bool = true\n",
+            "while(active){\n",
+            "var local:str = \"while真輪🪼\"\n",
+            "active = false\n",
+            "total = await next(total)\n",
+            "continue\n",
+            "}\n",
+            "return total\n",
+            "}\n",
+            "fn main()->int{ return worker()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        assert_eq!(queue.pending_await(id), Some("next"));
+        assert!(matches!(queue.retained_resources(id), Some([
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ])));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        let out = queue.outcome(id).unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert!(out.has_balanced_frame_trace());
+        assert!(matches!(out.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "next",
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v7_e3_原Checker_while本體await被取消後不執行後續continue或再迭代() {
+        let plan = checked(concat!(
+            "async fn next()->int{ return 5 }\n",
+            "fn worker()->int{\n",
+            "var active:bool = true\n",
+            "while(active){\n",
+            "var local:str = \"未退出的真局部🪼\"\n",
+            "active = false\n",
+            "var computed:int = await next()\n",
+            "continue\n",
+            "}\n",
+            "return 7\n",
+            "}\n",
+            "fn main()->int{ return worker()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        let original = queue.retained_resources(id).unwrap().to_vec();
+        assert!(matches!(original.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ]));
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        let cancellation = queue.cancellation(id).unwrap();
+        assert!(matches!(cancellation.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+        assert!(!cancellation.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "next",
+        )));
+        assert_eq!(queue.drive_one().unwrap(), None);
+        assert!(queue.outcome(id).is_none());
+    }
+}
+
 #[cfg(test)]
 mod g18_v7_cooperative_shutdown_tests {
     use super::*;
