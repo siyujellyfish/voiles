@@ -169,6 +169,9 @@ jobs:
       - name: G18 V7 A1 真私有 Checker 直接 await 工作跨呼叫保存與取消十項正反 Gate
         run: python3 tools/核對G18-V7私有直接等待工作.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 V7 E5 真私有 await 全祖先 BorrowTicket 五項正反 Gate
+        run: python3 tools/核對G18-V7所有祖先借用安全點.py --test-bin target/p02/p04_source_internal
+
 
       - name: G18 V1 R06 方法var int重賦值六十一項正反 Gate
         run: python3 tools/核對G18-R06跨執行器正反矩陣.py --test-bin target/p02/p04_source_internal
