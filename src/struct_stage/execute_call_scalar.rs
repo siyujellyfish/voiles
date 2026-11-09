@@ -5427,6 +5427,194 @@ impl PrivateCheckedDeferredAwaitQueue {
     }
 }
 
+
+#[cfg(test)]
+mod g18_v7_private_deferred_await_tests {
+    use super::*;
+
+    fn src(value: i64) -> String {
+        format!(
+            "async fn ready()->int{{ return {value} }}\n\
+             fn main()->int{{ return await ready() }}\n"
+        )
+    }
+
+    #[test]
+    fn g18_v7_a1_私有Checker工作可跨呼叫保存直到真喚醒才執行() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let id = queue.prepare(&src(23)).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Prepared));
+        assert!(queue.execution_order().is_empty());
+        assert!(queue.jobs[&id].outcome.is_none());
+        queue.suspend(id).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert!(queue.jobs[&id].plan.is_some());
+        assert!(queue.execution_order().is_empty());
+        let outcome = queue.wake(id).unwrap();
+        assert_eq!(outcome.result, Ok(23));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(outcome.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "ready",
+        )));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Succeeded));
+        assert_eq!(queue.execution_order(), &[id]);
+        assert!(queue.jobs[&id].plan.is_none());
+    }
+
+    #[test]
+    fn g18_v7_a1_兩個私有Checked工作只依真喚醒順序執行() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let first = queue.prepare(&src(1)).unwrap();
+        let second = queue.prepare(&src(2)).unwrap();
+        queue.suspend(first).unwrap();
+        queue.suspend(second).unwrap();
+        assert_eq!(queue.wake(second).unwrap().result, Ok(2));
+        assert_eq!(queue.status(first), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert_eq!(queue.wake(first).unwrap().result, Ok(1));
+        assert_eq!(queue.execution_order(), &[second, first]);
+    }
+
+    #[test]
+    fn g18_v7_a1_取消已暫停私有工作不執行任何函式事件() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let id = queue.prepare(&src(12)).unwrap();
+        queue.suspend(id).unwrap();
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert!(queue.jobs[&id].plan.is_none());
+        assert!(queue.jobs[&id].outcome.is_none());
+        assert!(queue.execution_order().is_empty());
+        assert_eq!(queue.wake(id).err(), Some(PrivateDeferredAwaitError::Cancelled));
+        assert_eq!(queue.cancel(id), Err(PrivateDeferredAwaitError::AlreadyFinished));
+    }
+
+    #[test]
+    fn g18_v7_a1_真正私有async局部UTF8只在喚醒後建構並唯一釋放() {
+        let source = concat!(
+            "async fn ready()->int{\n",
+            "var hold:str = \"真正🪼UTF-8\"\n",
+            "return 27\n}\n",
+            "fn main()->int{ return await ready() }\n",
+        );
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let id = queue.prepare(source).unwrap();
+        queue.suspend(id).unwrap();
+        assert!(queue.jobs[&id].outcome.is_none());
+        let outcome = queue.wake(id).unwrap();
+        assert_eq!(outcome.result, Ok(27));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+    }
+
+    #[test]
+    fn g18_v7_a2_私有直接等待真運算溢位後錯誤與資源單次退出() {
+        let source = concat!(
+            "async fn overflow()->int{\n",
+            "var hold:str = \"出錯也要清理🪼\"\n",
+            "return 9223372036854775807+1\n}\n",
+            "fn main()->int{ return await overflow() }\n",
+        );
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let id = queue.prepare(source).unwrap();
+        queue.suspend(id).unwrap();
+        let outcome = queue.wake(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(outcome.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!outcome.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::Returned(_),
+        )));
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Failed));
+        assert_eq!(queue.execution_order(), &[id]);
+        assert_eq!(queue.wake(id).err(), Some(PrivateDeferredAwaitError::WrongState));
+    }
+
+    #[test]
+    fn g18_v7_a1_有前置main資源不得假裝成已保存的等待框架() {
+        let source = concat!(
+            "async fn ready()->int{ return 3 }\n",
+            "fn main()->int{\n",
+            "var hold:str = \"不准偷偷跳過\"\n",
+            "return await ready()\n}\n",
+        );
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        assert!(matches!(queue.prepare(source),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert!(queue.jobs.is_empty());
+        assert!(queue.execution_order().is_empty());
+    }
+
+    #[test]
+    fn g18_v7_a1_複合await與普通同步呼叫不能冒充直接等待() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let addition = concat!(
+            "async fn ready()->int{ return 3 }\n",
+            "fn main()->int{ return await ready()+1 }\n",
+        );
+        assert!(matches!(queue.prepare(addition),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        let sync = concat!(
+            "fn plain()->int{ return 7 }\n",
+            "fn main()->int{ return plain() }\n",
+        );
+        assert!(matches!(queue.prepare(sync),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert!(queue.jobs.is_empty());
+    }
+
+    #[test]
+    fn g18_v7_a1_靜態非法來源不得建立工作或消耗工作身分() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let invalid = concat!(
+            "async fn ready()->int{ return true }\n",
+            "fn main()->int{ return await ready() }\n",
+        );
+        assert!(matches!(queue.prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        let id = queue.prepare(&src(7)).unwrap();
+        assert_eq!(id, 1);
+        assert!(queue.execution_order().is_empty());
+        assert_eq!(queue.suspend(100), Err(PrivateDeferredAwaitError::UnknownTask));
+        assert_eq!(queue.wake(id).err(), Some(PrivateDeferredAwaitError::WrongState));
+        queue.cancel(id).unwrap();
+    }
+
+    #[test]
+    fn g18_v7_a1_已封存私有來源竄改不能執行而可安全取消() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let id = queue.prepare(&src(17)).unwrap();
+        queue.suspend(id).unwrap();
+        queue.jobs.get_mut(&id).unwrap().plan.as_mut().unwrap().original[0] = b'!';
+        assert_eq!(queue.wake(id).err(), Some(PrivateDeferredAwaitError::SourceChanged));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert!(queue.execution_order().is_empty());
+        assert!(queue.jobs[&id].outcome.is_none());
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+    }
+
+    #[test]
+    fn g18_v7_a1_真工作不允許重複暫停或重複喚醒() {
+        let mut queue = PrivateCheckedDeferredAwaitQueue::new();
+        let id = queue.prepare(&src(9)).unwrap();
+        queue.suspend(id).unwrap();
+        assert_eq!(queue.suspend(id), Err(PrivateDeferredAwaitError::WrongState));
+        assert_eq!(queue.wake(id).unwrap().result, Ok(9));
+        assert_eq!(queue.wake(id).err(), Some(PrivateDeferredAwaitError::WrongState));
+        assert_eq!(queue.cancel(id), Err(PrivateDeferredAwaitError::AlreadyFinished));
+        assert_eq!(queue.execution_order(), &[id]);
+    }
+}
+
 #[cfg(test)]
 mod g18_private_scalar_call_tests {
     use super::*;
