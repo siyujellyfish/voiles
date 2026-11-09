@@ -5650,7 +5650,7 @@ mod g18_v7_real_graph_checkpoint_tests {
             "fn wrapper()->int{\n",
             "var hold:str = \"父框架已執行🪼\"\n",
             "return await ready(6)\n}\n",
-            "fn main()->int{ return wrapper() }\n",
+            "fn main()->int{ return wrapper()+0 }\n",
         ));
         let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
         assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
@@ -5774,7 +5774,7 @@ mod g18_v7_real_graph_checkpoint_tests {
     fn g18_v7_e2_同步原Checker工作不產生虛假的可暫停await() {
         let plan = checked(concat!(
             "fn forward(n:int)->int{ return n+4 }\n",
-            "fn main()->int{ return forward(2) }\n",
+            "fn main()->int{ return forward(2)+0 }\n",
         ));
         let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
         assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Completed);
