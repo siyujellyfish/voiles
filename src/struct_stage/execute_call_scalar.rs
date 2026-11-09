@@ -5917,7 +5917,7 @@ mod g18_v7_checked_program_catalog_tests {
     }
 
     #[test]
-    fn g18_v7_a1_登錄前靜態非法來源及不支援續行的真Checker形狀零身分消耗() {
+    fn g18_v7_a1_靜態非法來源零身分消耗且原Checker合法bool動態圖完整保留() {
         let mut catalog = PrivateScalarCheckedProgramCatalog::new();
         let invalid = concat!(
             "async fn ready()->int{ return true }\n",
@@ -5926,19 +5926,25 @@ mod g18_v7_checked_program_catalog_tests {
         assert!(matches!(catalog.prepare(invalid),
             Err(PrivateScalarCallPrepareError::Check(_))));
         assert_eq!(catalog.len(), 0);
-        // 原 Checker 接受 bool 參數普通函式，單一直接 main 快路
-        // 仍非本批的 int-only 可續行形狀；不能藉由登錄繞過限制。
-        let unsupported = concat!(
+        // 原 Checker 合法的 bool 參數呼叫已經採真 main_dynamic_call；
+        // 不可因為另有 int-only 直接快路的保守界線，誤拒完整動態圖。
+        let bool_graph = concat!(
             "fn choose(flag:bool)->int{\n",
             "if(flag){return 4}\nreturn 7\n}\n",
             "fn main()->int{ return choose(true) }\n",
         );
-        assert!(matches!(catalog.prepare(unsupported),
-            Err(PrivateScalarCallPrepareError::Unsupported(_))));
-        assert_eq!(catalog.len(), 0);
-        let first = catalog.prepare(&source(6)).unwrap();
-        assert_eq!(first, 1);
-        assert_eq!(catalog.len(), 1);
+        let flag_id = catalog.prepare(bool_graph).unwrap();
+        assert_eq!(flag_id, 1);
+        assert!(catalog.plan(flag_id).unwrap().main_dynamic_call.is_some());
+        let second = catalog.prepare(&source(6)).unwrap();
+        assert_eq!(second, 2);
+        assert_eq!(catalog.len(), 2);
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let flag_task = queue.submit_program(&catalog, flag_id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((flag_task, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(flag_task).unwrap().result, Ok(4));
+        assert!(queue.outcome(flag_task).unwrap().has_balanced_frame_trace());
     }
 
     #[test]
