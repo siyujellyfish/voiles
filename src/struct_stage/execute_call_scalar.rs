@@ -5416,6 +5416,9 @@ struct PrivateScalarGraphCancellation {
 
 struct PrivateScalarGraphContinuation<'a> {
     plan: &'a PreparedPrivateScalarCall,
+    // D18-01：屬於此真 CheckedTask 的環境預算，從第一次 poll 到
+    // 任意第 N 次 wake 不可重新配發或重置動態 step／frame 門檻。
+    budget: PrivateScalarExecutionBudget,
     checkpoint: Option<PrivateScalarGraphCheckpoint<'a>>,
     events: Vec<PrivateScalarCallEvent>,
     resource_events: Vec<crate::owned_str_runtime::ResourceEvent>,
@@ -5430,6 +5433,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
     /// 完整參數繫結的形式仍保守拒絕，不猜測新語意。
     fn root_for_graph(
         plan: &'a PreparedPrivateScalarCall,
+        budget: PrivateScalarExecutionBudget,
     ) -> Result<(
         &'a PrivateScalarReturnExpr,
         &'a [PrivateScalarLocalStep],
@@ -5437,7 +5441,6 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         PrivateScalarExecutionBudget,
         bool,
     ), PrivateScalarCallPrepareError> {
-        let budget = PrivateScalarExecutionBudget::default();
         if let Some(expr) = plan.main_dynamic_call.as_ref() {
             return Ok((
                 expr, plan.main_dynamic_steps.as_slice(),
@@ -5473,9 +5476,24 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
 
     fn new(plan: &'a PreparedPrivateScalarCall)
         -> Result<Self, PrivateScalarCallPrepareError> {
-        Self::root_for_graph(plan)?;
+        Self::new_with_budget(plan, PrivateScalarExecutionBudget::default())
+    }
+
+    /// D18-01：預算是每份執行環境的單次配置，不是 voiles
+    /// 固定遞迴或循環語言上限。零額度在任何資源及工作建立前
+    /// 拒絕，不得藉由 wake 補發新的單輪額度。
+    fn new_with_budget(
+        plan: &'a PreparedPrivateScalarCall,
+        budget: PrivateScalarExecutionBudget,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
+        if budget.max_call_frames == 0 || budget.max_steps == 0 {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "V7 原 CheckedTask 須有正執行環境預算",
+            ));
+        }
+        Self::root_for_graph(plan, budget)?;
         Ok(Self {
-            plan, checkpoint: None, events: Vec::new(),
+            plan, budget, checkpoint: None, events: Vec::new(),
             resource_events: Vec::new(), outcome: None,
             status: PrivateDeferredAwaitStatus::Prepared,
         })
@@ -5499,7 +5517,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         }
         let (expr, steps, initial_frame, budget, direct_fastpath) =
-            Self::root_for_graph(self.plan)?;
+            Self::root_for_graph(self.plan, self.budget)?;
         if direct_fastpath && self.status == PrivateDeferredAwaitStatus::Prepared {
             if let Some(argument) = self.plan.argument {
                 self.events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
@@ -5585,7 +5603,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
                 (&frame.borrow_tracker, frame.incoming_borrows.as_slice())),
         ).map_err(|_| PrivateScalarCallPrepareError::RuntimeTraceMismatch)?;
         let (expr, steps, initial_frame, budget, direct_fastpath) =
-            Self::root_for_graph(self.plan)?;
+            Self::root_for_graph(self.plan, self.budget)?;
         self.status = PrivateDeferredAwaitStatus::Running;
         let cleanup = self.plan.evaluate_graph_driver(
             expr, &initial_frame, &mut self.events, &mut self.resource_events,
@@ -5718,9 +5736,19 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         &mut self,
         plan: &'a PreparedPrivateScalarCall,
     ) -> Result<u64, PrivateScalarCooperativeError> {
+        self.submit_with_budget(plan, PrivateScalarExecutionBudget::default())
+    }
+
+    /// 同一核准來源可建立不同真動態工作，各有獨立的 D18-01
+    /// 環境預算。排程／喚醒不替任何工作重置其累積 steps。
+    fn submit_with_budget(
+        &mut self,
+        plan: &'a PreparedPrivateScalarCall,
+        budget: PrivateScalarExecutionBudget,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
         // 先在原 Checker 圖上真正建構可續行入口。
         // 來源無法核准時不消耗 ID、不加入任何工作。
-        let continuation = PrivateScalarGraphContinuation::new(plan)
+        let continuation = PrivateScalarGraphContinuation::new_with_budget(plan, budget)
             .map_err(|_| PrivateScalarCooperativeError::Engine)?;
         let id = self.next_id.checked_add(1)
             .ok_or(PrivateScalarCooperativeError::IdExhausted)?;
@@ -5741,9 +5769,20 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         catalog: &'a PrivateScalarCheckedProgramCatalog,
         program_id: u64,
     ) -> Result<u64, PrivateScalarCooperativeError> {
+        self.submit_program_with_budget(
+            catalog, program_id, PrivateScalarExecutionBudget::default(),
+        )
+    }
+
+    fn submit_program_with_budget(
+        &mut self,
+        catalog: &'a PrivateScalarCheckedProgramCatalog,
+        program_id: u64,
+        budget: PrivateScalarExecutionBudget,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
         let plan = catalog.plan(program_id)
             .ok_or(PrivateScalarCooperativeError::UnknownProgram)?;
-        self.submit(plan)
+        self.submit_with_budget(plan, budget)
     }
 
     fn status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
@@ -5917,6 +5956,213 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     }
 }
 
+
+
+#[cfg(test)]
+mod g18_v7_cumulative_budget_tests {
+    use super::*;
+
+    fn checked(source: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(source)
+            .expect("必須是原 Parser／Checker 核准來源，不藉新測試放寬文法")
+    }
+
+    fn owned_source() -> &'static str {
+        concat!(
+            "async fn ready(n:int)->int{ return n+1 }\n",
+            "fn wrapper()->int{\n",
+            "var hold:str = \"同一預算真持有者🪼\"\n",
+            "return await ready(7)\n",
+            "}\n",
+            "fn main()->int{ return wrapper() }\n",
+        )
+    }
+
+    #[test]
+    fn g18_v7_d1801_原真已執行工作跨await總步數不因wake重置() {
+        let plan = checked(owned_source());
+        let mut reference = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let consumed = reference.checkpoint.as_ref().unwrap().steps;
+        assert!(consumed > 0);
+        // 在原預先測得的「抵達 await 前」真正已執行步數上，
+        // 僅再允許一個 EnterCall；後續子函式真正步驟必受控拒絕。
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 128, max_steps: consumed + 1,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        assert_eq!(
+            queue.jobs[&id].continuation.checkpoint.as_ref().unwrap().steps,
+            consumed,
+        );
+        let before = queue.retained_resources(id).unwrap().to_vec();
+        assert!(matches!(before.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ]));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        let outcome = queue.outcome(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Failed));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+        assert_eq!(outcome.events.iter().filter(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "wrapper",
+        )).count(), 1);
+    }
+
+    #[test]
+    fn g18_v7_d1801_兩個真正await的第二個安全點與第三次poll仍共用總步數() {
+        let plan = checked(concat!(
+            "async fn first()->int{ return 2 }\n",
+            "async fn second()->int{ return 3 }\n",
+            "fn main()->int{\n",
+            "var hold:str = \"多安全點同一預算🪼\"\n",
+            "return await first()+await second()\n",
+            "}\n",
+        ));
+        let mut reference = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let first_steps = reference.checkpoint.as_ref().unwrap().steps;
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let second_steps = reference.checkpoint.as_ref().unwrap().steps;
+        assert!(second_steps > first_steps);
+
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 128, max_steps: second_steps + 1,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        assert_eq!(queue.pending_await(id), Some("second"));
+        assert_eq!(
+            queue.jobs[&id].continuation.checkpoint.as_ref().unwrap().steps,
+            second_steps,
+        );
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        let outcome = queue.outcome(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.resource_events));
+        assert_eq!(outcome.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "first",
+        )).count(), 1);
+        assert_eq!(queue.drive_order(), &[
+            (id, PrivateScalarGraphPoll::Suspended),
+            (id, PrivateScalarGraphPoll::Suspended),
+            (id, PrivateScalarGraphPoll::Completed),
+        ]);
+    }
+
+    #[test]
+    fn g18_v7_d1801_同一原Checker來源兩份FIFO工作各自獨立預算與資源帳() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(owned_source()).unwrap();
+        let plan = catalog.plan(program).unwrap();
+        let mut reference = PrivateScalarGraphContinuation::new(plan).unwrap();
+        assert_eq!(reference.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let steps = reference.checkpoint.as_ref().unwrap().steps;
+
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let limited = queue.submit_program_with_budget(
+            &catalog, program, PrivateScalarExecutionBudget {
+                max_call_frames: 128, max_steps: steps + 1,
+            },
+        ).unwrap();
+        let normal = queue.submit_program(&catalog, program).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((limited, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((normal, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(limited).unwrap();
+        queue.wake(normal).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((limited, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((normal, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(limited).unwrap().result,
+            Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert_eq!(queue.outcome(normal).unwrap().result, Ok(8));
+        for id in [limited, normal] {
+            let result = queue.outcome(id).unwrap();
+            assert!(result.has_balanced_frame_trace());
+            assert!(matches!(result.resource_events.as_slice(), [
+                crate::owned_str_runtime::ResourceEvent::Created(x),
+                crate::owned_str_runtime::ResourceEvent::Released(y),
+            ] if x == y));
+        }
+        assert_eq!(queue.ready_ids(), []);
+    }
+
+    #[test]
+    fn g18_v7_d1801_零環境預算與未知登錄身分不消耗FIFO工作ID() {
+        let plan = checked(owned_source());
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(owned_source()).unwrap();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        let before = queue.ready_ids();
+        for budget in [
+            PrivateScalarExecutionBudget { max_call_frames: 0, max_steps: 100 },
+            PrivateScalarExecutionBudget { max_call_frames: 100, max_steps: 0 },
+        ] {
+            assert_eq!(queue.submit_with_budget(&plan, budget),
+                Err(PrivateScalarCooperativeError::Engine));
+            assert_eq!(queue.ready_ids(), before);
+            assert_eq!(queue.jobs.len(), 1);
+        }
+        assert_eq!(queue.submit_program_with_budget(
+            &catalog, program + 500, PrivateScalarExecutionBudget::default(),
+        ), Err(PrivateScalarCooperativeError::UnknownProgram));
+        assert_eq!(queue.ready_ids(), before);
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Suspended,
+        )));
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.drive_order(), &[
+            (id, PrivateScalarGraphPoll::Suspended),
+        ]);
+    }
+
+    #[test]
+    fn g18_v7_d1801_函式框架環境預算限制在真正await前拒絕且釋放父資源() {
+        let plan = checked(owned_source());
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 1, max_steps: 100_000,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((
+            id, PrivateScalarGraphPoll::Completed,
+        )));
+        assert_eq!(queue.pending_await(id), None);
+        let outcome = queue.outcome(id).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(x),
+            crate::owned_str_runtime::ResourceEvent::Released(y),
+        ] if x == y));
+        assert!(!outcome.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::AwaitSafePoint(_),
+        )));
+    }
+}
 
 #[cfg(test)]
 mod g18_v7_loop_body_await_checkpoint_tests {
