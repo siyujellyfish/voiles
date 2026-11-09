@@ -195,6 +195,8 @@ jobs:
 
       - name: G18 V7 D18-01 真私有 FIFO 工作跨 await 累積環境預算五項正反 Gate
         run: python3 tools/核對G18-V7協作工作累積預算.py --test-bin target/p02/p04_source_internal
+      - name: G18 V7 E3 已結束 CheckedTask 移交證據與安全回收三項正反 Gate
+        run: python3 tools/核對G18-V7終態工作證據回收.py --test-bin target/p02/p04_source_internal
 
 
       - name: G18 V1 R06 方法var int重賦值六十一項正反 Gate

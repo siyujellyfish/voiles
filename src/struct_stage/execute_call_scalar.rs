@@ -5717,6 +5717,15 @@ struct PrivateScalarCooperativeJob<'a> {
     cancellation: Option<PrivateScalarGraphCancellation>,
 }
 
+ 
+/// E3：只有已正式終止並具有原 R05／P16 證據的工作才能移出 FIFO。
+/// 移交完整動態結果／取消事件；絕不可在 Drop 時默默丟棄真資源帳。
+#[derive(Debug)]
+enum PrivateScalarRetiredJob {
+    Completed(PrivateScalarCallOutcome),
+    Cancelled(Option<PrivateScalarGraphCancellation>),
+}
+
 /// 排程的「準備／可執行／已抵達 await／可喚醒」不等於
 /// 開放背景工作。每次 drive_one 僅消耗佇列頭的**一個**
 /// 原 Checker 計畫，至下一個真 await 或原函式正式完成。
@@ -5915,6 +5924,74 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         Ok(())
     }
 
+    /// V7-E3：顯式移交已終止工作的原執行結果及取消證據。
+    /// 長期存在的 FIFO 不應永久保存每份已結束的真動態框架；
+    /// 但未完成工作、仍在 ready 的工作及沒有 R05 證據的 Failed
+    /// 都不得為了回收記憶體而遺失 BorrowTicket／ResourceId 責任。
+    /// 已簽發的工作 ID 絕不重用；歷史排程與取消順序保留。
+    fn retire_terminal(
+        &mut self, id: u64,
+    ) -> Result<PrivateScalarRetiredJob, PrivateScalarCooperativeError> {
+        let job = self.jobs.get(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        let status = job.continuation.status;
+        if matches!(status,
+            PrivateDeferredAwaitStatus::Prepared
+            | PrivateDeferredAwaitStatus::Suspended
+            | PrivateDeferredAwaitStatus::Running
+        ) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
+        // 在移出 jobs 前完成全部守門，任何失敗都必須零修改。
+        if self.ready.contains(&id)
+            || job.continuation.checkpoint.is_some()
+            || !job.continuation.events.is_empty()
+            || !job.continuation.resource_events.is_empty() {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        match status {
+            PrivateDeferredAwaitStatus::Succeeded
+            | PrivateDeferredAwaitStatus::Failed => {
+                let outcome = job.continuation.outcome.as_ref()
+                    .ok_or(PrivateScalarCooperativeError::Engine)?;
+                if outcome.result.is_ok()
+                        != (status == PrivateDeferredAwaitStatus::Succeeded)
+                    || job.cancellation.is_some()
+                    || !outcome.has_balanced_frame_trace()
+                    || !crate::owned_str_runtime::event_trace_balanced(
+                        &outcome.resource_events,
+                    ) {
+                    return Err(PrivateScalarCooperativeError::Engine);
+                }
+            }
+            PrivateDeferredAwaitStatus::Cancelled => {
+                if job.continuation.outcome.is_some()
+                    || job.cancellation.as_ref().is_some_and(|evidence|
+                        !crate::owned_str_runtime::event_trace_balanced(
+                            &evidence.resource_events,
+                        )) {
+                    return Err(PrivateScalarCooperativeError::Engine);
+                }
+            }
+            _ => unreachable!("未完成狀態已於退休守門拒絕"),
+        }
+        let mut job = self.jobs.remove(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        match status {
+            PrivateDeferredAwaitStatus::Succeeded
+            | PrivateDeferredAwaitStatus::Failed => Ok(
+                PrivateScalarRetiredJob::Completed(
+                    job.continuation.outcome.take()
+                        .expect("前方已證明完成結果確實存在"),
+                ),
+            ),
+            PrivateDeferredAwaitStatus::Cancelled => Ok(
+                PrivateScalarRetiredJob::Cancelled(job.cancellation.take()),
+            ),
+            _ => unreachable!("未完成工作不得退休"),
+        }
+    }
+
     /// E3-A：由呼叫端明確關閉整批工作；不在背景或 Drop 時
     /// 偷偷執行 async 子函式。先對**所有**待取消工作檢查
     /// 真 HC14 票據／合法暫停點，再按逆登錄順序逐一使用
@@ -5957,6 +6034,117 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
 }
 
 
+
+#[cfg(test)]
+mod g18_v7_terminal_task_retirement_tests {
+    use super::*;
+
+    fn checked() -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(concat!(
+            "async fn pending()->int{ return 11 }\n",
+            "fn wrapper()->int{\n",
+            "var hold:str = \"終態資源帳不可丟棄🪼\"\n",
+            "return await pending()\n}\n",
+            "fn main()->int{ return wrapper() }\n",
+        )).expect("必須來自原 Parser／Checker 核准的真正資源來源")
+    }
+
+    #[test]
+    fn g18_v7_e3_完成與預算故障退休必移交R05原結果且工作身分不回繞() {
+        let plan = checked();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let success = queue.submit(&plan).unwrap();
+        let failed = queue.submit_with_budget(&plan, PrivateScalarExecutionBudget {
+            max_call_frames: 1, max_steps: 100_000,
+        }).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((success, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((failed, PrivateScalarGraphPoll::Completed)));
+        queue.wake(success).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((success, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.jobs.len(), 2);
+
+        let PrivateScalarRetiredJob::Completed(failure) =
+            queue.retire_terminal(failed).unwrap() else {
+                panic!("受控故障必保留真錯誤帳");
+            };
+        assert_eq!(failure.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert!(failure.has_balanced_frame_trace());
+        assert!(crate::owned_str_runtime::event_trace_balanced(
+            &failure.resource_events,
+        ));
+        let PrivateScalarRetiredJob::Completed(ok) =
+            queue.retire_terminal(success).unwrap() else {
+                panic!("正常完成必保留真結果");
+            };
+        assert_eq!(ok.result, Ok(11));
+        assert!(ok.has_balanced_frame_trace());
+        assert!(matches!(ok.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+        assert_eq!(queue.jobs.len(), 0);
+        assert_eq!(queue.status(success), None);
+        assert!(matches!(queue.retire_terminal(success),
+            Err(PrivateScalarCooperativeError::UnknownTask)));
+        assert_eq!(queue.drive_order().len(), 3);
+        let fresh = queue.submit(&plan).unwrap();
+        assert_eq!(fresh, failed + 1);
+        assert_eq!(queue.shutdown().unwrap(), [fresh]);
+    }
+
+    #[test]
+    fn g18_v7_e3_準備與暫停不得退休取消後真ResourceId證據隨工作移交() {
+        let plan = checked();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let suspended = queue.submit(&plan).unwrap();
+        let prepared = queue.submit(&plan).unwrap();
+        assert!(matches!(queue.retire_terminal(prepared),
+            Err(PrivateScalarCooperativeError::WrongState)));
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((suspended, PrivateScalarGraphPoll::Suspended)));
+        assert!(matches!(queue.retire_terminal(suspended),
+            Err(PrivateScalarCooperativeError::WrongState)));
+        assert_eq!(queue.ready_ids(), [prepared]);
+        queue.cancel(suspended).unwrap();
+        queue.cancel(prepared).unwrap();
+
+        let PrivateScalarRetiredJob::Cancelled(Some(cancelled)) =
+            queue.retire_terminal(suspended).unwrap() else {
+                panic!("真已執行框架的取消必交付原資源事件");
+            };
+        assert!(matches!(cancelled.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+        assert!(!cancelled.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert!(matches!(queue.retire_terminal(prepared).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        assert!(queue.ready_ids().is_empty());
+        assert!(queue.jobs.is_empty());
+        assert_eq!(queue.cancellation_order(), &[suspended, prepared]);
+        assert_eq!(queue.drive_one().unwrap(), None);
+    }
+
+    #[test]
+    fn g18_v7_e3_未有原R05驗證的Failed不得被退休以掩蓋失敗() {
+        let plan = checked();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        // 模擬引擎在正式結果產生之前即被阻斷：
+        // Failed 標籤不得冒充已產生成功／失敗退出帳。
+        queue.jobs.get_mut(&id).unwrap().continuation.status =
+            PrivateDeferredAwaitStatus::Failed;
+        assert!(matches!(queue.retire_terminal(id),
+            Err(PrivateScalarCooperativeError::Engine)));
+        assert_eq!(queue.ready_ids(), [id]);
+        assert_eq!(queue.jobs.len(), 1);
+        assert!(queue.outcome(id).is_none());
+    }
+}
 
 #[cfg(test)]
 mod g18_v7_cumulative_budget_tests {
