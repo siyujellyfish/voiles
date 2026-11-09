@@ -3100,7 +3100,7 @@ impl PreparedPrivateScalarCall {
         self.evaluate_graph_driver(
             expr, initial_frame, events, resource_events, budget,
             fail_after_root_binding, initial_local_steps, await_scheduler,
-            &mut checkpoint, false,
+            &mut checkpoint, false, false,
         )?.ok_or(PrivateScalarCallRuntimeError::StateMismatch)
     }
 
@@ -3121,7 +3121,13 @@ impl PreparedPrivateScalarCall {
         )>,
         checkpoint: &mut Option<PrivateScalarGraphCheckpoint<'a>>,
         allow_pause: bool,
+        // E3：僅能在已真正暫停且全框架無活借用的合法
+        // await 安全點直接停止工作，交由同一真出口反序清理。
+        cancel_at_checkpoint: bool,
     ) -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
+        if cancel_at_checkpoint && checkpoint.is_none() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
         let restored = checkpoint.take();
         let mut resuming_current_await = restored.is_some();
         let snapshot = restored.unwrap_or_else(|| {
@@ -3227,7 +3233,11 @@ impl PreparedPrivateScalarCall {
             mut pending_copy_structs, mut steps, awaiting_name: _,
         } = snapshot;
         let mut paused_await = None::<String>;
-        let result = (|| -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
+        // 取消不執行下一條 voiles 指令；此處 Ok(None) 只表示
+        // 「沒有更多使用者工作」，清理守門以 cancel_at_checkpoint
+        // 另行觸發，並不冒充任何正常回傳 int／執行期錯誤。
+        let result = if cancel_at_checkpoint { Ok(None) } else {
+        (|| -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
             'graph: while let Some(task) = tasks.pop() {
                 // 記錄已完成的實參不是另一個 voiles 運算步驟；
                 // 即使下一運算會耗盡預算，仍保留先前已真求值的事件。
@@ -4395,7 +4405,8 @@ impl PreparedPrivateScalarCall {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
             }
             Ok(Some(values[0]))
-        })();
+        })()
+        };
         // 真正處於合法 await 邊時不觸發原工作圖的終止清理。
         // 不回滾／重放任何已經產生的 ResourceEvent、函式進入或求值。
         if let Some(awaiting_name) = paused_await {
@@ -4408,7 +4419,8 @@ impl PreparedPrivateScalarCall {
         // 回滾借用帳須延續到根框架的最後資源清理階段；
         // 成功路徑維持空清單，不改動既有真函式返回語意。
         let mut pending_loans = Vec::new();
-        if result.is_err() {
+        let must_unwind = cancel_at_checkpoint || result.is_err();
+        if must_unwind {
             events.push(PrivateScalarCallEvent::UnwindStarted);
             // 先保留 pending 票據的逆序清單；它們可能分屬多個
             // 已進入的呼叫者框架。外層 Call 尚未 Enter 時，不得
@@ -4470,7 +4482,7 @@ impl PreparedPrivateScalarCall {
         // 直接 main→被呼叫者的真框架保存在最底層，亦必須在
         // 正常返回、注入故障或預算耗盡後按完成順序逆序離域。
         if let Some(root) = frames.first_mut() {
-            if result.is_err() {
+            if must_unwind {
                 // 所有內層框架已正式失敗退出，才可歸還根框架
                 // 尚未進入外層 Call 的票據；不得默默遺漏偽造來源。
                 Self::return_pending_borrows_in_frame(
@@ -4531,7 +4543,9 @@ impl PreparedPrivateScalarCall {
             events.push(PrivateScalarCallEvent::OwnedResource(resource.clone()));
         }
         resource_events.extend(emitted);
-        result
+        // E3 暫停取消：已完成 P16／HC14 真清理，呼叫者可確認
+        // checkpoint 為 None 且回傳 Ok(None)；不能流出偽造 RuntimeFailure。
+        if cancel_at_checkpoint { Ok(None) } else { result }
     }
 
     fn prepare(text: &str) -> Result<Self, PrivateScalarCallPrepareError> {
@@ -5392,6 +5406,14 @@ enum PrivateScalarGraphPoll {
     Completed,
 }
 
+/// E3 真取消證據：事件唯一來源是原 evaluate_graph_driver 中
+/// HC14 票據歸還、P16 OwnedStrRuntime 真 scope 退出與原函式幀退出。
+#[derive(Debug)]
+struct PrivateScalarGraphCancellation {
+    events: Vec<PrivateScalarCallEvent>,
+    resource_events: Vec<crate::owned_str_runtime::ResourceEvent>,
+}
+
 struct PrivateScalarGraphContinuation<'a> {
     plan: &'a PreparedPrivateScalarCall,
     checkpoint: Option<PrivateScalarGraphCheckpoint<'a>>,
@@ -5446,7 +5468,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         let result = self.plan.evaluate_graph_driver(
             expr, &main_frame, &mut self.events, &mut self.resource_events,
             adjusted_budget, false, &self.plan.main_dynamic_steps,
-            None, &mut self.checkpoint, true,
+            None, &mut self.checkpoint, true, false,
         );
         if matches!(&result, Ok(None)) {
             if self.checkpoint.is_none() {
@@ -5475,6 +5497,67 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         };
         self.outcome = Some(outcome);
         Ok(PrivateScalarGraphPoll::Completed)
+    }
+
+    /// E3：只能取消「已真進入執行而現在停在合法 await」的工作。
+    /// 不再次執行任何已完成運算或 EnterCall；同一 HC14／P16
+    /// 執行器從最內層向外真正歸還票據、釋放原 ResourceId。
+    /// 原計畫即使之後遭竄改仍需允許既有資源退場，故此處
+    /// 不重新執行來源／不以重驗原始文字阻塞必要清理。
+    fn cancel_suspended(
+        &mut self,
+    ) -> Result<PrivateScalarGraphCancellation, PrivateScalarCallPrepareError> {
+        if self.status != PrivateDeferredAwaitStatus::Suspended {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "真動態取消僅允許已停在合法 await 安全點",
+            ));
+        }
+        let saved = self.checkpoint.as_ref().ok_or(
+            PrivateScalarCallPrepareError::RuntimeTraceMismatch,
+        )?;
+        PreparedPrivateScalarCall::check_await_safe_point_chain(
+            saved.frames.iter().map(|frame|
+                (&frame.borrow_tracker, frame.incoming_borrows.as_slice())),
+        ).map_err(|_| PrivateScalarCallPrepareError::RuntimeTraceMismatch)?;
+        let expr = self.plan.main_dynamic_call.as_ref().ok_or(
+            PrivateScalarCallPrepareError::RuntimeTraceMismatch,
+        )?;
+        let main_frame = self.plan.main_owners.iter().copied()
+            .collect::<BTreeMap<DeclarationId, i64>>();
+        let budget = PrivateScalarExecutionBudget::default();
+        let adjusted_budget = PrivateScalarExecutionBudget {
+            max_call_frames: budget.max_call_frames.saturating_add(1),
+            max_steps: budget.max_steps,
+        };
+        self.status = PrivateDeferredAwaitStatus::Running;
+        let cleanup = self.plan.evaluate_graph_driver(
+            expr, &main_frame, &mut self.events, &mut self.resource_events,
+            adjusted_budget, false, &self.plan.main_dynamic_steps,
+            None, &mut self.checkpoint, false, true,
+        );
+        // 若真正 P16／HC14 退出失敗，禁止報稱取消成功；
+        // 已消耗工作不能恢復執行，保守標記 Failed 等待正式處置。
+        if !matches!(cleanup, Ok(None)) || self.checkpoint.is_some() {
+            self.status = PrivateDeferredAwaitStatus::Failed;
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        // 以既有 R05/SharedExit 對帳逆序 unwind，但結果僅供
+        // 內部稽核；使用者不會看到任何合成 StateMismatch runtime。
+        let evidence = PrivateScalarCallOutcome {
+            result: Err(PrivateScalarCallRuntimeError::StateMismatch),
+            events: std::mem::take(&mut self.events),
+            resource_events: std::mem::take(&mut self.resource_events),
+            parameter_slots_after_exit: 0,
+        };
+        if !evidence.has_balanced_frame_trace() {
+            self.status = PrivateDeferredAwaitStatus::Failed;
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        self.status = PrivateDeferredAwaitStatus::Cancelled;
+        Ok(PrivateScalarGraphCancellation {
+            events: evidence.events,
+            resource_events: evidence.resource_events,
+        })
     }
 
     fn pending_await(&self) -> Option<&str> {
