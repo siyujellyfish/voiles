@@ -5718,6 +5718,24 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         self.jobs.get(&id).and_then(|job| job.cancellation.as_ref())
     }
 
+    /// 暫停後到實際重新交付工作之間，原真借用帳可能出現新票據。
+    /// E5 不能只憑最初 suspend 成功便讓工作消耗原唯一 checkpoint；
+    /// 拒絕必先於佇列 pop_front 和原 evaluate_graph_driver 狀態變更。
+    fn verify_wakeup_safety(
+        job: &PrivateScalarCooperativeJob<'a>,
+    ) -> Result<(), PrivateScalarCooperativeError> {
+        if job.continuation.status != PrivateDeferredAwaitStatus::Suspended {
+            return Ok(());
+        }
+        let saved = job.continuation.checkpoint.as_ref()
+            .ok_or(PrivateScalarCooperativeError::Engine)?;
+        PreparedPrivateScalarCall::check_await_safe_point_chain(
+            saved.frames.iter().map(|frame| (
+                &frame.borrow_tracker, frame.incoming_borrows.as_slice(),
+            )),
+        ).map_err(|_| PrivateScalarCooperativeError::Engine)
+    }
+
     fn retained_resources(
         &self, id: u64,
     ) -> Option<&[crate::owned_str_runtime::ResourceEvent]> {
@@ -5735,6 +5753,11 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         let Some(id) = self.ready.front().copied() else {
             return Ok(None);
         };
+        // 防止 wake 成功後、drive 前加入的新有效票據消耗原
+        // checkpoint。拒絕時 FIFO、工作 ID、資源與執行順序零變更。
+        let job = self.jobs.get(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        Self::verify_wakeup_safety(job)?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         let poll = job.continuation.poll();
@@ -5768,6 +5791,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             || self.ready.contains(&id) {
             return Err(PrivateScalarCooperativeError::WrongState);
         }
+        Self::verify_wakeup_safety(job)?;
         self.ready.push_back(id);
         Ok(())
     }
