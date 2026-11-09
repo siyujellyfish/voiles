@@ -3055,6 +3055,12 @@ impl PreparedPrivateScalarCall {
         budget: PrivateScalarExecutionBudget,
         fail_after_root_binding: bool,
         initial_local_steps: &'a [PrivateScalarLocalStep],
+        // E2-A：只能由真 Checker async Call 到達時觸發。
+        // 呼叫期間保留原顯式工作棧／P16 真資源；完成另一個已驗證
+        // 工作後，同一執行緒回到此真框架，不創造第二套 CFG。
+        mut await_scheduler: Option<&mut dyn FnMut(
+            &str, &[crate::owned_str_runtime::ResourceEvent],
+        )>,
     ) -> Result<i64, PrivateScalarCallRuntimeError> {
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         // P16 MixedStructRuntime 的真建構與詞彙離域；本批拒絕任何 str 欄位。
@@ -4129,6 +4135,12 @@ impl PreparedPrivateScalarCall {
                         completed_arguments.truncate(completed_arguments.len() - argc);
                         if awaited {
                             events.push(PrivateScalarCallEvent::AwaitSafePoint(name.to_owned()));
+                            // 真來源的 await、安全借用守門及所有實參皆已完成，
+                            // 子函式尚未 Enter；在此點協作執行另一核准工作。
+                            // 觀測到的 ResourceEvent 唯一出自當下 P16 真帳。
+                            if let Some(schedule) = await_scheduler.as_deref_mut() {
+                                schedule(name, resources.events());
+                            }
                         }
                         events.push(PrivateScalarCallEvent::FunctionEntered(name.to_owned()));
                         events.extend(bound_events);
@@ -5153,6 +5165,28 @@ impl PreparedPrivateScalarCall {
     fn execute_with_budget_and_fault(
         &self, budget: PrivateScalarExecutionBudget, fail_after_binding: bool,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        self.execute_with_budget_and_fault_scheduler(budget, fail_after_binding, None)
+    }
+
+    /// E2-A 內部同執行緒協作切換：原私有 Checker 的真 await 到達時
+    /// 才呼叫排程者。不是預先掃描來源或在工作準備階段合成事件。
+    fn execute_with_await_scheduler(
+        &self,
+        scheduler: &mut dyn FnMut(
+            &str, &[crate::owned_str_runtime::ResourceEvent],
+        ),
+    ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
+        self.execute_with_budget_and_fault_scheduler(
+            PrivateScalarExecutionBudget::default(), false, Some(scheduler),
+        )
+    }
+
+    fn execute_with_budget_and_fault_scheduler(
+        &self, budget: PrivateScalarExecutionBudget, fail_after_binding: bool,
+        mut await_scheduler: Option<&mut dyn FnMut(
+            &str, &[crate::owned_str_runtime::ResourceEvent],
+        )>,
+    ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
         let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         };
@@ -5197,6 +5231,7 @@ impl PreparedPrivateScalarCall {
             let result = self.evaluate_graph(
                 dynamic_call, &main_frame, &mut events, &mut resource_events,
                 adjusted_budget, fail_after_binding, &self.main_dynamic_steps,
+                await_scheduler.take(),
             );
             return self.audit_graph_outcome(PrivateScalarCallOutcome {
                 result, events, resource_events, parameter_slots_after_exit: 0,
@@ -5224,7 +5259,8 @@ impl PreparedPrivateScalarCall {
                 Err(PrivateScalarCallRuntimeError::InjectedFailure)
             } else {
                 self.evaluate_graph(&self.return_expr, &frame, &mut events,
-                    &mut resource_events, budget, false, &self.root_local_steps)
+                    &mut resource_events, budget, false, &self.root_local_steps,
+                    await_scheduler.take())
             }
         });
         if let Ok(value) = result {
@@ -5396,6 +5432,131 @@ mod g18_private_scalar_call_tests {
             e, PrivateScalarCallEvent::UnwindStarted
         )));
     }
+
+
+    // V7／E2-A：來源真的執行到 await 前，協作排程才可暫用
+    // 同一 Rust 執行緒；父函式 P16 資源與真框架一直由原工作持有。
+    #[test]
+    fn g18_v7_e2_真私有await在內層函式中讓出且父框架資源仍存活() {
+        let main = checked(concat!(
+            "async fn target(n:int)->int{ return n+1 }\n",
+            "fn wrapper()->int{\nvar hold:str = \"原工作🪼\"\nreturn await target(6)\n}\n",
+            "fn main()->int{ return wrapper() }\n",
+        ));
+        let other = checked(concat!(
+            "async fn side()->int{ return 9 }\n",
+            "fn main()->int{ return await side() }\n",
+        ));
+        let mut visited = Vec::<(String, Vec<crate::owned_str_runtime::ResourceEvent>)>::new();
+        let mut scheduler = |name: &str, resources: &[crate::owned_str_runtime::ResourceEvent]| {
+            visited.push((name.to_owned(), resources.to_vec()));
+            let finished = other.execute().unwrap();
+            assert_eq!(finished.result, Ok(9));
+            assert!(finished.has_balanced_frame_trace());
+        };
+        let out = main.execute_with_await_scheduler(&mut scheduler).unwrap();
+        assert_eq!(out.result, Ok(7));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(visited.len(), 1);
+        assert_eq!(visited[0].0, "target");
+        assert!(matches!(visited[0].1.as_slice(),
+            [crate::owned_str_runtime::ResourceEvent::Created(_)]));
+        assert!(matches!(out.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(out.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "target"
+        )).count(), 1);
+        assert!(main.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e2_雙真正await只按動態左右順序發出協作切換() {
+        let plan = checked(concat!(
+            "async fn first(n:int)->int{ return n+1 }\n",
+            "async fn second(n:int)->int{ return n+2 }\n",
+            "fn main()->int{ return await first(2)+await second(3) }\n",
+        ));
+        let mut order = Vec::<String>::new();
+        let mut scheduler = |name: &str, _: &[crate::owned_str_runtime::ResourceEvent]| {
+            order.push(name.to_owned());
+        };
+        let out = plan.execute_with_await_scheduler(&mut scheduler).unwrap();
+        assert_eq!(out.result, Ok(8));
+        assert_eq!(order, ["first", "second"]);
+        assert!(out.has_balanced_frame_trace());
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e2_未達等待點的框架預算耗盡絕不執行排程者() {
+        let plan = checked(concat!(
+            "async fn inner()->int{ return 3 }\n",
+            "fn wrapper()->int{ return await inner() }\n",
+            "fn main()->int{ return wrapper() }\n",
+        ));
+        let mut count = 0usize;
+        let mut scheduler = |_: &str, _: &[crate::owned_str_runtime::ResourceEvent]| {
+            count += 1;
+        };
+        let out = plan.execute_with_budget_and_fault_scheduler(
+            PrivateScalarExecutionBudget { max_call_frames: 1, max_steps: 200 },
+            false, Some(&mut scheduler),
+        ).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::CallBudget));
+        assert_eq!(count, 0);
+        assert!(out.has_balanced_frame_trace());
+        assert!(!out.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+        )));
+    }
+
+    #[test]
+    fn g18_v7_e2_普通同步呼叫不得觸發等待排程() {
+        let plan = checked(concat!(
+            "fn plain(n:int)->int{ return n+1 }\n",
+            "fn main()->int{ return plain(5) }\n",
+        ));
+        let mut count = 0usize;
+        let mut scheduler = |_: &str, _: &[crate::owned_str_runtime::ResourceEvent]| {
+            count += 1;
+        };
+        let out = plan.execute_with_await_scheduler(&mut scheduler).unwrap();
+        assert_eq!(out.result, Ok(6));
+        assert_eq!(count, 0);
+        assert!(out.has_balanced_frame_trace());
+        assert!(plan.audit_graph_outcome(out).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e2_真await讓出後原執行溢位仍逐框架清理且不虛構返回() {
+        let plan = checked(concat!(
+            "async fn overflow(n:int)->int{ return n+1 }\n",
+            "fn main()->int{\nvar hold:str = \"留存🪼\"\n",
+            "return await overflow(9223372036854775807)\n}\n",
+        ));
+        let mut seen = Vec::new();
+        let mut scheduler = |name: &str, events: &[crate::owned_str_runtime::ResourceEvent]| {
+            seen.push((name.to_owned(), events.to_vec()));
+        };
+        let out = plan.execute_with_await_scheduler(&mut scheduler).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        assert_eq!(seen.len(), 1);
+        assert_eq!(seen[0].0, "overflow");
+        assert!(matches!(seen[0].1.as_slice(),
+            [crate::owned_str_runtime::ResourceEvent::Created(_)]));
+        assert!(matches!(out.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert!(out.events.iter().any(|e|
+            matches!(e, PrivateScalarCallEvent::UnwindStarted)));
+        assert!(out.events.iter().all(|e|
+            !matches!(e, PrivateScalarCallEvent::Returned(_))));
+    }
+
 
     // V7／A1：原 Checker 已接受的直接 await，不在準備時執行；
     // 只在原 int 工作圖真正走到 await Call 才逐幀進入並退出。
