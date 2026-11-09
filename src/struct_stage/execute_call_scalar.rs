@@ -1842,6 +1842,26 @@ impl PreparedPrivateScalarCall {
         Ok(())
     }
 
+    /// V7／E5：呼叫圖可能跨多個同步框架；只驗證「最內層 caller」
+    /// 不能證明外層仍有效的借用已合法歸還。每一個真框架都要以
+    /// 同一原 BorrowSafety／incoming BorrowFact 檢查，不自行建立票據。
+    fn check_await_safe_point_chain<'a>(
+        frames: impl IntoIterator<Item = (
+            &'a crate::borrow_safety::BorrowSafety,
+            &'a [(crate::borrow_safety::BorrowTicket, BorrowFact)],
+        )>,
+    ) -> Result<(), PrivateScalarCallRuntimeError> {
+        let mut any_frame = false;
+        for (tracker, imported) in frames {
+            any_frame = true;
+            Self::check_await_safe_point(tracker, imported)?;
+        }
+        if !any_frame {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+        Ok(())
+    }
+
     /// 只抄錄已由真 OwnedStrRuntime 完成的 ResourceId 事件，
     /// 各個動態函式退出、局部離域、故障回滾均與 Copyable 事件同序。
     /// 呼叫期間的 BorrowTicket 屬直接呼叫者 tracker；真正被呼叫端離域時
@@ -4125,12 +4145,10 @@ impl PreparedPrivateScalarCall {
                             // 任一仍活躍即不得開始 async 函式。
                             // 先拒絕再消耗 completed_arguments，保留
                             // 正式 R05 錯誤退出可歸還的票據來源。
-                            let parent = frames.last().ok_or(
-                                PrivateScalarCallRuntimeError::StateMismatch,
-                            )?;
-                            Self::check_await_safe_point(
-                                &parent.borrow_tracker, &parent.incoming_borrows,
-                            )?;
+                            Self::check_await_safe_point_chain(frames.iter().map(
+                                |frame| (&frame.borrow_tracker,
+                                    frame.incoming_borrows.as_slice()),
+                            ))?;
                         }
                         completed_arguments.truncate(completed_arguments.len() - argc);
                         if awaited {
@@ -5427,6 +5445,106 @@ impl PrivateCheckedDeferredAwaitQueue {
     }
 }
 
+
+
+#[cfg(test)]
+mod g18_v7_ancestor_borrow_tests {
+    use super::*;
+    use crate::ownership_ledger::DeclarationId;
+
+    #[test]
+    fn g18_v7_e5_外層真BorrowTicket未還不能因內層無票據而進await() {
+        let mut parent = crate::borrow_safety::BorrowSafety::new();
+        let child = crate::borrow_safety::BorrowSafety::new();
+        let source = DeclarationId(501);
+        let ticket = parent.acquire(source, BorrowKind::SharedRead).unwrap();
+        let empty: &[(crate::borrow_safety::BorrowTicket, BorrowFact)] = &[];
+        // 原先只檢查最內層 child 將錯誤放行；新的全框架安全點必拒。
+        assert!(PreparedPrivateScalarCall::check_await_safe_point(&child, empty).is_ok());
+        assert_eq!(
+            PreparedPrivateScalarCall::check_await_safe_point_chain([
+                (&parent, empty), (&child, empty),
+            ]),
+            Err(PrivateScalarCallRuntimeError::Borrow(
+                crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
+            )),
+        );
+        assert_eq!(parent.check_ticket_access(ticket, BorrowKind::SharedRead), Ok(source));
+        parent.release(ticket).unwrap();
+        assert!(PreparedPrivateScalarCall::check_await_safe_point_chain([
+            (&parent, empty), (&child, empty),
+        ]).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e5_外層傳入仍有效的BorrowFact不能跨過內層await() {
+        let parent = crate::borrow_safety::BorrowSafety::new();
+        let child = crate::borrow_safety::BorrowSafety::new();
+        let mut authority = crate::borrow_safety::BorrowSafety::new();
+        let fact = BorrowFact::new(DeclarationId(502), BorrowKind::SharedRead);
+        let ticket = authority.acquire(fact.source, fact.kind).unwrap();
+        let incoming = [(ticket, fact)];
+        let empty: &[(crate::borrow_safety::BorrowTicket, BorrowFact)] = &[];
+        assert_eq!(
+            PreparedPrivateScalarCall::check_await_safe_point_chain([
+                (&parent, incoming.as_slice()), (&child, empty),
+            ]),
+            Err(PrivateScalarCallRuntimeError::Borrow(
+                crate::borrow_safety::BorrowSafetyError::SourceIsBorrowed,
+            )),
+        );
+        authority.finish_selected_verified(&[ticket], &[fact]).unwrap();
+        assert!(PreparedPrivateScalarCall::check_await_safe_point_chain([
+            (&parent, empty), (&child, empty),
+        ]).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e5_空函式鏈不能被當成已驗證await安全點() {
+        let empty: [(&crate::borrow_safety::BorrowSafety,
+            &[(crate::borrow_safety::BorrowTicket, BorrowFact)]); 0] = [];
+        assert_eq!(
+            PreparedPrivateScalarCall::check_await_safe_point_chain(empty),
+            Err(PrivateScalarCallRuntimeError::StateMismatch),
+        );
+    }
+
+    #[test]
+    fn g18_v7_e5_真Checker三層函式皆無借用可正常直接await() {
+        let source = concat!(
+            "async fn ready(n:int)->int{ return n+1 }\n",
+            "fn inner(n:int)->int{ return await ready(n) }\n",
+            "fn outer(n:int)->int{ return inner(n) }\n",
+            "fn main()->int{ return outer(8) }\n",
+        );
+        let plan = PreparedPrivateScalarCall::prepare(source).unwrap();
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.result, Ok(9));
+        assert!(outcome.has_balanced_frame_trace());
+        assert_eq!(outcome.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "ready",
+        )).count(), 1);
+        assert!(plan.audit_graph_outcome(outcome).is_ok());
+    }
+
+    #[test]
+    fn g18_v7_e5_原Checker仍須拒絕未證歸還的跨await字串借用() {
+        let source = concat!(
+            "async fn ready()->int{ return 6 }\n",
+            "fn inner(source:str)->int{ return await ready() }\n",
+            "fn outer(source:str)->int{ return inner(source) }\n",
+            "fn main()->int{\n",
+            "var source:str = \"有效借用🪼\"\n",
+            "return outer(source)\n}\n",
+        );
+        match PreparedPrivateScalarCall::prepare(source) {
+            Err(PrivateScalarCallPrepareError::Check(problem)) => {
+                assert!(problem.message.contains("VB15-01-A"));
+            }
+            _ => panic!("原 Checker 必須在動態工作圖建立前拒絕借用跨 await"),
+        }
+    }
+}
 
 #[cfg(test)]
 mod g18_v7_private_deferred_await_tests {
