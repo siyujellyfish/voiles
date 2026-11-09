@@ -5440,7 +5440,7 @@ mod g18_private_scalar_call_tests {
     fn g18_v7_e2_真私有await在內層函式中讓出且父框架資源仍存活() {
         let main = checked(concat!(
             "async fn target(n:int)->int{ return n+1 }\n",
-            "fn wrapper()->int{ var hold:str = \"原工作🪼\" return await target(6) }\n",
+            "fn wrapper()->int{\nvar hold:str = \"原工作🪼\"\nreturn await target(6)\n}\n",
             "fn main()->int{ return wrapper() }\n",
         ));
         let other = checked(concat!(
@@ -5533,8 +5533,8 @@ mod g18_private_scalar_call_tests {
     fn g18_v7_e2_真await讓出後原執行溢位仍逐框架清理且不虛構返回() {
         let plan = checked(concat!(
             "async fn overflow(n:int)->int{ return n+1 }\n",
-            "fn main()->int{ var hold:str = \"留存🪼\"",
-            " return await overflow(9223372036854775807) }\n",
+            "fn main()->int{\nvar hold:str = \"留存🪼\"\n",
+            "return await overflow(9223372036854775807)\n}\n",
         ));
         let mut seen = Vec::new();
         let mut scheduler = |name: &str, events: &[crate::owned_str_runtime::ResourceEvent]| {
