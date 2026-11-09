@@ -5424,13 +5424,56 @@ struct PrivateScalarGraphContinuation<'a> {
 }
 
 impl<'a> PrivateScalarGraphContinuation<'a> {
-    fn new(plan: &'a PreparedPrivateScalarCall)
-        -> Result<Self, PrivateScalarCallPrepareError> {
-        if plan.main_dynamic_call.is_none() {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "真私有協程要求原 Checker 已編譯 main 動態函式圖",
+    /// 除了一般 main 動態圖，既有真 Checker 的「直接 main→函式」
+    /// Copyable int 快路也可在原函式內部 await 時產生續行。
+    /// 僅接通原 fastpath 真實參數框架；bool／str 等未經同一路徑
+    /// 完整參數繫結的形式仍保守拒絕，不猜測新語意。
+    fn root_for_graph(
+        plan: &'a PreparedPrivateScalarCall,
+    ) -> Result<(
+        &'a PrivateScalarReturnExpr,
+        &'a [PrivateScalarLocalStep],
+        BTreeMap<DeclarationId, i64>,
+        PrivateScalarExecutionBudget,
+        bool,
+    ), PrivateScalarCallPrepareError> {
+        let budget = PrivateScalarExecutionBudget::default();
+        if let Some(expr) = plan.main_dynamic_call.as_ref() {
+            return Ok((
+                expr, plan.main_dynamic_steps.as_slice(),
+                plan.main_owners.iter().copied().collect(),
+                PrivateScalarExecutionBudget {
+                    max_call_frames: budget.max_call_frames.saturating_add(1),
+                    max_steps: budget.max_steps,
+                }, false,
             ));
         }
+        if plan.callee_parameter_is_bool.iter().any(|value| *value)
+            || plan.callee_parameter_is_str.iter().any(|value| *value)
+            || !plan.main_dynamic_steps.is_empty()
+            || !plan.main_dynamic_inits.is_empty()
+            || plan.callee_parameter_ids.len()
+                != plan.parameter_id.zip(plan.argument).count()
+                    + plan.additional_arguments.len() {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "私有快路續行限原 Checker 已核准的直接 Copyable int 呼叫",
+            ));
+        }
+        let mut frame = BTreeMap::new();
+        for (id, value) in plan.parameter_id.zip(plan.argument).into_iter()
+            .chain(plan.additional_arguments.iter().map(
+                |(id, value, _)| (*id, *value),
+            )) {
+            if frame.insert(id, value).is_some() {
+                return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+            }
+        }
+        Ok((&plan.return_expr, plan.root_local_steps.as_slice(), frame, budget, true))
+    }
+
+    fn new(plan: &'a PreparedPrivateScalarCall)
+        -> Result<Self, PrivateScalarCallPrepareError> {
+        Self::root_for_graph(plan)?;
         Ok(Self {
             plan, checkpoint: None, events: Vec::new(),
             resource_events: Vec::new(), outcome: None,
@@ -5455,19 +5498,26 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             ) || !self.plan.matches_source(source) {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         }
-        let expr = self.plan.main_dynamic_call.as_ref()
-            .expect("new 已確認原 Checker 函式圖");
-        let main_frame: BTreeMap<DeclarationId, i64> =
-            self.plan.main_owners.iter().copied().collect();
-        let budget = PrivateScalarExecutionBudget::default();
-        let adjusted_budget = PrivateScalarExecutionBudget {
-            max_call_frames: budget.max_call_frames.saturating_add(1),
-            max_steps: budget.max_steps,
-        };
+        let (expr, steps, initial_frame, budget, direct_fastpath) =
+            Self::root_for_graph(self.plan)?;
+        if direct_fastpath && self.status == PrivateDeferredAwaitStatus::Prepared {
+            if let Some(argument) = self.plan.argument {
+                self.events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
+            }
+            for (_, argument, _) in &self.plan.additional_arguments {
+                self.events.push(PrivateScalarCallEvent::ArgumentEvaluated(*argument));
+            }
+            self.events.push(PrivateScalarCallEvent::FunctionEntered(
+                self.plan.callee_name.clone(),
+            ));
+            for (id, value) in &initial_frame {
+                self.events.push(PrivateScalarCallEvent::ParameterBound(*id, *value));
+            }
+        }
         self.status = PrivateDeferredAwaitStatus::Running;
         let result = self.plan.evaluate_graph_driver(
-            expr, &main_frame, &mut self.events, &mut self.resource_events,
-            adjusted_budget, false, &self.plan.main_dynamic_steps,
+            expr, &initial_frame, &mut self.events, &mut self.resource_events,
+            budget, false, steps,
             None, &mut self.checkpoint, true, false,
         );
         if matches!(&result, Ok(None)) {
@@ -5485,6 +5535,18 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             Err(error) => Err(error),
             Ok(None) => unreachable!("前方已處理真暫停"),
         };
+        if direct_fastpath {
+            if let Ok(value) = result {
+                self.events.push(PrivateScalarCallEvent::Returned(value));
+            } else if !self.events.iter().any(|event| matches!(
+                event, PrivateScalarCallEvent::UnwindStarted,
+            )) {
+                self.events.push(PrivateScalarCallEvent::UnwindStarted);
+            }
+            self.events.push(PrivateScalarCallEvent::FunctionExited {
+                name: self.plan.callee_name.clone(), returned: result.is_ok(),
+            });
+        }
         let outcome = self.plan.audit_graph_outcome(PrivateScalarCallOutcome {
             result, events: std::mem::take(&mut self.events),
             resource_events: std::mem::take(&mut self.resource_events),
@@ -5519,22 +5581,19 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             saved.frames.iter().map(|frame|
                 (&frame.borrow_tracker, frame.incoming_borrows.as_slice())),
         ).map_err(|_| PrivateScalarCallPrepareError::RuntimeTraceMismatch)?;
-        let expr = self.plan.main_dynamic_call.as_ref().ok_or(
-            PrivateScalarCallPrepareError::RuntimeTraceMismatch,
-        )?;
-        let main_frame = self.plan.main_owners.iter().copied()
-            .collect::<BTreeMap<DeclarationId, i64>>();
-        let budget = PrivateScalarExecutionBudget::default();
-        let adjusted_budget = PrivateScalarExecutionBudget {
-            max_call_frames: budget.max_call_frames.saturating_add(1),
-            max_steps: budget.max_steps,
-        };
+        let (expr, steps, initial_frame, budget, direct_fastpath) =
+            Self::root_for_graph(self.plan)?;
         self.status = PrivateDeferredAwaitStatus::Running;
         let cleanup = self.plan.evaluate_graph_driver(
-            expr, &main_frame, &mut self.events, &mut self.resource_events,
-            adjusted_budget, false, &self.plan.main_dynamic_steps,
+            expr, &initial_frame, &mut self.events, &mut self.resource_events,
+            budget, false, steps,
             None, &mut self.checkpoint, false, true,
         );
+        if direct_fastpath && matches!(cleanup, Ok(None)) {
+            self.events.push(PrivateScalarCallEvent::FunctionExited {
+                name: self.plan.callee_name.clone(), returned: false,
+            });
+        }
         // 若真正 P16／HC14 退出失敗，禁止報稱取消成功；
         // 已消耗工作不能恢復執行，保守標記 Failed 等待正式處置。
         if !matches!(cleanup, Ok(None)) || self.checkpoint.is_some() {
