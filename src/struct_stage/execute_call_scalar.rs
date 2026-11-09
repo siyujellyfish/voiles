@@ -5646,10 +5646,52 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateScalarCooperativeError {
     UnknownTask,
+    UnknownProgram,
     WrongState,
     IdExhausted,
     /// 原 Checker 或原 R05/SharedExit 的核對拒絕不是排程成功。
     Engine,
+}
+
+/// V7 A1/E2：擁有**原私有 Checker 真準備計畫**的來源登錄。
+/// 唯一真 Parser／Checker／TypedHIR 工作物件保存在 Box，地址在
+/// BTreeMap 擴容時保持穩定。排程器僅以 Rust 借用生命週期持有
+/// 其續行，不能在仍有工作時失效或置換來源；不靠 unsafe／Rc
+/// 自我參照，也不藉此啟用 E1 尚未核准的背景工作。
+#[derive(Default)]
+struct PrivateScalarCheckedProgramCatalog {
+    programs: BTreeMap<u64, Box<PreparedPrivateScalarCall>>,
+    next_id: u64,
+}
+
+impl PrivateScalarCheckedProgramCatalog {
+    fn new() -> Self { Self::default() }
+
+    fn prepare(
+        &mut self, source: &str,
+    ) -> Result<u64, PrivateScalarCallPrepareError> {
+        // 靜態拒絕不能消耗新的工作身分。此處保留原
+        // PreparedPrivateScalarCall::prepare 的唯一 Checker 來源。
+        let plan = PreparedPrivateScalarCall::prepare(source)?;
+        // 真執行圖的直接快路／複合 main 形狀亦必須可由
+        // 同一 GraphContinuation 執行。不能只要 Parser 成功
+        // 就允許佇列保存尚無可恢復執行位置的工作。
+        let _ = PrivateScalarGraphContinuation::new(&plan)?;
+        let id = self.next_id.checked_add(1).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "私有 Checker 計畫登錄 ID 已用盡，不能回繞",
+            ),
+        )?;
+        self.next_id = id;
+        self.programs.insert(id, Box::new(plan));
+        Ok(id)
+    }
+
+    fn plan(&self, id: u64) -> Option<&PreparedPrivateScalarCall> {
+        self.programs.get(&id).map(Box::as_ref)
+    }
+
+    fn len(&self) -> usize { self.programs.len() }
 }
 
 struct PrivateScalarCooperativeJob<'a> {
@@ -5688,6 +5730,20 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         });
         self.ready.push_back(id);
         Ok(id)
+    }
+
+    /// 用原 Checker 來源登錄 ID 建立真動態工作。登錄在本批
+    /// 持有來源與核准執行圖，真正工作由 FIFO 驅動；相同
+    /// 來源可為不同工作建立獨立 checkpoint／BorrowSafety。
+    /// 未知登錄 ID 必在配發工作 ID 之前拒絕。
+    fn submit_program(
+        &mut self,
+        catalog: &'a PrivateScalarCheckedProgramCatalog,
+        program_id: u64,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
+        let plan = catalog.plan(program_id)
+            .ok_or(PrivateScalarCooperativeError::UnknownProgram)?;
+        self.submit(plan)
     }
 
     fn status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
@@ -5818,6 +5874,224 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         self.ready.retain(|candidate| *candidate != id);
         self.cancellation_order.push(id);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod g18_v7_checked_program_catalog_tests {
+    use super::*;
+
+    fn source(n: i64) -> String {
+        format!(
+            "async fn ready()->int{{ return {n} }}\n\
+             fn main()->int{{ return await ready()+0 }}\n"
+        )
+    }
+
+    #[test]
+    fn g18_v7_a1_原Checker來源由登錄持有且FIFO續行引用同一真計畫身分() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(&source(17)).unwrap();
+        assert_eq!(program, 1);
+        assert_eq!(catalog.len(), 1);
+        let checked_ptr = catalog.plan(program).unwrap() as *const _;
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let task = queue.submit_program(&catalog, program).unwrap();
+        assert_eq!(task, 1);
+        assert!(std::ptr::eq(
+            checked_ptr, queue.jobs.get(&task).unwrap().continuation.plan,
+        ));
+        assert_eq!(queue.status(task), Some(PrivateDeferredAwaitStatus::Prepared));
+        assert_eq!(queue.drive_one().unwrap(), Some((task, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.pending_await(task), Some("ready"));
+        assert!(std::ptr::eq(
+            checked_ptr, queue.jobs.get(&task).unwrap().continuation.plan,
+        ));
+        queue.wake(task).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((task, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(task).unwrap().result, Ok(17));
+        assert!(queue.outcome(task).unwrap().has_balanced_frame_trace());
+        assert!(std::ptr::eq(
+            checked_ptr, queue.jobs.get(&task).unwrap().continuation.plan,
+        ));
+    }
+
+    #[test]
+    fn g18_v7_a1_靜態非法來源零身分消耗且原Checker合法bool動態圖完整保留() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let invalid = concat!(
+            "async fn ready()->int{ return true }\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        );
+        assert!(matches!(catalog.prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+        assert_eq!(catalog.len(), 0);
+        // 原 Checker 合法的 bool 參數呼叫已經採真 main_dynamic_call；
+        // 不可因為另有 int-only 直接快路的保守界線，誤拒完整動態圖。
+        let bool_graph = concat!(
+            "fn choose(flag:bool)->int{\n",
+            "if(flag){return 4}\nreturn 7\n}\n",
+            "fn main()->int{ return choose(true) }\n",
+        );
+        let flag_id = catalog.prepare(bool_graph).unwrap();
+        assert_eq!(flag_id, 1);
+        assert!(catalog.plan(flag_id).unwrap().main_dynamic_call.is_some());
+        let second = catalog.prepare(&source(6)).unwrap();
+        assert_eq!(second, 2);
+        assert_eq!(catalog.len(), 2);
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let flag_task = queue.submit_program(&catalog, flag_id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(),
+            Some((flag_task, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(flag_task).unwrap().result, Ok(4));
+        assert!(queue.outcome(flag_task).unwrap().has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v7_e2_未知來源登錄ID不得消耗FIFO工作身分或其他已核准佇列() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(&source(8)).unwrap();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        assert_eq!(queue.submit_program(&catalog, 500),
+            Err(PrivateScalarCooperativeError::UnknownProgram));
+        assert_eq!(queue.jobs.len(), 0);
+        assert_eq!(queue.ready_ids(), []);
+        let task = queue.submit_program(&catalog, program).unwrap();
+        assert_eq!(task, 1);
+        assert_eq!(queue.submit_program(&catalog, 500),
+            Err(PrivateScalarCooperativeError::UnknownProgram));
+        assert_eq!(queue.jobs.len(), 1);
+        assert_eq!(queue.ready_ids(), [task]);
+        assert_eq!(queue.drive_one().unwrap(), Some((task, PrivateScalarGraphPoll::Suspended)));
+        queue.cancel(task).unwrap();
+        assert_eq!(queue.status(task), Some(PrivateDeferredAwaitStatus::Cancelled));
+    }
+
+    #[test]
+    fn g18_v7_e2_同一份原Checker登錄來源可產生兩份相互獨立的真續行() {
+        let source = concat!(
+            "async fn ready()->int{ return 33 }\n",
+            "fn wrapper()->int{\n",
+            "var own:str = \"同源各有真Runtime🪼\"\n",
+            "return await ready()\n}\n",
+            "fn main()->int{ return wrapper() }\n",
+        );
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let program = catalog.prepare(source).unwrap();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let a = queue.submit_program(&catalog, program).unwrap();
+        let b = queue.submit_program(&catalog, program).unwrap();
+        assert_ne!(a, b);
+        assert!(std::ptr::eq(
+            queue.jobs.get(&a).unwrap().continuation.plan,
+            queue.jobs.get(&b).unwrap().continuation.plan,
+        ));
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Suspended)));
+        assert!(matches!(queue.retained_resources(a), Some([
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ])));
+        assert!(matches!(queue.retained_resources(b), Some([
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ])));
+        queue.cancel(a).unwrap();
+        queue.wake(b).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.status(a), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert!(queue.outcome(a).is_none());
+        assert_eq!(queue.outcome(b).unwrap().result, Ok(33));
+        assert!(matches!(queue.cancellation(a).unwrap().resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert!(matches!(queue.outcome(b).unwrap().resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert!(queue.outcome(b).unwrap().has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v7_e3_登錄來源真溢位及取消分別沿原Runtime清理不偽造成功() {
+        let failed = concat!(
+            "async fn over(n:int)->int{ return n+1 }\n",
+            "fn main()->int{\n",
+            "var own:str = \"原溢位也清理🪼\"\n",
+            "return await over(9223372036854775807)+0\n}\n",
+        );
+        let cancelled = concat!(
+            "async fn no()->int{ return 9 }\n",
+            "fn main()->int{\n",
+            "var own:str = \"取消前還在🪼\"\n",
+            "return await no()+0\n}\n",
+        );
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let failure_program = catalog.prepare(failed).unwrap();
+        let cancel_program = catalog.prepare(cancelled).unwrap();
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let a = queue.submit_program(&catalog, failure_program).unwrap();
+        let b = queue.submit_program(&catalog, cancel_program).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Suspended)));
+        queue.cancel(b).unwrap();
+        queue.wake(a).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Completed)));
+        let outcome = queue.outcome(a).unwrap();
+        assert_eq!(outcome.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(outcome.has_balanced_frame_trace());
+        assert!(!outcome.events.iter().any(|event|
+            matches!(event, PrivateScalarCallEvent::Returned(_))));
+        assert!(matches!(outcome.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert!(matches!(queue.cancellation(b).unwrap().resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(queue.status(a), Some(PrivateDeferredAwaitStatus::Failed));
+        assert_eq!(queue.status(b), Some(PrivateDeferredAwaitStatus::Cancelled));
+    }
+
+    #[test]
+    fn g18_v7_a1_來源登錄身分耗盡時原計畫不回繞也不污染先前工作() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let original = catalog.prepare(&source(4)).unwrap();
+        assert_eq!(original, 1);
+        catalog.next_id = u64::MAX;
+        assert!(matches!(catalog.prepare(&source(8)),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert_eq!(catalog.len(), 1);
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_program(&catalog, original).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(id).unwrap().result, Ok(4));
+    }
+
+    #[test]
+    fn g18_v7_a1_排程器完成後釋放借用原登錄仍能增加下一份真來源() {
+        let mut catalog = PrivateScalarCheckedProgramCatalog::new();
+        let one = catalog.prepare(&source(5)).unwrap();
+        {
+            let mut queue = PrivateScalarCooperativeQueue::new();
+            let id = queue.submit_program(&catalog, one).unwrap();
+            assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Suspended)));
+            queue.wake(id).unwrap();
+            assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Completed)));
+            assert_eq!(queue.outcome(id).unwrap().result, Ok(5));
+        }
+        // Rust 編譯期保證：仍被續行借用時 catalog 不可變更；
+        // 所有相關工作自然結束／離域後才重新取得唯一可變存取。
+        let two = catalog.prepare(&source(12)).unwrap();
+        assert_eq!(two, 2);
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit_program(&catalog, two).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(id).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(id).unwrap().result, Ok(12));
     }
 }
 
