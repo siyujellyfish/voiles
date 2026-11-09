@@ -5844,7 +5844,10 @@ mod g18_v7_fastpath_graph_tests {
             PrivateScalarCallEvent::ParameterBound(id, value) => Some((*id, *value)),
             _ => None,
         }).collect::<Vec<_>>();
-        assert_eq!(bound, plan.callee_parameter_ids.iter().copied().zip([2,3]).collect::<Vec<_>>());
+        // 真內層 async increase(n) 亦會新增自己的合法 ParameterBound，
+        // 只取原 wrapper 的前兩筆對帳，不可把真正第三筆誤判成重複。
+        assert_eq!(bound[..plan.callee_parameter_ids.len()],
+            plan.callee_parameter_ids.iter().copied().zip([2,3]).collect::<Vec<_>>());
     }
 
     #[test]
