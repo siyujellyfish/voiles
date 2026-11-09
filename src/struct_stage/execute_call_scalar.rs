@@ -5744,10 +5744,10 @@ mod g18_v7_real_graph_cancel_tests {
         assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
         assert_eq!(live.pending_await(), Some("target"));
         assert_eq!(live.retained_frames(), 3);
-        let created = live.retained_resources();
-        let [crate::owned_str_runtime::ResourceEvent::Created(parent),
-             crate::owned_str_runtime::ResourceEvent::Created(child)] = created else {
-            panic!("原父子已執行真 UTF-8 必各持唯一 ResourceId");
+        let (parent, child) = match live.retained_resources() {
+            [crate::owned_str_runtime::ResourceEvent::Created(parent),
+             crate::owned_str_runtime::ResourceEvent::Created(child)] => (*parent, *child),
+            _ => panic!("原父子已執行真 UTF-8 必各持唯一 ResourceId"),
         };
         assert_ne!(parent, child);
         let evidence = live.cancel_suspended().unwrap();
@@ -5756,10 +5756,10 @@ mod g18_v7_real_graph_cancel_tests {
         assert_eq!(live.retained_frames(), 0);
         assert_eq!(live.pending_await(), None);
         assert_eq!(evidence.resource_events, [
-            crate::owned_str_runtime::ResourceEvent::Created(*parent),
-            crate::owned_str_runtime::ResourceEvent::Created(*child),
-            crate::owned_str_runtime::ResourceEvent::Released(*child),
-            crate::owned_str_runtime::ResourceEvent::Released(*parent),
+            crate::owned_str_runtime::ResourceEvent::Created(parent),
+            crate::owned_str_runtime::ResourceEvent::Created(child),
+            crate::owned_str_runtime::ResourceEvent::Released(child),
+            crate::owned_str_runtime::ResourceEvent::Released(parent),
         ]);
         assert!(evidence.events.iter().any(|e| matches!(
             e, PrivateScalarCallEvent::UnwindStarted,
