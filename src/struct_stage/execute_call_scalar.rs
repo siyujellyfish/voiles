@@ -5646,10 +5646,52 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateScalarCooperativeError {
     UnknownTask,
+    UnknownProgram,
     WrongState,
     IdExhausted,
     /// 原 Checker 或原 R05/SharedExit 的核對拒絕不是排程成功。
     Engine,
+}
+
+/// V7 A1/E2：擁有**原私有 Checker 真準備計畫**的來源登錄。
+/// 唯一真 Parser／Checker／TypedHIR 工作物件保存在 Box，地址在
+/// BTreeMap 擴容時保持穩定。排程器僅以 Rust 借用生命週期持有
+/// 其續行，不能在仍有工作時失效或置換來源；不靠 unsafe／Rc
+/// 自我參照，也不藉此啟用 E1 尚未核准的背景工作。
+#[derive(Default)]
+struct PrivateScalarCheckedProgramCatalog {
+    programs: BTreeMap<u64, Box<PreparedPrivateScalarCall>>,
+    next_id: u64,
+}
+
+impl PrivateScalarCheckedProgramCatalog {
+    fn new() -> Self { Self::default() }
+
+    fn prepare(
+        &mut self, source: &str,
+    ) -> Result<u64, PrivateScalarCallPrepareError> {
+        // 靜態拒絕不能消耗新的工作身分。此處保留原
+        // PreparedPrivateScalarCall::prepare 的唯一 Checker 來源。
+        let plan = PreparedPrivateScalarCall::prepare(source)?;
+        // 真執行圖的直接快路／複合 main 形狀亦必須可由
+        // 同一 GraphContinuation 執行。不能只要 Parser 成功
+        // 就允許佇列保存尚無可恢復執行位置的工作。
+        let _ = PrivateScalarGraphContinuation::new(&plan)?;
+        let id = self.next_id.checked_add(1).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "私有 Checker 計畫登錄 ID 已用盡，不能回繞",
+            ),
+        )?;
+        self.next_id = id;
+        self.programs.insert(id, Box::new(plan));
+        Ok(id)
+    }
+
+    fn plan(&self, id: u64) -> Option<&PreparedPrivateScalarCall> {
+        self.programs.get(&id).map(Box::as_ref)
+    }
+
+    fn len(&self) -> usize { self.programs.len() }
 }
 
 struct PrivateScalarCooperativeJob<'a> {
@@ -5688,6 +5730,20 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         });
         self.ready.push_back(id);
         Ok(id)
+    }
+
+    /// 用原 Checker 來源登錄 ID 建立真動態工作。登錄在本批
+    /// 持有來源與核准執行圖，真正工作由 FIFO 驅動；相同
+    /// 來源可為不同工作建立獨立 checkpoint／BorrowSafety。
+    /// 未知登錄 ID 必在配發工作 ID 之前拒絕。
+    fn submit_program(
+        &mut self,
+        catalog: &'a PrivateScalarCheckedProgramCatalog,
+        program_id: u64,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
+        let plan = catalog.plan(program_id)
+            .ok_or(PrivateScalarCooperativeError::UnknownProgram)?;
+        self.submit(plan)
     }
 
     fn status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
