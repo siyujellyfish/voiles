@@ -1669,7 +1669,10 @@ impl PrivateScalarCopyStructSeed {
                             }.ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)?;
                             values.push(result);
                         }
+                        // 僅原 Checker int 欄位種子可進此純整數工作棧；
+                        // 不讓已核准 bool 返回以 0/1 偽裝 int 欄位值。
                         Work::Read(PrivateScalarReturnExpr::Call { .. }
+                            | PrivateScalarReturnExpr::BoolValue(..)
                             | PrivateScalarReturnExpr::Unreachable) =>
                             return Err(PrivateScalarCallRuntimeError::StateMismatch),
                     }
