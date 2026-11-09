@@ -5416,6 +5416,9 @@ struct PrivateScalarGraphCancellation {
 
 struct PrivateScalarGraphContinuation<'a> {
     plan: &'a PreparedPrivateScalarCall,
+    // D18-01：屬於此真 CheckedTask 的環境預算，從第一次 poll 到
+    // 任意第 N 次 wake 不可重新配發或重置動態 step／frame 門檻。
+    budget: PrivateScalarExecutionBudget,
     checkpoint: Option<PrivateScalarGraphCheckpoint<'a>>,
     events: Vec<PrivateScalarCallEvent>,
     resource_events: Vec<crate::owned_str_runtime::ResourceEvent>,
@@ -5430,6 +5433,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
     /// 完整參數繫結的形式仍保守拒絕，不猜測新語意。
     fn root_for_graph(
         plan: &'a PreparedPrivateScalarCall,
+        budget: PrivateScalarExecutionBudget,
     ) -> Result<(
         &'a PrivateScalarReturnExpr,
         &'a [PrivateScalarLocalStep],
@@ -5437,7 +5441,6 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         PrivateScalarExecutionBudget,
         bool,
     ), PrivateScalarCallPrepareError> {
-        let budget = PrivateScalarExecutionBudget::default();
         if let Some(expr) = plan.main_dynamic_call.as_ref() {
             return Ok((
                 expr, plan.main_dynamic_steps.as_slice(),
@@ -5473,9 +5476,24 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
 
     fn new(plan: &'a PreparedPrivateScalarCall)
         -> Result<Self, PrivateScalarCallPrepareError> {
-        Self::root_for_graph(plan)?;
+        Self::new_with_budget(plan, PrivateScalarExecutionBudget::default())
+    }
+
+    /// D18-01：預算是每份執行環境的單次配置，不是 voiles
+    /// 固定遞迴或循環語言上限。零額度在任何資源及工作建立前
+    /// 拒絕，不得藉由 wake 補發新的單輪額度。
+    fn new_with_budget(
+        plan: &'a PreparedPrivateScalarCall,
+        budget: PrivateScalarExecutionBudget,
+    ) -> Result<Self, PrivateScalarCallPrepareError> {
+        if budget.max_call_frames == 0 || budget.max_steps == 0 {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "V7 原 CheckedTask 須有正執行環境預算",
+            ));
+        }
+        Self::root_for_graph(plan, budget)?;
         Ok(Self {
-            plan, checkpoint: None, events: Vec::new(),
+            plan, budget, checkpoint: None, events: Vec::new(),
             resource_events: Vec::new(), outcome: None,
             status: PrivateDeferredAwaitStatus::Prepared,
         })
@@ -5499,7 +5517,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         }
         let (expr, steps, initial_frame, budget, direct_fastpath) =
-            Self::root_for_graph(self.plan)?;
+            Self::root_for_graph(self.plan, self.budget)?;
         if direct_fastpath && self.status == PrivateDeferredAwaitStatus::Prepared {
             if let Some(argument) = self.plan.argument {
                 self.events.push(PrivateScalarCallEvent::ArgumentEvaluated(argument));
@@ -5585,7 +5603,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
                 (&frame.borrow_tracker, frame.incoming_borrows.as_slice())),
         ).map_err(|_| PrivateScalarCallPrepareError::RuntimeTraceMismatch)?;
         let (expr, steps, initial_frame, budget, direct_fastpath) =
-            Self::root_for_graph(self.plan)?;
+            Self::root_for_graph(self.plan, self.budget)?;
         self.status = PrivateDeferredAwaitStatus::Running;
         let cleanup = self.plan.evaluate_graph_driver(
             expr, &initial_frame, &mut self.events, &mut self.resource_events,
@@ -5718,9 +5736,19 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         &mut self,
         plan: &'a PreparedPrivateScalarCall,
     ) -> Result<u64, PrivateScalarCooperativeError> {
+        self.submit_with_budget(plan, PrivateScalarExecutionBudget::default())
+    }
+
+    /// 同一核准來源可建立不同真動態工作，各有獨立的 D18-01
+    /// 環境預算。排程／喚醒不替任何工作重置其累積 steps。
+    fn submit_with_budget(
+        &mut self,
+        plan: &'a PreparedPrivateScalarCall,
+        budget: PrivateScalarExecutionBudget,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
         // 先在原 Checker 圖上真正建構可續行入口。
         // 來源無法核准時不消耗 ID、不加入任何工作。
-        let continuation = PrivateScalarGraphContinuation::new(plan)
+        let continuation = PrivateScalarGraphContinuation::new_with_budget(plan, budget)
             .map_err(|_| PrivateScalarCooperativeError::Engine)?;
         let id = self.next_id.checked_add(1)
             .ok_or(PrivateScalarCooperativeError::IdExhausted)?;
@@ -5741,9 +5769,20 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         catalog: &'a PrivateScalarCheckedProgramCatalog,
         program_id: u64,
     ) -> Result<u64, PrivateScalarCooperativeError> {
+        self.submit_program_with_budget(
+            catalog, program_id, PrivateScalarExecutionBudget::default(),
+        )
+    }
+
+    fn submit_program_with_budget(
+        &mut self,
+        catalog: &'a PrivateScalarCheckedProgramCatalog,
+        program_id: u64,
+        budget: PrivateScalarExecutionBudget,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
         let plan = catalog.plan(program_id)
             .ok_or(PrivateScalarCooperativeError::UnknownProgram)?;
-        self.submit(plan)
+        self.submit_with_budget(plan, budget)
     }
 
     fn status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
