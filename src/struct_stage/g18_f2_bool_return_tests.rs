@@ -186,4 +186,40 @@ return pick(ready(true),3)
         assert!(matches!(prepared.execute(),
             Err(PrivateScalarCallPrepareError::SourceChanged)));
     }
+
+    #[test]
+    fn f2_bool_return_篡改返回事件的布林整數型別即使框架平衡也拒絕() {
+        let source = r#"fn ready(flag:bool)->bool{
+return flag
+}
+fn pick(flag:bool,n:int)->int{
+if(flag){
+return n+1
+}
+return n
+}
+fn main()->int{
+return pick(ready(true),3)
+}
+"#;
+        let plan = PreparedPrivateScalarCall::prepare(source).unwrap();
+        let mut fake_bool = plan.execute().unwrap();
+        let offset = fake_bool.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::BoolReturned(true)
+        )).expect("原 bool 函式必真返回");
+        fake_bool.events[offset] = PrivateScalarCallEvent::Returned(1);
+        assert!(fake_bool.has_balanced_frame_trace(),
+            "只有型別來源稽核能辨識偽裝 int 的布林值");
+        assert!(matches!(plan.audit_graph_outcome(fake_bool),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+
+        let mut fake_int = plan.execute().unwrap();
+        let offset = fake_int.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(4)
+        )).expect("原 int 函式必真返回");
+        fake_int.events[offset] = PrivateScalarCallEvent::BoolReturned(true);
+        assert!(fake_int.has_balanced_frame_trace());
+        assert!(matches!(plan.audit_graph_outcome(fake_int),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+    }
 }
