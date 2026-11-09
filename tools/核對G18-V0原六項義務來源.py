@@ -31,7 +31,7 @@ import sys
 }
 證據種類 = {
     "RuntimeSuccess", "RuntimeFailure", "CheckerRejection",
-    "TraceRejection", "DecisionBlocked",
+    "TraceRejection", "DecisionBlocked", "EngineeringPending",
 }
 
 
@@ -54,12 +54,28 @@ def 取得靜態字面值(目標: str) -> dict:
 
 
 def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[list[dict], dict]:
-    if 清冊.get("schema") != "G18-P18-V0/1":
+    if 清冊.get("schema") != "G18-P18-V0/2":
         raise ValueError("V0 機讀清冊格式識別不符合")
     if set(原證據) != set(原項) or set(正式狀態) != set(原項):
         raise ValueError("原六項證據或正式狀態不完整")
     if set(清冊.get("original_status", {})) != set(原項):
         raise ValueError("V0 六項原始狀態快照身分缺漏")
+    if 清冊["original_status"] != {
+        "P18.1": "SubsetVerified", "P18.2": "SubsetVerified",
+        "P18.3": "Incomplete", "P18.4": "SubsetVerified",
+        "P18.5": "SubsetVerified", "P18.6": "BlockedByDecision",
+    }:
+        raise ValueError("V0 2026-11-08 原始快照不得被新核准覆寫")
+    if set(清冊.get("current_status", {})) != set(原項):
+        raise ValueError("G18 現行六項狀態不完整")
+    if 清冊.get("approved_async_semantics") != [
+        "D18-02-E1-A: 延遲啟動且只限直接 await",
+        "D18-02-E2-A: 單執行緒協作式排程",
+        "D18-02-E3-A: 安全點取消與逐框架退出",
+        "D18-02-E4-A: 現行 RuntimeFailure 傳遞",
+        "D18-02-E5: 維持 VB15-01-A 有效借用不得跨 await",
+    ]:
+        raise ValueError("D18-02-E1～E5 已核准語意記錄不完整，不能解除決策阻塞")
 
     for 項目 in 原項:
         if not isinstance(原證據[項目], (tuple, list)):
@@ -69,8 +85,12 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
         現狀 = 正式狀態[項目]
         if not isinstance(現狀, tuple) or len(現狀) != 2:
             raise ValueError(f"{項目} 正式狀態格式不正確")
-        if 清冊["original_status"][項目] != 現狀[0]:
-            raise ValueError(f"{項目} 原始狀態已變動，應重新核定 V0 而非沿用舊清冊")
+        if 清冊["current_status"][項目] != 現狀[0]:
+            raise ValueError(f"{項目} 現行正式狀態未與核准語意及機讀義務同步")
+        if 項目 != "P18.6" and 清冊["original_status"][項目] != 現狀[0]:
+            raise ValueError(f"{項目} 非本次核准範圍卻變更了原始驗收狀態")
+        if 項目 == "P18.6" and 現狀[0] != "Incomplete":
+            raise ValueError("D18-02 已核准但 A1/A2 尚無完整真任務證據，P18.6 只能 Incomplete")
     所有來源 = {來源 for 來源群 in 原證據.values() for 來源 in 來源群}
     if not 所有來源:
         raise ValueError("原六項真來源不可為空")
@@ -106,12 +126,14 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
 
         if 名稱 in {"A1", "A2"}:
             if (
-                階段 != "P18.6" or 狀態 != "BlockedDecision"
-                or 種類 != "DecisionBlocked" or 來源 is not None
+                階段 != "P18.6" or 狀態 != "OpenEngineering"
+                or 種類 != "EngineeringPending" or 來源 is not None
             ):
-                raise ValueError(f"V0 {名稱} 不能偽造未核准 async 正向證據")
+                raise ValueError(f"V0 {名稱} 決策已核准但真正 async 完整驗收仍不得偽造主證據")
         else:
-            if 狀態 != "OpenEngineering" or 種類 == "DecisionBlocked":
+            if 狀態 != "OpenEngineering" or 種類 in {
+                "DecisionBlocked", "EngineeringPending",
+            }:
                 raise ValueError(f"V0 {名稱} 未有完整契約，不得提前標 Closed 或 Blocked")
             if not isinstance(來源, str) or 來源 not in 原證據[階段]:
                 raise ValueError(f"V0 {名稱} 主要真來源未列在相應原始六項證據")
@@ -127,8 +149,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 0 or 統計["OpenEngineering"] != 24 or 統計["BlockedDecision"] != 2:
-        raise ValueError("V0 仍不能提前結案；應忠實保留 24 工程缺口與兩項必要決策")
+    if 統計["Closed"] != 0 or 統計["OpenEngineering"] != 26 or 統計["BlockedDecision"] != 0:
+        raise ValueError("V0 仍不能提前結案；E1～E5 已核准但 26 條工程義務均未完整 Closed")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -147,7 +169,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
         "closed": 統計["Closed"],
         "per_phase": {
             階段: {
-                "original_status": 正式狀態[階段][0],
+                "original_status": 清冊["original_status"][階段],
+                "current_status": 正式狀態[階段][0],
                 "evidence_references": len(原證據[階段]),
                 "obligations": 每項義務[階段],
             }
@@ -229,7 +252,7 @@ def main() -> int:
     print(
         f"G18 V0 盤點：原六項 {報告['unique_original_tests']} 個不同 Rust 名稱、"
         f"{報告['original_phase_references']} 次跨原項引用；"
-        f"26 條義務／24 條工程未閉合／2 條必要 async 決策；"
+        f"26 條義務／26 條工程未閉合／0 條待決 async 決策；"
         f"25 筆獨立真 Rust 測試均已實跑；"
         "P18 原六項仍 0/6 Passed。"
     )
