@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """G18 P18.1～P18.6 原始六項真來源稽核：--audit 核實子集，--check 嚴格正式驗收。
 
---audit 不等於 G18 Passed。D18-01 已核准與部分真遞迴執行，方法／async D18-02
-仍未核准時，必須明確回報 BlockedByDecision，不能以保守拒絕替代
-原始六項的正反真執行驗收。
+--audit 不等於 G18 Passed。D18-01 已核准；D18-02-E1～E4=A、
+E5 維持 VB15-01-A 亦已於 2026-11-08 正式核准。
+P18.6 現存阻塞是 async／同步方法的真正工程與驗收缺口，而非等待
+重新核准語意。已通過的私有直接 await 子集不等於完整 P18.6 Passed。
 """
 
 from __future__ import annotations
@@ -1514,14 +1515,14 @@ from pathlib import Path
 
 # 原始必需項目實際驗收狀態，並非設計時理想值。
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
-# 18.3／18.6 的未裁決安全行為不能僅靠「拒絕」宣稱 Passed。
+# 18.3／18.6 已核准決策不等於全部工程／動靜正反驗收已通過。
 狀態 = {
     "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、可達 Copyable 結構局部 P16 真建構／離域、if/while/for、區塊局部、OwnedStr 常值／覆寫、str.move 跨函式雙 ResourceId 及 BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；self／借用別名安全證明與任意合法型別混合函式圖仍需完整驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
     "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG，借用別名再借用仍缺 VB14 安全證明與完整退出矩陣"),
     "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
-    "P18.6": ("BlockedByDecision", "D18-02-A～D 原則已核准，同步共享／獨占 self 真票據、靜態唯一多載、零／單／多 int 常值參數、self 欄位與參數加減及溢位歸還已真執行；任意複合型別方法與一般函式 CFG 尚需整合，async 調度、喚醒、取消與錯誤傳遞可觀察細節及真正非同步正例仍未完成"),
+    "P18.6": ("Incomplete", "D18-02-E1～E4=A、E5 維持 VB15-01-A 已正式核准；同步共享／獨占 self、多載及方法欄位真讀寫已有受限正反；原 Parser/Checker 直接 await async 普通函式 int／str.move 已真執行，真 BorrowTicket 安全點與 P16 ResourceId／錯誤回滾均有子集證據；仍缺完整協作式 suspend/resume/wakeup、取消後續真任務框架、async self 方法與同步方法混合 CFG 的原六項完整正反驗收；不得標 Passed"),
 }
 
 真執行群組 = (
