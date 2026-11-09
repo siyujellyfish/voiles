@@ -5383,6 +5383,115 @@ impl PreparedPrivateScalarCall {
 }
 
 
+/// V7 E2：真正原私有 Checker 工作圖「已經開始執行」的動態續行。
+/// 一次 poll 只能直到下一個真 await 安全點或原圖正式結果。
+/// 借用已驗證的原計畫，避免跨呼叫自我參照與私有來源重編譯／重跑。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateScalarGraphPoll {
+    Suspended,
+    Completed,
+}
+
+struct PrivateScalarGraphContinuation<'a> {
+    plan: &'a PreparedPrivateScalarCall,
+    checkpoint: Option<PrivateScalarGraphCheckpoint<'a>>,
+    events: Vec<PrivateScalarCallEvent>,
+    resource_events: Vec<crate::owned_str_runtime::ResourceEvent>,
+    outcome: Option<PrivateScalarCallOutcome>,
+    status: PrivateDeferredAwaitStatus,
+}
+
+impl<'a> PrivateScalarGraphContinuation<'a> {
+    fn new(plan: &'a PreparedPrivateScalarCall)
+        -> Result<Self, PrivateScalarCallPrepareError> {
+        if plan.main_dynamic_call.is_none() {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "真私有協程要求原 Checker 已編譯 main 動態函式圖",
+            ));
+        }
+        Ok(Self {
+            plan, checkpoint: None, events: Vec::new(),
+            resource_events: Vec::new(), outcome: None,
+            status: PrivateDeferredAwaitStatus::Prepared,
+        })
+    }
+
+    fn poll(&mut self) -> Result<PrivateScalarGraphPoll, PrivateScalarCallPrepareError> {
+        if !matches!(self.status,
+            PrivateDeferredAwaitStatus::Prepared | PrivateDeferredAwaitStatus::Suspended) {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "已結束的私有工作不得重複 poll",
+            ));
+        }
+        // 每次真恢復均與原 Checker 同源內容與函式／控制圖對帳，
+        // 不能繞過原 PreparedPrivateScalarCall::execute 的防竄改守門。
+        let source = std::str::from_utf8(&self.plan.verified.source.bytes)
+            .map_err(|_| PrivateScalarCallPrepareError::SourceChanged)?;
+        if self.plan.original.as_ref() != self.plan.verified.source.bytes.as_slice()
+            || !self.plan.verified.plan.is_consistent(
+                &self.plan.verified.structs, &self.plan.verified.functions, source,
+            ) || !self.plan.matches_source(source) {
+            return Err(PrivateScalarCallPrepareError::SourceChanged);
+        }
+        let expr = self.plan.main_dynamic_call.as_ref()
+            .expect("new 已確認原 Checker 函式圖");
+        let main_frame: BTreeMap<DeclarationId, i64> =
+            self.plan.main_owners.iter().copied().collect();
+        let budget = PrivateScalarExecutionBudget::default();
+        let adjusted_budget = PrivateScalarExecutionBudget {
+            max_call_frames: budget.max_call_frames.saturating_add(1),
+            max_steps: budget.max_steps,
+        };
+        self.status = PrivateDeferredAwaitStatus::Running;
+        let result = self.plan.evaluate_graph_driver(
+            expr, &main_frame, &mut self.events, &mut self.resource_events,
+            adjusted_budget, false, &self.plan.main_dynamic_steps,
+            None, &mut self.checkpoint, true,
+        );
+        if matches!(&result, Ok(None)) {
+            if self.checkpoint.is_none() {
+                return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+            }
+            self.status = PrivateDeferredAwaitStatus::Suspended;
+            return Ok(PrivateScalarGraphPoll::Suspended);
+        }
+        if self.checkpoint.is_some() {
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        let result = match result {
+            Ok(Some(value)) => Ok(value),
+            Err(error) => Err(error),
+            Ok(None) => unreachable!("前方已處理真暫停"),
+        };
+        let outcome = self.plan.audit_graph_outcome(PrivateScalarCallOutcome {
+            result, events: std::mem::take(&mut self.events),
+            resource_events: std::mem::take(&mut self.resource_events),
+            parameter_slots_after_exit: 0,
+        })?;
+        self.status = if outcome.result.is_ok() {
+            PrivateDeferredAwaitStatus::Succeeded
+        } else {
+            PrivateDeferredAwaitStatus::Failed
+        };
+        self.outcome = Some(outcome);
+        Ok(PrivateScalarGraphPoll::Completed)
+    }
+
+    fn pending_await(&self) -> Option<&str> {
+        self.checkpoint.as_ref().map(|saved| saved.awaiting_name.as_str())
+    }
+
+    fn retained_frames(&self) -> usize {
+        self.checkpoint.as_ref().map_or(0, |saved| saved.frames.len())
+    }
+
+    fn retained_resources(&self) -> &[crate::owned_str_runtime::ResourceEvent] {
+        self.checkpoint.as_ref().map_or(&[], |saved| saved.resources.events())
+    }
+
+    fn result(&self) -> Option<&PrivateScalarCallOutcome> { self.outcome.as_ref() }
+}
+
 // G18／V7-A1：同一私有 Checker 已核准的直接 await 來源延遲工作。
 // 此處跨 Rust API 呼叫真正保留「未開始執行」的工作計畫；執行中
 // 函式的顯式 Task/Frame 堆疊尚未成為可持久化協程，不能宣稱 A2 Closed。
