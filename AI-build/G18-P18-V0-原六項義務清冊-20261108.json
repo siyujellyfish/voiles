@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "V0 原 original_status 保留 2026-11-08 歷史快照；current_status 須與當前 G18 唯一正式狀態一致。E1～E5 已核准，A1/A2 從決策阻塞轉為尚待真正工程閉合，沒有合法任務全規格來源正例前仍不得 Passed。",
+  "rule": "保留 2026-11-08 原 original_status 歷史快照，後續工程只依正式正反 Gate 逐條 Closed；F1 七項真函式來源 Closed 須同 PR HEAD 與新 main 同 SHA 三必要 CI 成功，其餘 25 條仍 OpenEngineering。原 P18.1 仍 SubsetVerified，六 Phase 仍 0/6 Passed；已核准 E1～E5，無重複待決項。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -24,11 +24,17 @@
       "id": "F1",
       "phase": "P18.1",
       "batch": "V1",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_a_前向兩層帶參數呼叫每層建立獨立框架並按返回順序退出",
-      "remaining": "前向／互相／多層呼叫與合法返回及局部退出全範圍",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "F1-C01～F1-C07 原始函式工作圖等價類、動態正常／異常退出與來源防偽已由獨立真 Rust Gate 提供候選完整證據；F2～F4、其他 Phase 仍需各自閉合，F1 正式生效尚須 PR 最新 HEAD 與合併 main 同 SHA 必要 CI 成功",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "F1-C01..F1-C07",
+        "tests": "src/struct_stage/g18_f1_obligation_tests.rs",
+        "gate": "tools/核對G18-F1真函式圖閉合.py",
+        "report": "AI-build/G18-P18-F1-函式圖原始義務閉合證據-20261110.md"
+      }
     },
     {
       "id": "F2",

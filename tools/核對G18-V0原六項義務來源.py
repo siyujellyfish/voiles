@@ -131,10 +131,24 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             ):
                 raise ValueError(f"V0 {名稱} 決策已核准但真正 async 完整驗收仍不得偽造主證據")
         else:
-            if 狀態 != "OpenEngineering" or 種類 in {
-                "DecisionBlocked", "EngineeringPending",
-            }:
-                raise ValueError(f"V0 {名稱} 未有完整契約，不得提前標 Closed 或 Blocked")
+            if 名稱 == "F1":
+                # 只有實際補入原 Checker→Runtime 真正反七項獨立 Gate、
+                # 並在本次 PR 最新 HEAD CI 實際執行，才可將 F1 單條 Closed。
+                # 不以此將 P18.1 或任一相鄰義務標成 Passed。
+                必要證明 = {
+                    "contract": "F1-C01..F1-C07",
+                    "tests": "src/struct_stage/g18_f1_obligation_tests.rs",
+                    "gate": "tools/核對G18-F1真函式圖閉合.py",
+                    "report": "AI-build/G18-P18-F1-函式圖原始義務閉合證據-20261110.md",
+                }
+                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                    raise ValueError("F1 不得在缺少七項來源／真 Gate 的情況下標 Closed")
+                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                    raise ValueError("F1 正式驗收來源、Gate 或工程報告不存在")
+            elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
+                raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
+            if 種類 in {"DecisionBlocked", "EngineeringPending"}:
+                raise ValueError(f"V0 {名稱} 不得使用舊決策阻塞或偽造證據分類")
             if not isinstance(來源, str) or 來源 not in 原證據[階段]:
                 raise ValueError(f"V0 {名稱} 主要真來源未列在相應原始六項證據")
             if 來源 in 可用主證據:
@@ -149,8 +163,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 0 or 統計["OpenEngineering"] != 26 or 統計["BlockedDecision"] != 0:
-        raise ValueError("V0 仍不能提前結案；E1～E5 已核准但 26 條工程義務均未完整 Closed")
+    if 統計["Closed"] != 1 or 統計["OpenEngineering"] != 25 or 統計["BlockedDecision"] != 0:
+        raise ValueError("F1 七項閉合、其他 25 條工程 OpenEngineering；不得提前 P18 Passed")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -252,7 +266,8 @@ def main() -> int:
     print(
         f"G18 V0 盤點：原六項 {報告['unique_original_tests']} 個不同 Rust 名稱、"
         f"{報告['original_phase_references']} 次跨原項引用；"
-        f"26 條義務／26 條工程未閉合／0 條待決 async 決策；"
+        f"26 條義務／{報告['closed']} 條已閉合／"
+        f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
         f"25 筆獨立真 Rust 測試均已實跑；"
         "P18 原六項仍 0/6 Passed。"
     )
