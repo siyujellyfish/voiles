@@ -5875,6 +5875,46 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         self.cancellation_order.push(id);
         Ok(())
     }
+
+    /// E3-A：由呼叫端明確關閉整批工作；不在背景或 Drop 時
+    /// 偷偷執行 async 子函式。先對**所有**待取消工作檢查
+    /// 真 HC14 票據／合法暫停點，再按逆登錄順序逐一使用
+    /// 已驗收的 cancel() 原 P16/HC14 退出。失敗預檢時
+    /// 必須全體零狀態變更，保留每份真框架和 FIFO。
+    ///
+    /// 若在清理階段出現 R05/SharedExit 稽核失敗，原 cancel
+    /// 會保守 Failed，不能謊報全部關閉或冒充原 Runtime 返回；
+    /// 完全原子性的跨獨立 Runtime 故障回滾未經本批授權。
+    fn shutdown(&mut self) -> Result<Vec<u64>, PrivateScalarCooperativeError> {
+        let mut pending = Vec::new();
+        for (&id, job) in self.jobs.iter().rev() {
+            match job.continuation.status {
+                PrivateDeferredAwaitStatus::Prepared => pending.push(id),
+                PrivateDeferredAwaitStatus::Suspended => {
+                    Self::verify_wakeup_safety(job)?;
+                    if job.continuation.pending_await().is_none() {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                    pending.push(id);
+                }
+                PrivateDeferredAwaitStatus::Running =>
+                    return Err(PrivateScalarCooperativeError::WrongState),
+                PrivateDeferredAwaitStatus::Succeeded
+                | PrivateDeferredAwaitStatus::Failed
+                | PrivateDeferredAwaitStatus::Cancelled => {
+                    // 已結束工作不得仍有可達的真持有者幀；
+                    // 否則不能將整批會話偽報為已安全結束。
+                    if job.continuation.checkpoint.is_some() {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                }
+            }
+        }
+        for id in &pending {
+            self.cancel(*id)?;
+        }
+        Ok(pending)
+    }
 }
 
 #[cfg(test)]
