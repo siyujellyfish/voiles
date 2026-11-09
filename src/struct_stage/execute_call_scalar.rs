@@ -5637,6 +5637,166 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
     fn result(&self) -> Option<&PrivateScalarCallOutcome> { self.outcome.as_ref() }
 }
 
+/// V7 E2／E3：已核准私有 Checker 圖的單執行緒協作工作佇列。
+/// 此批不在背景啟動任何工作，亦不仿造受控 await 的語法結果。
+/// 保存的是原 PrivateScalarGraphContinuation 與其同一套真
+/// PrivateScalarTask／PrivateScalarActiveFrame／P16／HC14 checkpoint。
+/// 來源計畫由呼叫者保留所有權，排程器在 Rust 生命週期內借用，
+/// 不使用 unsafe 自我參照；完全持有式工作登錄仍須後續工程。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateScalarCooperativeError {
+    UnknownTask,
+    WrongState,
+    IdExhausted,
+    /// 原 Checker 或原 R05/SharedExit 的核對拒絕不是排程成功。
+    Engine,
+}
+
+struct PrivateScalarCooperativeJob<'a> {
+    continuation: PrivateScalarGraphContinuation<'a>,
+    cancellation: Option<PrivateScalarGraphCancellation>,
+}
+
+/// 排程的「準備／可執行／已抵達 await／可喚醒」不等於
+/// 開放背景工作。每次 drive_one 僅消耗佇列頭的**一個**
+/// 原 Checker 計畫，至下一個真 await 或原函式正式完成。
+#[derive(Default)]
+struct PrivateScalarCooperativeQueue<'a> {
+    jobs: BTreeMap<u64, PrivateScalarCooperativeJob<'a>>,
+    ready: std::collections::VecDeque<u64>,
+    next_id: u64,
+    drive_order: Vec<(u64, PrivateScalarGraphPoll)>,
+    cancellation_order: Vec<u64>,
+}
+
+impl<'a> PrivateScalarCooperativeQueue<'a> {
+    fn new() -> Self { Self::default() }
+
+    fn submit(
+        &mut self,
+        plan: &'a PreparedPrivateScalarCall,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
+        // 先在原 Checker 圖上真正建構可續行入口。
+        // 來源無法核准時不消耗 ID、不加入任何工作。
+        let continuation = PrivateScalarGraphContinuation::new(plan)
+            .map_err(|_| PrivateScalarCooperativeError::Engine)?;
+        let id = self.next_id.checked_add(1)
+            .ok_or(PrivateScalarCooperativeError::IdExhausted)?;
+        self.next_id = id;
+        self.jobs.insert(id, PrivateScalarCooperativeJob {
+            continuation, cancellation: None,
+        });
+        self.ready.push_back(id);
+        Ok(id)
+    }
+
+    fn status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
+        self.jobs.get(&id).map(|job| job.continuation.status)
+    }
+
+    fn pending_await(&self, id: u64) -> Option<&str> {
+        self.jobs.get(&id).and_then(|job| job.continuation.pending_await())
+    }
+
+    fn ready_ids(&self) -> Vec<u64> {
+        self.ready.iter().copied().collect()
+    }
+
+    fn drive_order(&self) -> &[(u64, PrivateScalarGraphPoll)] {
+        &self.drive_order
+    }
+
+    fn cancellation_order(&self) -> &[u64] {
+        &self.cancellation_order
+    }
+
+    fn outcome(&self, id: u64) -> Option<&PrivateScalarCallOutcome> {
+        self.jobs.get(&id).and_then(|job| job.continuation.result())
+    }
+
+    fn cancellation(&self, id: u64) -> Option<&PrivateScalarGraphCancellation> {
+        self.jobs.get(&id).and_then(|job| job.cancellation.as_ref())
+    }
+
+    fn retained_resources(
+        &self, id: u64,
+    ) -> Option<&[crate::owned_str_runtime::ResourceEvent]> {
+        self.jobs.get(&id).map(|job| job.continuation.retained_resources())
+    }
+
+    /// E2-A：同步驅動下一個已列入佇列的原 Checker 工作。
+    /// 真 yield 後，除非呼叫者明確 wake，該工作不再次入佇列；
+    /// 下一個 drive_one 可以先執行其他已驗證工作。
+    /// 真 Checker SourceChanged 等預執行拒絕時保持佇列不變，
+    /// 讓呼叫者可選擇安全取消，不能消耗／重排其他工作。
+    fn drive_one(
+        &mut self,
+    ) -> Result<Option<(u64, PrivateScalarGraphPoll)>, PrivateScalarCooperativeError> {
+        let Some(id) = self.ready.front().copied() else {
+            return Ok(None);
+        };
+        let job = self.jobs.get_mut(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        let poll = job.continuation.poll();
+        let poll = match poll {
+            Ok(poll) => poll,
+            Err(_) => {
+                // 只有原工作在尚未執行任何新動態步驟時，
+                // 保留 ready 供明確取消；已進入而稽核失敗
+                // 的工作不能被重排成可再次啟動。
+                if !matches!(job.continuation.status,
+                    PrivateDeferredAwaitStatus::Prepared
+                    | PrivateDeferredAwaitStatus::Suspended) {
+                    job.continuation.status = PrivateDeferredAwaitStatus::Failed;
+                    self.ready.pop_front();
+                }
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+        };
+        self.ready.pop_front();
+        self.drive_order.push((id, poll));
+        Ok(Some((id, poll)))
+    }
+
+    /// 只有真正停在原 Checker await 的工作才能進入可執行隊列。
+    /// 重複 wake 不能建立第二個待消耗 token。
+    fn wake(&mut self, id: u64) -> Result<(), PrivateScalarCooperativeError> {
+        let job = self.jobs.get(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        if job.continuation.status != PrivateDeferredAwaitStatus::Suspended
+            || job.continuation.pending_await().is_none()
+            || self.ready.contains(&id) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
+        self.ready.push_back(id);
+        Ok(())
+    }
+
+    /// E3-A：已暫停的真執行幀，走原 R05/P16/HC14 取消；
+    /// 尚未啟動的工作只消耗 Prepared 計畫，零假資源事件。
+    /// 任何安全檢查失敗都保留真 checkpoint 和原排程位置。
+    fn cancel(&mut self, id: u64) -> Result<(), PrivateScalarCooperativeError> {
+        let job = self.jobs.get_mut(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        match job.continuation.status {
+            PrivateDeferredAwaitStatus::Prepared => {
+                job.continuation.status = PrivateDeferredAwaitStatus::Cancelled;
+            }
+            PrivateDeferredAwaitStatus::Suspended => {
+                let evidence = job.continuation.cancel_suspended()
+                    .map_err(|_| PrivateScalarCooperativeError::Engine)?;
+                job.cancellation = Some(evidence);
+            }
+            _ => return Err(PrivateScalarCooperativeError::WrongState),
+        }
+        // 只有正式清理成功／未啟動才從可執行佇列移除；
+        // 即使 wake 已加入 ready，取消仍能以相同工作身分處理。
+        self.ready.retain(|candidate| *candidate != id);
+        self.cancellation_order.push(id);
+        Ok(())
+    }
+}
+
 // G18／V7-A1：同一私有 Checker 已核准的直接 await 來源延遲工作。
 // 此處跨 Rust API 呼叫真正保留「未開始執行」的工作計畫；執行中
 // 函式的顯式 Task/Frame 堆疊尚未成為可持久化協程，不能宣稱 A2 Closed。
