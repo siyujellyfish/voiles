@@ -1386,3 +1386,7 @@ include!("struct_stage/f00_resource_capture.rs");
 // 以下回歸直接走兩條正式 Parser 與 Checker Typed HIR，不重組第三棵 AST。
 #[cfg(test)]
 include!("struct_stage/ir_projection.rs");
+
+// G18／P18.1-F1：原六項契約第一條函式圖獨立真執行正反矩陣。
+#[cfg(test)]
+include!("struct_stage/g18_f1_obligation_tests.rs");
