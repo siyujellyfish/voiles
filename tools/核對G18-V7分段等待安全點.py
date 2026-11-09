@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18 V7 A2：原 CheckedTask 分段安全點、單執行緒喚醒與取消五項真 Rust 正反。"""
+"""G18 V7 A2：原 CheckedTask 分段安全點、單執行緒喚醒與取消九項真 Rust 正反。"""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +15,10 @@ from pathlib import Path
     "v7_a2_不同會話相同工作編號不能冒用喚醒或取消",
     "v7_a2_暫停後會話新增真借用需歸還才能喚醒",
     "v7_a2_工作在暫停期間被提前取消仍可清理等待框架",
+    "v7_a2_喚醒前等待者新增真票據不得繞過VB15且狀態原子保留",
+    "v7_a2_取消前等待者真票據未還不得提前消耗工作及持有者",
+    "v7_a2_普通resume亦須重新核對暫停後加入的真正票據",
+    "v7_a2_暫停期間框架清單仍有真BorrowFact應禁止取消和喚醒",
 )
 
 
