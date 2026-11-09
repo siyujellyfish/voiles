@@ -1,5 +1,5 @@
 {
-  "schema": "G18-P18-V0/1",
+  "schema": "G18-P18-V0/2",
   "baseline_main_sha": "ea23b56dbc1f13da94cc37f738087af734b6cb22",
   "original_status": {
     "P18.1": "SubsetVerified",
@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "每筆 primary_case 為不同義務的唯一主要可重現 Rust 真來源入口，不表示整條義務 Closed。非同步 A1/A2 待決不能以空正例充當 Passed。",
+  "rule": "V0 原 original_status 保留 2026-11-08 歷史快照；current_status 須與當前 G18 唯一正式狀態一致。E1～E5 已核准，A1/A2 從決策阻塞轉為尚待真正工程閉合，沒有合法任務全規格來源正例前仍不得 Passed。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -264,21 +264,36 @@
       "id": "A1",
       "phase": "P18.6",
       "batch": "V7",
-      "status": "BlockedDecision",
-      "evidence_kind": "DecisionBlocked",
+      "status": "OpenEngineering",
+      "evidence_kind": "EngineeringPending",
       "primary_case": null,
-      "remaining": "D18-02-E1/E2 async 工作啟動、await 暫停恢復與喚醒調度規格及真正正例",
+      "remaining": "已核准 E1/E2 直接 await 延遲啟動的原 Checker 真呼叫子集已接通；仍待完整可暫停／恢復／喚醒協作式真任務圖與 async self 正反",
       "work_file": "src/struct_stage/execute_method_self.rs"
     },
     {
       "id": "A2",
       "phase": "P18.6",
       "batch": "V7",
-      "status": "BlockedDecision",
-      "evidence_kind": "DecisionBlocked",
+      "status": "OpenEngineering",
+      "evidence_kind": "EngineeringPending",
       "primary_case": null,
-      "remaining": "D18-02-E3/E4/E5 取消點、錯誤傳遞、跨 await 借用及清理安全",
+      "remaining": "已核准 E3/E4/E5 真 RuntimeFailure、BorrowTicket／ResourceId 安全點子集已接通；仍待從原 `.voil` 任務暫停／恢復後取消、異常與逐框架清理完整正反",
       "work_file": "src/struct_stage/shared_call_exit.rs"
     }
+  ],
+  "current_status": {
+    "P18.1": "SubsetVerified",
+    "P18.2": "SubsetVerified",
+    "P18.3": "Incomplete",
+    "P18.4": "SubsetVerified",
+    "P18.5": "SubsetVerified",
+    "P18.6": "Incomplete"
+  },
+  "approved_async_semantics": [
+    "D18-02-E1-A: 延遲啟動且只限直接 await",
+    "D18-02-E2-A: 單執行緒協作式排程",
+    "D18-02-E3-A: 安全點取消與逐框架退出",
+    "D18-02-E4-A: 現行 RuntimeFailure 傳遞",
+    "D18-02-E5: 維持 VB15-01-A 有效借用不得跨 await"
   ]
 }
