@@ -10,6 +10,8 @@ use crate::borrow_safety::BorrowSafety;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DirectAwaitStatus {
     Prepared,
+    /// 工作已保留於單執行緒協作式安全點，本體尚未執行。
+    Suspended,
     Running,
     Succeeded,
     Failed,
@@ -78,7 +80,7 @@ impl DirectAwaitSession {
     pub(crate) fn cancel_before_start(&mut self, id: u64)
         -> Result<(), DirectAwaitError> {
         let task = self.tasks.get_mut(&id).ok_or(DirectAwaitError::UnknownTask)?;
-        if task.status != DirectAwaitStatus::Prepared {
+        if !matches!(task.status, DirectAwaitStatus::Prepared | DirectAwaitStatus::Suspended) {
             return Err(DirectAwaitError::AlreadyAwaited);
         }
         task.plan = None;
@@ -474,13 +476,16 @@ impl AsyncSafePointFrames {
     /// 不觸發任何 Runtime／ResourceEvent；同一執行緒可先執行其他直接等待。
     /// Rc 身分避免不同會話的相同 task 編號被誤認成原工作。
     fn suspend_verified_await(
-        &mut self, session: &DirectAwaitSession, task: u64,
+        &mut self, session: &mut DirectAwaitSession, task: u64,
     ) -> Result<(), AsyncSafePointError> {
         if self.state != AsyncSafePointState::Running || self.frames.is_empty() {
             return Err(AsyncSafePointError::WrongState);
         }
         Self::verify_prepared_task(session, task)?;
         self.suspend()?;
+        // 同一會話中的其他直接 await 不能搶先執行這份已保留計畫。
+        session.tasks.get_mut(&task).expect("已驗證工作身分").status =
+            DirectAwaitStatus::Suspended;
         self.pending_verified_await = Some((Rc::clone(&session.identity), task));
         Ok(())
     }
@@ -495,6 +500,26 @@ impl AsyncSafePointFrames {
                 return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::Cancelled)),
             Some(_) =>
                 return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::AlreadyAwaited)),
+        }
+        if session.loans.verify_static_snapshot(std::iter::empty()).is_err() {
+            return Err(AsyncSafePointError::DirectAwait(
+                DirectAwaitError::ActiveBorrowAcrossAwait,
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_suspended_task(
+        session: &DirectAwaitSession, task: u64,
+    ) -> Result<(), AsyncSafePointError> {
+        match session.status(task) {
+            Some(DirectAwaitStatus::Suspended) => {}
+            Some(DirectAwaitStatus::Cancelled) =>
+                return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::Cancelled)),
+            None => return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::UnknownTask)),
+            Some(_) => return Err(AsyncSafePointError::DirectAwait(
+                DirectAwaitError::AlreadyAwaited,
+            )),
         }
         if session.loans.verify_static_snapshot(std::iter::empty()).is_err() {
             return Err(AsyncSafePointError::DirectAwait(
@@ -521,9 +546,11 @@ impl AsyncSafePointFrames {
         &mut self, session: &mut DirectAwaitSession, task: u64,
     ) -> Result<AsyncSafePointSettlement, AsyncSafePointError> {
         self.verify_pending_task(session, task)?;
-        Self::verify_prepared_task(session, task)?;
+        Self::verify_suspended_task(session, task)?;
         self.pending_verified_await = None;
         self.resume()?;
+        session.tasks.get_mut(&task).expect("仍保留原核准工作").status =
+            DirectAwaitStatus::Prepared;
         let outcome = session.await_direct(task).map_err(AsyncSafePointError::DirectAwait)?;
         match &outcome.result {
             Ok(value) => {
@@ -544,7 +571,7 @@ impl AsyncSafePointFrames {
     ) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
         self.verify_pending_task(session, task)?;
         match session.status(task) {
-            Some(DirectAwaitStatus::Prepared) =>
+            Some(DirectAwaitStatus::Suspended) =>
                 session.cancel_before_start(task).map_err(AsyncSafePointError::DirectAwait)?,
             // 原工作若已在此單執行緒的暫停期間取消，仍可清理等待者。
             Some(DirectAwaitStatus::Cancelled) => {}
@@ -945,10 +972,11 @@ mod v7_a2_safe_point_tests {
         let parent = frames.declare_owned("父", "父🪼").unwrap();
         frames.enter_frame().unwrap();
         let child = frames.declare_owned("子", "子🪼").unwrap();
-        frames.suspend_verified_await(&session, first).unwrap();
+        frames.suspend_verified_await(&mut session, first).unwrap();
         assert_eq!(frames.state, AsyncSafePointState::Suspended);
-        assert_eq!(session.status(first), Some(DirectAwaitStatus::Prepared));
+        assert_eq!(session.status(first), Some(DirectAwaitStatus::Suspended));
         assert!(session.execution_order().is_empty());
+        assert_eq!(session.await_direct(first).err(), Some(DirectAwaitError::AlreadyAwaited));
         assert_eq!(frames.resume(), Err(AsyncSafePointError::WrongState));
         assert_eq!(session.await_direct(second).unwrap().result, Ok(Value::Int(34)));
         let result = frames.wake_verified_await(&mut session, first).unwrap();
@@ -975,7 +1003,7 @@ mod v7_a2_safe_point_tests {
         let parent = frames.declare_owned("外", "外層").unwrap();
         frames.enter_frame().unwrap();
         let child = frames.declare_owned("內", "內層").unwrap();
-        frames.suspend_verified_await(&session, id).unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
         assert!(matches!(frames.cancel_suspended(), Err(AsyncSafePointError::WrongState)));
         let evidence = frames.cancel_verified_await(&mut session, id).unwrap();
         assert_eq!(session.status(id), Some(DirectAwaitStatus::Cancelled));
@@ -1003,7 +1031,7 @@ mod v7_a2_safe_point_tests {
         assert_eq!(id, fake);
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
-        frames.suspend_verified_await(&original, id).unwrap();
+        frames.suspend_verified_await(&mut original, id).unwrap();
         assert!(matches!(frames.wake_verified_await(&mut impostor, fake),
             Err(AsyncSafePointError::WrongState)));
         assert!(matches!(frames.cancel_verified_await(&mut impostor, fake),
@@ -1025,7 +1053,7 @@ mod v7_a2_safe_point_tests {
         ).unwrap();
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
-        frames.suspend_verified_await(&session, id).unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
         let ticket = session.loans.acquire(
             DeclarationId(203), BorrowKind::SharedRead,
         ).unwrap();
@@ -1033,7 +1061,7 @@ mod v7_a2_safe_point_tests {
             Err(AsyncSafePointError::DirectAwait(
                 DirectAwaitError::ActiveBorrowAcrossAwait))));
         assert_eq!(frames.state, AsyncSafePointState::Suspended);
-        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Suspended));
         session.loans.release(ticket).unwrap();
         let result = frames.wake_verified_await(&mut session, id).unwrap();
         assert!(matches!(result, AsyncSafePointSettlement::Succeeded {
@@ -1050,7 +1078,7 @@ mod v7_a2_safe_point_tests {
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
         let resource = frames.declare_owned("保留", "UTF-8🪼").unwrap();
-        frames.suspend_verified_await(&session, id).unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
         session.cancel_before_start(id).unwrap();
         assert!(matches!(frames.wake_verified_await(&mut session, id),
             Err(AsyncSafePointError::DirectAwait(DirectAwaitError::Cancelled))));
