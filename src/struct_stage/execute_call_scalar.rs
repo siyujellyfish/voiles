@@ -10595,7 +10595,7 @@ mod g18_private_scalar_call_tests {
         let src = "struct Marker{\nvar count:int = 6\nvar data:str\n}\nfn route()->int{\nvar first:Marker = Marker()\nvar second:Marker = first.move()\nreturn second.count\n}\nfn main()->int{\nreturn route()\n}\n";
         let result = PreparedPrivateScalarCall::prepare(src);
         assert!(matches!(&result, Err(PrivateScalarCallPrepareError::Check(_))),
-            "原 Checker 須先拒絕不完整來源：{result:?}");
+            "原 Checker 須先拒絕不完整來源");
 
     }
 
