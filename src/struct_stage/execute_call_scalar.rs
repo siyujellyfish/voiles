@@ -5637,6 +5637,475 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
     fn result(&self) -> Option<&PrivateScalarCallOutcome> { self.outcome.as_ref() }
 }
 
+/// V7 E2／E3：已核准私有 Checker 圖的單執行緒協作工作佇列。
+/// 此批不在背景啟動任何工作，亦不仿造受控 await 的語法結果。
+/// 保存的是原 PrivateScalarGraphContinuation 與其同一套真
+/// PrivateScalarTask／PrivateScalarActiveFrame／P16／HC14 checkpoint。
+/// 來源計畫由呼叫者保留所有權，排程器在 Rust 生命週期內借用，
+/// 不使用 unsafe 自我參照；完全持有式工作登錄仍須後續工程。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateScalarCooperativeError {
+    UnknownTask,
+    WrongState,
+    IdExhausted,
+    /// 原 Checker 或原 R05/SharedExit 的核對拒絕不是排程成功。
+    Engine,
+}
+
+struct PrivateScalarCooperativeJob<'a> {
+    continuation: PrivateScalarGraphContinuation<'a>,
+    cancellation: Option<PrivateScalarGraphCancellation>,
+}
+
+/// 排程的「準備／可執行／已抵達 await／可喚醒」不等於
+/// 開放背景工作。每次 drive_one 僅消耗佇列頭的**一個**
+/// 原 Checker 計畫，至下一個真 await 或原函式正式完成。
+#[derive(Default)]
+struct PrivateScalarCooperativeQueue<'a> {
+    jobs: BTreeMap<u64, PrivateScalarCooperativeJob<'a>>,
+    ready: std::collections::VecDeque<u64>,
+    next_id: u64,
+    drive_order: Vec<(u64, PrivateScalarGraphPoll)>,
+    cancellation_order: Vec<u64>,
+}
+
+impl<'a> PrivateScalarCooperativeQueue<'a> {
+    fn new() -> Self { Self::default() }
+
+    fn submit(
+        &mut self,
+        plan: &'a PreparedPrivateScalarCall,
+    ) -> Result<u64, PrivateScalarCooperativeError> {
+        // 先在原 Checker 圖上真正建構可續行入口。
+        // 來源無法核准時不消耗 ID、不加入任何工作。
+        let continuation = PrivateScalarGraphContinuation::new(plan)
+            .map_err(|_| PrivateScalarCooperativeError::Engine)?;
+        let id = self.next_id.checked_add(1)
+            .ok_or(PrivateScalarCooperativeError::IdExhausted)?;
+        self.next_id = id;
+        self.jobs.insert(id, PrivateScalarCooperativeJob {
+            continuation, cancellation: None,
+        });
+        self.ready.push_back(id);
+        Ok(id)
+    }
+
+    fn status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
+        self.jobs.get(&id).map(|job| job.continuation.status)
+    }
+
+    fn pending_await(&self, id: u64) -> Option<&str> {
+        self.jobs.get(&id).and_then(|job| job.continuation.pending_await())
+    }
+
+    fn ready_ids(&self) -> Vec<u64> {
+        self.ready.iter().copied().collect()
+    }
+
+    fn drive_order(&self) -> &[(u64, PrivateScalarGraphPoll)] {
+        &self.drive_order
+    }
+
+    fn cancellation_order(&self) -> &[u64] {
+        &self.cancellation_order
+    }
+
+    fn outcome(&self, id: u64) -> Option<&PrivateScalarCallOutcome> {
+        self.jobs.get(&id).and_then(|job| job.continuation.result())
+    }
+
+    fn cancellation(&self, id: u64) -> Option<&PrivateScalarGraphCancellation> {
+        self.jobs.get(&id).and_then(|job| job.cancellation.as_ref())
+    }
+
+    /// 暫停後到實際重新交付工作之間，原真借用帳可能出現新票據。
+    /// E5 不能只憑最初 suspend 成功便讓工作消耗原唯一 checkpoint；
+    /// 拒絕必先於佇列 pop_front 和原 evaluate_graph_driver 狀態變更。
+    fn verify_wakeup_safety(
+        job: &PrivateScalarCooperativeJob<'a>,
+    ) -> Result<(), PrivateScalarCooperativeError> {
+        if job.continuation.status != PrivateDeferredAwaitStatus::Suspended {
+            return Ok(());
+        }
+        let saved = job.continuation.checkpoint.as_ref()
+            .ok_or(PrivateScalarCooperativeError::Engine)?;
+        PreparedPrivateScalarCall::check_await_safe_point_chain(
+            saved.frames.iter().map(|frame| (
+                &frame.borrow_tracker, frame.incoming_borrows.as_slice(),
+            )),
+        ).map_err(|_| PrivateScalarCooperativeError::Engine)
+    }
+
+    fn retained_resources(
+        &self, id: u64,
+    ) -> Option<&[crate::owned_str_runtime::ResourceEvent]> {
+        self.jobs.get(&id).map(|job| job.continuation.retained_resources())
+    }
+
+    /// E2-A：同步驅動下一個已列入佇列的原 Checker 工作。
+    /// 真 yield 後，除非呼叫者明確 wake，該工作不再次入佇列；
+    /// 下一個 drive_one 可以先執行其他已驗證工作。
+    /// 真 Checker SourceChanged 等預執行拒絕時保持佇列不變，
+    /// 讓呼叫者可選擇安全取消，不能消耗／重排其他工作。
+    fn drive_one(
+        &mut self,
+    ) -> Result<Option<(u64, PrivateScalarGraphPoll)>, PrivateScalarCooperativeError> {
+        let Some(id) = self.ready.front().copied() else {
+            return Ok(None);
+        };
+        // 防止 wake 成功後、drive 前加入的新有效票據消耗原
+        // checkpoint。拒絕時 FIFO、工作 ID、資源與執行順序零變更。
+        let job = self.jobs.get(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        Self::verify_wakeup_safety(job)?;
+        let job = self.jobs.get_mut(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        let poll = job.continuation.poll();
+        let poll = match poll {
+            Ok(poll) => poll,
+            Err(_) => {
+                // 只有原工作在尚未執行任何新動態步驟時，
+                // 保留 ready 供明確取消；已進入而稽核失敗
+                // 的工作不能被重排成可再次啟動。
+                if !matches!(job.continuation.status,
+                    PrivateDeferredAwaitStatus::Prepared
+                    | PrivateDeferredAwaitStatus::Suspended) {
+                    job.continuation.status = PrivateDeferredAwaitStatus::Failed;
+                    self.ready.pop_front();
+                }
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+        };
+        self.ready.pop_front();
+        self.drive_order.push((id, poll));
+        Ok(Some((id, poll)))
+    }
+
+    /// 只有真正停在原 Checker await 的工作才能進入可執行隊列。
+    /// 重複 wake 不能建立第二個待消耗 token。
+    fn wake(&mut self, id: u64) -> Result<(), PrivateScalarCooperativeError> {
+        let job = self.jobs.get(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        if job.continuation.status != PrivateDeferredAwaitStatus::Suspended
+            || job.continuation.pending_await().is_none()
+            || self.ready.contains(&id) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
+        Self::verify_wakeup_safety(job)?;
+        self.ready.push_back(id);
+        Ok(())
+    }
+
+    /// E3-A：已暫停的真執行幀，走原 R05/P16/HC14 取消；
+    /// 尚未啟動的工作只消耗 Prepared 計畫，零假資源事件。
+    /// 任何安全檢查失敗都保留真 checkpoint 和原排程位置。
+    fn cancel(&mut self, id: u64) -> Result<(), PrivateScalarCooperativeError> {
+        let job = self.jobs.get_mut(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        match job.continuation.status {
+            PrivateDeferredAwaitStatus::Prepared => {
+                job.continuation.status = PrivateDeferredAwaitStatus::Cancelled;
+            }
+            PrivateDeferredAwaitStatus::Suspended => {
+                let evidence = job.continuation.cancel_suspended()
+                    .map_err(|_| PrivateScalarCooperativeError::Engine)?;
+                job.cancellation = Some(evidence);
+            }
+            _ => return Err(PrivateScalarCooperativeError::WrongState),
+        }
+        // 只有正式清理成功／未啟動才從可執行佇列移除；
+        // 即使 wake 已加入 ready，取消仍能以相同工作身分處理。
+        self.ready.retain(|candidate| *candidate != id);
+        self.cancellation_order.push(id);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod g18_v7_cooperative_graph_queue_tests {
+    use super::*;
+    use crate::ownership_ledger::DeclarationId;
+
+    fn checked(text: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(text)
+            .expect("必須使用原 Parser／Checker 真正核准的私有來源")
+    }
+
+    #[test]
+    fn g18_v7_e2_真動態工作三份FIFO交錯後依明確喚醒次序完成() {
+        let left = checked(concat!(
+            "async fn left()->int{ return 7 }\n",
+            "fn wrapper()->int{\n",
+            "var parent:str = \"佇列內原資源🪼\"\n",
+            "return await left()\n}\n",
+            "fn main()->int{ return wrapper() }\n",
+        ));
+        let right = checked(concat!(
+            "async fn right()->int{ return 11 }\n",
+            "fn main()->int{ return await right()+0 }\n",
+        ));
+        let sync = checked(concat!(
+            "fn simple()->int{ return 19 }\n",
+            "fn main()->int{ return simple()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let a = queue.submit(&left).unwrap();
+        let b = queue.submit(&right).unwrap();
+        let c = queue.submit(&sync).unwrap();
+        assert_eq!((a, b, c), (1, 2, 3));
+        assert_eq!(queue.ready_ids(), [a, b, c]);
+        assert_eq!(queue.status(a), Some(PrivateDeferredAwaitStatus::Prepared));
+        assert!(queue.drive_order().is_empty());
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.pending_await(a), Some("left"));
+        assert!(matches!(queue.retained_resources(a), Some([
+            crate::owned_str_runtime::ResourceEvent::Created(_),
+        ])));
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.drive_one().unwrap(), Some((c, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(c).unwrap().result, Ok(19));
+        assert_eq!(queue.ready_ids(), []);
+        assert_eq!(queue.drive_one().unwrap(), None);
+        assert!(queue.outcome(a).is_none());
+        queue.wake(b).unwrap();
+        queue.wake(a).unwrap();
+        assert_eq!(queue.ready_ids(), [b, a]);
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(b).unwrap().result, Ok(11));
+        let finished = queue.outcome(a).unwrap();
+        assert_eq!(finished.result, Ok(7));
+        assert!(finished.has_balanced_frame_trace());
+        assert!(matches!(finished.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(queue.drive_order(), &[
+            (a, PrivateScalarGraphPoll::Suspended),
+            (b, PrivateScalarGraphPoll::Suspended),
+            (c, PrivateScalarGraphPoll::Completed),
+            (b, PrivateScalarGraphPoll::Completed),
+            (a, PrivateScalarGraphPoll::Completed),
+        ]);
+    }
+
+    #[test]
+    fn g18_v7_e2_多await工作在不同真指令位置反覆yield且其他工作可插入() {
+        let multi = checked(concat!(
+            "async fn first()->int{ return 2 }\n",
+            "async fn second()->int{ return 3 }\n",
+            "fn main()->int{ return await first()+await second() }\n",
+        ));
+        let other = checked(concat!(
+            "async fn other()->int{ return 40 }\n",
+            "fn main()->int{ return await other()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let a = queue.submit(&multi).unwrap();
+        let b = queue.submit(&other).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.pending_await(a), Some("first"));
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(a).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(queue.pending_await(a), Some("second"));
+        assert_eq!(queue.status(b), Some(PrivateDeferredAwaitStatus::Suspended));
+        queue.wake(b).unwrap();
+        queue.wake(a).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(b).unwrap().result, Ok(40));
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(a).unwrap().result, Ok(5));
+        let awaited = queue.outcome(a).unwrap().events.iter().filter_map(|event|
+            match event {
+                PrivateScalarCallEvent::AwaitSafePoint(name) => Some(name.as_str()),
+                _ => None,
+            }
+        ).collect::<Vec<_>>();
+        assert_eq!(awaited, ["first", "second"]);
+        assert!(queue.outcome(a).unwrap().has_balanced_frame_trace());
+    }
+
+    #[test]
+    fn g18_v7_e3_已醒來尚待執行的真父框架取消會移除FIFO並真釋放資源() {
+        let active = checked(concat!(
+            "async fn never()->int{ return 8 }\n",
+            "fn wrapper()->int{\n",
+            "var own:str = \"原工作唯一持有🪼\"\n",
+            "return await never()\n}\n",
+            "fn main()->int{ return wrapper() }\n",
+        ));
+        let next = checked(concat!(
+            "fn ready()->int{ return 12 }\n",
+            "fn main()->int{ return ready()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let a = queue.submit(&active).unwrap();
+        let b = queue.submit(&next).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(a).unwrap();
+        assert_eq!(queue.ready_ids(), [b, a]);
+        queue.cancel(a).unwrap();
+        assert_eq!(queue.ready_ids(), [b]);
+        assert_eq!(queue.status(a), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert!(queue.outcome(a).is_none());
+        assert_eq!(queue.cancellation_order(), &[a]);
+        let evidence = queue.cancellation(a).unwrap();
+        assert!(matches!(evidence.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert!(!evidence.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::FunctionEntered(name) if name == "never",
+        )));
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(b).unwrap().result, Ok(12));
+        assert_eq!(queue.drive_one().unwrap(), None);
+        assert_eq!(queue.wake(a), Err(PrivateScalarCooperativeError::WrongState));
+        assert_eq!(queue.cancel(a), Err(PrivateScalarCooperativeError::WrongState));
+    }
+
+    #[test]
+    fn g18_v7_e5_喚醒前及已排隊後新增真祖先票據都不得偷消耗checkpoint() {
+        let plan = checked(concat!(
+            "async fn work()->int{ return 5 }\n",
+            "fn main()->int{\n",
+            "var hold:str = \"不許跨等待借用🪼\"\n",
+            "return await work()+0\n}\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Suspended)));
+        let before = queue.retained_resources(id).unwrap().to_vec();
+        let source = DeclarationId(974);
+        let ticket = queue.jobs.get_mut(&id).unwrap()
+            .continuation.checkpoint.as_mut().unwrap().frames[0]
+            .borrow_tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        assert_eq!(queue.wake(id), Err(PrivateScalarCooperativeError::Engine));
+        assert!(queue.ready_ids().is_empty());
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert_eq!(queue.retained_resources(id).unwrap(), before.as_slice());
+        queue.jobs.get_mut(&id).unwrap().continuation.checkpoint
+            .as_mut().unwrap().frames[0].borrow_tracker.release(ticket).unwrap();
+        queue.wake(id).unwrap();
+        assert_eq!(queue.ready_ids(), [id]);
+        let ticket = queue.jobs.get_mut(&id).unwrap()
+            .continuation.checkpoint.as_mut().unwrap().frames[0]
+            .borrow_tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        assert_eq!(queue.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(queue.ready_ids(), [id]);
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert_eq!(queue.retained_resources(id).unwrap(), before.as_slice());
+        queue.jobs.get_mut(&id).unwrap().continuation.checkpoint
+            .as_mut().unwrap().frames[0].borrow_tracker.release(ticket).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(id).unwrap().result, Ok(5));
+        assert!(matches!(queue.outcome(id).unwrap().resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+    }
+
+    #[test]
+    fn g18_v7_e3_取消前真祖先票據未還需保留已喚醒FIFO與原ResourceId() {
+        let plan = checked(concat!(
+            "async fn async_fn()->int{ return 4 }\n",
+            "fn main()->int{\nvar own:str = \"待取消🪼\"\n",
+            "return await async_fn()+0\n}\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let id = queue.submit(&plan).unwrap();
+        assert_eq!(queue.drive_one().unwrap(), Some((id, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(id).unwrap();
+        let original = queue.retained_resources(id).unwrap().to_vec();
+        let ticket = queue.jobs.get_mut(&id).unwrap()
+            .continuation.checkpoint.as_mut().unwrap().frames[0]
+            .borrow_tracker.acquire(DeclarationId(975), BorrowKind::ExclusiveWrite).unwrap();
+        assert_eq!(queue.cancel(id), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(queue.ready_ids(), [id]);
+        assert!(queue.cancellation_order().is_empty());
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert_eq!(queue.retained_resources(id).unwrap(), original.as_slice());
+        queue.jobs.get_mut(&id).unwrap().continuation.checkpoint
+            .as_mut().unwrap().frames[0].borrow_tracker.release(ticket).unwrap();
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.ready_ids(), []);
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert_eq!(queue.cancellation_order(), &[id]);
+        assert!(matches!(queue.cancellation(id).unwrap().resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(a),
+            crate::owned_str_runtime::ResourceEvent::Released(b),
+        ] if a == b));
+    }
+
+    #[test]
+    fn g18_v7_e2_普通同步工作不得醒來且重複喚醒不得重複入FIFO() {
+        let plan = checked(concat!(
+            "async fn target()->int{ return 9 }\n",
+            "fn main()->int{ return await target()+0 }\n",
+        ));
+        let sync = checked(concat!(
+            "fn plain()->int{ return 3 }\n",
+            "fn main()->int{ return plain()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let a = queue.submit(&plan).unwrap();
+        let b = queue.submit(&sync).unwrap();
+        assert_eq!(queue.wake(a), Err(PrivateScalarCooperativeError::WrongState));
+        assert_eq!(queue.wake(b), Err(PrivateScalarCooperativeError::WrongState));
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Suspended)));
+        queue.wake(a).unwrap();
+        assert_eq!(queue.wake(a), Err(PrivateScalarCooperativeError::WrongState));
+        assert_eq!(queue.ready_ids(), [b, a]);
+        assert_eq!(queue.drive_one().unwrap(), Some((b, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.wake(b), Err(PrivateScalarCooperativeError::WrongState));
+        assert_eq!(queue.drive_one().unwrap(), Some((a, PrivateScalarGraphPoll::Completed)));
+        assert_eq!(queue.outcome(a).unwrap().result, Ok(9));
+        assert_eq!(queue.drive_order().len(), 3);
+    }
+
+    #[test]
+    fn g18_v7_e3_未啟動工作取消必零真動態事件且無未知工作副作用() {
+        let plan = checked(concat!(
+            "async fn ready()->int{\nvar never:str = \"不得建構\"\n",
+            "return 9\n}\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        assert_eq!(queue.wake(812), Err(PrivateScalarCooperativeError::UnknownTask));
+        assert_eq!(queue.cancel(812), Err(PrivateScalarCooperativeError::UnknownTask));
+        let id = queue.submit(&plan).unwrap();
+        assert_eq!(queue.ready_ids(), [id]);
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert_eq!(queue.ready_ids(), []);
+        assert!(queue.cancellation(id).is_none());
+        assert!(queue.outcome(id).is_none());
+        assert!(queue.retained_resources(id).unwrap().is_empty());
+        assert_eq!(queue.drive_one().unwrap(), None);
+        assert_eq!(queue.drive_order(), &[]);
+        assert_eq!(queue.cancellation_order(), &[id]);
+    }
+
+    #[test]
+    fn g18_v7_e2_工作身分耗盡必拒絕且不污染原待執行FIFO() {
+        let plan = checked(concat!(
+            "async fn ready()->int{ return 1 }\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        ));
+        let mut queue = PrivateScalarCooperativeQueue::new();
+        let valid = queue.submit(&plan).unwrap();
+        queue.next_id = u64::MAX;
+        assert_eq!(queue.submit(&plan), Err(PrivateScalarCooperativeError::IdExhausted));
+        assert_eq!(queue.ready_ids(), [valid]);
+        assert_eq!(queue.jobs.len(), 1);
+        assert_eq!(queue.drive_order(), &[]);
+        assert_eq!(queue.drive_one().unwrap(), Some((valid, PrivateScalarGraphPoll::Suspended)));
+        queue.cancel(valid).unwrap();
+        assert_eq!(queue.status(valid), Some(PrivateDeferredAwaitStatus::Cancelled));
+    }
+}
+
 // G18／V7-A1：同一私有 Checker 已核准的直接 await 來源延遲工作。
 // 此處跨 Rust API 呼叫真正保留「未開始執行」的工作計畫；執行中
 // 函式的顯式 Task/Frame 堆疊尚未成為可持久化協程，不能宣稱 A2 Closed。

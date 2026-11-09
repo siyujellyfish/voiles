@@ -181,6 +181,9 @@ jobs:
       - name: G18 V7 E2/E3 原 main 直接 wrapper 真快路續行與取消四項正反 Gate
         run: python3 tools/核對G18-V7真main直接快路續行.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 V7 E2/E3 真私有 Checked 函式圖單執行緒 FIFO 排程八項正反 Gate
+        run: python3 tools/核對G18-V7真工作圖協作排程.py --test-bin target/p02/p04_source_internal
+
 
       - name: G18 V1 R06 方法var int重賦值六十一項正反 Gate
         run: python3 tools/核對G18-R06跨執行器正反矩陣.py --test-bin target/p02/p04_source_internal
