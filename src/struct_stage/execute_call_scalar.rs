@@ -5718,6 +5718,164 @@ impl PrivateCheckedDeferredAwaitQueue {
 
 
 
+
+#[cfg(test)]
+mod g18_v7_real_graph_cancel_tests {
+    use super::*;
+    use crate::ownership_ledger::DeclarationId;
+
+    fn checked(src: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(src).unwrap()
+    }
+
+    #[test]
+    fn g18_v7_e3_真父子函式已建兩份UTF8資源後取消須逆序真釋放() {
+        let plan = checked(concat!(
+            "async fn target()->int{ return 4 }\n",
+            "fn inner()->int{\n",
+            "var child:str = \"內🪼\"\n",
+            "return await target()\n}\n",
+            "fn outer()->int{\n",
+            "var parent:str = \"外🪼\"\n",
+            "return inner()\n}\n",
+            "fn main()->int{ return outer()+0 }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("target"));
+        assert_eq!(live.retained_frames(), 3);
+        let created = live.retained_resources();
+        let [crate::owned_str_runtime::ResourceEvent::Created(parent),
+             crate::owned_str_runtime::ResourceEvent::Created(child)] = created else {
+            panic!("原父子已執行真 UTF-8 必各持唯一 ResourceId");
+        };
+        assert_ne!(parent, child);
+        let evidence = live.cancel_suspended().unwrap();
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Cancelled);
+        assert!(live.result().is_none());
+        assert_eq!(live.retained_frames(), 0);
+        assert_eq!(live.pending_await(), None);
+        assert_eq!(evidence.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(*parent),
+            crate::owned_str_runtime::ResourceEvent::Created(*child),
+            crate::owned_str_runtime::ResourceEvent::Released(*child),
+            crate::owned_str_runtime::ResourceEvent::Released(*parent),
+        ]);
+        assert!(evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+                | PrivateScalarCallEvent::Returned(_),
+        )));
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionExited { returned: false, .. }
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v7_e3_第一次真await已完成第二次暫停取消不得重執行第一個() {
+        let plan = checked(concat!(
+            "async fn first()->int{ return 2 }\n",
+            "async fn second()->int{ return 3 }\n",
+            "fn main()->int{ return await first()+await second() }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("second"));
+        let evidence = live.cancel_suspended().unwrap();
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Cancelled);
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "first"
+        )).count(), 1);
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "second"
+        )));
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "first"
+        )).count(), 1);
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "second"
+        )));
+        assert!(evidence.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_v7_e3_尚未執行與已完成的真工作不能冒稱安全點取消() {
+        let plan = checked(concat!(
+            "async fn ready()->int{ return 8 }\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert!(matches!(live.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        live.cancel_suspended().unwrap();
+        assert!(matches!(live.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert!(matches!(live.poll(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        let mut completed = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(completed.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(completed.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        assert!(matches!(completed.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert_eq!(completed.result().unwrap().result, Ok(8));
+    }
+
+    #[test]
+    fn g18_v7_e3_暫停後意外新增真BorrowTicket時取消拒絕並保留原框架() {
+        let plan = checked(concat!(
+            "async fn ready()->int{ return 4 }\n",
+            "fn main()->int{\n",
+            "var own:str = \"不能提前釋放🪼\"\n",
+            "return await ready()+0\n}\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let original = live.retained_resources().to_vec();
+        let source = DeclarationId(987);
+        let ticket = live.checkpoint.as_mut().unwrap()
+            .frames[0].borrow_tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        assert!(matches!(live.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Suspended);
+        assert_eq!(live.retained_resources(), original.as_slice());
+        assert_eq!(live.retained_frames(), 1);
+        live.checkpoint.as_mut().unwrap()
+            .frames[0].borrow_tracker.release(ticket).unwrap();
+        let evidence = live.cancel_suspended().unwrap();
+        assert!(matches!(evidence.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Cancelled);
+    }
+
+    #[test]
+    fn g18_v7_e3_暫停取消只留下真退場事件不釋放未啟動async子函式資源() {
+        let plan = checked(concat!(
+            "async fn ready()->int{\n",
+            "var never:str = \"不得建構\"\n",
+            "return 6\n}\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert!(live.retained_resources().is_empty());
+        let evidence = live.cancel_suspended().unwrap();
+        assert!(evidence.resource_events.is_empty());
+        assert!(evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "ready"
+        )));
+        assert!(live.result().is_none());
+    }
+}
+
 #[cfg(test)]
 mod g18_v7_real_graph_checkpoint_tests {
     use super::*;
