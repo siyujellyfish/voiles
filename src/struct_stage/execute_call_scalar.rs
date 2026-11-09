@@ -5380,6 +5380,40 @@ impl PreparedPrivateScalarCall {
         if pending_await.is_some() {
             return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
         }
+        // F2：同一真進退事件另核對原 Checker 所宣告的返回型別。
+        // R05 既有平衡守門不辨識 int/bool 的靜態簽章，故不得讓
+        // 一筆型別錯誤但數量平衡的 Returned／BoolReturned 假冒成功。
+        let mut return_types = Vec::<bool>::new();
+        for event in &outcome.events {
+            match event {
+                PrivateScalarCallEvent::FunctionEntered(name) => {
+                    let Some(function) = self.verified.functions.iter()
+                        .find(|fun| fun.name == *name) else {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    };
+                    return_types.push(function.result_ty == "bool");
+                }
+                PrivateScalarCallEvent::Returned(_) => {
+                    if return_types.last() != Some(&false) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                PrivateScalarCallEvent::BoolReturned(_) => {
+                    if return_types.last() != Some(&true) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                PrivateScalarCallEvent::FunctionExited { .. } => {
+                    if return_types.pop().is_none() {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !return_types.is_empty() {
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
         // None 是先前已核准「直接 main 呼叫、純 int 實參」的
         // 獨立快路；其成功時也由相同的原 Checker 根 Call 決定結果。
         // Some(Addition/Subtraction/Unreachable/Parameter) 則不能直接
