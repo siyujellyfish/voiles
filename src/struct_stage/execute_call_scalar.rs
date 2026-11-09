@@ -3100,7 +3100,7 @@ impl PreparedPrivateScalarCall {
         self.evaluate_graph_driver(
             expr, initial_frame, events, resource_events, budget,
             fail_after_root_binding, initial_local_steps, await_scheduler,
-            &mut checkpoint, false,
+            &mut checkpoint, false, false,
         )?.ok_or(PrivateScalarCallRuntimeError::StateMismatch)
     }
 
@@ -3121,7 +3121,13 @@ impl PreparedPrivateScalarCall {
         )>,
         checkpoint: &mut Option<PrivateScalarGraphCheckpoint<'a>>,
         allow_pause: bool,
+        // E3：僅能在已真正暫停且全框架無活借用的合法
+        // await 安全點直接停止工作，交由同一真出口反序清理。
+        cancel_at_checkpoint: bool,
     ) -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
+        if cancel_at_checkpoint && checkpoint.is_none() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
         let restored = checkpoint.take();
         let mut resuming_current_await = restored.is_some();
         let snapshot = restored.unwrap_or_else(|| {
@@ -3227,7 +3233,11 @@ impl PreparedPrivateScalarCall {
             mut pending_copy_structs, mut steps, awaiting_name: _,
         } = snapshot;
         let mut paused_await = None::<String>;
-        let result = (|| -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
+        // 取消不執行下一條 voiles 指令；此處 Ok(None) 只表示
+        // 「沒有更多使用者工作」，清理守門以 cancel_at_checkpoint
+        // 另行觸發，並不冒充任何正常回傳 int／執行期錯誤。
+        let result = if cancel_at_checkpoint { Ok(None) } else {
+        (|| -> Result<Option<i64>, PrivateScalarCallRuntimeError> {
             'graph: while let Some(task) = tasks.pop() {
                 // 記錄已完成的實參不是另一個 voiles 運算步驟；
                 // 即使下一運算會耗盡預算，仍保留先前已真求值的事件。
@@ -4395,7 +4405,8 @@ impl PreparedPrivateScalarCall {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
             }
             Ok(Some(values[0]))
-        })();
+        })()
+        };
         // 真正處於合法 await 邊時不觸發原工作圖的終止清理。
         // 不回滾／重放任何已經產生的 ResourceEvent、函式進入或求值。
         if let Some(awaiting_name) = paused_await {
@@ -4408,7 +4419,8 @@ impl PreparedPrivateScalarCall {
         // 回滾借用帳須延續到根框架的最後資源清理階段；
         // 成功路徑維持空清單，不改動既有真函式返回語意。
         let mut pending_loans = Vec::new();
-        if result.is_err() {
+        let must_unwind = cancel_at_checkpoint || result.is_err();
+        if must_unwind {
             events.push(PrivateScalarCallEvent::UnwindStarted);
             // 先保留 pending 票據的逆序清單；它們可能分屬多個
             // 已進入的呼叫者框架。外層 Call 尚未 Enter 時，不得
@@ -4470,7 +4482,7 @@ impl PreparedPrivateScalarCall {
         // 直接 main→被呼叫者的真框架保存在最底層，亦必須在
         // 正常返回、注入故障或預算耗盡後按完成順序逆序離域。
         if let Some(root) = frames.first_mut() {
-            if result.is_err() {
+            if must_unwind {
                 // 所有內層框架已正式失敗退出，才可歸還根框架
                 // 尚未進入外層 Call 的票據；不得默默遺漏偽造來源。
                 Self::return_pending_borrows_in_frame(
@@ -4531,7 +4543,9 @@ impl PreparedPrivateScalarCall {
             events.push(PrivateScalarCallEvent::OwnedResource(resource.clone()));
         }
         resource_events.extend(emitted);
-        result
+        // E3 暫停取消：已完成 P16／HC14 真清理，呼叫者可確認
+        // checkpoint 為 None 且回傳 Ok(None)；不能流出偽造 RuntimeFailure。
+        if cancel_at_checkpoint { Ok(None) } else { result }
     }
 
     fn prepare(text: &str) -> Result<Self, PrivateScalarCallPrepareError> {
@@ -5392,6 +5406,14 @@ enum PrivateScalarGraphPoll {
     Completed,
 }
 
+/// E3 真取消證據：事件唯一來源是原 evaluate_graph_driver 中
+/// HC14 票據歸還、P16 OwnedStrRuntime 真 scope 退出與原函式幀退出。
+#[derive(Debug)]
+struct PrivateScalarGraphCancellation {
+    events: Vec<PrivateScalarCallEvent>,
+    resource_events: Vec<crate::owned_str_runtime::ResourceEvent>,
+}
+
 struct PrivateScalarGraphContinuation<'a> {
     plan: &'a PreparedPrivateScalarCall,
     checkpoint: Option<PrivateScalarGraphCheckpoint<'a>>,
@@ -5446,7 +5468,7 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         let result = self.plan.evaluate_graph_driver(
             expr, &main_frame, &mut self.events, &mut self.resource_events,
             adjusted_budget, false, &self.plan.main_dynamic_steps,
-            None, &mut self.checkpoint, true,
+            None, &mut self.checkpoint, true, false,
         );
         if matches!(&result, Ok(None)) {
             if self.checkpoint.is_none() {
@@ -5475,6 +5497,67 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         };
         self.outcome = Some(outcome);
         Ok(PrivateScalarGraphPoll::Completed)
+    }
+
+    /// E3：只能取消「已真進入執行而現在停在合法 await」的工作。
+    /// 不再次執行任何已完成運算或 EnterCall；同一 HC14／P16
+    /// 執行器從最內層向外真正歸還票據、釋放原 ResourceId。
+    /// 原計畫即使之後遭竄改仍需允許既有資源退場，故此處
+    /// 不重新執行來源／不以重驗原始文字阻塞必要清理。
+    fn cancel_suspended(
+        &mut self,
+    ) -> Result<PrivateScalarGraphCancellation, PrivateScalarCallPrepareError> {
+        if self.status != PrivateDeferredAwaitStatus::Suspended {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "真動態取消僅允許已停在合法 await 安全點",
+            ));
+        }
+        let saved = self.checkpoint.as_ref().ok_or(
+            PrivateScalarCallPrepareError::RuntimeTraceMismatch,
+        )?;
+        PreparedPrivateScalarCall::check_await_safe_point_chain(
+            saved.frames.iter().map(|frame|
+                (&frame.borrow_tracker, frame.incoming_borrows.as_slice())),
+        ).map_err(|_| PrivateScalarCallPrepareError::RuntimeTraceMismatch)?;
+        let expr = self.plan.main_dynamic_call.as_ref().ok_or(
+            PrivateScalarCallPrepareError::RuntimeTraceMismatch,
+        )?;
+        let main_frame = self.plan.main_owners.iter().copied()
+            .collect::<BTreeMap<DeclarationId, i64>>();
+        let budget = PrivateScalarExecutionBudget::default();
+        let adjusted_budget = PrivateScalarExecutionBudget {
+            max_call_frames: budget.max_call_frames.saturating_add(1),
+            max_steps: budget.max_steps,
+        };
+        self.status = PrivateDeferredAwaitStatus::Running;
+        let cleanup = self.plan.evaluate_graph_driver(
+            expr, &main_frame, &mut self.events, &mut self.resource_events,
+            adjusted_budget, false, &self.plan.main_dynamic_steps,
+            None, &mut self.checkpoint, false, true,
+        );
+        // 若真正 P16／HC14 退出失敗，禁止報稱取消成功；
+        // 已消耗工作不能恢復執行，保守標記 Failed 等待正式處置。
+        if !matches!(cleanup, Ok(None)) || self.checkpoint.is_some() {
+            self.status = PrivateDeferredAwaitStatus::Failed;
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        // 以既有 R05/SharedExit 對帳逆序 unwind，但結果僅供
+        // 內部稽核；使用者不會看到任何合成 StateMismatch runtime。
+        let evidence = PrivateScalarCallOutcome {
+            result: Err(PrivateScalarCallRuntimeError::StateMismatch),
+            events: std::mem::take(&mut self.events),
+            resource_events: std::mem::take(&mut self.resource_events),
+            parameter_slots_after_exit: 0,
+        };
+        if !evidence.has_balanced_frame_trace() {
+            self.status = PrivateDeferredAwaitStatus::Failed;
+            return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+        }
+        self.status = PrivateDeferredAwaitStatus::Cancelled;
+        Ok(PrivateScalarGraphCancellation {
+            events: evidence.events,
+            resource_events: evidence.resource_events,
+        })
     }
 
     fn pending_await(&self) -> Option<&str> {
@@ -5634,6 +5717,164 @@ impl PrivateCheckedDeferredAwaitQueue {
 
 
 
+
+
+#[cfg(test)]
+mod g18_v7_real_graph_cancel_tests {
+    use super::*;
+    use crate::ownership_ledger::DeclarationId;
+
+    fn checked(src: &str) -> PreparedPrivateScalarCall {
+        PreparedPrivateScalarCall::prepare(src).unwrap()
+    }
+
+    #[test]
+    fn g18_v7_e3_真父子函式已建兩份UTF8資源後取消須逆序真釋放() {
+        let plan = checked(concat!(
+            "async fn target()->int{ return 4 }\n",
+            "fn inner()->int{\n",
+            "var child:str = \"內🪼\"\n",
+            "return await target()\n}\n",
+            "fn outer()->int{\n",
+            "var parent:str = \"外🪼\"\n",
+            "return inner()\n}\n",
+            "fn main()->int{ return outer()+0 }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("target"));
+        assert_eq!(live.retained_frames(), 3);
+        let (parent, child) = match live.retained_resources() {
+            [crate::owned_str_runtime::ResourceEvent::Created(parent),
+             crate::owned_str_runtime::ResourceEvent::Created(child)] => (*parent, *child),
+            _ => panic!("原父子已執行真 UTF-8 必各持唯一 ResourceId"),
+        };
+        assert_ne!(parent, child);
+        let evidence = live.cancel_suspended().unwrap();
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Cancelled);
+        assert!(live.result().is_none());
+        assert_eq!(live.retained_frames(), 0);
+        assert_eq!(live.pending_await(), None);
+        assert_eq!(evidence.resource_events, [
+            crate::owned_str_runtime::ResourceEvent::Created(parent),
+            crate::owned_str_runtime::ResourceEvent::Created(child),
+            crate::owned_str_runtime::ResourceEvent::Released(child),
+            crate::owned_str_runtime::ResourceEvent::Released(parent),
+        ]);
+        assert!(evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(_)
+                | PrivateScalarCallEvent::Returned(_),
+        )));
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionExited { returned: false, .. }
+        )).count(), 2);
+    }
+
+    #[test]
+    fn g18_v7_e3_第一次真await已完成第二次暫停取消不得重執行第一個() {
+        let plan = checked(concat!(
+            "async fn first()->int{ return 2 }\n",
+            "async fn second()->int{ return 3 }\n",
+            "fn main()->int{ return await first()+await second() }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(live.pending_await(), Some("second"));
+        let evidence = live.cancel_suspended().unwrap();
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Cancelled);
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "first"
+        )).count(), 1);
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "second"
+        )));
+        assert_eq!(evidence.events.iter().filter(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "first"
+        )).count(), 1);
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::AwaitSafePoint(name) if name == "second"
+        )));
+        assert!(evidence.resource_events.is_empty());
+    }
+
+    #[test]
+    fn g18_v7_e3_尚未執行與已完成的真工作不能冒稱安全點取消() {
+        let plan = checked(concat!(
+            "async fn ready()->int{ return 8 }\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert!(matches!(live.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        live.cancel_suspended().unwrap();
+        assert!(matches!(live.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert!(matches!(live.poll(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        let mut completed = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(completed.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert_eq!(completed.poll().unwrap(), PrivateScalarGraphPoll::Completed);
+        assert!(matches!(completed.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::Unsupported(_))));
+        assert_eq!(completed.result().unwrap().result, Ok(8));
+    }
+
+    #[test]
+    fn g18_v7_e3_暫停後意外新增真BorrowTicket時取消拒絕並保留原框架() {
+        let plan = checked(concat!(
+            "async fn ready()->int{ return 4 }\n",
+            "fn main()->int{\n",
+            "var own:str = \"不能提前釋放🪼\"\n",
+            "return await ready()+0\n}\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        let original = live.retained_resources().to_vec();
+        let source = DeclarationId(987);
+        let ticket = live.checkpoint.as_mut().unwrap()
+            .frames[0].borrow_tracker.acquire(source, BorrowKind::SharedRead).unwrap();
+        assert!(matches!(live.cancel_suspended(),
+            Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch)));
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Suspended);
+        assert_eq!(live.retained_resources(), original.as_slice());
+        assert_eq!(live.retained_frames(), 1);
+        live.checkpoint.as_mut().unwrap()
+            .frames[0].borrow_tracker.release(ticket).unwrap();
+        let evidence = live.cancel_suspended().unwrap();
+        assert!(matches!(evidence.resource_events.as_slice(), [
+            crate::owned_str_runtime::ResourceEvent::Created(id),
+            crate::owned_str_runtime::ResourceEvent::Released(done),
+        ] if id == done));
+        assert_eq!(live.status, PrivateDeferredAwaitStatus::Cancelled);
+    }
+
+    #[test]
+    fn g18_v7_e3_暫停取消只留下真退場事件不釋放未啟動async子函式資源() {
+        let plan = checked(concat!(
+            "async fn ready()->int{\n",
+            "var never:str = \"不得建構\"\n",
+            "return 6\n}\n",
+            "fn main()->int{ return await ready()+0 }\n",
+        ));
+        let mut live = PrivateScalarGraphContinuation::new(&plan).unwrap();
+        assert_eq!(live.poll().unwrap(), PrivateScalarGraphPoll::Suspended);
+        assert!(live.retained_resources().is_empty());
+        let evidence = live.cancel_suspended().unwrap();
+        assert!(evidence.resource_events.is_empty());
+        assert!(evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::UnwindStarted,
+        )));
+        assert!(!evidence.events.iter().any(|e| matches!(
+            e, PrivateScalarCallEvent::FunctionEntered(name) if name == "ready"
+        )));
+        assert!(live.result().is_none());
+    }
+}
 
 #[cfg(test)]
 mod g18_v7_real_graph_checkpoint_tests {
