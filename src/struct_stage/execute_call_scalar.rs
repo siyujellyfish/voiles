@@ -1377,9 +1377,9 @@ impl PrivateScalarBoolExpr {
         if name == "main" || target.result_ty != "bool" || target.is_async
             || target.params.len() != actual.len()
             || target.params.iter().any(|param|
-                !matches!(param.ty.as_str(), "int" | "bool" | "str"))
-            || verified.plan.declarations.call_borrows_at(span)
-                .is_some_and(|facts| !facts.is_empty()) {
+                !matches!(param.ty.as_str(), "int" | "bool" | "str")) {
+            // P15.6：借用不在此預先一律拒絕；以下逐形參生成真
+            // BorrowFact，再對原 Checker call_borrows_at(span) 全量比對。
             return Err(PrivateScalarCallPrepareError::Unsupported(
                 "bool 呼叫須為原 Checker 同步 int/bool/str 混合形參及 bool 結果",
             ));
