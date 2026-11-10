@@ -2836,12 +2836,25 @@ impl PreparedPrivateScalarCall {
             }
             StmtKind::Break if inside_loop => Ok(PrivateScalarBranchAction::Break),
             StmtKind::Continue if inside_loop => Ok(PrivateScalarBranchAction::Continue),
-            StmtKind::Return(ret) =>
-                Ok(PrivateScalarBranchAction::Return(
+            StmtKind::Return(ret) => {
+                // F2：原 Checker 已核准的提前 return 型別由同一份
+                // TypedHIR 決定；bool 在原工作棧用 BoolValue 返回，
+                // 不作 int 隱式轉型，也不新增第二套 CFG。
+                let span = ret.expression.node_span();
+                let result = if verified.plan.scalar_hir.expression(span)
+                    .is_some_and(|fact| fact.ty == crate::common_ir::ScalarType::Bool) {
+                    PrivateScalarReturnExpr::BoolValue(Box::new(
+                        PrivateScalarBoolExpr::from_checked_call_argument(
+                            &ret.expression, int_bindings, verified,
+                        )?,
+                    ))
+                } else {
                     PrivateScalarReturnExpr::from_checked_bindings(
                         &ret.expression, int_bindings, verified,
-                    )?,
-                )),
+                    )?
+                };
+                Ok(PrivateScalarBranchAction::Return(result))
+            },
             StmtKind::FieldAssign { receiver, field, value } => {
                 if verified.plan.declarations.typed_declaration(
                     *int_bindings.get(receiver).ok_or(
@@ -3003,24 +3016,13 @@ impl PreparedPrivateScalarCall {
                 "普通函式最後一筆必須是真 Checker 核准的 return",
             ));
         };
-        // F2：bool 型別由原 Checker 返回宣告及 TypedHIR 雙重核准。
-        // 此次只接通沒有前置語句的真布林 leaf；後續 bool 控制圖
-        // 需另一批型別化工作棧證據，不能將合法來源默默變成 int。
-        if function.result_ty == "bool" {
-            if !prefix.is_empty() {
-                return Err(PrivateScalarCallPrepareError::Unsupported(
-                    "bool 返回函式的前置局部／控制圖尚未完整驗收",
-                ));
-            }
-            let bindings = function.params.iter().map(|param|
-                (param.name.clone(), DeclarationId(param.declaration_start))
-            ).collect::<BTreeMap<_, _>>();
-            return Ok((Vec::new(), Vec::new(),
-                PrivateScalarReturnExpr::BoolValue(Box::new(
-                    PrivateScalarBoolExpr::from_checked_call_argument(
-                        &ret.expression, &bindings, verified,
-                    )?,
-                )), ret.expression.node_span()));
+        // F2：bool/int 返回走同一組原 Checker 已核准的局部與 CFG
+        // 編譯流程，直到最後 return 才按真 TypedHIR 選擇值型別。
+        // 非 Copyable 返回的完整資源交接仍不在此 i64/bool 工作棧冒充。
+        if !matches!(function.result_ty.as_str(), "int" | "bool") {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "普通函式此執行器只接通已核准 int/bool 值返回",
+            ));
         }
         let mut bindings = function.params.iter().map(|param|
             (param.name.clone(), DeclarationId(param.declaration_start))
@@ -3284,6 +3286,14 @@ impl PreparedPrivateScalarCall {
         let result = if every_branch_returns
             && verified.plan.scalar_hir.expression(return_span).is_none() {
             PrivateScalarReturnExpr::Unreachable
+        } else if function.result_ty == "bool" {
+            // 尾端與提前 return 同一來源事實；bool 值只經
+            // EvaluateBoolArgument 真返回，不混入 int 運算。
+            PrivateScalarReturnExpr::BoolValue(Box::new(
+                PrivateScalarBoolExpr::from_checked_call_argument(
+                    &ret.expression, &bindings, verified,
+                )?,
+            ))
         } else {
             PrivateScalarReturnExpr::from_checked_bindings(
                 &ret.expression, &bindings, verified,
