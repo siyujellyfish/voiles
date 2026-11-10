@@ -84,6 +84,9 @@ jobs:
       - name: G18 P18.2～18.3 真 for／while 可配置步數預算三十六項正反 Gate
         run: python3 tools/核對G18有限迴圈真資源.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F2 原 Checker bool-return str 借用 Move 與混合參數八項正反 Gate
+        run: python3 tools/核對G18-F2布林字串混合參數.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1-F2 真 bool-return 混合 int bool 形式參數八項正反 Gate
         run: python3 tools/核對G18-F2布林混型別參數.py --test-bin target/p02/p04_source_internal
 

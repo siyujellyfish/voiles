@@ -1377,24 +1377,95 @@ impl PrivateScalarBoolExpr {
         if name == "main" || target.result_ty != "bool" || target.is_async
             || target.params.len() != actual.len()
             || target.params.iter().any(|param|
-                !matches!(param.ty.as_str(), "int" | "bool"))
-            || verified.plan.declarations.call_borrows_at(span)
-                .is_some_and(|facts| !facts.is_empty()) {
+                !matches!(param.ty.as_str(), "int" | "bool" | "str")) {
+            // P15.6：借用不在此預先一律拒絕；以下逐形參生成真
+            // BorrowFact，再對原 Checker call_borrows_at(span) 全量比對。
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "bool 呼叫只接通原 Checker 同步 int/bool 形式參數與 bool 結果",
+                "bool 呼叫須為原 Checker 同步 int/bool/str 混合形參及 bool 結果",
             ));
         }
-        let arguments = actual.iter().zip(&target.params).map(|(argument, param)| {
-            if param.ty == "bool" {
-                Self::from_checked_call_argument(argument, bindings, verified)
-                    .map(PrivateScalarCallArgument::Bool)
-            } else {
-                // 仍從原 Checker int TypedHIR 編譯參數，不允許 bool→int 暗轉型。
-                PrivateScalarReturnExpr::from_checked_bindings(
-                    argument, bindings, verified,
-                ).map(PrivateScalarCallArgument::Int)
-            }
-        }).collect::<Result<Vec<_>, _>>()?;
+        // F2：與 int-return 真工作圖一致，非 Copyable 的 str 實參
+        // 必須出自原 Checker 真來源身分，並精確核對 call_borrows。
+        // 任何來源型別或權限不符時，尚未動態 EnterCall／借出／移交。
+        let mut arguments = Vec::with_capacity(actual.len());
+        let mut observed_borrows = Vec::new();
+        for (argument, param) in actual.iter().zip(&target.params) {
+            arguments.push(match param.ty.as_str() {
+                "bool" => PrivateScalarCallArgument::Bool(
+                    Self::from_checked_call_argument(argument, bindings, verified)?,
+                ),
+                "int" => PrivateScalarCallArgument::Int(
+                    PrivateScalarReturnExpr::from_checked_bindings(
+                        argument, bindings, verified,
+                    )?,
+                ),
+                "str" => {
+                    if matches!(&argument.kind, TermKind::Move(_)) {
+                        let owner = PreparedPrivateMoveCall::checked_move_name(
+                            argument, verified,
+                        ).map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                            "bool 返回 str Move 實參缺少原 Lexer/Parser 身分",
+                        ))?;
+                        let source = *bindings.get(owner).ok_or(
+                            PrivateScalarCallPrepareError::Unsupported(
+                                "bool 返回 str Move 實參缺少目前作用域 DeclarationId",
+                            ),
+                        )?;
+                        if !verified.plan.declarations.typed_declaration(source)
+                            .is_some_and(|fact| fact.ty == "str") {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "bool 返回 str Move 缺少原 Checker 擁有型別",
+                            ));
+                        }
+                        PrivateScalarCallArgument::MoveStr {
+                            owner: owner.to_owned(), source,
+                        }
+                    } else {
+                        let TermKind::Name(owner) = &argument.kind else {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "bool 返回 str 預設借用只支援原 Parser 具名來源",
+                            ));
+                        };
+                        let source = *bindings.get(owner).ok_or(
+                            PrivateScalarCallPrepareError::Unsupported(
+                                "bool 返回 str 借用缺少目前作用域 DeclarationId",
+                            ),
+                        )?;
+                        let decl = verified.plan.declarations.typed_declaration(source)
+                            .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                                "bool 返回 str 借用缺少原 Checker 型別",
+                            ))?;
+                        if decl.ty != "str"
+                            || !verified.tokens.iter().any(|token|
+                                token.start == argument.start && token.end == argument.end
+                                    && matches!(&token.kind,
+                                        TokenKind::Name(found) if found == owner)) {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "bool 返回 str 借用缺少原 Lexer/Checker 來源",
+                            ));
+                        }
+                        let fact = BorrowFact::new(source, if decl.mutable {
+                            BorrowKind::ExclusiveWrite
+                        } else {
+                            BorrowKind::SharedRead
+                        });
+                        observed_borrows.push(fact);
+                        PrivateScalarCallArgument::BorrowStr {
+                            owner: owner.clone(), fact,
+                        }
+                    }
+                }
+                _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "bool 返回函式含未核准的形式參數型別",
+                )),
+            });
+        }
+        if verified.plan.declarations.call_borrows_at(span).unwrap_or(&[])
+            != observed_borrows.as_slice() {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "bool 返回 str 實參原 Checker BorrowFact 身分或權限不相符",
+            ));
+        }
         Ok(Self::Call { name: name.to_owned(), arguments })
     }
 
@@ -3484,8 +3555,12 @@ impl PreparedPrivateScalarCall {
                                         tasks.push(PrivateScalarTask::RecordArgument);
                                         tasks.push(PrivateScalarTask::Evaluate(value, false));
                                     }
-                                    // F2 str 借用／Move 作 bool 返回仍需完整 P16 資源矩陣。
-                                    _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
+                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
+                                    }
+                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
+                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
+                                    }
                                 }
                             }
                         } else {

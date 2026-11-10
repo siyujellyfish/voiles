@@ -1410,3 +1410,7 @@ include!("struct_stage/g18_f2_bool_condition_tests.rs");
 // G18／P18.1-F2：布林回傳的 int／bool 混型別形參真動態來源正反。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_mixed_tests.rs");
+
+// G18 F2：原 Checker bool 返回 str 借用與 Move 實際 ResourceId／BorrowTicket 八項。
+#[cfg(test)]
+include!("struct_stage/g18_f2_bool_str_tests.rs");
