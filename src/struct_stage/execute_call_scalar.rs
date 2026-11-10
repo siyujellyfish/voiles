@@ -1849,6 +1849,7 @@ impl PrivateScalarCopyStructSeed {
                         // 不讓已核准 bool 返回以 0/1 偽裝 int 欄位值。
                         Work::Read(PrivateScalarReturnExpr::Call { .. }
                             | PrivateScalarReturnExpr::BoolValue(..)
+                            | PrivateScalarReturnExpr::StrValue(..)
                             | PrivateScalarReturnExpr::Unreachable) =>
                             return Err(PrivateScalarCallRuntimeError::StateMismatch),
                     }
