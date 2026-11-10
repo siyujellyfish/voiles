@@ -314,6 +314,29 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
+    /// G18／F2：接收子函式已 Returned 的同一 OwnedUtf8，原子覆寫現有 var str。
+    /// 先驗證名稱、可寫性與序號，全部成功才取代舊綁定；失敗把完整
+    /// OwnedUtf8 交還呼叫者進行正式 release_detached，不能只靠 Rust Drop。
+    pub(crate) fn replace_return_as(
+        &mut self, name: &str, result: OwnedUtf8,
+    ) -> Result<(), (StrRuntimeError, OwnedUtf8)> {
+        let (i, j) = match self.location(name) {
+            Ok(position) => position,
+            Err(error) => return Err((error, result)),
+        };
+        if !self.scopes[i].names[j].mutable {
+            return Err((StrRuntimeError::ImmutableBinding, result));
+        }
+        let order = match self.next_order() {
+            Ok(order) => order,
+            Err(error) => return Err((error, result)),
+        };
+        let previous = self.scopes[i].names[j].owned.replace(result);
+        self.scopes[i].names[j].initialized_at = order;
+        if let Some(previous) = previous { self.release(previous); }
+        Ok(())
+    }
+
     fn cleanup_frame(&mut self, mut frame: StrFrame) {
         frame.names.sort_by_key(|slot| slot.initialized_at);
         for slot in frame.names.into_iter().rev() {
@@ -720,6 +743,55 @@ mod g18_f2_str_return_permission_tests {
         assert_eq!(rt.finish().unwrap(), [
             ResourceEvent::Created(1),
             ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+}
+
+#[cfg(test)]
+mod g18_f2_str_return_reassign_runtime_tests {
+    use super::*;
+
+    #[test]
+    fn f2_return_replace_原子接收相同utf8且只釋放舊資源() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("target", true, "舊值").unwrap();
+        runtime.enter_scope();
+        runtime.declare("callee", true, "返回🪼").unwrap();
+        let pointer = runtime.read("callee").unwrap().as_ptr();
+        let pending = runtime.return_named("callee").unwrap();
+        runtime.leave_scope().unwrap();
+        runtime.replace_return_as("target", pending).unwrap();
+        assert_eq!(runtime.read("target"), Ok("返回🪼"));
+        assert_eq!(runtime.resource_id("target"), Ok(2));
+        assert_eq!(runtime.read("target").unwrap().as_ptr(), pointer);
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Returned(2),
+            ResourceEvent::Released(1),
+            ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn f2_return_replace_不可寫拒絕歸還完整資源並保留原值() {
+        let mut runtime = OwnedStrRuntime::new();
+        runtime.declare("target", false, "唯讀").unwrap();
+        runtime.enter_scope();
+        runtime.declare("callee", true, "不得遺失").unwrap();
+        let returned = runtime.return_named("callee").unwrap();
+        runtime.leave_scope().unwrap();
+        let (error, pending) = runtime.replace_return_as("target", returned).unwrap_err();
+        assert_eq!(error, StrRuntimeError::ImmutableBinding);
+        assert_eq!(runtime.read("target"), Ok("唯讀"));
+        assert_eq!(pending.text(), "不得遺失");
+        runtime.release_detached(pending);
+        assert_eq!(runtime.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Returned(2),
+            ResourceEvent::Released(2),
             ResourceEvent::Released(1),
         ]);
     }
