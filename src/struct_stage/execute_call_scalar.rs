@@ -74,6 +74,8 @@ enum PrivateScalarCallEvent {
     ResourceOwnerBound(DeclarationId, u64),
     /// R05：父函式唯一所有權整筆交接給子函式指定 str 參數。
     ResourceTransferred { source: DeclarationId, target: DeclarationId, resource_id: u64 },
+    /// Returned 字串直接作為下一呼叫 str 實參：不冒充具名 DeclarationId。
+    StrTemporaryTransferred { target: DeclarationId, resource_id: u64 },
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     LoanAcquired(crate::borrow_safety::BorrowTicket),
     /// R05：真取得票據時同步記錄其 UTF-8 資源身分，防止先釋放後歸還。
@@ -281,6 +283,33 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                     parent.owner_resources.remove(source);
+                    if !parent.resource_ids.remove(resource_id)
+                        || !child.resource_ids.insert(*resource_id)
+                        || child.pending_transfers.insert(
+                            *resource_id, (*target, false),
+                        ).is_some() { return false; }
+                }
+                PrivateScalarCallEvent::StrTemporaryTransferred {
+                    target, resource_id,
+                } => {
+                    if frames.len() <= 1 || frames.iter().any(|frame|
+                        frame.loan_resources.iter().any(|(_, id)| id == resource_id)) {
+                        return false;
+                    }
+                    let last = frames.len() - 1;
+                    let (parents, child) = frames.split_at_mut(last);
+                    let parent = &mut parents[last - 1];
+                    let child = &mut child[0];
+                    if parent.returned || child.returned
+                        || parent.pending_str_results.last() != Some(resource_id)
+                        || !parent.resource_ids.contains(resource_id)
+                        || parent.owner_resources.values().any(|id| id == resource_id)
+                        || child.resource_ids.contains(resource_id)
+                        || child.pending_transfers.contains_key(resource_id)
+                        || child.owner_resources.contains_key(target) {
+                        return false;
+                    }
+                    parent.pending_str_results.pop();
                     if !parent.resource_ids.remove(resource_id)
                         || !child.resource_ids.insert(*resource_id)
                         || child.pending_transfers.insert(
@@ -1257,6 +1286,8 @@ enum PrivateScalarCallArgument {
     BorrowStr { owner: String, fact: BorrowFact },
     /// 真 Parser .move() 以原 Checker 已簽發的 str 身分整筆傳參。
     MoveStr { owner: String, source: DeclarationId },
+    /// 只接原 Checker 同步 str-return 函式，完整巢狀參數仍由工作棧求值。
+    NestedStrCall { name: String, arguments: Vec<PrivateScalarCallArgument> },
 }
 
 impl PrivateScalarCallArgument {
@@ -1264,6 +1295,10 @@ impl PrivateScalarCallArgument {
         match self {
             Self::Int(expr) => expr.collect_calls(output),
             Self::Bool(expr) => expr.collect_calls(output),
+            Self::NestedStrCall { name, arguments } => {
+                output.push(name);
+                for argument in arguments { argument.collect_calls(output); }
+            }
             Self::BorrowStr { .. } | Self::MoveStr { .. } => {}
         }
     }
@@ -2044,6 +2079,8 @@ struct PrivateScalarActiveFrame {
     copy_struct_scopes: Vec<Vec<(DeclarationId, String)>>,
     borrow_tracker: crate::borrow_safety::BorrowSafety,
     incoming_borrows: Vec<(crate::borrow_safety::BorrowTicket, BorrowFact)>,
+    /// 每個 frame 真 Detached 返回值尚未接管的唯一 ResourceId（LIFO）。
+    pending_owned_returns: Vec<u64>,
 }
 
 /// 各已完成實參維持正式型別，不以整數佔位冒充字串。
@@ -2056,6 +2093,7 @@ enum PrivateScalarEvaluatedArgument {
         fact: BorrowFact,
     },
     Move { source: DeclarationId },
+    TemporaryStr { resource_id: u64 },
 }
 
 /// 不以 Rust 遞迴執行具名函式；每個原 Checker expression 在工作堆疊
@@ -2066,6 +2104,7 @@ enum PrivateScalarTask<'a> {
     RecordArgument,
     EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
     RecordBoolArgument,
+    RecordStrArgument,
     BorrowArgument(&'a str, BorrowFact),
     MoveArgument(&'a str, DeclarationId),
     Apply(char),
@@ -3636,6 +3675,7 @@ impl PreparedPrivateScalarCall {
             copy_struct_scopes: vec![Vec::new()],
             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
             incoming_borrows: Vec::new(),
+            pending_owned_returns: Vec::new(),
         }];
         let mut tasks = vec![PrivateScalarTask::Evaluate(expr, true)];
         // 原 Checker 語句順序在 LIFO 上反向推入，執行時保持
@@ -5031,6 +5071,7 @@ impl PreparedPrivateScalarCall {
                             copy_struct_scopes: vec![Vec::new()],
                             borrow_tracker: crate::borrow_safety::BorrowSafety::new(),
                             incoming_borrows,
+                            pending_owned_returns: Vec::new(),
                         });
                         // 僅以真 OwnedStrRuntime 的同一 ID 移動，不重新配置
                         // 字串；在新框架中以原 Checker 正式參數 ID 接管。
