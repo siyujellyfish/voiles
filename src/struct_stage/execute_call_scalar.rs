@@ -1155,7 +1155,7 @@ impl PrivateScalarReturnExpr {
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
             // 不准從只有 int slot 的舊純值捷徑假造結構欄位常數。
             Self::CopyStructIntField { .. } | Self::Call { .. }
-            | Self::BoolValue(..) | Self::Unreachable =>
+            | Self::BoolValue(..) | Self::StrValue(..) | Self::Unreachable =>
                 Err(PrivateScalarCallRuntimeError::StateMismatch),
         }
     }
@@ -1171,6 +1171,7 @@ impl PrivateScalarReturnExpr {
                 right.collect_calls(calls);
             }
             Self::BoolValue(expr) => expr.collect_calls(calls),
+            Self::StrValue(..) => {},
             Self::Parameter(_) | Self::CopyStructIntField { .. }
                 | Self::Constant(_) | Self::Unreachable => {}
         }
@@ -2174,6 +2175,51 @@ impl PreparedPrivateScalarCall {
         })
     }
 
+    /// F2-RS01/RS05：不得將非 Copyable str 返回偷偷映射成 int。
+    /// 此處只形成原 Checker 准許的 str 常值或具名明確整筆 move；
+    /// 所有權真正移出及失敗回收由動態 OwnedStrRuntime 負責。
+    fn checked_str_return(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarStrReturn, PrivateScalarCallPrepareError> {
+        if let TermKind::Group(inner) = &term.kind {
+            let span = term.node_span();
+            if !verified.tokens.iter().any(|token|
+                token.start == span.start
+                    && matches!(token.kind, TokenKind::Symbol('(')))
+                || !verified.tokens.iter().any(|token|
+                    token.end == span.end
+                        && matches!(token.kind, TokenKind::Symbol(')'))) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "str 返回 Group 缺少原 Lexer 括號身份",
+                ));
+            }
+            return Self::checked_str_return(inner, bindings, verified);
+        }
+        if let Ok(text) = private_str_literal(term, &verified.tokens) {
+            return Ok(PrivateScalarStrReturn::Literal(text));
+        }
+        let source = PreparedPrivateMoveCall::checked_move_name(term, verified)
+            .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                "str 返回只接受原 Checker 核准的字面或具名 .move()",
+            ))?;
+        let declaration = *bindings.get(source).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "str 返回來源不在真 Checker 詞彙作用域",
+            ),
+        )?;
+        if !verified.plan.declarations.typed_declaration(declaration)
+            .is_some_and(|fact| fact.ty == "str") {
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str 返回缺少原 Checker DeclarationId 所有型別",
+            ));
+        }
+        Ok(PrivateScalarStrReturn::Move {
+            source: source.to_owned(), declaration,
+        })
+    }
+
     /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
     /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
     fn checked_str_initializer(
@@ -2183,6 +2229,42 @@ impl PreparedPrivateScalarCall {
     ) -> Result<PrivateScalarStrInitializer, PrivateScalarCallPrepareError> {
         if let Ok(text) = private_str_literal(term, &verified.tokens) {
             return Ok(PrivateScalarStrInitializer::Literal(text));
+        }
+        // F2：本批先接通零形參真 str-return 普通函式；
+        // 有形參及嵌套 str-return 值仍須額外的 TypedHIR 及轉交矩陣。
+        let mut call_term = term;
+        while let TermKind::Group(inner) = &call_term.kind {
+            let span = call_term.node_span();
+            if !verified.tokens.iter().any(|t|
+                t.start == span.start && matches!(t.kind, TokenKind::Symbol('(')))
+                || !verified.tokens.iter().any(|t|
+                    t.end == span.end && matches!(t.kind, TokenKind::Symbol(')'))) {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "str Call Group 缺少原 Lexer 括號",
+                ));
+            }
+            call_term = inner;
+        }
+        let call_name = match &call_term.kind {
+            TermKind::Call(call) if !call.awaited && call.arguments.is_empty() =>
+                Some(call.name.as_str()),
+            TermKind::UnresolvedZeroArgs(name)
+                if !verified.structs.contains_key(name) => Some(name.as_str()),
+            _ => None,
+        };
+        if let Some(name) = call_name {
+            if verified.functions.iter().any(|fun| fun.name == name
+                && fun.name != "main" && fun.result_ty == "str"
+                && fun.params.is_empty() && !fun.is_async)
+                && verified.plan.declarations.call_borrows_at(call_term.node_span())
+                    .is_none_or(|facts| facts.is_empty()) {
+                return Ok(PrivateScalarStrInitializer::Call {
+                    name: name.to_owned(), arguments: Vec::new(),
+                });
+            }
+            return Err(PrivateScalarCallPrepareError::Unsupported(
+                "str 普通函式此子批只接受原 Checker 的同步零形參返回",
+            ));
         }
         let source = PreparedPrivateMoveCall::checked_move_name(term, verified)
             .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
