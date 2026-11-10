@@ -1378,6 +1378,10 @@ impl PrivateScalarBoolExpr {
             || target.params.len() != actual.len()
             || target.params.iter().any(|param|
                 !matches!(param.ty.as_str(), "int" | "bool" | "str")) {
+            #[cfg(test)]
+            eprintln!("F2 BOOL CALL: name={name:?} result={:?} async={} argc={} params={:?}",
+                target.result_ty, target.is_async, actual.len(),
+                target.params.iter().map(|p| (&p.name, &p.ty)).collect::<Vec<_>>());
             // P15.6：借用不在此預先一律拒絕；以下逐形參生成真
             // BorrowFact，再對原 Checker call_borrows_at(span) 全量比對。
             return Err(PrivateScalarCallPrepareError::Unsupported(
