@@ -93,6 +93,9 @@ jobs:
       - name: G18 P18.1-F2 原 Checker str 提前返回字面及 Move 真資源八項 Gate
         run: python3 tools/核對G18-F2字串提前返回真圖.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F2 多 str ResourceId BorrowTicket 正常故障防偽八項 Gate
+        run: python3 tools/核對G18-F2字串多資源借用交叉.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1-F2 原 Checker str-return var 覆寫與 P16 原子接收八項正反 Gate
         run: python3 tools/核對G18-F2字串返回var覆寫.py --test-bin target/p02/p04_source_internal
 
