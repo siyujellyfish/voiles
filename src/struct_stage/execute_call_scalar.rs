@@ -3093,9 +3093,11 @@ impl PreparedPrivateScalarCall {
             StmtKind::Break if inside_loop => Ok(PrivateScalarBranchAction::Break),
             StmtKind::Continue if inside_loop => Ok(PrivateScalarBranchAction::Continue),
             StmtKind::Return(ret) => {
-                // F2：原 Checker 已核准的提前 return 型別由同一份
-                // TypedHIR 決定；bool 在原工作棧用 BoolValue 返回，
-                // 不作 int 隱式轉型，也不新增第二套 CFG。
+                // F2：原 Checker 已核准的提前 return 保持原型別：
+                // int/bool 走共同 TypedHIR，str 擁有返回只接受原 Lexer
+                // 字面值或具名明確 .move() 且原 Checker 已證安全。
+                // ScalarType 僅有 Copyable int/bool；不能將 str
+                // 冒充純值 HIR，也不能以 ResourceId 轉成假 i64。
                 let span = ret.expression.node_span();
                 let result = if verified.plan.scalar_hir.expression(span)
                     .is_some_and(|fact| fact.ty == crate::common_ir::ScalarType::Bool) {
@@ -3104,6 +3106,13 @@ impl PreparedPrivateScalarCall {
                             &ret.expression, int_bindings, verified,
                         )?,
                     ))
+                } else if let Ok(returned) = Self::checked_str_return(
+                    &ret.expression, int_bindings, verified,
+                ) {
+                    // 原 Checker 已完成整個函式返回型別／借用有效期
+                    // 檢查。此處只辨識曾核准的 str 擁有來源，不補定
+                    // Call-return 或 str 借用逃逸等未接通形狀。
+                    PrivateScalarReturnExpr::StrValue(returned)
                 } else {
                     PrivateScalarReturnExpr::from_checked_bindings(
                         &ret.expression, int_bindings, verified,
