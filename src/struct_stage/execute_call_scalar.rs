@@ -301,7 +301,7 @@ impl PrivateScalarCallOutcome {
                     let parent = &mut parents[last - 1];
                     let child = &mut child[0];
                     if parent.returned || child.returned
-                        || parent.pending_str_results.last() != Some(resource_id)
+                        || !parent.pending_str_results.contains(resource_id)
                         || !parent.resource_ids.contains(resource_id)
                         || parent.owner_resources.values().any(|id| id == resource_id)
                         || child.resource_ids.contains(resource_id)
@@ -309,7 +309,9 @@ impl PrivateScalarCallOutcome {
                         || child.owner_resources.contains_key(target) {
                         return false;
                     }
-                    parent.pending_str_results.pop();
+                    let Some(index) = parent.pending_str_results.iter()
+                        .position(|id| id == resource_id) else { return false; };
+                    parent.pending_str_results.remove(index);
                     if !parent.resource_ids.remove(resource_id)
                         || !child.resource_ids.insert(*resource_id)
                         || child.pending_transfers.insert(
@@ -5061,20 +5063,17 @@ impl PreparedPrivateScalarCall {
                             resources.read(owner)
                                 .map_err(PrivateScalarCallRuntimeError::Resource)?;
                         }
-                        // 已返回的暫存，必須仍由本 caller 按原引數順序持有。
+                        // 多個 str-return 暫存可同時存活：各個唯一 ResourceId
+                        // 仍由同一 caller 持有，不依字串內容或假身分推定。
                         let mut distinct_temporary_ids = std::collections::BTreeSet::new();
-                        let mut available = pending_str_returns.iter().rev();
-                        for (resource_id, _, _) in pending_temporaries.iter().rev() {
+                        for (resource_id, _, _) in &pending_temporaries {
                             if !distinct_temporary_ids.insert(*resource_id)
-                                || available.next().map(|v| v.resource_id()) != Some(*resource_id) {
+                                || !pending_str_returns.iter().any(|owned|
+                                    owned.resource_id() == *resource_id)
+                                || frames.last().is_none_or(|frame|
+                                    !frame.pending_owned_returns.contains(resource_id)) {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
-                        }
-                        if frames.last().is_none_or(|frame|
-                            pending_temporaries.iter().rev().zip(
-                                frame.pending_owned_returns.iter().rev(),
-                            ).any(|((id, _, _), owner_id)| id != owner_id)) {
-                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         if awaited {
                             // 真安全點：普通框架上的原 BorrowSafety
@@ -5150,19 +5149,19 @@ impl PreparedPrivateScalarCall {
                             let parent_index = frames.len().checked_sub(2).ok_or(
                                 PrivateScalarCallRuntimeError::StateMismatch,
                             )?;
-                            if frames[parent_index].pending_owned_returns.last()
-                                != Some(&resource_id)
-                                || pending_str_returns.last()
-                                    .map(|owned| owned.resource_id()) != Some(resource_id) {
-                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
-                            }
-                            let returned = pending_str_returns.pop().expect("已核對返回暫存");
+                            let owned_index = pending_str_returns.iter()
+                                .position(|owned| owned.resource_id() == resource_id)
+                                .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            let holder_index = frames[parent_index].pending_owned_returns.iter()
+                                .position(|id| *id == resource_id)
+                                .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            let returned = pending_str_returns.remove(owned_index);
                             if let Err((error, returned)) =
                                 resources.accept_returned_argument_as(&target, returned) {
                                 pending_str_returns.push(returned);
                                 return Err(PrivateScalarCallRuntimeError::Resource(error));
                             }
-                            frames[parent_index].pending_owned_returns.pop();
+                            frames[parent_index].pending_owned_returns.remove(holder_index);
                             events.push(PrivateScalarCallEvent::StrTemporaryTransferred {
                                 target: parameter, resource_id,
                             });
