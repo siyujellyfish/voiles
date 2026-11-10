@@ -1318,6 +1318,10 @@ impl PrivateScalarBoolExpr {
     /// F2：原 Parser/Checker 的 bool 函式可作 bool 形式參數值。
     /// 本子批只允許同步、每項 bool 型別的引數；其它合法函式形狀
     /// 仍保守 Unsupported，不繞過原 Checker，也不猜測整數轉 bool。
+    // 混合 int/bool 的 bool-return 呼叫必須收到目前作用域完整的
+    // DeclarationId 名稱表；bool-only 投影只可供純 bool 名稱解析。
+    // 所有 int/bool 實參仍由原 Checker TypedHIR 逐項確認型別，
+    // 不因給予完整名稱表而新增隱含 int/bool 轉型或借用權限。
     fn from_checked_call_argument(
         term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -2692,7 +2696,7 @@ impl PreparedPrivateScalarCall {
                     Ok(PrivateScalarBranchAction::DeclareBool {
                         declaration: id,
                         value: PrivateScalarBoolExpr::from_checked_call_argument(
-                            init, bool_bindings, verified,
+                            init, int_bindings, verified,
                         )?,
                     })
                 } else {
@@ -2850,7 +2854,7 @@ impl PreparedPrivateScalarCall {
                     Ok(PrivateScalarBranchAction::AssignBool {
                         declaration: id,
                         value: PrivateScalarBoolExpr::from_checked_call_argument(
-                            &assign.expression, bool_bindings, verified,
+                            &assign.expression, int_bindings, verified,
                         )?,
                     })
                 } else {
@@ -2881,7 +2885,7 @@ impl PreparedPrivateScalarCall {
             ));
         };
         let condition = PrivateScalarBoolExpr::from_checked_call_argument(
-            &branch.branch.condition, bool_bindings, verified,
+            &branch.branch.condition, int_bindings, verified,
         )?;
         let when_true = Self::scoped_single_declaration(
             Self::compile_early_branch(
@@ -3033,7 +3037,7 @@ impl PreparedPrivateScalarCall {
                         ));
                     }
                     let value = PrivateScalarBoolExpr::from_checked_call_argument(
-                        &assign.expression, &bool_bindings, verified,
+                        &assign.expression, &bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::AssignBool {
                         declaration: id, value,
@@ -3155,7 +3159,7 @@ impl PreparedPrivateScalarCall {
                 }
                 if let Some(initializer) = owner.initializer.as_ref() {
                     let value = PrivateScalarBoolExpr::from_checked_call_argument(
-                        initializer, &bool_bindings, verified,
+                        initializer, &bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::DeclareBool {
                         declaration, value,
