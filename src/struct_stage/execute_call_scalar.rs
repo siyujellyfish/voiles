@@ -2335,6 +2335,38 @@ impl PreparedPrivateScalarCall {
 
     /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
     /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
+    /// 所有型別實參共用唯一左至右動態求值排程；NestedStrCall
+    /// 必須等自己的真 ExitCall 後才 RecordStrArgument，不得預先建立
+    /// 字串或透過宿主函式遞迴偷跑。
+    fn queue_call_arguments<'a>(
+        tasks: &mut Vec<PrivateScalarTask<'a>>,
+        arguments: &'a [PrivateScalarCallArgument],
+    ) {
+        for argument in arguments.iter().rev() {
+            match argument {
+                PrivateScalarCallArgument::Int(expr) => {
+                    tasks.push(PrivateScalarTask::RecordArgument);
+                    tasks.push(PrivateScalarTask::Evaluate(expr, false));
+                }
+                PrivateScalarCallArgument::Bool(expr) => {
+                    tasks.push(PrivateScalarTask::RecordBoolArgument);
+                    tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                }
+                PrivateScalarCallArgument::BorrowStr { owner, fact } =>
+                    tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact)),
+                PrivateScalarCallArgument::MoveStr { owner, source } =>
+                    tasks.push(PrivateScalarTask::MoveArgument(owner, *source)),
+                PrivateScalarCallArgument::NestedStrCall { name, arguments } => {
+                    tasks.push(PrivateScalarTask::RecordStrArgument);
+                    tasks.push(PrivateScalarTask::EnterCall(
+                        name, arguments, false, false,
+                    ));
+                    Self::queue_call_arguments(tasks, arguments);
+                }
+            }
+        }
+    }
+
     /// 此來源只允許原 Checker 已核准、實際執行後 Returned 的同步 str 呼叫。
     /// 不將字面常值、非 Copyable 具名借用或其他形式偽裝成臨時所有者。
     fn checked_nested_str_argument(
@@ -3886,24 +3918,7 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::EnterCall(
                                 name, arguments, is_root_expression, *awaited,
                             ));
-                            for argument in arguments.iter().rev() {
-                                match argument {
-                                    PrivateScalarCallArgument::Int(expr) => {
-                                        tasks.push(PrivateScalarTask::RecordArgument);
-                                        tasks.push(PrivateScalarTask::Evaluate(expr, false));
-                                    }
-                                    PrivateScalarCallArgument::Bool(expr) => {
-                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
-                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
-                                    }
-                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
-                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
-                                    }
-                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
-                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
-                                    }
-                                }
-                            }
+                            Self::queue_call_arguments(&mut tasks, arguments);
                         }
                     },
                     PrivateScalarTask::RecordArgument => {
@@ -3920,24 +3935,7 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::EnterCall(
                                 name, arguments, false, false,
                             ));
-                            for argument in arguments.iter().rev() {
-                                match argument {
-                                    PrivateScalarCallArgument::Bool(value) => {
-                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
-                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
-                                    }
-                                    PrivateScalarCallArgument::Int(value) => {
-                                        tasks.push(PrivateScalarTask::RecordArgument);
-                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
-                                    }
-                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
-                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
-                                    }
-                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
-                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
-                                    }
-                                }
-                            }
+                            Self::queue_call_arguments(&mut tasks, arguments);
                         } else {
                             let frame = frames.last().ok_or(
                                 PrivateScalarCallRuntimeError::StateMismatch,
@@ -4368,24 +4366,7 @@ impl PreparedPrivateScalarCall {
                             ));
                             // LIFO：依原 Parser 實參來源左至右真正求值，
                             // 後序算術或借用錯誤時尚未 EnterCall，不得提交 Move。
-                            for argument in arguments.iter().rev() {
-                                match argument {
-                                    PrivateScalarCallArgument::Int(value) => {
-                                        tasks.push(PrivateScalarTask::RecordArgument);
-                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
-                                    }
-                                    PrivateScalarCallArgument::Bool(value) => {
-                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
-                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
-                                    }
-                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
-                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
-                                    }
-                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
-                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
-                                    }
-                                }
-                            }
+                            Self::queue_call_arguments(&mut tasks, arguments);
                             continue;
                         }
                         let frame = frames.last_mut().ok_or(
@@ -4542,24 +4523,7 @@ impl PreparedPrivateScalarCall {
                             ));
                             // 真正求值完成前不得轉交 .move()；參數借用票據
                             // 由同一 EnterCall/ExitCall 對帳並於失敗時反序歸還。
-                            for argument in arguments.iter().rev() {
-                                match argument {
-                                    PrivateScalarCallArgument::Int(value) => {
-                                        tasks.push(PrivateScalarTask::RecordArgument);
-                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
-                                    }
-                                    PrivateScalarCallArgument::Bool(value) => {
-                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
-                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
-                                    }
-                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
-                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
-                                    }
-                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
-                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
-                                    }
-                                }
-                            }
+                            Self::queue_call_arguments(&mut tasks, arguments);
                             continue;
                         }
                         match initializer {
