@@ -1372,17 +1372,25 @@ impl PrivateScalarBoolExpr {
             ))?;
         if name == "main" || target.result_ty != "bool" || target.is_async
             || target.params.len() != actual.len()
-            || target.params.iter().any(|param| param.ty != "bool")
+            || target.params.iter().any(|param|
+                !matches!(param.ty.as_str(), "int" | "bool"))
             || verified.plan.declarations.call_borrows_at(span)
                 .is_some_and(|facts| !facts.is_empty()) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "bool 呼叫只接通原 Checker 同步純 bool 形式參數與結果",
+                "bool 呼叫只接通原 Checker 同步 int/bool 形式參數與 bool 結果",
             ));
         }
-        let arguments = actual.iter().map(|argument|
-            Self::from_checked_call_argument(argument, bindings, verified)
-                .map(PrivateScalarCallArgument::Bool),
-        ).collect::<Result<Vec<_>, _>>()?;
+        let arguments = actual.iter().zip(&target.params).map(|(argument, param)| {
+            if param.ty == "bool" {
+                Self::from_checked_call_argument(argument, bindings, verified)
+                    .map(PrivateScalarCallArgument::Bool)
+            } else {
+                // 仍從原 Checker int TypedHIR 編譯參數，不允許 bool→int 暗轉型。
+                PrivateScalarReturnExpr::from_checked_bindings(
+                    argument, bindings, verified,
+                ).map(PrivateScalarCallArgument::Int)
+            }
+        }).collect::<Result<Vec<_>, _>>()?;
         Ok(Self::Call { name: name.to_owned(), arguments })
     }
 
@@ -3463,11 +3471,18 @@ impl PreparedPrivateScalarCall {
                                 name, arguments, false, false,
                             ));
                             for argument in arguments.iter().rev() {
-                                let PrivateScalarCallArgument::Bool(value) = argument else {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
-                                };
-                                tasks.push(PrivateScalarTask::RecordBoolArgument);
-                                tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                                match argument {
+                                    PrivateScalarCallArgument::Bool(value) => {
+                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                                    }
+                                    PrivateScalarCallArgument::Int(value) => {
+                                        tasks.push(PrivateScalarTask::RecordArgument);
+                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                    }
+                                    // F2 str 借用／Move 作 bool 返回仍需完整 P16 資源矩陣。
+                                    _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                }
                             }
                         } else {
                             let frame = frames.last().ok_or(
