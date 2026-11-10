@@ -1,5 +1,5 @@
-// G18／P18.1-F2：原 Checker 合法的 str 返回作為 var str 覆寫，
-// 同一動態工作棧直接承接真正 OwnedUtf8，並與 P16/HC14 雙帳對照。
+// G18／P18.1-F2：原 Checker 核准未初始化 var str 首次接收 str-return，
+// 既有已初始化 str 的函式返回覆寫維持 P16 靜態保守拒絕。
 #[cfg(test)]
 mod g18_f2_str_return_assign_tests {
     use super::*;
@@ -8,35 +8,37 @@ mod g18_f2_str_return_assign_tests {
     fn run(source: &str) -> PrivateScalarCallOutcome {
         let plan = PreparedPrivateScalarCall::prepare(source).unwrap();
         let out = plan.execute().unwrap();
-        assert!(out.has_balanced_frame_trace(), "str-return var 覆寫雙帳須完整平衡");
+        assert!(out.has_balanced_frame_trace(), "F2 首次 str-return 賦值雙帳須平衡");
         assert_eq!(out.parameter_slots_after_exit, 0);
         out
     }
 
     #[test]
-    fn f2_str_assign_既有var原子接管真返回先釋放舊資源且不二次配置() {
-        let source = r#"fn make()->str{
+    fn f2_str_assign_未初始化var帶整數布林形參真接受唯一utf8資源() {
+        let source = r#"fn make(n:int,flag:bool)->str{
 return "第二份🪼"
 }
 fn main()->int{
-var output:str = "原本"
-output = make()
+var output:str
+output = make(2,true)
 return 0
 }
 "#;
         let out = run(source);
         assert_eq!(out.result, Ok(0));
         assert_eq!(out.resource_events, [
-            R::Created(1), R::Created(2), R::Returned(2),
-            R::Released(1), R::Released(2),
+            R::Created(1), R::Returned(1), R::Released(1),
         ]);
-        let released = out.events.iter().position(|event| matches!(
-            event, PrivateScalarCallEvent::OwnedResource(R::Released(1))
+        let argument = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::ArgumentEvaluated(2)
+        )).unwrap();
+        let flag = out.events.iter().position(|event| matches!(
+            event, PrivateScalarCallEvent::BoolArgumentEvaluated(true)
         )).unwrap();
         let accepted = out.events.iter().position(|event| matches!(
-            event, PrivateScalarCallEvent::StrReturnAccepted(_, 2)
+            event, PrivateScalarCallEvent::StrReturnAccepted(_, 1)
         )).unwrap();
-        assert!(released < accepted);
+        assert!(argument < flag && flag < accepted);
     }
 
     #[test]
@@ -61,45 +63,49 @@ return 0
     }
 
     #[test]
-    fn f2_str_assign_連續兩次返回覆寫各id只釋放一次() {
-        let source = r#"fn make(n:int)->str{
+    fn f2_str_assign_已初始化var函式覆寫及重複覆寫仍由原checker拒絕() {
+        let first = r#"fn make()->str{
 return "真返回"
 }
 fn main()->int{
 var output:str = "舊"
-output = make(1)
-output = make(2)
+output = make()
 return 0
 }
 "#;
-        let out = run(source);
-        assert_eq!(out.result, Ok(0));
-        assert_eq!(out.resource_events, [
-            R::Created(1), R::Created(2), R::Returned(2), R::Released(1),
-            R::Created(3), R::Returned(3), R::Released(2), R::Released(3),
-        ]);
-        assert_eq!(out.events.iter().filter(|event| matches!(
-            event, PrivateScalarCallEvent::StrReturnAccepted(..)
-        )).count(), 2);
+        let again = r#"fn make()->str{
+return "真返回"
+}
+fn main()->int{
+var output:str
+output = make()
+output = make()
+return 0
+}
+"#;
+        for source in [first, again] {
+            assert!(matches!(
+                PreparedPrivateScalarCall::prepare(source),
+                Err(PrivateScalarCallPrepareError::Check(_))
+            ));
+        }
     }
 
     #[test]
-    fn f2_str_assign_借用實參後溢位不進callee不交付且舊資源正常清理() {
+    fn f2_str_assign_借用實參後溢位不進callee不交付且原資源唯一清理() {
         let source = r#"fn make(source:str,n:int)->str{
 return "不可建"
 }
 fn main()->int{
 const input:str = "原來源"
-var output:str = "未替換"
+var output:str
 output = make(input,9223372036854775807+1)
 return 0
 }
 "#;
         let out = run(source);
         assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
-        assert_eq!(out.resource_events, [
-            R::Created(1), R::Created(2), R::Released(2), R::Released(1),
-        ]);
+        assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
         assert_eq!(out.events.iter().filter(|event| matches!(
             event, PrivateScalarCallEvent::LoanAcquired(_)
         )).count(), 1);
@@ -127,7 +133,7 @@ return 0
 return 4
 }
 fn main()->int{
-var output:str = "不可轉型"
+var output:str
 output = make()
 return 0
 }
@@ -141,12 +147,12 @@ return 0
     }
 
     #[test]
-    fn f2_str_assign_偽造覆寫接受resourceid即使釋放數平衡也須拒絕() {
+    fn f2_str_assign_偽造首次接收resourceid即使釋放數平衡也須拒絕() {
         let source = r#"fn make()->str{
 return "新"
 }
 fn main()->int{
-var output:str = "舊"
+var output:str
 output = make()
 return 0
 }
@@ -158,7 +164,7 @@ return 0
             event, PrivateScalarCallEvent::StrReturnAccepted(..)
         )).unwrap();
         if let PrivateScalarCallEvent::StrReturnAccepted(id, _) = out.events[idx] {
-            out.events[idx] = PrivateScalarCallEvent::StrReturnAccepted(id, 1);
+            out.events[idx] = PrivateScalarCallEvent::StrReturnAccepted(id, 9999);
         }
         assert!(!out.has_balanced_frame_trace());
         assert!(matches!(
