@@ -1439,3 +1439,4 @@ include!("struct_stage/g18_f2_str_early_return_tests.rs");
 // G18／P18.1-F2：多個 str ResourceId 與 BorrowTicket 在相同真函式工作圖的交叉正反。
 #[cfg(test)]
 include!("struct_stage/g18_f2_str_multi_resource_tests.rs");
+include!("struct_stage/g18_f2_nested_str_temporary_tests.rs");
