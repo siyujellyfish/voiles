@@ -1430,3 +1430,8 @@ include!("struct_stage/g18_f2_str_return_args_tests.rs");
 // G18／P18.1-F2：原 Checker str-return 覆寫既有 var 的真 OwnedUtf8 正反驗收。
 #[cfg(test)]
 include!("struct_stage/g18_f2_str_return_assign_tests.rs");
+
+
+// G18／P18.1-F2：原 Checker 合法 str 提前返回字面／Move 八項同圖正反。
+#[cfg(test)]
+include!("struct_stage/g18_f2_str_early_return_tests.rs");
