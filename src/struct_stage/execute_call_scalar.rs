@@ -85,6 +85,10 @@ enum PrivateScalarCallEvent {
     Returned(i64),
     /// F2：已由原 Checker 確認 bool 的真正返回，不把 0/1 當成 int 返回。
     BoolReturned(bool),
+    /// F2：原 Checker str 所有權返回，使用真 P16 ResourceId，並非 i64。
+    StrReturned(u64),
+    /// 呼叫者經原 DeclarationId 接管同一個 Detached OwnedUtf8。
+    StrReturnAccepted(DeclarationId, u64),
     FunctionExited { name: String, returned: bool },
 }
 
@@ -730,6 +734,8 @@ enum PrivateScalarReturnExpr {
     Constant(i64),
     /// F2：僅由已驗證 bool 函式的直接 return 建立；非 int 算式來源。
     BoolValue(Box<PrivateScalarBoolExpr>),
+    /// 真 OwnedUtf8 回傳不佔 Copyable i64 工作棧。
+    StrValue(PrivateScalarStrReturn),
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
     /// 原 Checker 唯一具名函式與已驗證 int 實參；真正呼叫會進入新框架。
@@ -1505,11 +1511,28 @@ impl PrivateScalarBoolExpr {
     }
 }
 
-/// 只接受原 Lexer 字串常值或原 Parser／Checker 真 .move() 的 str 初始化。
+/// 已核准的字串所有權回傳來源，必須經 Checker 與唯一持有者驗證。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateScalarStrReturn {
+    Literal(String),
+    Move { source: String, declaration: DeclarationId },
+}
+
+/// 只接受原 Lexer 字串常值、明確 .move() 或 Checker 真 str 函式來源。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarStrInitializer {
     Literal(String),
     Move { source: String, declaration: DeclarationId },
+    /// 在同一顯式工作棧完成 ReturnNamed／OwnedUtf8 交接後才提交本宣告。
+    Call { name: String, arguments: Vec<PrivateScalarCallArgument> },
+}
+impl PrivateScalarStrInitializer {
+    fn collect_calls<'a>(&'a self, out: &mut Vec<&'a str>) {
+        if let Self::Call { name, arguments } = self {
+            out.push(name);
+            for arg in arguments { arg.collect_calls(out); }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1584,10 +1607,11 @@ impl PrivateScalarBranchAction {
             Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
             Self::AssignBool { value, .. } | Self::AssignCopyStructBool { value, .. }
                 | Self::DeclareBool { value, .. } => value.collect_calls(calls),
+            Self::DeclareStr { initializer, .. } | Self::AssignStr { initializer, .. } =>
+                initializer.collect_calls(calls),
             Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
-                | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::MoveCopyStruct { .. }
-                | Self::AssignStr { .. } | Self::AssignCopyStructStr { .. }
+                | Self::DeclareEmptyStr { .. } | Self::MoveCopyStruct { .. }
+                | Self::AssignCopyStructStr { .. }
                 | Self::Break | Self::Continue => {}
         }
     }
@@ -1865,11 +1889,11 @@ impl PrivateScalarLocalStep {
             Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
             Self::DeclareBool { value, .. } | Self::AssignBool { value, .. } =>
                 value.collect_calls(calls),
+            Self::DeclareStr { initializer, .. } | Self::AssignStr { initializer, .. } =>
+                initializer.collect_calls(calls),
             Self::AssignCopyStructBool { .. } | Self::AssignCopyStructStr { .. }
                 | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
-                | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
-                | Self::MoveCopyStruct { .. }
-                | Self::AssignStr { .. } => {}
+                | Self::DeclareEmptyStr { .. } | Self::MoveCopyStruct { .. } => {}
         }
     }
 }
@@ -1992,6 +2016,8 @@ enum PrivateScalarTask<'a> {
     BindBoolFromValue(DeclarationId),
     AssignBoolFromValue(DeclarationId),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
+    /// str 函式真正退出後由呼叫端用原 Checker const/var 權限接管唯一 OwnedUtf8。
+    FinishStrReturnBinding(DeclarationId, &'a str, bool),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
     /// 具名欄位來源逐項在當前動態 frame 求值；含 Call 使用與 return
@@ -2028,6 +2054,8 @@ struct PrivateScalarGraphCheckpoint<'a> {
     frames: Vec<PrivateScalarActiveFrame>,
     tasks: Vec<PrivateScalarTask<'a>>,
     values: Vec<i64>,
+    /// F2：型別化返回所有權，不可轉成假 i64 ResourceId。
+    pending_str_returns: Vec<crate::owned_str_runtime::OwnedUtf8>,
     completed_arguments: Vec<PrivateScalarEvaluatedArgument>,
     pending_copy_structs: Vec<Vec<(String, ApprovedSeed)>>,
     steps: usize,
@@ -3019,9 +3047,9 @@ impl PreparedPrivateScalarCall {
         // F2：bool/int 返回走同一組原 Checker 已核准的局部與 CFG
         // 編譯流程，直到最後 return 才按真 TypedHIR 選擇值型別。
         // 非 Copyable 返回的完整資源交接仍不在此 i64/bool 工作棧冒充。
-        if !matches!(function.result_ty.as_str(), "int" | "bool") {
+        if !matches!(function.result_ty.as_str(), "int" | "bool" | "str") {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "普通函式此執行器只接通已核准 int/bool 值返回",
+                "普通函式此執行器只接通已核准 int/bool/str 返回",
             ));
         }
         let mut bindings = function.params.iter().map(|param|
@@ -3286,6 +3314,10 @@ impl PreparedPrivateScalarCall {
         let result = if every_branch_returns
             && verified.plan.scalar_hir.expression(return_span).is_none() {
             PrivateScalarReturnExpr::Unreachable
+        } else if function.result_ty == "str" {
+            PrivateScalarReturnExpr::StrValue(
+                Self::checked_str_return(&ret.expression, &bindings, verified)?,
+            )
         } else if function.result_ty == "bool" {
             // 尾端與提前 return 同一來源事實；bool 值只經
             // EvaluateBoolArgument 真返回，不混入 int 運算。
@@ -4972,7 +5004,7 @@ impl PreparedPrivateScalarCall {
                 "main 呼叫缺少原 Checker 具名函式宣告",
             ))?;
         if main.result_ty != "int" || !main.params.is_empty()
-            || callee.result_ty != "int"
+            || !matches!(callee.result_ty.as_str(), "int" | "bool" | "str")
             || callee.params.iter().any(|param|
                 !matches!(param.ty.as_str(), "int" | "bool" | "str"))
             || callee.body.statements.is_empty()
@@ -5043,7 +5075,7 @@ impl PreparedPrivateScalarCall {
                 // 只讓原 Checker/TypedHIR 通過的返回和語句出現在
                 // 工作計畫；任何未接通的真正可達合法形狀仍在此
                 // 受控 Unsupported，不可偷略過或擅自創造語意。
-                if !matches!(function.result_ty.as_str(), "int" | "bool")
+                if !matches!(function.result_ty.as_str(), "int" | "bool" | "str")
                     || function.params.iter().any(|param|
                         !matches!(param.ty.as_str(), "int" | "bool" | "str"))
                     || function.body.statements.is_empty() {
@@ -5070,7 +5102,7 @@ impl PreparedPrivateScalarCall {
         for function in verified.functions.iter()
             .filter(|fun| fun.name != "main" && fun.name != callee.name
                 && reachable.contains(&fun.name)) {
-            if !matches!(function.result_ty.as_str(), "int" | "bool")
+            if !matches!(function.result_ty.as_str(), "int" | "bool" | "str")
                 || function.params.iter().any(|param|
                     !matches!(param.ty.as_str(), "int" | "bool" | "str"))
                 || function.body.statements.is_empty() {
