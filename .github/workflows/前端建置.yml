@@ -84,6 +84,9 @@ jobs:
       - name: G18 P18.2～18.3 真 for／while 可配置步數預算三十六項正反 Gate
         run: python3 tools/核對G18有限迴圈真資源.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F2 真 if else-if bool 返回與 while P15 純值禁止八項 Gate
+        run: python3 tools/核對G18-F2布林條件真控制.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1-F2 原 Checker bool 回傳局部初始化與賦值七項真 Gate
         run: python3 tools/核對G18-F2布林局部返回.py --test-bin target/p02/p04_source_internal
 

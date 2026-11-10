@@ -1493,11 +1493,15 @@ impl PrivateScalarBranchAction {
                 | Self::AssignCopyStructInt { value: expr, .. }
                 | Self::DeclareInt { value: expr, .. } =>
                 expr.collect_calls(calls),
-            Self::While { body, .. } | Self::ForRange { body, .. } =>
-                body.collect_calls(calls),
+            Self::While { condition, body } => {
+                condition.collect_calls(calls);
+                body.collect_calls(calls);
+            }
+            Self::ForRange { body, .. } => body.collect_calls(calls),
             Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
-            Self::AssignBool { .. } | Self::AssignCopyStructBool { .. }
-                | Self::DeclareBool { .. } | Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
+            Self::AssignBool { value, .. } | Self::AssignCopyStructBool { value, .. }
+                | Self::DeclareBool { value, .. } => value.collect_calls(calls),
+            Self::DeclareEmptyInt { .. } | Self::DeclareEmptyBool { .. }
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
                 | Self::MoveCopyStruct { .. }
                 | Self::AssignStr { .. } | Self::AssignCopyStructStr { .. }
@@ -1549,6 +1553,7 @@ impl PrivateScalarEarlyIf {
     }
 
     fn collect_calls<'a>(&'a self, out: &mut Vec<&'a str>) {
+        self.condition.collect_calls(out);
         self.when_true.collect_calls(out);
         if let Some(otherwise) = &self.when_false {
             match otherwise {
@@ -1914,6 +1919,8 @@ enum PrivateScalarTask<'a> {
     AssignStr(DeclarationId, &'a str, &'a PrivateScalarStrInitializer),
     AssignBool(DeclarationId, &'a PrivateScalarBoolExpr),
     CheckEarlyReturn(&'a PrivateScalarEarlyIf),
+    /// 若條件包含原 Checker 准許的 bool 函式，待真正 BoolReturned 後才選分支。
+    FinishEarlyCondition(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
     CheckWhile(&'a PrivateScalarBoolExpr, &'a PrivateScalarBranchAction),
     /// 本輪迭代器僅在所屬來源區塊有效，離域後可用同一 ID 進下一輪。
@@ -2676,7 +2683,7 @@ impl PreparedPrivateScalarCall {
                 if owner.ty == "bool" {
                     Ok(PrivateScalarBranchAction::DeclareBool {
                         declaration: id,
-                        value: PrivateScalarBoolExpr::from_checked(
+                        value: PrivateScalarBoolExpr::from_checked_call_argument(
                             init, bool_bindings, verified,
                         )?,
                     })
@@ -2834,7 +2841,7 @@ impl PreparedPrivateScalarCall {
                     }
                     Ok(PrivateScalarBranchAction::AssignBool {
                         declaration: id,
-                        value: PrivateScalarBoolExpr::from_checked(
+                        value: PrivateScalarBoolExpr::from_checked_call_argument(
                             &assign.expression, bool_bindings, verified,
                         )?,
                     })
@@ -2865,7 +2872,7 @@ impl PreparedPrivateScalarCall {
                 "else-if 必須保持原 Parser 真 If 節點",
             ));
         };
-        let condition = PrivateScalarBoolExpr::from_checked(
+        let condition = PrivateScalarBoolExpr::from_checked_call_argument(
             &branch.branch.condition, bool_bindings, verified,
         )?;
         let when_true = Self::scoped_single_declaration(
@@ -4008,6 +4015,15 @@ impl PreparedPrivateScalarCall {
                         let mut selected = None;
                         let mut current = branch;
                         loop {
+                            if matches!(&current.condition, PrivateScalarBoolExpr::Call { .. }) {
+                                // 子函式必須先在相同的動態棧 Enter/Exit、簽真 BoolReturned，
+                                // 才能將該返回值用作分支判斷；不得預先決定控制邊。
+                                tasks.push(PrivateScalarTask::FinishEarlyCondition(current));
+                                tasks.push(PrivateScalarTask::EvaluateBoolArgument(
+                                    &current.condition,
+                                ));
+                                break;
+                            }
                             let condition =
                                 current.condition.evaluate_runtime(frame, &copy_structs)?;
                             events.push(PrivateScalarCallEvent::ConditionalChecked(condition));
@@ -4030,14 +4046,36 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::ExecuteBranchAction(selected));
                         }
                     }
+                    PrivateScalarTask::FinishEarlyCondition(branch) => {
+                        let encoded = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !matches!(encoded, 0 | 1) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        let selected = encoded == 1;
+                        events.push(PrivateScalarCallEvent::ConditionalChecked(selected));
+                        if selected {
+                            tasks.push(PrivateScalarTask::ExecuteBranchAction(&branch.when_true));
+                        } else {
+                            match branch.when_false.as_ref() {
+                                Some(PrivateScalarEarlyElse::Branch(action)) =>
+                                    tasks.push(PrivateScalarTask::ExecuteBranchAction(action)),
+                                Some(PrivateScalarEarlyElse::ElseIf(next)) =>
+                                    tasks.push(PrivateScalarTask::CheckEarlyReturn(next)),
+                                None => {}
+                            }
+                        }
+                    }
                     PrivateScalarTask::CheckWhile(condition, body) => {
+                        // P15：while 條件只能是原 Checker 准許的無資源副作用純值。
+                        // 此處絕不偷開未核准的 bool 函式呼叫路徑。
                         let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
                         let value = condition.evaluate_runtime(frame, &copy_structs)?;
                         events.push(PrivateScalarCallEvent::ConditionalChecked(value));
                         if value {
-                            // 本輪真動作在反向邊之前，逐輪重新讀取框架 bool 值。
                             tasks.push(PrivateScalarTask::CheckWhile(condition, body));
                             tasks.push(PrivateScalarTask::ExecuteBranchAction(body));
                         }
