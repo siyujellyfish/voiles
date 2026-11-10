@@ -90,6 +90,9 @@ jobs:
       - name: G18 P18.1-F2 原 bool-return 多語句與提前分支返回九項正反 Gate
         run: python3 tools/核對G18-F2布林多語句返回.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F2 原 Checker str-return var 覆寫與 P16 原子接收八項正反 Gate
+        run: python3 tools/核對G18-F2字串返回var覆寫.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1-F2 原 Checker str-return int bool str 混合形參八項真 Gate
         run: python3 tools/核對G18-F2字串返回混型別形參.py --test-bin target/p02/p04_source_internal
 
