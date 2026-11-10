@@ -2294,8 +2294,9 @@ impl PreparedPrivateScalarCall {
         if let Ok(text) = private_str_literal(term, &verified.tokens) {
             return Ok(PrivateScalarStrInitializer::Literal(text));
         }
-        // F2：本批先接通零形參真 str-return 普通函式；
-        // 有形參及嵌套 str-return 值仍須額外的 TypedHIR 及轉交矩陣。
+        // F2：同步 str 擁有返回可使用原 Checker 已核准的 int/bool/str
+        // 多個混合實參。所有 BorrowFact 對帳完畢才進真工作圖；
+        // 此處只生成原始安全計畫，絕不先移動或預先借用資源。
         let mut call_term = term;
         while let TermKind::Group(inner) = &call_term.kind {
             let span = call_term.node_span();
@@ -2309,26 +2310,105 @@ impl PreparedPrivateScalarCall {
             }
             call_term = inner;
         }
-        let call_name = match &call_term.kind {
-            TermKind::Call(call) if !call.awaited && call.arguments.is_empty() =>
-                Some(call.name.as_str()),
+        let (call_name, actuals): (&str, &[Term]) = match &call_term.kind {
+            TermKind::Call(call) if !call.awaited =>
+                (call.name.as_str(), &call.arguments),
             TermKind::UnresolvedZeroArgs(name)
-                if !verified.structs.contains_key(name) => Some(name.as_str()),
-            _ => None,
+                if !verified.structs.contains_key(name) => (name.as_str(), &[]),
+            _ => ("", &[]),
         };
-        if let Some(name) = call_name {
-            if verified.functions.iter().any(|fun| fun.name == name
-                && fun.name != "main" && fun.result_ty == "str"
-                && fun.params.is_empty() && !fun.is_async)
-                && verified.plan.declarations.call_borrows_at(call_term.node_span())
-                    .is_none_or(|facts| facts.is_empty()) {
-                return Ok(PrivateScalarStrInitializer::Call {
-                    name: name.to_owned(), arguments: Vec::new(),
-                });
+        if !call_name.is_empty() {
+            let target = verified.functions.iter().find(|fun| fun.name == call_name
+                && fun.name != "main" && fun.result_ty == "str" && !fun.is_async
+                && fun.params.len() == actuals.len()
+                && fun.params.iter().all(|param|
+                    matches!(param.ty.as_str(), "int" | "bool" | "str")))
+                .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                    "str Call 缺少原 Checker 同步 str 返回與完整形參簽章",
+                ))?;
+            let mut arguments = Vec::with_capacity(actuals.len());
+            let mut observed_borrows = Vec::new();
+            for (argument, parameter) in actuals.iter().zip(&target.params) {
+                let planned = match parameter.ty.as_str() {
+                    "int" => PrivateScalarCallArgument::Int(
+                        PrivateScalarReturnExpr::from_checked_bindings(
+                            argument, bindings, verified,
+                        )?,
+                    ),
+                    "bool" => PrivateScalarCallArgument::Bool(
+                        PrivateScalarBoolExpr::from_checked_call_argument(
+                            argument, bindings, verified,
+                        )?,
+                    ),
+                    "str" if matches!(argument.kind, TermKind::Move(_)) => {
+                        let owner = PreparedPrivateMoveCall::checked_move_name(
+                            argument, verified,
+                        ).map_err(|_| PrivateScalarCallPrepareError::Unsupported(
+                            "str 返回 Move 引數缺少原 Parser/Lexer 身分",
+                        ))?;
+                        let source = *bindings.get(owner).ok_or(
+                            PrivateScalarCallPrepareError::Unsupported(
+                                "str 返回 Move 引數缺少當前 DeclarationId",
+                            ),
+                        )?;
+                        if !verified.plan.declarations.typed_declaration(source)
+                            .is_some_and(|fact| fact.ty == "str") {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 返回 Move 引數缺少原 Checker str 身分",
+                            ));
+                        }
+                        PrivateScalarCallArgument::MoveStr {
+                            owner: owner.to_owned(), source,
+                        }
+                    }
+                    "str" => {
+                        let TermKind::Name(owner) = &argument.kind else {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 返回借用只能使用原 Parser 具名來源",
+                            ));
+                        };
+                        let source = *bindings.get(owner).ok_or(
+                            PrivateScalarCallPrepareError::Unsupported(
+                                "str 返回借用缺少目前 Checker 作用域身分",
+                            ),
+                        )?;
+                        let record = verified.plan.declarations.typed_declaration(source)
+                            .ok_or(PrivateScalarCallPrepareError::Unsupported(
+                                "str 返回借用缺少原 Checker 宣告事實",
+                            ))?;
+                        if record.ty != "str" || !verified.tokens.iter().any(|token|
+                            token.start == argument.start && token.end == argument.end
+                                && matches!(&token.kind,
+                                    TokenKind::Name(found) if found == owner)) {
+                            return Err(PrivateScalarCallPrepareError::Unsupported(
+                                "str 返回借用缺少原 Checker/Lexer 型別與來源",
+                            ));
+                        }
+                        let fact = BorrowFact::new(source, if record.mutable {
+                            BorrowKind::ExclusiveWrite
+                        } else {
+                            BorrowKind::SharedRead
+                        });
+                        observed_borrows.push(fact);
+                        PrivateScalarCallArgument::BorrowStr {
+                            owner: owner.clone(), fact,
+                        }
+                    }
+                    _ => return Err(PrivateScalarCallPrepareError::Unsupported(
+                        "str 返回引數含未核准型別",
+                    )),
+                };
+                arguments.push(planned);
             }
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "str 普通函式此子批只接受原 Checker 的同步零形參返回",
-            ));
+            if verified.plan.declarations.call_borrows_at(call_term.node_span())
+                .unwrap_or(&[]) != observed_borrows.as_slice() {
+                return Err(PrivateScalarCallPrepareError::Unsupported(
+                    "str 返回引數 BorrowFact 與原 Checker 不一致",
+                ));
+            }
+            return Ok(PrivateScalarStrInitializer::Call {
+                name: call_name.to_owned(), arguments,
+            });
         }
         let source = PreparedPrivateMoveCall::checked_move_name(term, verified)
             .map_err(|_| PrivateScalarCallPrepareError::Unsupported(
@@ -4209,10 +4289,25 @@ impl PreparedPrivateScalarCall {
                             tasks.push(PrivateScalarTask::EnterCall(
                                 callee, arguments, false, false,
                             ));
-                            // 目前真核准 str source Call 限零形參；其它形式
-                            // 必須先擴充 TypedHIR 參數與 Return 所有權矩陣。
-                            if !arguments.is_empty() {
-                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            // LIFO：依原 Parser 實參來源左至右真正求值，
+                            // 後序算術或借用錯誤時尚未 EnterCall，不得提交 Move。
+                            for argument in arguments.iter().rev() {
+                                match argument {
+                                    PrivateScalarCallArgument::Int(value) => {
+                                        tasks.push(PrivateScalarTask::RecordArgument);
+                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                    }
+                                    PrivateScalarCallArgument::Bool(value) => {
+                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                                    }
+                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
+                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
+                                    }
+                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
+                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
+                                    }
+                                }
                             }
                             continue;
                         }
