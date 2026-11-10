@@ -2083,7 +2083,7 @@ enum PrivateScalarTask<'a> {
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     /// str 函式真正退出後由呼叫端用原 Checker const/var 權限接管唯一 OwnedUtf8。
     FinishStrReturnBinding(DeclarationId, &'a str, bool),
-    /// F2：原 Checker var str 已存在，返回 OwnedUtf8 應原子覆寫，不新建綁定。
+    /// F2：僅原 Checker 合法的未初始化 var str 首次接收 Returned OwnedUtf8。
     FinishStrReturnAssignment(DeclarationId, &'a str),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
@@ -4405,6 +4405,16 @@ impl PreparedPrivateScalarCall {
                             );
                             return Err(PrivateScalarCallRuntimeError::Borrow(error));
                         }
+                        // P16 原 Checker 的已初始化 var str 不准直接以
+                        // 普通函式 str-return 覆寫；目前僅合法首次賦值。
+                        // 即使假造 Checked Source 也不能越過此動態防線。
+                        if resources.resource_id(name).is_ok() {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if let Err((error, returned)) = resources.replace_return_as(name, returned) {
                             resources.release_detached(returned);
                             Self::record_owned_resources(
@@ -4412,8 +4422,8 @@ impl PreparedPrivateScalarCall {
                             );
                             return Err(PrivateScalarCallRuntimeError::Resource(error));
                         }
-                        // 舊持有資源先真正 Released，新返回資源才 Accepted；
-                        // 原雙帳 ResourceId 必須只由當前 DeclarationId 接管一次。
+                        // 原 Checker 首次賦值沒有舊資源可釋放；
+                        // 同一新 ResourceId 只能由當前 DeclarationId 接管一次。
                         Self::record_owned_resources(
                             &resources, &mut resource_cursor, events,
                         );
