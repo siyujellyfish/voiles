@@ -1422,3 +1422,7 @@ include!("struct_stage/g18_f2_bool_body_tests.rs");
 // G18／F2：原 Checker str Return→OwnedUtf8 接管與 ResourceId 身分閉合五項正反。
 #[cfg(test)]
 include!("struct_stage/g18_f2_str_return_graph_tests.rs");
+
+// G18／P18.1-F2：str 擁有返回帶 int／bool／str 實參八項真資源與失敗證據。
+#[cfg(test)]
+include!("struct_stage/g18_f2_str_return_args_tests.rs");
