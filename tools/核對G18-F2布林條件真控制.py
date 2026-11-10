@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／F2：bool 返回作 if／else-if／while 動態條件八項真來源正反。"""
+"""G18／F2：bool 返回作 if／else-if 真條件，while 嚴守 P15 純值限制的八項正反。"""
 from __future__ import annotations
 import argparse
 from pathlib import Path
@@ -14,9 +14,9 @@ CASES = (
     "f2_bool_cond_if真函式返回false不執行未選分支",
     "f2_bool_cond_else_if按原順序真執行前兩個條件",
     "f2_bool_cond_else_if首分支已選中時不可多執行後續條件",
-    "f2_bool_cond_while每輪重呼叫真bool函式而非重用快照",
-    "f2_bool_cond_while第一次false不得建立循環本體資源",
-    "f2_bool_cond_迴圈預算耗盡仍清理父框架真utf8而不假成功",
+    "f2_bool_cond_while僅准純值重讀_函式條件由原checker拒絕",
+    "f2_bool_cond_while函式返回false仍須拒絕_純值false不建資源",
+    "f2_bool_cond_while函式條件拒絕_純值無限迴圈預算仍清理真資源",
     "f2_bool_cond_整數函式不能冒充bool條件由原checker拒絕",
 )
 
