@@ -1775,8 +1775,9 @@ impl PrivateScalarLocalStep {
             Self::EarlyReturn(plan) => plan.collect_calls(calls),
             Self::Control(action) => action.collect_calls(calls),
             Self::DeclareCopyStruct { plan, .. } => plan.collect_calls(calls),
-            Self::DeclareBool { .. } | Self::AssignBool { .. }
-                | Self::AssignCopyStructBool { .. } | Self::AssignCopyStructStr { .. }
+            Self::DeclareBool { value, .. } | Self::AssignBool { value, .. } =>
+                value.collect_calls(calls),
+            Self::AssignCopyStructBool { .. } | Self::AssignCopyStructStr { .. }
                 | Self::DeclareEmptyInt(_) | Self::DeclareEmptyBool(_)
                 | Self::DeclareStr { .. } | Self::DeclareEmptyStr { .. }
                 | Self::MoveCopyStruct { .. }
@@ -1899,6 +1900,9 @@ enum PrivateScalarTask<'a> {
     WriteCopyStructBool(DeclarationId, &'a str, &'a str, &'a PrivateScalarBoolExpr),
     WriteCopyStructStr(DeclarationId, &'a str, &'a str, &'a str),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
+    /// F2：bool 動態呼叫真正返回後才可寫入局部；尚未返回不可提前初始化。
+    BindBoolFromValue(DeclarationId),
+    AssignBoolFromValue(DeclarationId),
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
@@ -2923,7 +2927,7 @@ impl PreparedPrivateScalarCall {
             ).collect::<BTreeMap<_, _>>();
             return Ok((Vec::new(), Vec::new(),
                 PrivateScalarReturnExpr::BoolValue(Box::new(
-                    PrivateScalarBoolExpr::from_checked(
+                    PrivateScalarBoolExpr::from_checked_call_argument(
                         &ret.expression, &bindings, verified,
                     )?,
                 )), ret.expression.node_span()));
@@ -3013,7 +3017,7 @@ impl PreparedPrivateScalarCall {
                             "bool var 賦值缺少原 Checker 可寫身分與 Token",
                         ));
                     }
-                    let value = PrivateScalarBoolExpr::from_checked(
+                    let value = PrivateScalarBoolExpr::from_checked_call_argument(
                         &assign.expression, &bool_bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::AssignBool {
@@ -3135,7 +3139,7 @@ impl PreparedPrivateScalarCall {
                     ));
                 }
                 if let Some(initializer) = owner.initializer.as_ref() {
-                    let value = PrivateScalarBoolExpr::from_checked(
+                    let value = PrivateScalarBoolExpr::from_checked_call_argument(
                         initializer, &bool_bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::DeclareBool {
@@ -3682,15 +3686,37 @@ impl PreparedPrivateScalarCall {
                         }
                     }
                     PrivateScalarTask::BindBool(id, expr) => {
+                        if matches!(expr, PrivateScalarBoolExpr::Call { .. }) {
+                            // 先完整執行真 bool 子框架，返回前不可提前宣告。
+                            tasks.push(PrivateScalarTask::BindBoolFromValue(id));
+                            tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                        } else {
+                            let frame = frames.last_mut().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let value = expr.evaluate_runtime(frame, &copy_structs)?;
+                            if frame.bool_values.insert(id, value).is_some() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
+                            events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                        }
+                    }
+                    PrivateScalarTask::BindBoolFromValue(id) => {
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !matches!(value, 0 | 1) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
-                        if frame.bool_values.insert(id, value).is_some() {
+                        if frame.bool_values.insert(id, value == 1).is_some() {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         frame.initialized_order.push(PrivateScalarLocalBinding::Bool(id));
-                        events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                        events.push(PrivateScalarCallEvent::BoolInitialized(id, value == 1));
                     }
                     PrivateScalarTask::MoveCopyStruct(id, name, source, source_name) => {
                         let frame = frames.last_mut().ok_or(
@@ -3924,13 +3950,44 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::ResourceOwnerBound(id, resource_id));
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
+                        if matches!(expr, PrivateScalarBoolExpr::Call { .. }) {
+                            tasks.push(PrivateScalarTask::AssignBoolFromValue(id));
+                            tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                        } else {
+                            let frame = frames.last_mut().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
+                            let value = expr.evaluate_runtime(frame, &copy_structs)?;
+                            if let Some(slot) = frame.bool_values.get_mut(&id) {
+                                *slot = value;
+                                events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                            } else {
+                                let pending = frame.initialized_order.iter_mut()
+                                    .find(|entry| matches!(entry,
+                                        PrivateScalarLocalBinding::UninitializedBool(old)
+                                            if *old == id
+                                    )).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                *pending = PrivateScalarLocalBinding::Bool(id);
+                                if frame.bool_values.insert(id, value).is_some() {
+                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                }
+                                events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                            }
+                        }
+                    }
+                    PrivateScalarTask::AssignBoolFromValue(id) => {
+                        let value = values.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !matches!(value, 0 | 1) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
                         if let Some(slot) = frame.bool_values.get_mut(&id) {
-                            *slot = value;
-                            events.push(PrivateScalarCallEvent::BoolAssigned(id, value));
+                            *slot = value == 1;
+                            events.push(PrivateScalarCallEvent::BoolAssigned(id, value == 1));
                         } else {
                             let pending = frame.initialized_order.iter_mut()
                                 .find(|entry| matches!(entry,
@@ -3938,10 +3995,10 @@ impl PreparedPrivateScalarCall {
                                         if *old == id
                                 )).ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
                             *pending = PrivateScalarLocalBinding::Bool(id);
-                            if frame.bool_values.insert(id, value).is_some() {
+                            if frame.bool_values.insert(id, value == 1).is_some() {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
-                            events.push(PrivateScalarCallEvent::BoolInitialized(id, value));
+                            events.push(PrivateScalarCallEvent::BoolInitialized(id, value == 1));
                         }
                     }
                     PrivateScalarTask::CheckEarlyReturn(branch) => {
