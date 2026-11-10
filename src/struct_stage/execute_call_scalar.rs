@@ -1923,7 +1923,6 @@ enum PrivateScalarTask<'a> {
     FinishEarlyCondition(&'a PrivateScalarEarlyIf),
     /// 循環的可識別反向邊亦作為 break／continue 的最近動態目標。
     CheckWhile(&'a PrivateScalarBoolExpr, &'a PrivateScalarBranchAction),
-    FinishWhileCondition(&'a PrivateScalarBoolExpr, &'a PrivateScalarBranchAction),
     /// 本輪迭代器僅在所屬來源區塊有效，離域後可用同一 ID 進下一輪。
     CheckFor(&'a PrivateScalarBranchAction, DeclarationId, i64, i64),
     EndFor(&'a PrivateScalarBranchAction, DeclarationId, i64, i64),
@@ -2704,7 +2703,7 @@ impl PreparedPrivateScalarCall {
                     )?,
                 ))),
             StmtKind::While { condition, body } => {
-                let guard = PrivateScalarBoolExpr::from_checked_call_argument(
+                let guard = PrivateScalarBoolExpr::from_checked(
                     condition, bool_bindings, verified,
                 )?;
                 let steps = if matches!(guard, PrivateScalarBoolExpr::Constant(false))
@@ -4069,32 +4068,14 @@ impl PreparedPrivateScalarCall {
                         }
                     }
                     PrivateScalarTask::CheckWhile(condition, body) => {
-                        if matches!(condition, PrivateScalarBoolExpr::Call { .. }) {
-                            tasks.push(PrivateScalarTask::FinishWhileCondition(condition, body));
-                            tasks.push(PrivateScalarTask::EvaluateBoolArgument(condition));
-                        } else {
-                            let frame = frames.last().ok_or(
-                                PrivateScalarCallRuntimeError::StateMismatch,
-                            )?;
-                            let value = condition.evaluate_runtime(frame, &copy_structs)?;
-                            events.push(PrivateScalarCallEvent::ConditionalChecked(value));
-                            if value {
-                                tasks.push(PrivateScalarTask::CheckWhile(condition, body));
-                                tasks.push(PrivateScalarTask::ExecuteBranchAction(body));
-                            }
-                        }
-                    }
-                    PrivateScalarTask::FinishWhileCondition(condition, body) => {
-                        let encoded = values.pop().ok_or(
+                        // P15：while 條件只能是原 Checker 准許的無資源副作用純值。
+                        // 此處絕不偷開未核准的 bool 函式呼叫路徑。
+                        let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
-                        if !matches!(encoded, 0 | 1) {
-                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
-                        }
-                        let selected = encoded == 1;
-                        events.push(PrivateScalarCallEvent::ConditionalChecked(selected));
-                        if selected {
-                            // 每輪必重新呼叫原已核准 bool 函式，而非重用前一輪值。
+                        let value = condition.evaluate_runtime(frame, &copy_structs)?;
+                        events.push(PrivateScalarCallEvent::ConditionalChecked(value));
+                        if value {
                             tasks.push(PrivateScalarTask::CheckWhile(condition, body));
                             tasks.push(PrivateScalarTask::ExecuteBranchAction(body));
                         }
