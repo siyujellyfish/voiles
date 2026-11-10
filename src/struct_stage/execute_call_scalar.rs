@@ -2892,6 +2892,7 @@ impl PreparedPrivateScalarCall {
         bool_bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
         inside_loop: bool,
+        expected_return_ty: &str,
     ) -> Result<PrivateScalarBranchAction, PrivateScalarCallPrepareError> {
         let [statement] = statements else {
             if statements.is_empty() {
@@ -2909,6 +2910,7 @@ impl PreparedPrivateScalarCall {
                 let action = Self::compile_early_branch(
                     std::slice::from_ref(statement),
                     &local_int, &local_bool, verified, inside_loop,
+                    expected_return_ty,
                 )?;
                 if let StmtKind::Declare(owner) = &statement.kind {
                     let id = DeclarationId(statement.start);
@@ -3039,6 +3041,7 @@ impl PreparedPrivateScalarCall {
                 Ok(PrivateScalarBranchAction::NestedIf(Box::new(
                     Self::compile_early_if(
                         statement, int_bindings, bool_bindings, verified, inside_loop,
+                        expected_return_ty,
                     )?,
                 ))),
             StmtKind::While { condition, body } => {
@@ -3051,6 +3054,7 @@ impl PreparedPrivateScalarCall {
                 } else {
                     Self::compile_early_branch(
                         &body.statements, int_bindings, bool_bindings, verified, true,
+                        expected_return_ty,
                     )?
                 };
                 Ok(PrivateScalarBranchAction::While {
@@ -3083,6 +3087,7 @@ impl PreparedPrivateScalarCall {
                     scoped.insert(iterator.clone(), identity);
                     Self::compile_early_branch(
                         &body.statements, &scoped, bool_bindings, verified, true,
+                        expected_return_ty,
                     )?
                 };
                 Ok(PrivateScalarBranchAction::ForRange {
@@ -3093,11 +3098,15 @@ impl PreparedPrivateScalarCall {
             StmtKind::Break if inside_loop => Ok(PrivateScalarBranchAction::Break),
             StmtKind::Continue if inside_loop => Ok(PrivateScalarBranchAction::Continue),
             StmtKind::Return(ret) => {
-                // F2：原 Checker 已核准的提前 return 型別由同一份
-                // TypedHIR 決定；bool 在原工作棧用 BoolValue 返回，
-                // 不作 int 隱式轉型，也不新增第二套 CFG。
+                // F2：str 非 Copyable，沒有 ScalarType::Str；只依原 Checker
+                // 核准的函式返回簽章與 str Literal／顯式 .move() 來源。
+                // 分支／巢狀分支逐層傳遞原宣告 result_ty，不推測 AST 型別。
                 let span = ret.expression.node_span();
-                let result = if verified.plan.scalar_hir.expression(span)
+                let result = if expected_return_ty == "str" {
+                    PrivateScalarReturnExpr::StrValue(
+                        Self::checked_str_return(&ret.expression, int_bindings, verified)?,
+                    )
+                } else if verified.plan.scalar_hir.expression(span)
                     .is_some_and(|fact| fact.ty == crate::common_ir::ScalarType::Bool) {
                     PrivateScalarReturnExpr::BoolValue(Box::new(
                         PrivateScalarBoolExpr::from_checked_call_argument(
@@ -3218,6 +3227,7 @@ impl PreparedPrivateScalarCall {
         bool_bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
         inside_loop: bool,
+        expected_return_ty: &str,
     ) -> Result<PrivateScalarEarlyIf, PrivateScalarCallPrepareError> {
         let StmtKind::If { branch, no } = &stmt.kind else {
             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -3230,6 +3240,7 @@ impl PreparedPrivateScalarCall {
         let when_true = Self::scoped_single_declaration(
             Self::compile_early_branch(
                 &branch.body.statements, int_bindings, bool_bindings, verified, inside_loop,
+                expected_return_ty,
             )?,
         );
         let when_false = match no.as_ref() {
@@ -3238,12 +3249,14 @@ impl PreparedPrivateScalarCall {
                 Some(PrivateScalarEarlyElse::Branch(
                     Self::scoped_single_declaration(Self::compile_early_branch(
                         &block.statements, int_bindings, bool_bindings, verified, inside_loop,
+                        expected_return_ty,
                     )?),
                 )),
             Some(crate::syntax_shared::ParsedElse::ElseIf(next)) =>
                 Some(PrivateScalarEarlyElse::ElseIf(Box::new(
                     Self::compile_early_if(
                         next, int_bindings, bool_bindings, verified, inside_loop,
+                        expected_return_ty,
                     )?,
                 ))),
             #[cfg(test)]
@@ -3293,6 +3306,7 @@ impl PreparedPrivateScalarCall {
             if matches!(&statement.kind, StmtKind::If { .. }) {
                 let branch = Self::compile_early_if(
                     statement, &bindings, &bool_bindings, verified, false,
+                    &function.result_ty,
                 )?;
                 // V1／F3：原 Checker 已證整個頂層 if／else-if／else
                 // 都返回時，後續同層來源沒有執行邊；不再編譯
@@ -3307,7 +3321,7 @@ impl PreparedPrivateScalarCall {
                 StmtKind::While { .. } | StmtKind::ForRange { .. }) {
                 let action = Self::compile_early_branch(
                     std::slice::from_ref(statement), &bindings, &bool_bindings,
-                    verified, false,
+                    verified, false, &function.result_ty,
                 )?;
                 local_steps.push(PrivateScalarLocalStep::Control(action));
                 continue;
