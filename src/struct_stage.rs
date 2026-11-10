@@ -1418,3 +1418,7 @@ include!("struct_stage/g18_f2_bool_str_tests.rs");
 // G18／F2：原 bool-return 多語句、提前分支及 str 資源真正反九項。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_body_tests.rs");
+
+// G18／F2：原 Checker str Return→OwnedUtf8 接管與 ResourceId 身分閉合五項正反。
+#[cfg(test)]
+include!("struct_stage/g18_f2_str_return_graph_tests.rs");
