@@ -122,14 +122,29 @@ return choose(3)
     }
 
     #[test]
-    fn f2_bool_cond_while每輪重呼叫真bool函式而非重用快照() {
-        let src = r#"fn ready(flag:bool)->bool{
+    fn f2_bool_cond_while僅准純值重讀_函式條件由原checker拒絕() {
+        let invalid = r#"fn ready(flag:bool)->bool{
 return flag
 }
 fn count(n:int)->int{
 var again:bool = true
-var value:int = 0
 while(ready(again)){
+again = false
+}
+return n
+}
+fn main()->int{
+return count(4)
+}
+"#;
+        assert!(matches!(
+            PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))
+        ));
+        let valid = r#"fn count(n:int)->int{
+var again:bool = true
+var value:int = 0
+while(again){
 value = value+1
 again = false
 }
@@ -139,24 +154,21 @@ fn main()->int{
 return count(4)
 }
 "#;
-        let out = run(src);
+        let out = run(valid);
         assert_eq!(out.result, Ok(5));
-        let values = out.events.iter().filter_map(|e| match e {
-            PrivateScalarCallEvent::BoolReturned(v) => Some(*v),
-            _ => None,
-        }).collect::<Vec<_>>();
-        assert_eq!(values, [true, false]);
-        let checks = out.events.iter().filter_map(|e| match e {
+        assert_eq!(out.events.iter().filter_map(|event| match event {
             PrivateScalarCallEvent::ConditionalChecked(v) => Some(*v),
             _ => None,
-        }).collect::<Vec<_>>();
-        assert_eq!(checks, [true, false]);
+        }).collect::<Vec<_>>(), [true, false]);
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::BoolReturned(_)
+        )));
     }
 
     #[test]
-    fn f2_bool_cond_while第一次false不得建立循環本體資源() {
+    fn f2_bool_cond_while函式返回false仍須拒絕_純值false不建資源() {
         use crate::owned_str_runtime::ResourceEvent as R;
-        let src = r#"fn ready(flag:bool)->bool{
+        let invalid = r#"fn ready(flag:bool)->bool{
 return flag
 }
 fn count(n:int)->int{
@@ -170,18 +182,30 @@ fn main()->int{
 return count(6)
 }
 "#;
-        let out = run(src);
+        assert!(matches!(
+            PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))
+        ));
+        let valid = r#"fn count(n:int)->int{
+while(false){
+var local:str = "不可執行"
+break
+}
+return n
+}
+fn main()->int{
+return count(6)
+}
+"#;
+        let out = run(valid);
         assert_eq!(out.result, Ok(6));
         assert_eq!(out.resource_events, Vec::<R>::new());
-        assert_eq!(out.events.iter().filter(|e| matches!(
-            e, PrivateScalarCallEvent::BoolReturned(false)
-        )).count(), 1);
     }
 
     #[test]
-    fn f2_bool_cond_迴圈預算耗盡仍清理父框架真utf8而不假成功() {
+    fn f2_bool_cond_while函式條件拒絕_純值無限迴圈預算仍清理真資源() {
         use crate::owned_str_runtime::ResourceEvent as R;
-        let src = r#"fn ready(flag:bool)->bool{
+        let invalid = r#"fn ready(flag:bool)->bool{
 return flag
 }
 fn looped(n:int)->int{
@@ -195,15 +219,30 @@ fn main()->int{
 return looped(3)
 }
 "#;
-        let out = PreparedPrivateScalarCall::prepare(src).unwrap()
+        assert!(matches!(
+            PreparedPrivateScalarCall::prepare(invalid),
+            Err(PrivateScalarCallPrepareError::Check(_))
+        ));
+        let valid = r#"fn looped(n:int)->int{
+var owned:str = "終止回收🪼"
+while(true){
+continue
+}
+return n
+}
+fn main()->int{
+return looped(3)
+}
+"#;
+        let out = PreparedPrivateScalarCall::prepare(valid).unwrap()
             .execute_with_budget(PrivateScalarExecutionBudget {
                 max_call_frames: 12, max_steps: 44,
             }).unwrap();
         assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
         assert!(out.has_balanced_frame_trace());
         assert_eq!(out.resource_events, [R::Created(1), R::Released(1)]);
-        assert!(!out.events.iter().any(|e| matches!(
-            e, PrivateScalarCallEvent::Returned(_)
+        assert!(!out.events.iter().any(|event| matches!(
+            event, PrivateScalarCallEvent::Returned(_)
         )));
     }
 
