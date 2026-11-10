@@ -11,12 +11,12 @@ import sys
 
 GROUPS = {
     "struct_stage::g18_f2_str_return_assign_tests::": (
-        "f2_str_assign_既有var原子接管真返回先釋放舊資源且不二次配置",
+        "f2_str_assign_未初始化var帶整數布林形參真接受唯一utf8資源",
         "f2_str_assign_未初始化var接管str返回同一id並於退出唯一釋放",
-        "f2_str_assign_連續兩次返回覆寫各id只釋放一次",
-        "f2_str_assign_借用實參後溢位不進callee不交付且舊資源正常清理",
+        "f2_str_assign_已初始化var函式覆寫及重複覆寫仍由原checker拒絕",
+        "f2_str_assign_借用實參後溢位不進callee不交付且原資源唯一清理",
         "f2_str_assign_const與錯誤型別仍由原checker拒絕不得建立資源",
-        "f2_str_assign_偽造覆寫接受resourceid即使釋放數平衡也須拒絕",
+        "f2_str_assign_偽造首次接收resourceid即使釋放數平衡也須拒絕",
     ),
     "owned_str_runtime::g18_f2_str_return_reassign_runtime_tests::": (
         "f2_return_replace_原子接收相同utf8且只釋放舊資源",
