@@ -608,3 +608,119 @@ mod p16_4_資源事件身分逐筆稽核 {
         assert_eq!(rt.finish(), Err(StrRuntimeError::OutstandingResource));
     }
 }
+
+#[cfg(test)]
+mod g18_f2_str_return_permission_tests {
+    use super::*;
+
+    #[test]
+    fn f2_str_return_const接收保持原資源身分且不得賦值() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.enter_scope();
+        rt.declare("callee", true, "原始🪼").unwrap();
+        let id = rt.resource_id("callee").unwrap();
+        let pointer = rt.read("callee").unwrap().as_ptr();
+        let resource = rt.return_named("callee").unwrap();
+        rt.leave_scope().unwrap();
+
+        rt.accept_return_as("caller", resource, false).unwrap();
+        assert_eq!(rt.resource_id("caller"), Ok(id));
+        assert_eq!(rt.read("caller"), Ok("原始🪼"));
+        assert_eq!(rt.read("caller").unwrap().as_ptr(), pointer);
+        assert_eq!(rt.assign("caller", "不可變更"), Err(StrRuntimeError::ImmutableBinding));
+        assert_eq!(rt.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn f2_str_return_var接收可覆寫且舊資源唯一釋放() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.enter_scope();
+        rt.declare("callee", true, "初始").unwrap();
+        let returned = rt.return_named("callee").unwrap();
+        rt.leave_scope().unwrap();
+
+        rt.accept_return_as("caller", returned, true).unwrap();
+        assert_eq!(rt.resource_id("caller"), Ok(1));
+        rt.assign("caller", "覆寫").unwrap();
+        assert_eq!(rt.read("caller"), Ok("覆寫"));
+        assert_eq!(rt.resource_id("caller"), Ok(2));
+        assert_eq!(rt.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Released(1),
+            ResourceEvent::Released(2),
+        ]);
+    }
+
+    #[test]
+    fn f2_str_return接收同名失敗要歸還真資源供呼叫端清理() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.declare("caller", false, "既有值").unwrap();
+        rt.enter_scope();
+        rt.declare("callee", true, "待交付").unwrap();
+        let returned = rt.return_named("callee").unwrap();
+        rt.leave_scope().unwrap();
+
+        let (error, detached) = rt.accept_return_as("caller", returned, false).unwrap_err();
+        assert_eq!(error, StrRuntimeError::DuplicateBinding);
+        assert_eq!(rt.read("caller"), Ok("既有值"));
+        assert_eq!(rt.resource_id("caller"), Ok(1));
+        rt.release_detached(detached);
+        assert_eq!(rt.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Created(2),
+            ResourceEvent::Returned(2),
+            ResourceEvent::Released(2),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn f2_str_return兩層跨框架交還同一實際utf8不得重配置() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.enter_scope();
+        rt.declare("inner", true, "逐層歸還").unwrap();
+        let original = rt.resource_id("inner").unwrap();
+        let ptr = rt.read("inner").unwrap().as_ptr();
+        let first = rt.return_named("inner").unwrap();
+        rt.leave_scope().unwrap();
+
+        rt.enter_scope();
+        rt.accept_return_as("middle", first, false).unwrap();
+        assert_eq!(rt.resource_id("middle"), Ok(original));
+        let second = rt.return_named("middle").unwrap();
+        rt.leave_scope().unwrap();
+
+        rt.accept_return_as("outer", second, false).unwrap();
+        assert_eq!(rt.resource_id("outer"), Ok(original));
+        assert_eq!(rt.read("outer").unwrap().as_ptr(), ptr);
+        assert_eq!(rt.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+
+    #[test]
+    fn f2_str_return尚未交付的資源需保持可追溯清理不能依賴宿主drop() {
+        let mut rt = OwnedStrRuntime::new();
+        rt.enter_scope();
+        rt.declare("callee", true, "回滾🪼").unwrap();
+        let pending = rt.return_named("callee").unwrap();
+        rt.leave_scope().unwrap();
+        // 來源執行期後續失敗時，唯有正式 release_detached 才能
+        // 形成 P16 唯一 Released，不能將 Rust 自動 Drop 算作驗收。
+        rt.release_detached(pending);
+        assert_eq!(rt.finish().unwrap(), [
+            ResourceEvent::Created(1),
+            ResourceEvent::Returned(1),
+            ResourceEvent::Released(1),
+        ]);
+    }
+}
