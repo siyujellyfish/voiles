@@ -291,7 +291,17 @@ impl OwnedStrRuntime {
 
     pub(crate) fn accept_return(&mut self, name: &str, result: OwnedUtf8)
         -> Result<(), (StrRuntimeError, OwnedUtf8)> {
-        // 失敗時將原資源交還呼叫者，不能在未證明的地方暗中丟棄。
+        // 相容已驗收的舊私有 var 接收模式；新來源必透過 accept_return_as
+        // 帶入原 Checker const／var 權限，不能無條件提升為 var。
+        self.accept_return_as(name, result, true)
+    }
+
+    /// G18／F2：把已 Return 的同一 OwnedUtf8 接入呼叫者原 Checker
+    /// 正式確認的 const／var 宣告。只搬移所有權，不重建字串或 ResourceId。
+    /// 驗證失敗時歸還完整資源，讓呼叫者明確回滾而非依賴 Rust Drop。
+    pub(crate) fn accept_return_as(
+        &mut self, name: &str, result: OwnedUtf8, mutable: bool,
+    ) -> Result<(), (StrRuntimeError, OwnedUtf8)> {
         if let Err(err) = self.current_name_free(name) { return Err((err, result)); }
         if self.next_order == u64::MAX {
             return Err((StrRuntimeError::ExhaustedIdentity, result));
@@ -299,7 +309,7 @@ impl OwnedStrRuntime {
         let order = self.next_order;
         self.next_order += 1;
         self.scopes.last_mut().expect("根作用域存在").names.push(StrBinding {
-            name: name.to_owned(), mutable: true, initialized_at: order, owned: Some(result),
+            name: name.to_owned(), mutable, initialized_at: order, owned: Some(result),
         });
         Ok(())
     }
