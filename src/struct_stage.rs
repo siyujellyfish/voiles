@@ -1426,3 +1426,7 @@ include!("struct_stage/g18_f2_str_return_graph_tests.rs");
 // G18／P18.1-F2：str 擁有返回帶 int／bool／str 實參八項真資源與失敗證據。
 #[cfg(test)]
 include!("struct_stage/g18_f2_str_return_args_tests.rs");
+
+// G18／P18.1-F2：原 Checker str-return 覆寫既有 var 的真 OwnedUtf8 正反驗收。
+#[cfg(test)]
+include!("struct_stage/g18_f2_str_return_assign_tests.rs");
