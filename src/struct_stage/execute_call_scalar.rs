@@ -985,6 +985,10 @@ impl PrivateScalarReturnExpr {
                             PrivateScalarCallArgument::MoveStr {
                                 owner: owner.to_owned(), source,
                             }
+                        } else if !matches!(&argument.kind, TermKind::Name(_)) {
+                            PreparedPrivateScalarCall::checked_nested_str_argument(
+                                argument, bindings, verified,
+                            )?
                         } else {
                         let TermKind::Name(owner) = &argument.kind else {
                             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -1525,6 +1529,10 @@ impl PrivateScalarBoolExpr {
                         PrivateScalarCallArgument::MoveStr {
                             owner: owner.to_owned(), source,
                         }
+                    } else if !matches!(&argument.kind, TermKind::Name(_)) {
+                        PreparedPrivateScalarCall::checked_nested_str_argument(
+                            argument, bindings, verified,
+                        )?
                     } else {
                         let TermKind::Name(owner) = &argument.kind else {
                             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -2327,6 +2335,22 @@ impl PreparedPrivateScalarCall {
 
     /// 唯有原 Checker 合法所有者來源，才可進真 OwnedStrRuntime；
     /// 不能透過文字相同就虛構所有權或將 str 視為 Copyable。
+    /// 此來源只允許原 Checker 已核准、實際執行後 Returned 的同步 str 呼叫。
+    /// 不將字面常值、非 Copyable 具名借用或其他形式偽裝成臨時所有者。
+    fn checked_nested_str_argument(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarCallArgument, PrivateScalarCallPrepareError> {
+        match Self::checked_str_initializer(term, bindings, verified)? {
+            PrivateScalarStrInitializer::Call { name, arguments } =>
+                Ok(PrivateScalarCallArgument::NestedStrCall { name, arguments }),
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "F2 str 暫存形參只允許原 Checker 真同步 str-return 呼叫",
+            )),
+        }
+    }
+
     fn checked_str_initializer(
         term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -2402,6 +2426,8 @@ impl PreparedPrivateScalarCall {
                             owner: owner.to_owned(), source,
                         }
                     }
+                    "str" if !matches!(&argument.kind, TermKind::Name(_)) =>
+                        Self::checked_nested_str_argument(argument, bindings, verified)?,
                     "str" => {
                         let TermKind::Name(owner) = &argument.kind else {
                             return Err(PrivateScalarCallPrepareError::Unsupported(
