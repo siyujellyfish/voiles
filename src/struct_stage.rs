@@ -1402,3 +1402,7 @@ include!("struct_stage/g18_f2_bool_return_tests.rs");
 // G18／F2：原 Checker bool-return 函式的局部綁定、更新與真資源逆序收尾。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_local_tests.rs");
+
+// G18 F2：原 Checker bool-return 真 if／else-if／while 條件八項正反驗收。
+#[cfg(test)]
+include!("struct_stage/g18_f2_bool_condition_tests.rs");
