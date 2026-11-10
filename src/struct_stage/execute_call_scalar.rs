@@ -3551,6 +3551,7 @@ impl PreparedPrivateScalarCall {
             }
         }
         let mut values = Vec::<i64>::new();
+        let mut pending_str_returns = Vec::<crate::owned_str_runtime::OwnedUtf8>::new();
         let mut completed_arguments = Vec::<PrivateScalarEvaluatedArgument>::new();
         // 只有 Copyable 欄位的暫存具名快照；不持有 UTF-8 ResourceId，
         // 函式失敗時丟棄快照不會產生已建構結構或需釋放的資源。
@@ -3559,12 +3560,14 @@ impl PreparedPrivateScalarCall {
         let mut steps = 0usize;
         PrivateScalarGraphCheckpoint {
             resources, copy_structs, resource_cursor, frames, tasks, values,
-            completed_arguments, pending_copy_structs, steps, awaiting_name: String::new(),
+            pending_str_returns, completed_arguments, pending_copy_structs,
+            steps, awaiting_name: String::new(),
         }
         });
         let PrivateScalarGraphCheckpoint {
             mut resources, mut copy_structs, mut resource_cursor,
-            mut frames, mut tasks, mut values, mut completed_arguments,
+            mut frames, mut tasks, mut values, mut pending_str_returns,
+            mut completed_arguments,
             mut pending_copy_structs, mut steps, awaiting_name: _,
         } = snapshot;
         let mut paused_await = None::<String>;
@@ -3594,6 +3597,33 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarReturnExpr::Constant(value) => values.push(*value),
                         PrivateScalarReturnExpr::BoolValue(expr) => {
                             tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
+                        }
+                        PrivateScalarReturnExpr::StrValue(source) => {
+                            let owned = match source {
+                                PrivateScalarStrReturn::Literal(text) => {
+                                    let owned = resources.create_detached(text).map_err(
+                                        PrivateScalarCallRuntimeError::Resource,
+                                    )?;
+                                    resources.mark_detached_return(&owned);
+                                    owned
+                                }
+                                PrivateScalarStrReturn::Move { source, declaration } => {
+                                    let frame = frames.last().ok_or(
+                                        PrivateScalarCallRuntimeError::StateMismatch,
+                                    )?;
+                                    if !frame.str_owner_scopes.iter().rev().flatten()
+                                        .any(|(id, name)| id == declaration && name == source) {
+                                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                                    }
+                                    frame.borrow_tracker.check_direct_access(*declaration)
+                                        .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                                    resources.return_named(source).map_err(
+                                        PrivateScalarCallRuntimeError::Resource,
+                                    )?
+                                }
+                            };
+                            pending_str_returns.push(owned);
+                            Self::record_owned_resources(&resources, &mut resource_cursor, events);
                         }
                         PrivateScalarReturnExpr::CopyStructIntField {
                             declaration, owner, field,
@@ -4100,6 +4130,28 @@ impl PreparedPrivateScalarCall {
                         )?.push((id, name.to_owned()));
                     }
                     PrivateScalarTask::DeclareStr(id, name, mutable, initializer) => {
+                        if let PrivateScalarStrInitializer::Call { name: callee, arguments } =
+                            initializer {
+                            if Self::current_scope_has_str_struct(
+                                frames.last().ok_or(
+                                    PrivateScalarCallRuntimeError::StateMismatch,
+                                )?, &copy_structs,
+                            ) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            tasks.push(PrivateScalarTask::FinishStrReturnBinding(
+                                id, name, mutable,
+                            ));
+                            tasks.push(PrivateScalarTask::EnterCall(
+                                callee, arguments, false, false,
+                            ));
+                            // 目前真核准 str source Call 限零形參；其它形式
+                            // 必須先擴充 TypedHIR 參數與 Return 所有權矩陣。
+                            if !arguments.is_empty() {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            continue;
+                        }
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -4127,6 +4179,8 @@ impl PreparedPrivateScalarCall {
                                 resources.declare(name, mutable, text),
                             PrivateScalarStrInitializer::Move { source, .. } =>
                                 resources.move_named_as(source, name, mutable),
+                            PrivateScalarStrInitializer::Call { .. } =>
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch),
                         }.map_err(PrivateScalarCallRuntimeError::Resource)?;
                         frame.str_owner_scopes.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -4137,6 +4191,35 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::ResourceOwnerBound(
                             id, resource_id,
                         ));
+                    }
+                    PrivateScalarTask::FinishStrReturnBinding(id, name, mutable) => {
+                        let returned = pending_str_returns.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let resource_id = returned.resource_id();
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.str_owner_scopes.last().is_none_or(|scope|
+                            scope.iter().any(|(known, active)| known == &id || active == name)) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        if let Err((error, returned)) = resources.accept_return_as(
+                            name, returned, mutable,
+                        ) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::Resource(error));
+                        }
+                        frame.str_owner_scopes.last_mut().expect("原動態 str 作用域")
+                            .push((id, name.to_owned()));
+                        events.push(PrivateScalarCallEvent::StrReturnAccepted(id, resource_id));
                     }
                     PrivateScalarTask::AssignStr(id, name, initializer) => {
                         let frame = frames.last_mut().ok_or(
@@ -4168,6 +4251,8 @@ impl PreparedPrivateScalarCall {
                                 resources.assign(name, text),
                             PrivateScalarStrInitializer::Move { source, .. } =>
                                 resources.replace_from(source, name),
+                            PrivateScalarStrInitializer::Call { .. } =>
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch),
                         }.map_err(PrivateScalarCallRuntimeError::Resource)?;
                         Self::record_owned_resources(&resources, &mut resource_cursor, events);
                         let resource_id = resources.resource_id(name)
@@ -4796,20 +4881,36 @@ impl PreparedPrivateScalarCall {
                         if frames.len() <= 1 {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
-                        let value = values.pop().ok_or(
-                            PrivateScalarCallRuntimeError::StateMismatch,
-                        )?;
+                        let returning = self.verified.functions.iter()
+                            .find(|fun| fun.name == frames.last()
+                                .map(|frame| frame.name.as_str()).unwrap_or(""))
+                            .map(|fun| fun.result_ty.as_str())
+                            .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                        let value = if returning == "str" {
+                            None
+                        } else {
+                            Some(values.pop().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?)
+                        };
                         let mut frame = frames.pop().expect("真子框架仍存在");
-                        let is_bool_return = self.verified.functions.iter()
-                            .find(|fun| fun.name == frame.name)
-                            .is_some_and(|fun| fun.result_ty == "bool");
-                        if is_bool_return {
+                        if returning == "str" {
+                            let resource_id = pending_str_returns.last().ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?.resource_id();
+                            events.push(PrivateScalarCallEvent::StrReturned(resource_id));
+                        } else if returning == "bool" {
+                            let value = value.ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?;
                             if !matches!(value, 0 | 1) {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
                             events.push(PrivateScalarCallEvent::BoolReturned(value == 1));
                         } else {
-                            events.push(PrivateScalarCallEvent::Returned(value));
+                            events.push(PrivateScalarCallEvent::Returned(value.ok_or(
+                                PrivateScalarCallRuntimeError::StateMismatch,
+                            )?));
                         }
                         let parent = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -4849,7 +4950,7 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::FunctionExited {
                             name: frame.name, returned: true,
                         });
-                        values.push(value);
+                        if let Some(value) = value { values.push(value); }
                     }
                 }
             }
@@ -4857,6 +4958,7 @@ impl PreparedPrivateScalarCall {
                 return Ok(None);
             }
             if frames.len() != 1 || values.len() != 1
+                || !pending_str_returns.is_empty()
                 || !completed_arguments.is_empty()
                 || !pending_copy_structs.is_empty() {
                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
@@ -4869,7 +4971,8 @@ impl PreparedPrivateScalarCall {
         if let Some(awaiting_name) = paused_await {
             *checkpoint = Some(PrivateScalarGraphCheckpoint {
                 resources, copy_structs, resource_cursor, frames, tasks, values,
-                completed_arguments, pending_copy_structs, steps, awaiting_name,
+                pending_str_returns, completed_arguments, pending_copy_structs,
+                steps, awaiting_name,
             });
             return Ok(None);
         }
@@ -4935,6 +5038,12 @@ impl PreparedPrivateScalarCall {
                     name: frame.name, returned: false,
                 });
             }
+        }
+        // 失敗時若 str 返回已脫離子幀而尚未被主程式接收，
+        // 呼叫者必須以真 P16 ledger 釋放；Rust Drop 不算資源事件。
+        for owned in pending_str_returns.drain(..).rev() {
+            resources.release_detached(owned);
+            Self::record_owned_resources(&resources, &mut resource_cursor, events);
         }
         // 直接 main→被呼叫者的真框架保存在最底層，亦必須在
         // 正常返回、注入故障或預算耗盡後按完成順序逆序離域。
