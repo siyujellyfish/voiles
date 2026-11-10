@@ -4433,6 +4433,13 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        if frame.pending_owned_returns.pop() != Some(resource_id) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if frame.str_owner_scopes.last().is_none_or(|scope|
                             scope.iter().any(|(known, active)| known == &id || active == name)) {
                             resources.release_detached(returned);
@@ -4462,6 +4469,13 @@ impl PreparedPrivateScalarCall {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
+                        if frame.pending_owned_returns.pop() != Some(resource_id) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
                         if !frame.str_owner_scopes.iter().rev().flatten()
                             .any(|(known, active)| *known == id && active == name) {
                             resources.release_detached(returned);
@@ -5283,6 +5297,20 @@ impl PreparedPrivateScalarCall {
                         Self::return_incoming_borrows(
                             parent, &frame.incoming_borrows, events,
                         )?;
+                        // F2：已 Returned、尚待作為外層 str 實參交付的
+                        // Detached OwnedUtf8 必須在「本 frame」離域前反序
+                        // 釋放，不能留到 root 再無憑據地補發 Released。
+                        for id in frame.pending_owned_returns.drain(..).rev() {
+                            if pending_str_returns.last()
+                                .map(|owned| owned.resource_id()) != Some(id) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            let owned = pending_str_returns.pop().expect("F2 暫存 LIFO");
+                            resources.release_detached(owned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                        }
                         for entry in frame.initialized_order.iter().rev() {
                             match entry {
                                 PrivateScalarLocalBinding::Int(id) =>
