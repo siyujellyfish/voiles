@@ -84,6 +84,9 @@ jobs:
       - name: G18 P18.2～18.3 真 for／while 可配置步數預算三十六項正反 Gate
         run: python3 tools/核對G18有限迴圈真資源.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F2 原 P16 真 str Return Accept 權限與失敗歸還五項 Gate
+        run: python3 tools/核對G18-F2資源返回接收權限.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1-F2 原 bool-return 多語句與提前分支返回九項正反 Gate
         run: python3 tools/核對G18-F2布林多語句返回.py --test-bin target/p02/p04_source_internal
 
