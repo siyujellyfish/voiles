@@ -2083,6 +2083,8 @@ enum PrivateScalarTask<'a> {
     DeclareStr(DeclarationId, &'a str, bool, &'a PrivateScalarStrInitializer),
     /// str 函式真正退出後由呼叫端用原 Checker const/var 權限接管唯一 OwnedUtf8。
     FinishStrReturnBinding(DeclarationId, &'a str, bool),
+    /// F2：僅原 Checker 合法的未初始化 var str 首次接收 Returned OwnedUtf8。
+    FinishStrReturnAssignment(DeclarationId, &'a str),
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
     /// 具名欄位來源逐項在當前動態 frame 求值；含 Call 使用與 return
@@ -4380,6 +4382,53 @@ impl PreparedPrivateScalarCall {
                             .push((id, name.to_owned()));
                         events.push(PrivateScalarCallEvent::StrReturnAccepted(id, resource_id));
                     }
+                    PrivateScalarTask::FinishStrReturnAssignment(id, name) => {
+                        let returned = pending_str_returns.pop().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let resource_id = returned.resource_id();
+                        let frame = frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if !frame.str_owner_scopes.iter().rev().flatten()
+                            .any(|(known, active)| *known == id && active == name) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        if let Err(error) = frame.borrow_tracker.check_direct_access(id) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::Borrow(error));
+                        }
+                        // P16 原 Checker 的已初始化 var str 不准直接以
+                        // 普通函式 str-return 覆寫；目前僅合法首次賦值。
+                        // 即使假造 Checked Source 也不能越過此動態防線。
+                        if resources.resource_id(name).is_ok() {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        if let Err((error, returned)) = resources.replace_return_as(name, returned) {
+                            resources.release_detached(returned);
+                            Self::record_owned_resources(
+                                &resources, &mut resource_cursor, events,
+                            );
+                            return Err(PrivateScalarCallRuntimeError::Resource(error));
+                        }
+                        // 原 Checker 首次賦值沒有舊資源可釋放；
+                        // 同一新 ResourceId 只能由當前 DeclarationId 接管一次。
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
+                        );
+                        events.push(PrivateScalarCallEvent::StrReturnAccepted(id, resource_id));
+                    }
                     PrivateScalarTask::AssignStr(id, name, initializer) => {
                         let frame = frames.last_mut().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -4404,6 +4453,39 @@ impl PreparedPrivateScalarCall {
                             }
                             frame.borrow_tracker.check_direct_access(*declaration)
                                 .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                        }
+                        if let PrivateScalarStrInitializer::Call { name: callee, arguments } =
+                            initializer {
+                            // 現有 P16 含 str 結構與普通 str 同層交錯的全域
+                            // 退出序尚未完整證明，不能藉此呼叫拓寬既有界線。
+                            if Self::current_scope_has_str_struct(frame, &copy_structs) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            tasks.push(PrivateScalarTask::FinishStrReturnAssignment(id, name));
+                            tasks.push(PrivateScalarTask::EnterCall(
+                                callee, arguments, false, false,
+                            ));
+                            // 真正求值完成前不得轉交 .move()；參數借用票據
+                            // 由同一 EnterCall/ExitCall 對帳並於失敗時反序歸還。
+                            for argument in arguments.iter().rev() {
+                                match argument {
+                                    PrivateScalarCallArgument::Int(value) => {
+                                        tasks.push(PrivateScalarTask::RecordArgument);
+                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                    }
+                                    PrivateScalarCallArgument::Bool(value) => {
+                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                                    }
+                                    PrivateScalarCallArgument::BorrowStr { owner, fact } => {
+                                        tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact));
+                                    }
+                                    PrivateScalarCallArgument::MoveStr { owner, source } => {
+                                        tasks.push(PrivateScalarTask::MoveArgument(owner, *source));
+                                    }
+                                }
+                            }
+                            continue;
                         }
                         match initializer {
                             PrivateScalarStrInitializer::Literal(text) =>
