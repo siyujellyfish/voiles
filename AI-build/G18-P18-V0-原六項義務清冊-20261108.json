@@ -43,7 +43,7 @@
       "status": "OpenEngineering",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
-      "remaining": "所有已核准 int/bool/str 混合參數及返回形狀的完整次序",
+      "remaining": "已驗收 int/bool 與 str 借用/Move 混合形參、int/bool 真返回及局部/提前退出；仍缺原 Checker 核准之 str 擁有型別返回的同一動態圖、跨框架 OwnedUtf8/ResourceId 真交付、錯誤回滾和來源防偽全矩陣；F2 必保持 OpenEngineering",
       "work_file": "src/struct_stage/execute_call_scalar.rs"
     },
     {
