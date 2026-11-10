@@ -1414,3 +1414,7 @@ include!("struct_stage/g18_f2_bool_mixed_tests.rs");
 // G18 F2：原 Checker bool 返回 str 借用與 Move 實際 ResourceId／BorrowTicket 八項。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_str_tests.rs");
+
+// G18／F2：原 bool-return 多語句、提前分支及 str 資源真正反九項。
+#[cfg(test)]
+include!("struct_stage/g18_f2_bool_body_tests.rs");
