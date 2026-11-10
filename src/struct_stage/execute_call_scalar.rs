@@ -141,6 +141,9 @@ impl PrivateScalarCallOutcome {
             pending_struct_moves: Vec<u64>,
             /// 先完成跨框架持有者交接，下一個真 Moved 事件才算提交。
             pending_transfers: BTreeMap<u64, (DeclarationId, bool)>,
+            /// 真 OwnedUtf8 已離開來源所有者，但尚未正式交付呼叫者。
+            str_returning: Option<u64>,
+            pending_str_results: Vec<u64>,
             loans: Vec<crate::borrow_safety::BorrowTicket>,
             /// 每張活躍票據與真 ResourceId 一一對應，不以名稱推算持有權。
             loan_resources: Vec<(crate::borrow_safety::BorrowTicket, u64)>,
@@ -160,6 +163,7 @@ impl PrivateScalarCallOutcome {
             pending_str_field_write: None,
             pending_struct_moves: Vec::new(),
             pending_transfers: BTreeMap::new(),
+            str_returning: None, pending_str_results: Vec::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
         }];
@@ -243,6 +247,7 @@ impl PrivateScalarCallOutcome {
             pending_str_field_write: None,
             pending_struct_moves: Vec::new(),
             pending_transfers: BTreeMap::new(),
+            str_returning: None, pending_str_results: Vec::new(),
             loans: Vec::new(), loan_resources: Vec::new(),
             imported_loans: Vec::new(), returned: false,
                     });
@@ -564,8 +569,7 @@ impl PrivateScalarCallOutcome {
                         crate::owned_str_runtime::ResourceEvent::Created(id) =>
                             !frame.returned && created_ids.insert(*id)
                                 && frame.resource_ids.insert(*id),
-                        crate::owned_str_runtime::ResourceEvent::Moved(id)
-                            | crate::owned_str_runtime::ResourceEvent::Returned(id) => {
+                        crate::owned_str_runtime::ResourceEvent::Moved(id) => {
                             if !frame.returned && frame.resource_ids.contains(id) {
                                 if matches!(resource,
                                     crate::owned_str_runtime::ResourceEvent::Moved(_))
@@ -585,7 +589,31 @@ impl PrivateScalarCallOutcome {
                                 }
                             } else { false }
                         }
+                        crate::owned_str_runtime::ResourceEvent::Returned(id) => {
+                            if frame.returned || frame.str_returning.is_some()
+                                || !frame.resource_ids.contains(id)
+                                || frame.struct_owner_resources.values().any(|v| v == id)
+                                || frame.pending_str_results.contains(id) {
+                                false
+                            } else {
+                                let owner = frame.owner_resources.iter()
+                                    .find_map(|(owner, value)| (value == id).then_some(*owner));
+                                if let Some(owner) = owner {
+                                    frame.owner_resources.remove(&owner);
+                                }
+                                frame.str_returning = Some(*id);
+                                true
+                            }
+                        }
                         crate::owned_str_runtime::ResourceEvent::Released(id) => {
+                            let detached = if frame.str_returning == Some(*id) {
+                                frame.str_returning = None;
+                                true
+                            } else if let Some(index) = frame.pending_str_results.iter()
+                                .position(|v| v == id) {
+                                frame.pending_str_results.remove(index);
+                                true
+                            } else { false };
                             let scalar = frame.owner_resources.iter().find_map(|(owner, held)|
                                 (held == id).then_some(*owner));
                             let structure = frame.struct_owner_resources.iter()
@@ -597,7 +625,7 @@ impl PrivateScalarCallOutcome {
                             } else if let Some(owner) = structure {
                                 frame.struct_owner_resources.remove(&owner) == Some(*id)
                             } else {
-                                false
+                                detached
                             };
                             frame.resource_ids.remove(id) && bound
                         }
@@ -624,6 +652,29 @@ impl PrivateScalarCallOutcome {
                     }
                     frame.owner_resources.insert(*declaration, *resource_id);
                 }
+                PrivateScalarCallEvent::StrReturned(id) => {
+                    if unwinding { return false; }
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.name.is_none() || frame.returned
+                        || frame.str_returning != Some(*id)
+                        || !frame.resource_ids.contains(id) {
+                        return false;
+                    }
+                    frame.returned = true;
+                    returned_imported_loans.extend(frame.imported_loans.iter().copied());
+                }
+                PrivateScalarCallEvent::StrReturnAccepted(declaration, id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if unwinding || frame.returned
+                        || frame.pending_str_results.last() != Some(id)
+                        || !frame.resource_ids.contains(id)
+                        || frame.owner_resources.contains_key(declaration)
+                        || frame.owner_resources.values().any(|x| x == id) {
+                        return false;
+                    }
+                    frame.pending_str_results.pop();
+                    frame.owner_resources.insert(*declaration, *id);
+                }
                 PrivateScalarCallEvent::Returned(_)
                 | PrivateScalarCallEvent::BoolReturned(_) => {
                     if unwinding { return false; }
@@ -640,7 +691,9 @@ impl PrivateScalarCallOutcome {
                     if frame.name.as_deref() != Some(name.as_str())
                         || (unwinding && *returned)
                         || frame.returned != *returned || !frame.locals.is_empty()
-                        || !frame.resource_ids.is_empty() || !frame.loans.is_empty()
+                        || frame.resource_ids.iter().any(|id| Some(*id) != frame.str_returning)
+                        || (!*returned && frame.str_returning.is_some())
+                        || !frame.pending_str_results.is_empty() || !frame.loans.is_empty()
                         || !frame.moved_copy_struct_sources.is_empty()
                         || !frame.owner_resources.is_empty()
                         || !frame.struct_owner_resources.is_empty()
@@ -654,6 +707,13 @@ impl PrivateScalarCallOutcome {
                             frame.imported_loans.iter().any(|ticket|
                                 parent.loans.contains(ticket))) {
                         return false;
+                    }
+                    if let Some(id) = frame.str_returning {
+                        let Some(parent) = frames.last_mut() else { return false; };
+                        if !parent.resource_ids.insert(id) {
+                            return false;
+                        }
+                        parent.pending_str_results.push(id);
                     }
                 }
                 PrivateScalarCallEvent::ArgumentEvaluated(_)
@@ -690,7 +750,8 @@ impl PrivateScalarCallOutcome {
                 | PrivateScalarCallEvent::BoolScopeEndedEmpty(id) =>
                 Some(PrivateSharedCallExitEvent::LocalScopeEndedEmpty(*id)),
             PrivateScalarCallEvent::Returned(_)
-            | PrivateScalarCallEvent::BoolReturned(_) =>
+            | PrivateScalarCallEvent::BoolReturned(_)
+            | PrivateScalarCallEvent::StrReturned(_) =>
                 Some(PrivateSharedCallExitEvent::Returned),
             PrivateScalarCallEvent::UnwindStarted =>
                 Some(PrivateSharedCallExitEvent::UnwindStarted),
@@ -712,6 +773,8 @@ impl PrivateScalarCallOutcome {
             && frames[0].pending_transfers.is_empty()
             && frames[0].loans.is_empty()
             && frames[0].loan_resources.is_empty()
+            && frames[0].str_returning.is_none()
+            && frames[0].pending_str_results.is_empty()
             && self.parameter_slots_after_exit == 0
             // 即使沒有借用票據，失敗仍須留下唯一真 UnwindStarted。
             && unwinding == self.result.is_err()
@@ -5805,7 +5868,7 @@ impl PreparedPrivateScalarCall {
         // F2：同一真進退事件另核對原 Checker 所宣告的返回型別。
         // R05 既有平衡守門不辨識 int/bool 的靜態簽章，故不得讓
         // 一筆型別錯誤但數量平衡的 Returned／BoolReturned 假冒成功。
-        let mut return_types = Vec::<bool>::new();
+        let mut return_types = Vec::<&str>::new();
         for event in &outcome.events {
             match event {
                 PrivateScalarCallEvent::FunctionEntered(name) => {
@@ -5813,15 +5876,20 @@ impl PreparedPrivateScalarCall {
                         .find(|fun| fun.name == *name) else {
                         return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
                     };
-                    return_types.push(function.result_ty == "bool");
+                    return_types.push(function.result_ty.as_str());
                 }
                 PrivateScalarCallEvent::Returned(_) => {
-                    if return_types.last() != Some(&false) {
+                    if return_types.last() != Some(&"int") {
                         return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
                     }
                 }
                 PrivateScalarCallEvent::BoolReturned(_) => {
-                    if return_types.last() != Some(&true) {
+                    if return_types.last() != Some(&"bool") {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
+                PrivateScalarCallEvent::StrReturned(_) => {
+                    if return_types.last() != Some(&"str") {
                         return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
                     }
                 }
