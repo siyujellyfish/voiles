@@ -1318,6 +1318,10 @@ impl PrivateScalarBoolExpr {
     /// F2：原 Parser/Checker 的 bool 函式可作 bool 形式參數值。
     /// 本子批只允許同步、每項 bool 型別的引數；其它合法函式形狀
     /// 仍保守 Unsupported，不繞過原 Checker，也不猜測整數轉 bool。
+    // 混合 int/bool 的 bool-return 呼叫必須收到目前作用域完整的
+    // DeclarationId 名稱表；bool-only 投影只可供純 bool 名稱解析。
+    // 所有 int/bool 實參仍由原 Checker TypedHIR 逐項確認型別，
+    // 不因給予完整名稱表而新增隱含 int/bool 轉型或借用權限。
     fn from_checked_call_argument(
         term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -1372,17 +1376,25 @@ impl PrivateScalarBoolExpr {
             ))?;
         if name == "main" || target.result_ty != "bool" || target.is_async
             || target.params.len() != actual.len()
-            || target.params.iter().any(|param| param.ty != "bool")
+            || target.params.iter().any(|param|
+                !matches!(param.ty.as_str(), "int" | "bool"))
             || verified.plan.declarations.call_borrows_at(span)
                 .is_some_and(|facts| !facts.is_empty()) {
             return Err(PrivateScalarCallPrepareError::Unsupported(
-                "bool 呼叫只接通原 Checker 同步純 bool 形式參數與結果",
+                "bool 呼叫只接通原 Checker 同步 int/bool 形式參數與 bool 結果",
             ));
         }
-        let arguments = actual.iter().map(|argument|
-            Self::from_checked_call_argument(argument, bindings, verified)
-                .map(PrivateScalarCallArgument::Bool),
-        ).collect::<Result<Vec<_>, _>>()?;
+        let arguments = actual.iter().zip(&target.params).map(|(argument, param)| {
+            if param.ty == "bool" {
+                Self::from_checked_call_argument(argument, bindings, verified)
+                    .map(PrivateScalarCallArgument::Bool)
+            } else {
+                // 仍從原 Checker int TypedHIR 編譯參數，不允許 bool→int 暗轉型。
+                PrivateScalarReturnExpr::from_checked_bindings(
+                    argument, bindings, verified,
+                ).map(PrivateScalarCallArgument::Int)
+            }
+        }).collect::<Result<Vec<_>, _>>()?;
         Ok(Self::Call { name: name.to_owned(), arguments })
     }
 
@@ -2684,7 +2696,7 @@ impl PreparedPrivateScalarCall {
                     Ok(PrivateScalarBranchAction::DeclareBool {
                         declaration: id,
                         value: PrivateScalarBoolExpr::from_checked_call_argument(
-                            init, bool_bindings, verified,
+                            init, int_bindings, verified,
                         )?,
                     })
                 } else {
@@ -2842,7 +2854,7 @@ impl PreparedPrivateScalarCall {
                     Ok(PrivateScalarBranchAction::AssignBool {
                         declaration: id,
                         value: PrivateScalarBoolExpr::from_checked_call_argument(
-                            &assign.expression, bool_bindings, verified,
+                            &assign.expression, int_bindings, verified,
                         )?,
                     })
                 } else {
@@ -2873,7 +2885,7 @@ impl PreparedPrivateScalarCall {
             ));
         };
         let condition = PrivateScalarBoolExpr::from_checked_call_argument(
-            &branch.branch.condition, bool_bindings, verified,
+            &branch.branch.condition, int_bindings, verified,
         )?;
         let when_true = Self::scoped_single_declaration(
             Self::compile_early_branch(
@@ -3025,7 +3037,7 @@ impl PreparedPrivateScalarCall {
                         ));
                     }
                     let value = PrivateScalarBoolExpr::from_checked_call_argument(
-                        &assign.expression, &bool_bindings, verified,
+                        &assign.expression, &bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::AssignBool {
                         declaration: id, value,
@@ -3147,7 +3159,7 @@ impl PreparedPrivateScalarCall {
                 }
                 if let Some(initializer) = owner.initializer.as_ref() {
                     let value = PrivateScalarBoolExpr::from_checked_call_argument(
-                        initializer, &bool_bindings, verified,
+                        initializer, &bindings, verified,
                     )?;
                     local_steps.push(PrivateScalarLocalStep::DeclareBool {
                         declaration, value,
@@ -3463,11 +3475,18 @@ impl PreparedPrivateScalarCall {
                                 name, arguments, false, false,
                             ));
                             for argument in arguments.iter().rev() {
-                                let PrivateScalarCallArgument::Bool(value) = argument else {
-                                    return Err(PrivateScalarCallRuntimeError::StateMismatch);
-                                };
-                                tasks.push(PrivateScalarTask::RecordBoolArgument);
-                                tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                                match argument {
+                                    PrivateScalarCallArgument::Bool(value) => {
+                                        tasks.push(PrivateScalarTask::RecordBoolArgument);
+                                        tasks.push(PrivateScalarTask::EvaluateBoolArgument(value));
+                                    }
+                                    PrivateScalarCallArgument::Int(value) => {
+                                        tasks.push(PrivateScalarTask::RecordArgument);
+                                        tasks.push(PrivateScalarTask::Evaluate(value, false));
+                                    }
+                                    // F2 str 借用／Move 作 bool 返回仍需完整 P16 資源矩陣。
+                                    _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                }
                             }
                         } else {
                             let frame = frames.last().ok_or(

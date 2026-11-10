@@ -1406,3 +1406,7 @@ include!("struct_stage/g18_f2_bool_local_tests.rs");
 // G18 F2：原 Checker bool-return 真 if／else-if／while 條件八項正反驗收。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_condition_tests.rs");
+
+// G18／P18.1-F2：布林回傳的 int／bool 混型別形參真動態來源正反。
+#[cfg(test)]
+include!("struct_stage/g18_f2_bool_mixed_tests.rs");
