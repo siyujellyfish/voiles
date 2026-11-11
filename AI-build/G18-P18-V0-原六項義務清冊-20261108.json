@@ -43,7 +43,7 @@
       "status": "OpenEngineering",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
-      "remaining": "PR #730/#731 在新 main 同 SHA 三必要 CI 完成 str-return 首次賦值與分支提前 return 真雙帳；本批增加兩／多獨立 str 資源及 BorrowTicket 的正常、溢位、動態 Move、跨呼叫票據重用、偽造連結八項候選 Gate，最新 PR HEAD 與新 main 同 SHA 三必要 CI 成功才正式認列。仍缺原 Checker 合法巢狀 str-return 直接作 str 實參的真暫存 OwnedUtf8 交接及其他深層故障全矩陣；P16 已初始化 var 函式返回覆寫維持拒絕。F2 保持 OpenEngineering，F3 不開始。",
+      "remaining": "既有 PR #730/#731/#733 的 str-return 首次接管、提前返回、多資源與 BorrowTicket 真帳已在新 main 同 SHA 成功；本批候選另接通原 Checker 合法同步巢狀 str-return 作為下一函式 str 實參的同 OwnedUtf8 無複製原子接管、跨框架 StrTemporaryTransferred 來源稽核與失敗逐框架釋放，附八項真 Rust Gate；僅最新 PR HEAD／新 main 同 SHA 三必要 CI 成功後方可認列本批。原 Checker 其他未覆蓋 str 暫存型式、跨層故障全矩陣與 P16 已初始化 var 覆寫安全未全部驗收，F2 維持 OpenEngineering，P18.1 維持 SubsetVerified，F3 不開始。",
       "work_file": "src/struct_stage/execute_call_scalar.rs"
     },
     {

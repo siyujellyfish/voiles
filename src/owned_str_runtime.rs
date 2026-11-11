@@ -314,6 +314,18 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
+    /// G18／F2：直接 str-return 作為下一個 str 實參時，不先杜撰
+    /// 暫存 DeclarationId；以同一個 Detached OwnedUtf8 在子框架
+    /// 原子接收，再記錄真 Moved(id)。失敗時返還原物件予明確回滾。
+    pub(crate) fn accept_returned_argument_as(
+        &mut self, name: &str, returned: OwnedUtf8,
+    ) -> Result<(), (StrRuntimeError, OwnedUtf8)> {
+        let resource_id = returned.resource_id();
+        self.accept_return_as(name, returned, false)?;
+        self.events.push(ResourceEvent::Moved(resource_id));
+        Ok(())
+    }
+
     /// G18／F2：接收子函式已 Returned 的同一 OwnedUtf8，原子覆寫現有 var str。
     /// 先驗證名稱、可寫性與序號，全部成功才取代舊綁定；失敗把完整
     /// OwnedUtf8 交還呼叫者進行正式 release_detached，不能只靠 Rust Drop。
