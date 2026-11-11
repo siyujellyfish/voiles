@@ -93,6 +93,9 @@ jobs:
       - name: G18 P18.1-F2 原 Checker str 提前返回字面及 Move 真資源八項 Gate
         run: python3 tools/核對G18-F2字串提前返回真圖.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F2 同步 str 轉發步數截斷與多資源回滾八項 Gate
+        run: python3 tools/核對G18-F2字串跨函式轉發步數安全.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1-F2 原 Checker 同步 str call-return 真資源轉發八項 Gate
         run: python3 tools/核對G18-F2字串跨函式直接轉發.py --test-bin target/p02/p04_source_internal
 
