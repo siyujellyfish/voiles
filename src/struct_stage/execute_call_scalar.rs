@@ -5516,6 +5516,24 @@ impl PreparedPrivateScalarCall {
                 Self::return_incoming_borrows(
                     parent, &frame.incoming_borrows, events,
                 )?;
+                // F2：callee 已 Returned、但 caller 尚未完成接管時，
+                // 故障只能由「原持有該 Detached 暫存的本 frame」
+                // 記錄 Released。禁止所有函式退出後才在 root 補釋放，
+                // 否則 Created/Returned 的 ResourceId 會跨幀錯綁。
+                // 此處先返還 incoming 借用，再逐幀 LIFO 釋放暫存，
+                // 不建立新 ResourceId，也不將暫存當具名 owner。
+                for id in frame.pending_owned_returns.drain(..).rev() {
+                    let Some(index) = pending_str_returns.iter().position(|owned|
+                        owned.resource_id() == id
+                    ) else {
+                        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                    };
+                    let returned = pending_str_returns.remove(index);
+                    resources.release_detached(returned);
+                    Self::record_owned_resources(
+                        &resources, &mut resource_cursor, events,
+                    );
+                }
                 for entry in frame.initialized_order.iter().rev() {
                     match entry {
                         PrivateScalarLocalBinding::Int(id) =>
