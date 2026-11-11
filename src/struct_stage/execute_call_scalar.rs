@@ -641,14 +641,24 @@ impl PrivateScalarCallOutcome {
                         crate::owned_str_runtime::ResourceEvent::Returned(id) => {
                             if frame.returned || frame.str_returning.is_some()
                                 || !frame.resource_ids.contains(id)
-                                || frame.struct_owner_resources.values().any(|v| v == id)
-                                || frame.pending_str_results.contains(id) {
+                                || frame.struct_owner_resources.values().any(|v| v == id) {
                                 false
                             } else {
-                                let owner = frame.owner_resources.iter()
-                                    .find_map(|(owner, value)| (value == id).then_some(*owner));
-                                if let Some(owner) = owner {
-                                    frame.owner_resources.remove(&owner);
+                                // 第二次 Returned 只能是真子函式 ExitCall
+                                // 留在本幀的待接收 ID；絕不能把尚未轉交的
+                                // 具名持有者及匿名暫存同時視為該 ID 的持有者。
+                                if let Some(index) = frame.pending_str_results.iter()
+                                    .position(|value| value == id) {
+                                    if frame.owner_resources.values().any(|held| held == id) {
+                                        return false;
+                                    }
+                                    frame.pending_str_results.remove(index);
+                                } else {
+                                    let owner = frame.owner_resources.iter()
+                                        .find_map(|(owner, value)| (value == id).then_some(*owner));
+                                    if let Some(owner) = owner {
+                                        frame.owner_resources.remove(&owner);
+                                    }
                                 }
                                 frame.str_returning = Some(*id);
                                 true
@@ -849,6 +859,9 @@ enum PrivateScalarReturnExpr {
     BoolValue(Box<PrivateScalarBoolExpr>),
     /// 真 OwnedUtf8 回傳不佔 Copyable i64 工作棧。
     StrValue(PrivateScalarStrReturn),
+    /// 原 Checker 已核准的同步 str 呼叫作本函式直接返回；
+    /// 內層 ExitCall 後同一 OwnedUtf8 再從本 frame 返回，絕不複製。
+    StrCall { name: String, arguments: Vec<PrivateScalarCallArgument> },
     Addition(Box<Self>, Box<Self>),
     Subtraction(Box<Self>, Box<Self>),
     /// 原 Checker 唯一具名函式與已驗證 int 實參；真正呼叫會進入新框架。
@@ -1272,7 +1285,8 @@ impl PrivateScalarReturnExpr {
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
             // 不准從只有 int slot 的舊純值捷徑假造結構欄位常數。
             Self::CopyStructIntField { .. } | Self::Call { .. }
-            | Self::BoolValue(..) | Self::StrValue(..) | Self::Unreachable =>
+            | Self::BoolValue(..) | Self::StrValue(..)
+            | Self::StrCall { .. } | Self::Unreachable =>
                 Err(PrivateScalarCallRuntimeError::StateMismatch),
         }
     }
@@ -1289,6 +1303,10 @@ impl PrivateScalarReturnExpr {
             }
             Self::BoolValue(expr) => expr.collect_calls(calls),
             Self::StrValue(..) => {},
+            Self::StrCall { name, arguments } => {
+                calls.push(name);
+                for argument in arguments { argument.collect_calls(calls); }
+            },
             Self::Parameter(_) | Self::CopyStructIntField { .. }
                 | Self::Constant(_) | Self::Unreachable => {}
         }
@@ -2157,6 +2175,9 @@ enum PrivateScalarTask<'a> {
     FinishStrReturnBinding(DeclarationId, &'a str, bool),
     /// F2：僅原 Checker 合法的未初始化 var str 首次接收 Returned OwnedUtf8。
     FinishStrReturnAssignment(DeclarationId, &'a str),
+    /// 內層 str-return 已真退出；保留同一 OwnedUtf8，從當前外層
+    /// 函式再發出真 Returned(id)，交由原 ExitCall 驗證唯一資源。
+    ForwardStrReturn,
     DeclareEmptyStr(DeclarationId, &'a str, bool),
     DeclareCopyStruct(DeclarationId, &'a str, &'a PrivateScalarCopyStructPlan),
     /// 具名欄位來源逐項在當前動態 frame 求值；含 Call 使用與 return
@@ -2316,6 +2337,26 @@ impl PreparedPrivateScalarCall {
     /// F2-RS01/RS05：不得將非 Copyable str 返回偷偷映射成 int。
     /// 此處只形成原 Checker 准許的 str 常值或具名明確整筆 move；
     /// 所有權真正移出及失敗回收由動態 OwnedStrRuntime 負責。
+    /// 只允許同一原 Checker str 返回型別的 Literal／Move／同步 Call。
+    /// 既有同步 Call 編譯已精確驗證 Lexer 括號、函式完整簽章、
+    /// 子呼叫多形參 TypedHIR 與 call_borrows，不新建所有權語意。
+    fn checked_str_return_expr(
+        term: &Term,
+        bindings: &BTreeMap<String, DeclarationId>,
+        verified: &VerifiedPrivateSource,
+    ) -> Result<PrivateScalarReturnExpr, PrivateScalarCallPrepareError> {
+        if let Ok(returned) = Self::checked_str_return(term, bindings, verified) {
+            return Ok(PrivateScalarReturnExpr::StrValue(returned));
+        }
+        match Self::checked_str_initializer(term, bindings, verified)? {
+            PrivateScalarStrInitializer::Call { name, arguments } =>
+                Ok(PrivateScalarReturnExpr::StrCall { name, arguments }),
+            _ => Err(PrivateScalarCallPrepareError::Unsupported(
+                "原 Checker str return 須為合法字面、明確 Move 或同步函式結果",
+            )),
+        }
+    }
+
     fn checked_str_return(
         term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
@@ -3232,13 +3273,12 @@ impl PreparedPrivateScalarCall {
                             &ret.expression, int_bindings, verified,
                         )?,
                     ))
-                } else if let Ok(returned) = Self::checked_str_return(
+                } else if let Ok(returned) = Self::checked_str_return_expr(
                     &ret.expression, int_bindings, verified,
                 ) {
-                    // 原 Checker 已完成整個函式返回型別／借用有效期
-                    // 檢查。此處只辨識曾核准的 str 擁有來源，不補定
-                    // Call-return 或 str 借用逃逸等未接通形狀。
-                    PrivateScalarReturnExpr::StrValue(returned)
+                    // 原 Checker 已確認整筆返回來源；不可由編譯器
+                    // 擅自把未通過型別驗證的 Call-return 接入資源帳。
+                    returned
                 } else {
                     PrivateScalarReturnExpr::from_checked_bindings(
                         &ret.expression, int_bindings, verified,
@@ -3678,9 +3718,7 @@ impl PreparedPrivateScalarCall {
             && verified.plan.scalar_hir.expression(return_span).is_none() {
             PrivateScalarReturnExpr::Unreachable
         } else if function.result_ty == "str" {
-            PrivateScalarReturnExpr::StrValue(
-                Self::checked_str_return(&ret.expression, &bindings, verified)?,
-            )
+            Self::checked_str_return_expr(&ret.expression, &bindings, verified)?
         } else if function.result_ty == "bool" {
             // 尾端與提前 return 同一來源事實；bool 值只經
             // EvaluateBoolArgument 真返回，不混入 int 運算。
@@ -3880,6 +3918,13 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarReturnExpr::BoolValue(expr) => {
                             tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
                         }
+                        PrivateScalarReturnExpr::StrCall { name, arguments } => {
+                            tasks.push(PrivateScalarTask::ForwardStrReturn);
+                            tasks.push(PrivateScalarTask::EnterCall(
+                                name, arguments, false, false,
+                            ));
+                            Self::queue_call_arguments(&mut tasks, arguments);
+                        }
                         PrivateScalarReturnExpr::StrValue(source) => {
                             let owned = match source {
                                 PrivateScalarStrReturn::Literal(text) => {
@@ -4007,6 +4052,27 @@ impl PreparedPrivateScalarCall {
                         );
                         completed_arguments.push(
                             PrivateScalarEvaluatedArgument::TemporaryStr { resource_id },
+                        );
+                    }
+                    PrivateScalarTask::ForwardStrReturn => {
+                        let returned = pending_str_returns.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        let resource_id = returned.resource_id();
+                        let frame = frames.last().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?;
+                        if frame.pending_owned_returns.last() != Some(&resource_id)
+                            || frame.str_owner_scopes.iter().flatten().any(|(_, name)|
+                                resources.resource_id(name).ok() == Some(resource_id)) {
+                            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                        }
+                        // 子函式已發出第一個 Returned；在當前函式真正
+                        // 到達 return 時再記錄同一 ID 的 Returned，不搬動
+                        // OwnedUtf8，清理責任仍交由此幀 ExitCall／回滾。
+                        resources.mark_detached_return(returned);
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
                         );
                     }
                     PrivateScalarTask::RecordStrArgument => {
