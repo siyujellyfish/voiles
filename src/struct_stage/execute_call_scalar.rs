@@ -76,6 +76,8 @@ enum PrivateScalarCallEvent {
     ResourceTransferred { source: DeclarationId, target: DeclarationId, resource_id: u64 },
     /// Returned 字串直接作為下一呼叫 str 實參：不冒充具名 DeclarationId。
     StrTemporaryTransferred { target: DeclarationId, resource_id: u64 },
+    /// 本詞彙框架真配置的字串常值，尚未傳入子函式且無具名持有者。
+    StrLiteralTemporaryCreated(u64),
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     LoanAcquired(crate::borrow_safety::BorrowTicket),
     /// R05：真取得票據時同步記錄其 UTF-8 資源身分，防止先釋放後歸還。
@@ -179,7 +181,7 @@ impl PrivateScalarCallOutcome {
         // 歸還其直接呼叫者的票據；尚未入框架的失敗實參須先回滾。
         let mut returned_imported_loans =
             Vec::<crate::borrow_safety::BorrowTicket>::new();
-        for event in &self.events {
+        for (index, event) in self.events.iter().enumerate() {
             if let Some(target) = awaited_entry {
                 if !matches!(event,
                     PrivateScalarCallEvent::FunctionEntered(name)
@@ -288,6 +290,22 @@ impl PrivateScalarCallOutcome {
                         || child.pending_transfers.insert(
                             *resource_id, (*target, false),
                         ).is_some() { return false; }
+                }
+                PrivateScalarCallEvent::StrLiteralTemporaryCreated(id) => {
+                    let Some(frame) = frames.last_mut() else { return false; };
+                    if frame.returned
+                        || !matches!(self.events.get(index.checked_sub(1).unwrap_or(usize::MAX)),
+                            Some(PrivateScalarCallEvent::OwnedResource(
+                                crate::owned_str_runtime::ResourceEvent::Created(created)
+                            )) if created == id)
+                        || !frame.resource_ids.contains(id)
+                        || frame.pending_str_results.contains(id)
+                        || frame.str_returning == Some(*id)
+                        || frame.owner_resources.values().any(|owned| owned == id)
+                        || frame.struct_owner_resources.values().any(|owned| owned == id) {
+                        return false;
+                    }
+                    frame.pending_str_results.push(*id);
                 }
                 PrivateScalarCallEvent::StrTemporaryTransferred {
                     target, resource_id,
@@ -667,6 +685,7 @@ impl PrivateScalarCallOutcome {
                 PrivateScalarCallEvent::ResourceOwnerBound(declaration, resource_id) => {
                     let Some(frame) = frames.last_mut() else { return false; };
                     if frame.returned || !frame.resource_ids.contains(resource_id)
+                        || frame.pending_str_results.contains(resource_id)
                         || frame.owner_resources.contains_key(declaration)
                         || frame.owner_resources.values().any(|held| held == resource_id)
                         || frame.struct_owner_resources.values().any(|held| held == resource_id) {
@@ -988,7 +1007,7 @@ impl PrivateScalarReturnExpr {
                                 owner: owner.to_owned(), source,
                             }
                         } else if !matches!(&argument.kind, TermKind::Name(_)) {
-                            PreparedPrivateScalarCall::checked_nested_str_argument(
+                            PreparedPrivateScalarCall::checked_temporary_str_argument(
                                 argument, bindings, verified,
                             )?
                         } else {
@@ -1294,6 +1313,8 @@ enum PrivateScalarCallArgument {
     MoveStr { owner: String, source: DeclarationId },
     /// 只接原 Checker 同步 str-return 函式，完整巢狀參數仍由工作棧求值。
     NestedStrCall { name: String, arguments: Vec<PrivateScalarCallArgument> },
+    /// 唯一原 Lexer str 常值：直到真正求值才配置 OwnedUtf8。
+    LiteralStr(String),
 }
 
 impl PrivateScalarCallArgument {
@@ -1305,7 +1326,8 @@ impl PrivateScalarCallArgument {
                 output.push(name);
                 for argument in arguments { argument.collect_calls(output); }
             }
-            Self::BorrowStr { .. } | Self::MoveStr { .. } => {}
+            Self::BorrowStr { .. } | Self::MoveStr { .. }
+                | Self::LiteralStr(_) => {}
         }
     }
 }
@@ -1532,7 +1554,7 @@ impl PrivateScalarBoolExpr {
                             owner: owner.to_owned(), source,
                         }
                     } else if !matches!(&argument.kind, TermKind::Name(_)) {
-                        PreparedPrivateScalarCall::checked_nested_str_argument(
+                        PreparedPrivateScalarCall::checked_temporary_str_argument(
                             argument, bindings, verified,
                         )?
                     } else {
@@ -2115,6 +2137,7 @@ enum PrivateScalarTask<'a> {
     EvaluateBoolArgument(&'a PrivateScalarBoolExpr),
     RecordBoolArgument,
     RecordStrArgument,
+    CreateStrLiteralArgument(&'a str),
     BorrowArgument(&'a str, BorrowFact),
     MoveArgument(&'a str, DeclarationId),
     Apply(char),
@@ -2358,6 +2381,8 @@ impl PreparedPrivateScalarCall {
                     tasks.push(PrivateScalarTask::BorrowArgument(owner, *fact)),
                 PrivateScalarCallArgument::MoveStr { owner, source } =>
                     tasks.push(PrivateScalarTask::MoveArgument(owner, *source)),
+                PrivateScalarCallArgument::LiteralStr(text) =>
+                    tasks.push(PrivateScalarTask::CreateStrLiteralArgument(text)),
                 PrivateScalarCallArgument::NestedStrCall { name, arguments } => {
                     tasks.push(PrivateScalarTask::RecordStrArgument);
                     tasks.push(PrivateScalarTask::EnterCall(
@@ -2371,7 +2396,7 @@ impl PreparedPrivateScalarCall {
 
     /// 此來源只允許原 Checker 已核准、實際執行後 Returned 的同步 str 呼叫。
     /// 不將字面常值、非 Copyable 具名借用或其他形式偽裝成臨時所有者。
-    fn checked_nested_str_argument(
+    fn checked_temporary_str_argument(
         term: &Term,
         bindings: &BTreeMap<String, DeclarationId>,
         verified: &VerifiedPrivateSource,
@@ -2379,8 +2404,10 @@ impl PreparedPrivateScalarCall {
         match Self::checked_str_initializer(term, bindings, verified)? {
             PrivateScalarStrInitializer::Call { name, arguments } =>
                 Ok(PrivateScalarCallArgument::NestedStrCall { name, arguments }),
+            PrivateScalarStrInitializer::Literal(text) =>
+                Ok(PrivateScalarCallArgument::LiteralStr(text)),
             _ => Err(PrivateScalarCallPrepareError::Unsupported(
-                "F2 str 暫存形參只允許原 Checker 真同步 str-return 呼叫",
+                "F2 str 暫存形參僅接原 Lexer 常值或 Checker 同步 str-return",
             )),
         }
     }
@@ -2461,7 +2488,7 @@ impl PreparedPrivateScalarCall {
                         }
                     }
                     "str" if !matches!(&argument.kind, TermKind::Name(_)) =>
-                        Self::checked_nested_str_argument(argument, bindings, verified)?,
+                        Self::checked_temporary_str_argument(argument, bindings, verified)?,
                     "str" => {
                         let TermKind::Name(owner) = &argument.kind else {
                             return Err(PrivateScalarCallPrepareError::Unsupported(
@@ -3963,6 +3990,25 @@ impl PreparedPrivateScalarCall {
                             PrivateScalarEvaluatedArgument::Bool(encoded == 1),
                         );
                     }
+                    PrivateScalarTask::CreateStrLiteralArgument(text) => {
+                        let owned = resources.create_detached(text).map_err(
+                            PrivateScalarCallRuntimeError::Resource,
+                        )?;
+                        let resource_id = owned.resource_id();
+                        frames.last_mut().ok_or(
+                            PrivateScalarCallRuntimeError::StateMismatch,
+                        )?.pending_owned_returns.push(resource_id);
+                        pending_str_returns.push(owned);
+                        Self::record_owned_resources(
+                            &resources, &mut resource_cursor, events,
+                        );
+                        events.push(
+                            PrivateScalarCallEvent::StrLiteralTemporaryCreated(resource_id),
+                        );
+                        completed_arguments.push(
+                            PrivateScalarEvaluatedArgument::TemporaryStr { resource_id },
+                        );
+                    }
                     PrivateScalarTask::RecordStrArgument => {
                         let resource_id = pending_str_returns.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
@@ -5000,7 +5046,8 @@ impl PreparedPrivateScalarCall {
                                     ));
                                 }
                                 (true, false,
-                                    PrivateScalarCallArgument::NestedStrCall { .. },
+                                    PrivateScalarCallArgument::NestedStrCall { .. }
+                                        | PrivateScalarCallArgument::LiteralStr(_),
                                     PrivateScalarEvaluatedArgument::TemporaryStr { resource_id }) => {
                                     let actual = self.verified.functions.iter()
                                         .find(|fun| fun.name == name)
@@ -5157,7 +5204,7 @@ impl PreparedPrivateScalarCall {
                                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
                             let returned = pending_str_returns.remove(owned_index);
                             if let Err((error, returned)) =
-                                resources.accept_returned_argument_as(&target, returned) {
+                                resources.accept_temporary_argument_as(&target, returned) {
                                 pending_str_returns.push(returned);
                                 return Err(PrivateScalarCallRuntimeError::Resource(error));
                             }
