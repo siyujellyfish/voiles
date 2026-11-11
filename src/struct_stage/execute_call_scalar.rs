@@ -1935,6 +1935,7 @@ impl PrivateScalarCopyStructSeed {
                         Work::Read(PrivateScalarReturnExpr::Call { .. }
                             | PrivateScalarReturnExpr::BoolValue(..)
                             | PrivateScalarReturnExpr::StrValue(..)
+                            | PrivateScalarReturnExpr::StrCall { .. }
                             | PrivateScalarReturnExpr::Unreachable) =>
                             return Err(PrivateScalarCallRuntimeError::StateMismatch),
                     }
