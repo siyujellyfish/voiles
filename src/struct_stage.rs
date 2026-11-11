@@ -1442,3 +1442,4 @@ include!("struct_stage/g18_f2_str_multi_resource_tests.rs");
 include!("struct_stage/g18_f2_nested_str_temporary_tests.rs");
 include!("struct_stage/g18_f2_literal_str_temporary_tests.rs");
 include!("struct_stage/g18_f2_str_forward_return_tests.rs");
+include!("struct_stage/g18_f2_str_forward_budget_tests.rs");
