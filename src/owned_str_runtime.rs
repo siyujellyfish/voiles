@@ -314,10 +314,10 @@ impl OwnedStrRuntime {
         Ok(())
     }
 
-    /// G18／F2：直接 str-return 作為下一個 str 實參時，不先杜撰
+    /// G18／F2：字串常值或直接 str-return 作下一個 str 實參時，不杜撰
     /// 暫存 DeclarationId；以同一個 Detached OwnedUtf8 在子框架
     /// 原子接收，再記錄真 Moved(id)。失敗時返還原物件予明確回滾。
-    pub(crate) fn accept_returned_argument_as(
+    pub(crate) fn accept_temporary_argument_as(
         &mut self, name: &str, returned: OwnedUtf8,
     ) -> Result<(), (StrRuntimeError, OwnedUtf8)> {
         let resource_id = returned.resource_id();
