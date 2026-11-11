@@ -118,7 +118,7 @@ return 0
 return "到達"
 }
 fn relay(flag:bool)->str{
-if flag {
+if (flag) {
 return make()
 }
 return "沒到達"
