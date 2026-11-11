@@ -41,7 +41,8 @@ return 0
 return n+3
 }
 fn main()->int{
-return consume("參數",4)
+const answer:int = consume("參數",4)
+return answer
 }
 "#);
         assert_eq!(out.result, Ok(7));
@@ -98,7 +99,8 @@ return 0
 return n
 }
 fn main()->int{
-return consume("僅暫存",9223372036854775807+1)
+const answer:int = consume("僅暫存",9223372036854775807+1)
+return answer
 }
 "#);
         assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
@@ -118,7 +120,8 @@ const overflow:int = 9223372036854775807+1
 return 7
 }
 fn main()->int{
-return fail("已交付")
+const answer:int = fail("已交付")
+return answer
 }
 "#);
         assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
@@ -140,7 +143,8 @@ fn consume(payload:str)->int{
 return 7
 }
 fn main()->int{
-return consume(echo("鏈式資源"))
+const answer:int = consume(echo("鏈式資源"))
+return answer
 }
 "#);
         assert_eq!(out.result, Ok(7));
@@ -159,7 +163,8 @@ return consume(echo("鏈式資源"))
 return 3
 }
 fn main()->int{
-return consume("不可偽造")
+const answer:int = consume("不可偽造")
+return answer
 }
 "#;
         let plan = PreparedPrivateScalarCall::prepare(src).unwrap();
