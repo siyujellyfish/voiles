@@ -801,6 +801,27 @@ impl PreparedPrivateSelfMethod {
                                     // 重用同一原 Checker FieldRead/BinaryInt 左欄位右 Lexer
                                     // int 精確來源檢核，只在實際選中內層 else 時求值。
                                     let nested_else_calc = match &returned.expression.kind {
+                                                                TermKind::Scalar(
+                                                                    crate::syntax_shared::ScalarLiteral::Integer(raw),
+                                                                ) => {
+                                                                    // 原 Checker 已證 int 返回；執行計畫再逐 token 鎖定常值來源。
+                                                                    if !verified.tokens.iter().any(|token|
+                                                                        token.start == returned.expression.start
+                                                                            && token.end == returned.expression.end
+                                                                            && matches!(&token.kind,
+                                                                                TokenKind::Integer(text) if text == raw)
+                                                                    ) {
+                                                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else整數常值缺少原 Lexer 精確來源",
+                                                                        ));
+                                                                    }
+                                                                    let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                                                                        PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else整數常值超出 i64 範圍",
+                                                                        )
+                                                                    )?;
+                                                                    PrivateSelfIntReturn::Constant(literal)
+                                                                }
                                                                 TermKind::FieldRead(receiver, name)
                                                                     if receiver == "self" && name == &field.name =>
                                                                     PrivateSelfIntReturn::Field,
@@ -871,6 +892,27 @@ impl PreparedPrivateSelfMethod {
                             ));
                         };
                         let true_return_plan = match &early.expression.kind {
+                            TermKind::Scalar(
+                                crate::syntax_shared::ScalarLiteral::Integer(raw),
+                            ) => {
+                                // 原 Checker 已證 int 返回；執行計畫再逐 token 鎖定常值來源。
+                                if !verified.tokens.iter().any(|token|
+                                    token.start == early.expression.start
+                                        && token.end == early.expression.end
+                                        && matches!(&token.kind,
+                                            TokenKind::Integer(text) if text == raw)
+                                ) {
+                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 true 返回葉整數常值缺少原 Lexer 精確來源",
+                                    ));
+                                }
+                                let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                                    PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 true 返回葉整數常值超出 i64 範圍",
+                                    )
+                                )?;
+                                PrivateSelfIntReturn::Constant(literal)
+                            }
                             TermKind::FieldRead(receiver, name)
                                 if receiver == "self" && name == &field.name =>
                                 PrivateSelfIntReturn::Field,
