@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""F2 str 直接轉發：逐步數故障、多 ResourceId、來源重播八項真 Gate。"""
+"""F2 str 直接轉發：逐步數故障、多 ResourceId、來源重播十二項真 Gate。"""
 from __future__ import annotations
 
 import argparse
@@ -19,6 +19,10 @@ CASES = (
     "f2_forward_budget_未進入真正子函式前的暫存字面值加溢位逐框架清理",
     "f2_forward_budget_重播第二次真returned事件必遭來源雙帳防偽拒絕",
     "f2_forward_budget_竄改第二次真strreturned的resourceid必遭R05拒絕",
+    "f2_forward_budget_雙字串已返回第三實參溢位逆序回收而不入被呼叫者",
+    "f2_forward_budget_雙字串前置實參逐步數截斷均無遺漏與重複釋放",
+    "f2_forward_budget_雙實參將第二個轉交目標竄改成第一個即使id正確仍拒絕",
+    "f2_forward_budget_雙來源第二個str返回偽冒第一個id必遭稽核拒絕",
 )
 
 def main() -> int:
@@ -47,7 +51,7 @@ def main() -> int:
                     r"test result: ok\.\s+1 passed;\s+0 failed;\s+0 ignored;", out):
                 raise ValueError(f"F2 步數／多資源 {i}/{len(CASES)}：{case}\n" + out[-3500:])
             print(f"F2 str 直接轉發真安全 {i}/{len(CASES)}：{case}（通過）")
-        print("F2 八項步數與多資源安全 Gate 真通過；F2 整體仍 OpenEngineering")
+        print("F2 十二項步數與多資源安全 Gate 真通過；F2 整體仍 OpenEngineering")
         return 0
     except (OSError, ValueError) as error:
         print("G18 F2 真轉發安全 Gate 失敗：" + str(error), file=sys.stderr)
