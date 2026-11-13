@@ -1455,6 +1455,10 @@ include!("struct_stage/g18_m2_nested_else_arithmetic_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_m2_nested_constant_return_tests.rs");
 
+// G18／P18.6-M2：原 Checker 頂層 else 直接 self.int 返回與加減。
+#[cfg(test)]
+include!("struct_stage/g18_m2_direct_else_self_return_tests.rs");
+
 // G18／F2：原 Checker 真 bool 返回與 bool 實參使用同一動態進退帳。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_return_tests.rs");
