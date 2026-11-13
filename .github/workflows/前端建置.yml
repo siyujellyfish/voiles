@@ -312,6 +312,9 @@ jobs:
       - name: G18 P18.6 S20 同名方法靜態唯一簽章九項來源正反 Gate
         run: python3 tools/核對G18方法多載靜態唯一簽章.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M1 原S20唯一簽章九靜態十八真動態二十七項正式 Gate
+        run: python3 tools/核對G18-P18.6-M1原始方法簽章.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.3／18.4 原 Checker str.move 真所有權跨函式十項正反 Gate
         run: python3 tools/核對G18整筆移動跨函式真資源.py --test-bin target/p02/p04_source_internal
 
