@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "P18.1 只有 F1～F4 原四義務各自 Closed（7+30+30+26 = 93 真 Rust 正反）且原始總 Gate 真重跑成功，在 PR 最新 HEAD 與合併 main 同 SHA 三必要 CI completed/success 才正式 Passed；其他五個 Phase 仍未驗收，22 條 OpenEngineering，P18 總體仍未完成。",
+  "rule": "P18.1、P18.2 各須其原義務全部 Closed，P18.2 C1～C4 四獨立 Gate 共 44 真正反且總 Gate 重跑成功，最新 PR HEAD 及合併 main 同 SHA 三必要 CI completed/success 才 Passed；其餘 18 條 OpenEngineering、P18 總體 2/6 Passed 未結案。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -88,41 +88,65 @@
       "id": "C1",
       "phase": "P18.2",
       "batch": "V2",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r03_main_else_if選中分支str_move借用只建立一個resourceid",
-      "remaining": "已核准 if／else-if／else 選中與未選中同資源 CFG",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "C1 透過原 Checker 可接受來源、動態控制與 R05 P16 真資源因果證據 10 筆正反，專用 --exact Gate 和 P18.2 四項重跑共 44 筆；PR HEAD＋合併 main 同 SHA 三 CI completed/success 後才認列 Closed。P18.3～18.6 仍未 Passed，不新增語意。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "C1-01..C1-10",
+        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "gate": "tools/核對G18-P18.2-C1分支選葉.py",
+        "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "C2",
       "phase": "P18.2",
       "batch": "V2",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_source_loop_tests::g18_b_超過六十四輪的合法_for_依真實步數預算成功或受控耗盡",
-      "remaining": "半開 for／動態 while 零多輪與可配置預算回邊",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "C2 透過原 Checker 可接受來源、動態控制與 R05 P16 真資源因果證據 10 筆正反，專用 --exact Gate 和 P18.2 四項重跑共 44 筆；PR HEAD＋合併 main 同 SHA 三 CI completed/success 後才認列 Closed。P18.3～18.6 仍未 Passed，不新增語意。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "C2-01..C2-10",
+        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "gate": "tools/核對G18-P18.2-C2迴圈回邊.py",
+        "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "C3",
       "phase": "P18.2",
       "batch": "V2",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r03_main_for_continue每輪真move與借用先還票再走回邊",
-      "remaining": "巢狀 break/continue/return 逐幀離域與未執行零事件",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "C3 透過原 Checker 可接受來源、動態控制與 R05 P16 真資源因果證據 12 筆正反，專用 --exact Gate 和 P18.2 四項重跑共 44 筆；PR HEAD＋合併 main 同 SHA 三 CI completed/success 後才認列 Closed。P18.3～18.6 仍未 Passed，不新增語意。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "C3-01..C3-12",
+        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "gate": "tools/核對G18-P18.2-C3巢狀控制轉移.py",
+        "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "C4",
       "phase": "P18.2",
       "batch": "V2",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r02_r03_main_if_false來源不建資源_else同名局部只取真分支",
-      "remaining": "同名遮蔽及未初始化/首次賦值/覆寫的 int/bool/str CFG 交叉",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "C4 透過原 Checker 可接受來源、動態控制與 R05 P16 真資源因果證據 12 筆正反，專用 --exact Gate 和 P18.2 四項重跑共 44 筆；PR HEAD＋合併 main 同 SHA 三 CI completed/success 後才認列 Closed。P18.3～18.6 仍未 Passed，不新增語意。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "C4-01..C4-12",
+        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "gate": "tools/核對G18-P18.2-C4局部資源離域.py",
+        "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "R1",
@@ -307,7 +331,7 @@
   ],
   "current_status": {
     "P18.1": "Passed",
-    "P18.2": "SubsetVerified",
+    "P18.2": "Passed",
     "P18.3": "Incomplete",
     "P18.4": "SubsetVerified",
     "P18.5": "SubsetVerified",
