@@ -114,9 +114,12 @@ return owner.read()
                 .replace("return 11\n}", "return n\n}"),
             MIXED.replace("return 11\n}", "return 9223372036854775807+1\n}"),
         ] {
+            // 原 Checker 能直接拒絕時，比執行器 Unsupported 更早
+            // 且更強；兩者都必須在沒有動態執行前拒絕來源。
             assert!(matches!(
                 PreparedPrivateSelfMethod::prepare(&source),
                 Err(PrivateSelfMethodPrepareError::Unsupported(_))
+                    | Err(PrivateSelfMethodPrepareError::Check(_))
             ), "未完整動態驗證的普通函式來源不可直接放行：{source}");
         }
     }
