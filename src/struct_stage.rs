@@ -1391,6 +1391,10 @@ include!("struct_stage/ir_projection.rs");
 #[cfg(test)]
 include!("struct_stage/g18_f1_obligation_tests.rs");
 
+// G18／P18.1-F3：同一原 Checker 圖涵蓋 return／宣告／賦值／if／for／while 真呼叫位置。
+#[cfg(test)]
+include!("struct_stage/g18_f3_call_site_tests.rs");
+
 // G18／P18.1-F2：原始混合參數真執行及正常／失敗資源責任矩陣。
 #[cfg(test)]
 include!("struct_stage/g18_f2_obligation_tests.rs");
