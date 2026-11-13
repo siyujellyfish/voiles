@@ -264,9 +264,9 @@ struct PreparedPrivateSelfMethod {
     method_branch_else: Option<(i64, crate::common_ir::NodeSpan)>,
     /// M2：else 分支獨立的真 FieldAssign 值／原 NodeSpan。
     method_branch_else_write: Option<(i64, crate::common_ir::NodeSpan)>,
-    /// else 寫入後真 return self.int 的原 Checked Return NodeSpan。
+    /// else 直接讀取或寫入後返回 self.int 的原 Checked Return NodeSpan。
     method_branch_else_field_return: Option<crate::common_ir::NodeSpan>,
-    /// M2：原 Checker else 寫入後的真 Copyable 欄位返回或加減算式；
+    /// M2：原 Checker else 直接讀取或寫入後的 Copyable 欄位／加減；
     /// 來源位置由 method_branch_else_field_return 另外核實。
     method_branch_else_calculation: Option<PrivateSelfIntReturn>,
     /// M2：原 Checker if true 葉內唯一可寫 self.int 的真位置與值。
@@ -969,9 +969,9 @@ impl PreparedPrivateSelfMethod {
                                 "M2 true 葉僅接通原 Checker int 常值、self.int 或其加減",
                             )),
                         };
-                        // else 只接通兩種原 Checker 安全葉：
-                        // 單一 Lexer int 常值返回；或單一真 self.int 寫入
-                        // 隨後以相同欄位返回。其他 CFG、Move／Borrow 保守拒絕。
+                        // else 僅接通原 Checker 單一 int 常值或 self.int 真返回／加減，
+                        // 或一筆真 self.int 寫入後的同欄位返回。
+                        // 其他 CFG、Move／Borrow 保守拒絕。
                         let (else_return, else_write, else_field_return,
                             else_calculation) =
                             if let Some(otherwise) = no.as_ref() {
@@ -983,28 +983,85 @@ impl PreparedPrivateSelfMethod {
                                             "M2 else 單語句僅能是原 Checker return",
                                         ));
                                     };
-                                    let TermKind::Scalar(
-                                        crate::syntax_shared::ScalarLiteral::Integer(raw),
-                                    ) = &returned.expression.kind else {
-                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 else 單語句只准原 Lexer int 常值",
-                                        ));
-                                    };
-                                    if !verified.tokens.iter().any(|token|
-                                        token.start == returned.expression.start
-                                            && token.end == returned.expression.end
-                                            && matches!(&token.kind, TokenKind::Integer(text)
-                                                if text == raw)
-                                    ) {
-                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 else int 常值來源與 Lexer 不一致",
-                                        ));
+                                    match &returned.expression.kind {
+                                        TermKind::Scalar(
+                                            crate::syntax_shared::ScalarLiteral::Integer(raw),
+                                        ) => {
+                                            if !verified.tokens.iter().any(|token|
+                                                token.start == returned.expression.start
+                                                    && token.end == returned.expression.end
+                                                    && matches!(&token.kind,
+                                                        TokenKind::Integer(text) if text == raw)
+                                            ) {
+                                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else int 常值來源與 Lexer 不一致",
+                                                ));
+                                            }
+                                            let literal = crate::syntax_shared::integer_i64(raw)
+                                                .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else 返回整數超出 i64",
+                                                ))?;
+                                            (Some((literal, stmt.node_span())), None, None, None)
+                                        }
+                                        TermKind::FieldRead(receiver, name)
+                                            if receiver == "self" && name == &field.name =>
+                                            (None, None, Some(stmt.node_span()),
+                                                Some(PrivateSelfIntReturn::Field)),
+                                        TermKind::BinaryInt(binary) => {
+                                            let TermKind::FieldRead(receiver, name) =
+                                                &binary.left.kind else {
+                                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else 直接加減左端必須為原 self.int",
+                                                ));
+                                            };
+                                            let TermKind::Scalar(
+                                                crate::syntax_shared::ScalarLiteral::Integer(raw),
+                                            ) = &binary.right.kind else {
+                                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else 直接加減右端必須為原 Lexer int",
+                                                ));
+                                            };
+                                            let left = binary.left.node_span();
+                                            let right = binary.right.node_span();
+                                            let operator = verified.source.bytes.get(
+                                                left.end..right.start,
+                                            ).and_then(|raw| std::str::from_utf8(raw).ok())
+                                                .map(str::trim);
+                                            let expected = match binary.operator {
+                                                '+' => "+",
+                                                '-' => "-",
+                                                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else 直接加減只支援已核准運算子",
+                                                )),
+                                            };
+                                            if receiver != "self" || name != &field.name
+                                                || operator != Some(expected)
+                                                || !verified.tokens.iter().any(|token|
+                                                    token.start == binary.right.start
+                                                        && token.end == binary.right.end
+                                                        && matches!(&token.kind,
+                                                            TokenKind::Integer(text) if text == raw)
+                                                )
+                                            {
+                                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else 直接加減缺少原 Checker/Lexer 身分",
+                                                ));
+                                            }
+                                            let literal = crate::syntax_shared::integer_i64(raw)
+                                                .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 else 直接加減超出 i64",
+                                                ))?;
+                                            let plan = match binary.operator {
+                                                '+' => PrivateSelfIntReturn::Add(literal),
+                                                '-' => PrivateSelfIntReturn::Subtract(literal),
+                                                _ => unreachable!("運算子已經原來源驗證"),
+                                            };
+                                            (None, None, Some(stmt.node_span()), Some(plan))
+                                        }
+                                        _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 單 return 只接通 int 常值、self.int 或其加減",
+                                        )),
                                     }
-                                    let literal = crate::syntax_shared::integer_i64(raw)
-                                        .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 else 返回整數超出 i64",
-                                        ))?;
-                                    (Some((literal, stmt.node_span())), None, None, None)
                                 } else if statements.len() == 2 {
                                     let assignment = &statements[0];
                                     let StmtKind::FieldAssign {
@@ -1387,8 +1444,10 @@ impl PreparedPrivateSelfMethod {
                 !method_fact.checked_returns.contains(&span))
             || method_branch_else_field_return.is_some_and(|span|
                 !method_fact.checked_returns.contains(&span))
-            || (method_branch_else_field_return.is_some()
-                != method_branch_else_write.is_some())
+            || (method_branch_else_write.is_some()
+                && method_branch_else_field_return.is_none())
+            || (method_branch_else.is_some()
+                && method_branch_else_field_return.is_some())
             || (method_branch_else_calculation.is_some()
                 != method_branch_else_field_return.is_some())
             || (method_branch.is_some() != method_branch_return.is_some())
