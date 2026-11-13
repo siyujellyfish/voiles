@@ -1403,6 +1403,10 @@ include!("struct_stage/g18_f2_obligation_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b1_obligation_tests.rs");
 
+// G18／P18.4 B4：原 Checker 同一詞彙路徑之普通函式與同步 self 動態橋接。
+#[cfg(test)]
+include!("struct_stage/g18_b4_mixed_self_call_tests.rs");
+
 // G18／F2：原 Checker 真 bool 返回與 bool 實參使用同一動態進退帳。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_return_tests.rs");
