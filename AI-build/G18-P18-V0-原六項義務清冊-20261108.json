@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "P18.1～P18.3 分別必須原四義務全 Closed；R1～R4 62 獨立 Rust 真來源的 Gate 及總 Gate 均成功，PR 最新 HEAD 及合併 main 同 SHA 三必要 CI completed/success 後 P18.3 才正式 Passed。P18.4～P18.6 合計 14 條仍 OpenEngineering，P18 全體 3/6 未結案。",
+  "rule": "保留原 2026-11-08 original_status 歷史快照；F1～F4、C1～C4、R1～R4 已逐項正式閉合，B1 的 11 筆獨立 Gate 須最新 PR HEAD 與合併 main 同 SHA 三必要 CI completed/success 才能認列；其餘 13 條 OpenEngineering。P18.1～P18.3 Passed；P18.4～P18.6 未正式 Passed，嚴格 --check 不得提前成功。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -216,11 +216,17 @@
       "id": "B1",
       "phase": "P18.4",
       "batch": "V3",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_具名_var_str_獨占借用與_copyable_int_真返回",
-      "remaining": "Copyable 值重複讀取、混合參數順序不消耗來源",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "B1-01～B1-11 原 Checker 真 int／bool Copyable 重用、巢狀／迴圈、Borrow／Move 混合、不合法來源、算術溢位及事件重播拒絕已由獨立 --exact 真 Gate 提供閉合證據；只有最新 PR HEAD 與合併 main 同 SHA 三必要 CI success 後正式生效。B2～B5 尚未 Closed，P18.4 仍 SubsetVerified。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "B1-01..B1-11",
+        "tests": "src/struct_stage/g18_b1_obligation_tests.rs",
+        "gate": "tools/核對G18-P18.4-B1原始Copyable責任.py",
+        "report": "AI-build/G18-P18.4-B1-Copyable參數原始義務閉合證據-20261113.md"
+      }
     },
     {
       "id": "B2",
