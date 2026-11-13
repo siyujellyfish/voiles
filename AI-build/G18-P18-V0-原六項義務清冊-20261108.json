@@ -59,7 +59,7 @@
       "status": "OpenEngineering",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",
-      "remaining": "return／宣告／賦值／條件／迴圈內的合法函式調用位置",
+      "remaining": "return／宣告／賦值／條件／迴圈內的合法函式調用位置 2026-11-13 本批增設跨 return／宣告／賦值／if／for／while 真同圖六項正反，精確 --exact Gate 覆核每個真正退出；此為 F3 候選子集，須 PR HEAD 和 main 同 SHA 三必要 CI 以及其它可達等價類評估後才能閉合；仍 OpenEngineering。",
       "work_file": "src/struct_stage/execute_call_scalar.rs"
     },
     {
