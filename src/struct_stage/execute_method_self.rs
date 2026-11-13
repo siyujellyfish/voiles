@@ -33,8 +33,12 @@ struct PrivateSelfMethodOutcome {
     branch_checked: Option<bool>,
     /// M2：只在已選中原 Checker if 葉且持有獨占票據時寫真 int 欄位。
     branch_write_applied: bool,
+    /// 只有真落在 else 葉、具原 Checker ExclusiveWrite 證據時才可寫入。
+    branch_else_write_applied: bool,
     /// 真原 Checker if 葉具有欄位寫入，不能因 false 葉擅自寫入。
     expected_branch_write: bool,
+    /// 原 Checker 證明 else 有可達 self 欄位寫入；其他分支不得動用。
+    expected_branch_else_write: bool,
     /// 原 Parser／Checker 唯一核准的分支常值，供真執行稽核。
     expected_branch: Option<bool>,
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
@@ -185,6 +189,12 @@ impl PrivateSelfMethodOutcome {
                     && self.expected_branch_write))
             && (!self.result.is_ok() || self.branch_write_applied
                 == (self.expected_branch_write && self.branch_checked == Some(true)))
+            && (!self.branch_else_write_applied
+                || (self.method_entered && self.branch_checked == Some(false)
+                    && self.expected_branch_else_write))
+            && !(self.branch_write_applied && self.branch_else_write_applied)
+            && (!self.result.is_ok() || self.branch_else_write_applied
+                == (self.expected_branch_else_write && self.branch_checked == Some(false)))
     }
 }
 
@@ -242,6 +252,10 @@ struct PreparedPrivateSelfMethod {
     method_branch: Option<(bool, crate::common_ir::NodeSpan)>,
     /// M2：單一 else 葉必須是原 Checker 真 return int 字面值及其位置。
     method_branch_else: Option<(i64, crate::common_ir::NodeSpan)>,
+    /// M2：else 分支獨立的真 FieldAssign 值／原 NodeSpan。
+    method_branch_else_write: Option<(i64, crate::common_ir::NodeSpan)>,
+    /// else 寫入後真 return self.int 的原 Checked Return NodeSpan。
+    method_branch_else_field_return: Option<crate::common_ir::NodeSpan>,
     /// M2：原 Checker if true 葉內唯一可寫 self.int 的真位置與值。
     method_branch_write: Option<(i64, crate::common_ir::NodeSpan)>,
     /// M2：if 真返回葉可讀取原 Checker self.int 或受控加減；只有
@@ -610,7 +624,9 @@ impl PreparedPrivateSelfMethod {
         // Parser/Checker 的 bool 形參名稱。真值由 execute 的
         // 獨立 bool 參數框架讀取，不發明 int 隱含轉型。
         let (method_branch, method_branch_parameter,
-            method_branch_else, method_branch_write, method_branch_return) =
+            method_branch_else, method_branch_else_write,
+            method_branch_else_field_return,
+            method_branch_write, method_branch_return) =
             if method.body.statements.len() == 2 {
                 match &method.body.statements[0].kind {
                     StmtKind::If { branch, no } => {
@@ -760,52 +776,103 @@ impl PreparedPrivateSelfMethod {
                                 "M2 true 葉只接通原 Checker self.int 或其 int 加減",
                             )),
                         };
-                        // else 仍只接通單一已驗證 return int Lexer 常值；
-                        // 不能用 else-if、非 Copyable 值或同名來源補造工作圖。
-                        let else_return = if let Some(otherwise) = no.as_ref() {
-                            let statements = otherwise.as_slice();
-                            if statements.len() != 1 {
-                                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 else 必須只有一筆原 Checker return",
-                                ));
-                            }
-                            let stmt = &statements[0];
-                            let StmtKind::Return(returned) = &stmt.kind else {
-                                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 else 不得含未接通控制路徑或資源動作",
-                                ));
-                            };
-                            let TermKind::Scalar(
-                                crate::syntax_shared::ScalarLiteral::Integer(raw),
-                            ) = &returned.expression.kind else {
-                                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 else 目前只支援原 Checker int 常值返回",
-                                ));
-                            };
-                            if !verified.tokens.iter().any(|token|
-                                token.start == returned.expression.start
-                                    && token.end == returned.expression.end
-                                    && matches!(&token.kind, TokenKind::Integer(text)
-                                        if text == raw)
-                            ) {
-                                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 else int 返回缺少原 Lexer 精確身分",
-                                ));
-                            }
-                            let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
-                                PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 else int 返回超出已核准 i64",
-                                )
-                            )?;
-                            Some((literal, stmt.node_span()))
-                        } else { None };
+                        // else 只接通兩種原 Checker 安全葉：
+                        // 單一 Lexer int 常值返回；或單一真 self.int 寫入
+                        // 隨後以相同欄位返回。其他 CFG、Move／Borrow 保守拒絕。
+                        let (else_return, else_write, else_field_return) =
+                            if let Some(otherwise) = no.as_ref() {
+                                let statements = otherwise.as_slice();
+                                if statements.len() == 1 {
+                                    let stmt = &statements[0];
+                                    let StmtKind::Return(returned) = &stmt.kind else {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 單語句僅能是原 Checker return",
+                                        ));
+                                    };
+                                    let TermKind::Scalar(
+                                        crate::syntax_shared::ScalarLiteral::Integer(raw),
+                                    ) = &returned.expression.kind else {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 單語句只准原 Lexer int 常值",
+                                        ));
+                                    };
+                                    if !verified.tokens.iter().any(|token|
+                                        token.start == returned.expression.start
+                                            && token.end == returned.expression.end
+                                            && matches!(&token.kind, TokenKind::Integer(text)
+                                                if text == raw)
+                                    ) {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else int 常值來源與 Lexer 不一致",
+                                        ));
+                                    }
+                                    let literal = crate::syntax_shared::integer_i64(raw)
+                                        .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 返回整數超出 i64",
+                                        ))?;
+                                    (Some((literal, stmt.node_span())), None, None)
+                                } else if statements.len() == 2 {
+                                    let assignment = &statements[0];
+                                    let StmtKind::FieldAssign {
+                                        receiver, field: name, value,
+                                    } = &assignment.kind else {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 第一語句需為真 Checker self.int 寫入",
+                                        ));
+                                    };
+                                    let TermKind::Scalar(
+                                        crate::syntax_shared::ScalarLiteral::Integer(raw),
+                                    ) = &value.kind else {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 欄位只能寫入原 Lexer int 常值",
+                                        ));
+                                    };
+                                    if receiver != "self" || name != &field.name
+                                        || !verified.tokens.iter().any(|token|
+                                            token.start == value.start
+                                                && token.end == value.end
+                                                && matches!(&token.kind,
+                                                    TokenKind::Integer(text) if text == raw)
+                                        )
+                                    {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 寫入欄位名稱或 Lexer 座標未經證明",
+                                        ));
+                                    }
+                                    let literal = crate::syntax_shared::integer_i64(raw)
+                                        .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 寫入整數超出 i64",
+                                        ))?;
+                                    let returned_stmt = &statements[1];
+                                    let StmtKind::Return(returned) =
+                                        &returned_stmt.kind else {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 寫入後必須直接 return self.int",
+                                        ));
+                                    };
+                                    if !matches!(&returned.expression.kind,
+                                        TermKind::FieldRead(target, name)
+                                            if target == "self" && name == &field.name)
+                                    {
+                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                            "M2 else 寫入後只能返回同一原 Checker int 欄位",
+                                        ));
+                                    }
+                                    (None, Some((literal, assignment.node_span())),
+                                        Some(returned_stmt.node_span()))
+                                } else {
+                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 else 只能真單 return 或一筆寫入後直接 return",
+                                    ));
+                                }
+                            } else { (None, None, None) };
                         (Some((condition, early_stmt.node_span())),
-                            parameter_source, else_return, branch_write,
-                            Some(true_return_plan))
+                            parameter_source, else_return, else_write, else_field_return,
+                            branch_write, Some(true_return_plan))
                     }
-                    _ => (None, None, None, None, None),
+                    _ => (None, None, None, None, None, None, None),
                 }
-            } else { (None, None, None, None, None) };
+            } else { (None, None, None, None, None, None, None) };
         // 同步 self 已取得的參數框架沿用普通函式的 TypedHIR
         // expression/reference/arithmetic，從第一筆到 return 前逐一
         // 編譯真 Copyable int 局部；所有宣告身分均須原 Checker
@@ -1063,7 +1130,8 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "缺少正式 Checker 的 VerifiedMethodSafety",
             ))?;
-        let required_kind = if write_value.is_some() || method_branch_write.is_some() {
+        let required_kind = if write_value.is_some()
+            || method_branch_write.is_some() || method_branch_else_write.is_some() {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
         if self_read.is_some_and(|(receiver, read_field)|
@@ -1072,6 +1140,10 @@ impl PreparedPrivateSelfMethod {
                 !method_fact.checked_returns.contains(&span))
             || method_branch_else.is_some_and(|(_, span)|
                 !method_fact.checked_returns.contains(&span))
+            || method_branch_else_field_return.is_some_and(|span|
+                !method_fact.checked_returns.contains(&span))
+            || (method_branch_else_field_return.is_some()
+                != method_branch_else_write.is_some())
             || (method_branch.is_some() != method_branch_return.is_some())
             || (method_branch_else.is_some() && method_branch.is_none())
             || (method_branch_parameter.is_some() && method_bool_argument.is_none())
@@ -1139,7 +1211,8 @@ impl PreparedPrivateSelfMethod {
                 "本次方法呼叫缺少正式 Checker call_borrows 自動 self 事實",
             ))?;
         let loan = BorrowFact::new(owner_id, required_kind);
-        if (write_value.is_some() || method_branch_write.is_some())
+        if (write_value.is_some() || method_branch_write.is_some()
+            || method_branch_else_write.is_some())
             && (!owner.mutable || field.immutable) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "獨占 self 僅能修改 var 接收者及 var int 欄位",
@@ -1162,8 +1235,10 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method_int_locals,
-            method_helper, method_branch, method_branch_else, method_branch_write,
-            method_branch_return, method_branch_parameter, method_int_assignments,
+            method_helper, method_branch, method_branch_else,
+            method_branch_else_write, method_branch_else_field_return,
+            method_branch_write, method_branch_return,
+            method_branch_parameter, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_argument, main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -1184,6 +1259,8 @@ impl PreparedPrivateSelfMethod {
             && self.method_helper == fresh.method_helper
             && self.method_branch == fresh.method_branch
             && self.method_branch_else == fresh.method_branch_else
+            && self.method_branch_else_write == fresh.method_branch_else_write
+            && self.method_branch_else_field_return == fresh.method_branch_else_field_return
             && self.method_branch_write == fresh.method_branch_write
             && self.method_branch_return == fresh.method_branch_return
             && self.method_branch_parameter == fresh.method_branch_parameter
@@ -1233,6 +1310,7 @@ impl PreparedPrivateSelfMethod {
         let mut ordinary_calls_completed = 0usize;
         let mut branch_checked = None::<bool>;
         let mut branch_write_applied = false;
+        let mut branch_else_write_applied = false;
         for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
             .zip(&self.main_init_plans) {
             let executed = match initializer {
@@ -1413,12 +1491,14 @@ impl PreparedPrivateSelfMethod {
                 branch_checked = Some(observed);
                 Some(observed)
             } else { None };
-            // 獨占 self：只有真被選中的 true 寫入葉或舊直線
-            // FieldAssign 才具有真正的欄位寫入能力。
+            // 原 Checker 只簽發方法入口的一張獨占票據。
+            // 真正選中 true／else 葉時，僅該葉可有一筆欄位寫入。
             let selected_write = self.write_value.or_else(|| {
-                if selected_branch == Some(true) {
-                    self.method_branch_write.map(|(value, _)| value)
-                } else { None }
+                match selected_branch {
+                    Some(true) => self.method_branch_write.map(|(value, _)| value),
+                    Some(false) => self.method_branch_else_write.map(|(value, _)| value),
+                    None => None,
+                }
             });
             if let Some(value) = selected_write {
                 let authorized = tracker.check_ticket_access(
@@ -1432,6 +1512,10 @@ impl PreparedPrivateSelfMethod {
                 ).map_err(PrivateSelfMethodRuntimeError::Resource)?;
                 if selected_branch == Some(true) && self.method_branch_write.is_some() {
                     branch_write_applied = true;
+                }
+                if selected_branch == Some(false)
+                    && self.method_branch_else_write.is_some() {
+                    branch_else_write_applied = true;
                 }
             }
             // 真方法 self 欄位讀取須以存活 BorrowTicket 授權，不可
@@ -1450,7 +1534,9 @@ impl PreparedPrivateSelfMethod {
                     PrivateSelfMethodRuntimeError::WrongReceiver,
                 )?,
                 Some(false) => {
-                    if let Some((literal, _)) = self.method_branch_else {
+                    if self.method_branch_else_field_return.is_some() {
+                        PrivateSelfIntReturn::Field
+                    } else if let Some((literal, _)) = self.method_branch_else {
                         PrivateSelfIntReturn::Constant(literal)
                     } else {
                         self.return_calculation.clone()
@@ -1582,7 +1668,9 @@ impl PreparedPrivateSelfMethod {
             ordinary_calls_completed,
             branch_checked,
             branch_write_applied,
+            branch_else_write_applied,
             expected_branch_write: self.method_branch_write.is_some(),
+            expected_branch_else_write: self.method_branch_else_write.is_some(),
             expected_branch: self.method_branch.map(|(condition, _)| condition),
             main_local_slots_after_exit: main_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
