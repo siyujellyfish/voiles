@@ -874,14 +874,39 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, method: &Function,
         returned: &crate::syntax_shared::ParsedReturn<Term>,
     ) -> Result<(), Diagnostic> {
-        fn pure_int(term: &Term) -> bool {
+        // B4：本輪只在「直接局部初始化」允許 Checker 真函式索引
+        // 已證同步、零參數、單一 int 常值 return 的純助手。
+        // 不把它擴張至方法其他算式、重賦值、資源／別名／await。
+        let helper_is_proven = |name: &str| self.find_function(name).is_some_and(|helper| {
+            !helper.is_async && helper.name != "main"
+                && helper.params.is_empty() && helper.result_ty == "int"
+                && helper.body.statements.len() == 1
+                && matches!(&helper.body.statements[0].kind,
+                    StmtKind::Return(returned)
+                        if matches!(&returned.expression.kind,
+                            TermKind::Scalar(
+                                crate::syntax_shared::ScalarLiteral::Integer(_)
+                            )
+                        )
+                )
+        });
+        fn pure_int(
+            term: &Term, helper_is_proven: &dyn Fn(&str) -> bool, allow_direct_helper: bool,
+        ) -> bool {
             match &term.kind {
                 TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
                 | TermKind::Name(_) => true,
-                TermKind::Group(inner) => pure_int(inner),
+                TermKind::Group(inner) =>
+                    pure_int(inner, helper_is_proven, allow_direct_helper),
                 TermKind::BinaryInt(binary) =>
                     matches!(binary.operator, '+' | '-')
-                    && pure_int(&binary.left) && pure_int(&binary.right),
+                    && pure_int(&binary.left, helper_is_proven, false)
+                    && pure_int(&binary.right, helper_is_proven, false),
+                TermKind::UnresolvedZeroArgs(name) if allow_direct_helper =>
+                    helper_is_proven(name),
+                TermKind::Call(call) if allow_direct_helper =>
+                    !call.awaited && call.arguments.is_empty()
+                        && helper_is_proven(&call.name),
                 _ => false,
             }
         }
@@ -921,7 +946,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         message: "方法 int 局部必須有已核准的初始化來源".into(),
                         span: Some(self.source.span(statement.start, statement.end)),
                     })?;
-                    if !pure_int(init) {
+                    if !pure_int(init, &helper_is_proven, true) {
                         return Err(self.error(
                             "方法 int 局部不得含未驗證的 Borrow／Move／函式呼叫／self 欄位",
                             init,
@@ -950,7 +975,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !target.mutable || target.ty != "int"
                         || target.loan.is_some()
                         || target.value.state() != ValueState::Available
-                        || !pure_int(&assignment.expression) {
+                        || !pure_int(&assignment.expression, &helper_is_proven, false) {
                         return Err(self.error(
                             "方法局部賦值僅接受已初始化的 var int 與純整數算式",
                             &assignment.expression,
@@ -980,7 +1005,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }),
             }
         }
-        if !pure_int(&returned.expression) {
+        if !pure_int(&returned.expression, &helper_is_proven, false) {
             return Err(self.error(
                 "方法局部返回僅接通原 Checker 的純 int 算術",
                 &returned.expression,
