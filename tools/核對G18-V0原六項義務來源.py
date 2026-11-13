@@ -231,6 +231,22 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                     raise ValueError("B1 沒有原 Checker Copyable 11 類真動態閉合證據")
                 if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
                     raise ValueError("B1 Rust 來源／獨立 Gate／報告不存在")
+            elif 名稱 in {"B2", "B3"}:
+                # 兩組來源必須獨立，不靠既有 group pass 冒充逐條 Closed。
+                數量 = {"B2": 20, "B3": 42}[名稱]
+                必要證明 = {
+                    "contract": f"{名稱}-01..{名稱}-{數量:02d}",
+                    "tests": "src/struct_stage/execute_call_borrow.rs",
+                    "gate": {
+                        "B2": "tools/核對G18-P18.4-B2整筆Move借用共帳.py",
+                        "B3": "tools/核對G18-P18.4-B3真Borrow來源身分.py",
+                    }[名稱],
+                    "report": "AI-build/G18-P18.4-B2-B3-多資源借用身分閉合證據-20261113.md",
+                }
+                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                    raise ValueError(f"P18.4 {名稱} 沒有原來源及 {數量} 筆獨立 Gate 閉合證明")
+                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                    raise ValueError(f"P18.4 {名稱} 真來源／Gate／報告不存在")
             elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
                 raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
             if 種類 in {"DecisionBlocked", "EngineeringPending"}:
@@ -267,8 +283,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 13 or 統計["OpenEngineering"] != 13 or 統計["BlockedDecision"] != 0:
-        raise ValueError("F1～F4、C1～C4、R1～R4、B1 閉合；其餘 13 條 OpenEngineering；不得提前 P18.4 Passed")
+    if 統計["Closed"] != 15 or 統計["OpenEngineering"] != 11 or 統計["BlockedDecision"] != 0:
+        raise ValueError("F1～F4、C1～C4、R1～R4、B1～B3 閉合；其餘 11 條 OpenEngineering；不得提前 P18.4 Passed")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -373,7 +389,7 @@ def main() -> int:
         f"26 條義務／{報告['closed']} 條已閉合／"
         f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
         f"25 筆獨立真 Rust 測試均已實跑；"
-        "P18 原六項 P18.1～P18.3 Passed（3/6）；B1 已獨立閉合候選，其餘三原項未 Passed。"
+        "P18 原六項 P18.1～P18.3 Passed（3/6）；B1 已主線正式閉合，B2／B3 同批獨立閉合候選，其餘三原項未 Passed。"
     )
     print("V0 完成只代表來源／義務清冊可信；R07 正式 --check 未完成仍必須非零。")
     return 0
