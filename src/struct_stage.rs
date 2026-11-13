@@ -1447,6 +1447,10 @@ include!("struct_stage/g18_m2_nested_self_if_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_m2_nested_dynamic_bool_tests.rs");
 
+// G18／P18.6-M2：原巢狀 else 真加減與獨立溢位 Unwind 安全。
+#[cfg(test)]
+include!("struct_stage/g18_m2_nested_else_arithmetic_tests.rs");
+
 // G18／F2：原 Checker 真 bool 返回與 bool 實參使用同一動態進退帳。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_return_tests.rs");
