@@ -647,7 +647,7 @@ impl PreparedPrivateSelfMethod {
             method_branch_else, method_branch_else_write,
             method_branch_else_field_return, method_branch_else_calculation,
             method_branch_write, method_branch_return, method_nested_branch,
-            method_nested_branch_parameter) =
+            method_nested_branch_parameter, method_nested_else_calculation) =
             if method.body.statements.len() == 2 {
                 match &method.body.statements[0].kind {
                     StmtKind::If { branch, no } => {
@@ -736,7 +736,7 @@ impl PreparedPrivateSelfMethod {
                         // 內層 if(bool Lexer 常值)，其 true／else 葉各有
                         // 單一 Copyable int return。內層 false 只讀 self.int，
                         // 不允許未證的動態別名／資源操作。
-                        let (early_stmt, nested_branch, nested_parameter_source) =
+                        let (early_stmt, nested_branch, nested_parameter_source, nested_else_calculation) =
                             if branch.body.statements.len() == 1 {
                                 let candidate = &branch.body.statements[0];
                                 if let StmtKind::If {
@@ -1020,11 +1020,11 @@ impl PreparedPrivateSelfMethod {
                         (Some((condition, early_stmt.node_span())),
                             parameter_source, else_return, else_write, else_field_return,
                             else_calculation, branch_write, Some(true_return_plan),
-                            nested_branch, nested_parameter_source)
+                            nested_branch, nested_parameter_source, nested_else_calculation)
                     }
-                    _ => (None, None, None, None, None, None, None, None, None, None),
+                    _ => (None, None, None, None, None, None, None, None, None, None, None),
                 }
-            } else { (None, None, None, None, None, None, None, None, None, None) };
+            } else { (None, None, None, None, None, None, None, None, None, None, None) };
         // 同步 self 已取得的參數框架沿用普通函式的 TypedHIR
         // expression/reference/arithmetic，從第一筆到 return 前逐一
         // 編譯真 Copyable int 局部；所有宣告身分均須原 Checker
@@ -1302,6 +1302,7 @@ impl PreparedPrivateSelfMethod {
             || method_nested_branch.is_some_and(|(_, span)|
                 !method_fact.checked_returns.contains(&span))
             || (method_nested_branch.is_some() && method_branch.is_none())
+            || (method_nested_else_calculation.is_some() != method_nested_branch.is_some())
             || (method_nested_branch_parameter.is_some()
                 && (method_nested_branch.is_none() || method_bool_argument.is_none()))
             || (method_branch_else.is_some() && method_branch.is_none())
@@ -1398,7 +1399,7 @@ impl PreparedPrivateSelfMethod {
             method_branch_else_write, method_branch_else_field_return,
             method_branch_else_calculation, method_branch_write, method_branch_return,
             method_nested_branch, method_nested_branch_parameter,
-            method_branch_parameter, method_int_assignments,
+            method_nested_else_calculation, method_branch_parameter, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_argument, main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -1426,6 +1427,7 @@ impl PreparedPrivateSelfMethod {
             && self.method_branch_return == fresh.method_branch_return
             && self.method_nested_branch == fresh.method_nested_branch
             && self.method_nested_branch_parameter == fresh.method_nested_branch_parameter
+            && self.method_nested_else_calculation == fresh.method_nested_else_calculation
             && self.method_branch_parameter == fresh.method_branch_parameter
             && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
@@ -1712,7 +1714,9 @@ impl PreparedPrivateSelfMethod {
                                 PrivateSelfMethodRuntimeError::WrongReceiver,
                             )?
                         } else {
-                            PrivateSelfIntReturn::Field
+                            self.method_nested_else_calculation.clone().ok_or(
+                                PrivateSelfMethodRuntimeError::WrongReceiver,
+                            )?
                         }
                     } else {
                         self.method_branch_return.clone().ok_or(
