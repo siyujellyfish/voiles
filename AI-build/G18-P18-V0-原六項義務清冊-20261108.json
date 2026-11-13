@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "歷史 original_status 原封不動。F1～F4、C1～C4、R1～R4 與 B1 已於 main 真驗收；B2/B3 各 20/42 真來源專用 Gate 完成後，只有新 PR 最新 HEAD 與合併 main 同 SHA 三必要 CI completed/success 方能正式計入 Closed。B4、B5、T1～T4、M1～M3、A1～A2 等 11 條義務仍 OpenEngineering。六 Phase 僅 P18.1～P18.3 Passed，P18.4～P18.6 不提前 Passed。",
+  "rule": "original_status 保留 2026-11-08 歷史快照。F1～F4、C1～C4、R1～R4、B1～B3 已由 main 同 SHA 完整 CI 正式閉合；B5 42 真 Checker／BorrowSafety 案例需本 PR 最新 HEAD 與新 main 同 SHA 三 CI success 才正式生效。B4、T1～T4、M1～M3、A1～A2 共 10 條 OpenEngineering。P18 僅 P18.1～P18.3 Passed；P18.4～P18.6 不得提前標 Passed。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -274,11 +274,17 @@
       "id": "B5",
       "phase": "P18.4",
       "batch": "V3",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "CheckerRejection",
       "primary_case": "struct_stage::g18_r06_cross_runtime_tests::g18_r06_原_checker_VB14_借用別名缺乏重借證明不得進真子呼叫",
-      "remaining": "VB14 既有合法借用生命期與無證再借／逃逸安全反例",
-      "work_file": "src/borrow_safety.rs"
+      "remaining": "B5-01～B5-42 的原 Checker P14/P15 非 Copyable 借用生命期、合法直接重新借用、禁止別名無證再借、函式／方法及資源逃逸、BorrowTicket 真 Tracker／過期拒絕，已建立 42 筆不同來源 --exact 真 Gate 候選；須最新 PR HEAD 與 Squash merge 後新 main 同 SHA 必要三 CI 都成功才正式認列。B4 尚未 Closed，P18.4 繼續 SubsetVerified。",
+      "work_file": "src/borrow_safety.rs",
+      "closure_proof": {
+        "contract": "B5-01..B5-42",
+        "tests": "src/struct_stage/tests_lifetime_resources.rs",
+        "gate": "tools/核對G18-P18.4-B5借用有效期與無證再借.py",
+        "report": "AI-build/G18-P18.4-B5-借用生命期與退出票據正式證據-20261113.md"
+      }
     },
     {
       "id": "T1",
