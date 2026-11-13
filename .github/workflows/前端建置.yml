@@ -135,6 +135,12 @@ jobs:
       - name: G18 P18.1-F2 原 Checker 混合實參與原始資源責任九項正反驗收
         run: python3 tools/核對G18-F2混合參數閉合.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.1-F4 原始十三等價類二十六項真來源正式閉合 Gate
+        run: python3 tools/核對G18-F4可達函式圖原始義務閉合.py --test-bin target/p02/p04_source_internal --check
+
+      - name: G18 P18.1 四義務正式驗收總 Gate
+        run: python3 tools/核對G18-P18.1原始四義務正式驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: G18 P18.1-F3 原始十五等價類三十項真來源正式閉合 Gate
         run: python3 tools/核對G18-F3原始義務正式閉合.py --test-bin target/p02/p04_source_internal --check
 
