@@ -985,7 +985,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !target.mutable || target.ty != "int"
                         || target.loan.is_some()
                         || target.value.state() != ValueState::Available
-                        || !pure_int(&assignment.expression, &helper_is_proven, false) {
+                        // 與已核准的局部初始化相同：只有完整 RHS
+                        // 直接呼叫原 Checker 已證的零參數純 int helper 可通過。
+                        // BinaryInt 子樹仍由 pure_int(..., false) 禁止嵌入呼叫。
+                        || !pure_int(&assignment.expression, &helper_is_proven, true) {
                         return Err(self.error(
                             "方法局部賦值僅接受已初始化的 var int 與純整數算式",
                             &assignment.expression,
