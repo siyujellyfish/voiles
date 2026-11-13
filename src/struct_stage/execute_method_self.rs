@@ -279,7 +279,7 @@ struct PreparedPrivateSelfMethod {
     /// M2：內層 if(Name) 的原 Checker bool 形參宣告身分；
     /// 無此值時嚴格使用 Lexer 真 bool 字面，不能把 int 轉為 bool。
     method_nested_branch_parameter: Option<DeclarationId>,
-    /// M2：原 Checker 巢狀 else 直接返回或 int 加減。
+    /// M2：原 Checker 巢狀 else 返回 int 常值、self.int 或其加減。
     method_nested_else_calculation: Option<PrivateSelfIntReturn>,
     /// M2：只有原 Checker 真 bool 形式參數能成為方法 if 條件來源。
     method_branch_parameter: Option<DeclarationId>,
@@ -821,7 +821,7 @@ impl PreparedPrivateSelfMethod {
                                                                         )
                                                                     )?;
                                                                     PrivateSelfIntReturn::Constant(literal)
-                                                                }
+                                                                },
                                                                 TermKind::FieldRead(receiver, name)
                                                                     if receiver == "self" && name == &field.name =>
                                                                     PrivateSelfIntReturn::Field,
@@ -875,7 +875,7 @@ impl PreparedPrivateSelfMethod {
                                                                     }
                                                                 }
                                                                 _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                                                    "M2 巢狀 else只接通原 Checker self.int 或其 int 加減",
+                                                                    "M2 巢狀 else僅接通原 Checker int 常值、self.int 或其加減",
                                                                 )),
                                                             };
                                     (true_stmt, Some((condition, false_stmt.node_span())),
@@ -912,7 +912,7 @@ impl PreparedPrivateSelfMethod {
                                     )
                                 )?;
                                 PrivateSelfIntReturn::Constant(literal)
-                            }
+                            },
                             TermKind::FieldRead(receiver, name)
                                 if receiver == "self" && name == &field.name =>
                                 PrivateSelfIntReturn::Field,
@@ -966,7 +966,7 @@ impl PreparedPrivateSelfMethod {
                                 }
                             }
                             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                "M2 true 葉只接通原 Checker self.int 或其 int 加減",
+                                "M2 true 葉僅接通原 Checker int 常值、self.int 或其加減",
                             )),
                         };
                         // else 只接通兩種原 Checker 安全葉：
