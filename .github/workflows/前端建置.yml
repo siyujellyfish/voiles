@@ -327,6 +327,9 @@ jobs:
       - name: G18 P18.4-B3 真 BorrowFact BorrowTicket ResourceId 四十二項獨立 Gate
         run: python3 tools/核對G18-P18.4-B3真Borrow來源身分.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B5 借用有效期無證再借與逃逸四十二項獨立 Gate
+        run: python3 tools/核對G18-P18.4-B5借用有效期與無證再借.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
         run: python3 tools/核對G18原六項驗收差距.py --test-bin target/p02/p04_source_internal --audit
       - name: G18 V1 R07 原六項正式 --check 結果／阻塞狀態一致性 Gate
