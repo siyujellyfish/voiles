@@ -28,6 +28,11 @@ struct PrivateSelfMethodOutcome {
     ticket_returned: bool,
     /// B4：原 Checker 普通函式在真正 self 框架內執行的已完成次數。
     ordinary_calls_completed: usize,
+    /// M2：真正進入同步方法後才觀測的原 Checker if 條件。
+    /// 未進入的分支、借用前錯誤及方法入口注入失敗不得填寫。
+    branch_checked: Option<bool>,
+    /// 原 Parser／Checker 唯一核准的分支常值，供真執行稽核。
+    expected_branch: Option<bool>,
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
     main_local_slots_after_exit: usize,
     method_local_slots_after_exit: usize,
@@ -169,6 +174,8 @@ impl PrivateSelfMethodOutcome {
             && acquired == all_issued && all_issued <= 1
             && (!self.method_exited || self.method_entered)
             && self.method_exited == self.result.is_ok()
+            && (self.branch_checked.is_none() || self.method_entered)
+            && (!self.result.is_ok() || self.branch_checked == self.expected_branch)
     }
 }
 
@@ -219,6 +226,9 @@ struct PreparedPrivateSelfMethod {
     method_int_locals: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     /// B4：同一原 Checker 唯一零參數、純 int 返回的真普通函式計畫。
     method_helper: Option<(String, PrivateScalarReturnExpr)>,
+    /// M2：真原 Parser 首句 if(bool 常值) 且葉內只提前 return self.int；
+    /// 保留實際 Return 位置，未命中時落至最後一筆已核准 return。
+    method_branch: Option<(bool, crate::common_ir::NodeSpan)>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
     method_int_assignments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     method: String,
@@ -533,6 +543,54 @@ impl PreparedPrivateSelfMethod {
                 PrivateSelfMethodPrepareError::Unsupported("寫入值超出 i64 範圍")
             )?)
         } else { None };
+        // M2 第一個真分支：原 Checker 已證全部方法出口和 BorrowFact；
+        // 目前只允許首句 if(原 bool 字面)，選中時直接返回目前 self.int，
+        // 未命中則執行原最後 Return。不是從字串重新解析條件；
+        // 其餘 if/else、資源寫入及控制路徑仍保守拒絕。
+        let method_branch = if method.body.statements.len() == 2 {
+            match &method.body.statements[0].kind {
+                StmtKind::If { branch, no } => {
+                    if no.is_some() || branch.body.statements.len() != 1 {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 首批僅接通原 Checker if 單葉提前 return",
+                        ));
+                    }
+                    let TermKind::Scalar(
+                        crate::syntax_shared::ScalarLiteral::Boolean(condition),
+                    ) = &branch.condition.kind else {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 尚未接通動態 bool 參數控制來源",
+                        ));
+                    };
+                    if !verified.tokens.iter().any(|token|
+                        token.start == branch.condition.start
+                            && token.end == branch.condition.end
+                            && matches!(&token.kind, TokenKind::Keyword(word)
+                                if word == if *condition { "true" } else { "false" })
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 原 Lexer bool 條件身分不一致",
+                        ));
+                    }
+                    let early_stmt = &branch.body.statements[0];
+                    let StmtKind::Return(early) = &early_stmt.kind else {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 if 條件葉不是已核准真提前 return",
+                        ));
+                    };
+                    if !matches!(&early.expression.kind,
+                        TermKind::FieldRead(receiver, name)
+                            if receiver == "self" && name == &field.name
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 首批只支援 if 葉返回已核准 self.int 欄位",
+                        ));
+                    }
+                    Some((*condition, early_stmt.node_span()))
+                }
+                _ => None,
+            }
+        } else { None };
         // 同步 self 已取得的參數框架沿用普通函式的 TypedHIR
         // expression/reference/arithmetic，從第一筆到 return 前逐一
         // 編譯真 Copyable int 局部；所有宣告身分均須原 Checker
@@ -548,7 +606,7 @@ impl PreparedPrivateSelfMethod {
         let mut seen_assignment = false;
         for (index, statement) in method.body.statements.iter().enumerate()
             .take(method.body.statements.len() - 1) {
-            if write_value.is_some() && index == 0 {
+            if (write_value.is_some() || method_branch.is_some()) && index == 0 {
                 continue;
             }
             match &statement.kind {
@@ -795,6 +853,8 @@ impl PreparedPrivateSelfMethod {
         } else { BorrowKind::SharedRead };
         if self_read.is_some_and(|(receiver, read_field)|
                 receiver != "self" || read_field != field.name.as_str())
+            || method_branch.is_some_and(|(_, span)|
+                !method_fact.checked_returns.contains(&span))
             || method_fact.span != method_span
             || method_fact.self_borrow != required_kind
             || !method_fact.checked_returns.contains(&last.node_span()) {
@@ -880,7 +940,7 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method_int_locals,
-            method_helper, method_int_assignments,
+            method_helper, method_branch, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -899,6 +959,7 @@ impl PreparedPrivateSelfMethod {
             && self.return_calculation == fresh.return_calculation
             && self.method_int_locals == fresh.method_int_locals
             && self.method_helper == fresh.method_helper
+            && self.method_branch == fresh.method_branch
             && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
@@ -942,6 +1003,7 @@ impl PreparedPrivateSelfMethod {
         // prepare 預寫假 FunctionEntered／Returned。
         let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut ordinary_calls_completed = 0usize;
+        let mut branch_checked = None::<bool>;
         for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
             .zip(&self.main_init_plans) {
             let executed = match initializer {
@@ -1127,7 +1189,20 @@ impl PreparedPrivateSelfMethod {
                 .map_err(PrivateSelfMethodRuntimeError::Resource)? else {
                 return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
             };
-            let calculated = match self.return_calculation.clone() {
+            let selected_calculation = if let Some((condition, _)) =
+                self.method_branch {
+                // 真 self 已進框架、有效 BorrowTicket 及欄位值在手後才
+                // 讀取原 Checker bool 條件；未選葉不能生效或提前返回。
+                branch_checked = Some(condition);
+                if condition {
+                    PrivateSelfIntReturn::Field
+                } else {
+                    self.return_calculation.clone()
+                }
+            } else {
+                self.return_calculation.clone()
+            };
+            let calculated = match selected_calculation {
                 PrivateSelfIntReturn::Field => value,
                 PrivateSelfIntReturn::Add(rhs) => value.checked_add(rhs)
                     .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?,
@@ -1248,6 +1323,8 @@ impl PreparedPrivateSelfMethod {
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
             ordinary_calls_completed,
+            branch_checked,
+            expected_branch: self.method_branch.map(|(condition, _)| condition),
             main_local_slots_after_exit: main_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
             method_local_events,
