@@ -31,6 +31,10 @@ struct PrivateSelfMethodOutcome {
     /// M2：真正進入同步方法後才觀測的原 Checker if 條件。
     /// 未進入的分支、借用前錯誤及方法入口注入失敗不得填寫。
     branch_checked: Option<bool>,
+    /// M2：只在已選中原 Checker if 葉且持有獨占票據時寫真 int 欄位。
+    branch_write_applied: bool,
+    /// 真原 Checker if 葉具有欄位寫入，不能因 false 葉擅自寫入。
+    expected_branch_write: bool,
     /// 原 Parser／Checker 唯一核准的分支常值，供真執行稽核。
     expected_branch: Option<bool>,
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
@@ -176,6 +180,11 @@ impl PrivateSelfMethodOutcome {
             && self.method_exited == self.result.is_ok()
             && (self.branch_checked.is_none() || self.method_entered)
             && (!self.result.is_ok() || self.branch_checked == self.expected_branch)
+            && (!self.branch_write_applied
+                || (self.method_entered && self.branch_checked == Some(true)
+                    && self.expected_branch_write))
+            && (!self.result.is_ok() || self.branch_write_applied
+                == (self.expected_branch_write && self.branch_checked == Some(true)))
     }
 }
 
@@ -233,6 +242,8 @@ struct PreparedPrivateSelfMethod {
     method_branch: Option<(bool, crate::common_ir::NodeSpan)>,
     /// M2：單一 else 葉必須是原 Checker 真 return int 字面值及其位置。
     method_branch_else: Option<(i64, crate::common_ir::NodeSpan)>,
+    /// M2：原 Checker if true 葉內唯一可寫 self.int 的真位置與值。
+    method_branch_write: Option<(i64, crate::common_ir::NodeSpan)>,
     /// M2：只有原 Checker 真 bool 形式參數能成為方法 if 條件來源。
     method_branch_parameter: Option<DeclarationId>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
@@ -595,13 +606,14 @@ impl PreparedPrivateSelfMethod {
         // M2 第二批：保留原已驗證 bool 字面條件，再接通同一
         // Parser/Checker 的 bool 形參名稱。真值由 execute 的
         // 獨立 bool 參數框架讀取，不發明 int 隱含轉型。
-        let (method_branch, method_branch_parameter, method_branch_else) =
+        let (method_branch, method_branch_parameter,
+            method_branch_else, method_branch_write) =
             if method.body.statements.len() == 2 {
                 match &method.body.statements[0].kind {
                     StmtKind::If { branch, no } => {
-                        if branch.body.statements.len() != 1 {
+                        if !(1..=2).contains(&branch.body.statements.len()) {
                             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                "M2 目前僅准 if 單葉提前 return",
+                                "M2 if true 葉只可單一 return 或先欄位寫入再 return",
                             ));
                         }
                         let (condition, parameter_source) = match &branch.condition.kind {
@@ -643,7 +655,46 @@ impl PreparedPrivateSelfMethod {
                                 "M2 if 條件尚未有原 Lexer／Checker 證據",
                             )),
                         };
-                        let early_stmt = &branch.body.statements[0];
+                        // 只有 true 葉可以先寫單一原 Checker var int 欄位；
+                        // Lexer 原 token／Parser 原節點身分與 MethodSafety
+                        // 的 ExclusiveWrite 證據必須同時成立。
+                        let branch_write = if branch.body.statements.len() == 2 {
+                            let write = &branch.body.statements[0];
+                            let StmtKind::FieldAssign {
+                                receiver, field: name, value,
+                            } = &write.kind else {
+                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                    "M2 true 葉第一句只能是原 Checker self.int 欄位寫入",
+                                ));
+                            };
+                            let TermKind::Scalar(
+                                crate::syntax_shared::ScalarLiteral::Integer(raw),
+                            ) = &value.kind else {
+                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                    "M2 true 葉欄位寫入只能是原 Lexer int 字面",
+                                ));
+                            };
+                            if receiver != "self" || name != &field.name
+                                || !verified.tokens.iter().any(|token|
+                                    token.start == value.start && token.end == value.end
+                                        && matches!(&token.kind,
+                                            TokenKind::Integer(text) if text == raw)
+                                ) {
+                                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                    "M2 true 葉欄位來源、型別或詞彙位置不符",
+                                ));
+                            }
+                            let literal = crate::syntax_shared::integer_i64(raw)
+                                .map_err(|_|
+                                    PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 true 葉欄位值超出原 int 安全範圍",
+                                    )
+                                )?;
+                            Some((literal, write.node_span()))
+                        } else { None };
+                        let early_stmt = branch.body.statements.last().expect(
+                            "已確認 if 葉具一至兩條原 Parser 語句",
+                        );
                         let StmtKind::Return(early) = &early_stmt.kind else {
                             return Err(PrivateSelfMethodPrepareError::Unsupported(
                                 "M2 bool 選中葉不是已核准提前 return",
@@ -697,11 +748,11 @@ impl PreparedPrivateSelfMethod {
                             Some((literal, stmt.node_span()))
                         } else { None };
                         (Some((condition, early_stmt.node_span())),
-                            parameter_source, else_return)
+                            parameter_source, else_return, branch_write)
                     }
-                    _ => (None, None, None),
+                    _ => (None, None, None, None),
                 }
-            } else { (None, None, None) };
+            } else { (None, None, None, None) };
         // 同步 self 已取得的參數框架沿用普通函式的 TypedHIR
         // expression/reference/arithmetic，從第一筆到 return 前逐一
         // 編譯真 Copyable int 局部；所有宣告身分均須原 Checker
@@ -959,7 +1010,7 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "缺少正式 Checker 的 VerifiedMethodSafety",
             ))?;
-        let required_kind = if write_value.is_some() {
+        let required_kind = if write_value.is_some() || method_branch_write.is_some() {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
         if self_read.is_some_and(|(receiver, read_field)|
@@ -1034,7 +1085,8 @@ impl PreparedPrivateSelfMethod {
                 "本次方法呼叫缺少正式 Checker call_borrows 自動 self 事實",
             ))?;
         let loan = BorrowFact::new(owner_id, required_kind);
-        if write_value.is_some() && (!owner.mutable || field.immutable) {
+        if (write_value.is_some() || method_branch_write.is_some())
+            && (!owner.mutable || field.immutable) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "獨占 self 僅能修改 var 接收者及 var int 欄位",
             ));
@@ -1056,7 +1108,7 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method_int_locals,
-            method_helper, method_branch, method_branch_else,
+            method_helper, method_branch, method_branch_else, method_branch_write,
             method_branch_parameter, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
@@ -1078,6 +1130,7 @@ impl PreparedPrivateSelfMethod {
             && self.method_helper == fresh.method_helper
             && self.method_branch == fresh.method_branch
             && self.method_branch_else == fresh.method_branch_else
+            && self.method_branch_write == fresh.method_branch_write
             && self.method_branch_parameter == fresh.method_branch_parameter
             && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
@@ -1124,6 +1177,7 @@ impl PreparedPrivateSelfMethod {
         let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut ordinary_calls_completed = 0usize;
         let mut branch_checked = None::<bool>;
+        let mut branch_write_applied = false;
         for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
             .zip(&self.main_init_plans) {
             let executed = match initializer {
@@ -1290,10 +1344,28 @@ impl PreparedPrivateSelfMethod {
                 ));
                 exit_events.push(PrivateSharedCallExitEvent::LocalAssigned(*id));
             }
-            // 寫入屬已核准之獨占 self：先驗真 BorrowTicket 身分、
-            // 來源及權限，再寫真 MixedStructRuntime 的 Copyable int。
-            // 共用方法無此路徑；唯一資源持有者與欄位可寫性皆受保護。
-            if let Some(value) = self.write_value {
+            // 條件只於真 self 框架進入後，從原 Checker bool 參數
+            // 獨立框架或 Lexer 常值取得；支線有寫入時不能先寫後選。
+            let selected_branch = if let Some((condition, _)) = self.method_branch {
+                let observed = if let Some(id) = self.method_branch_parameter {
+                    *bool_parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver,
+                    )?
+                } else { condition };
+                if observed != condition {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                branch_checked = Some(observed);
+                Some(observed)
+            } else { None };
+            // 獨占 self：只有真被選中的 true 寫入葉或舊直線
+            // FieldAssign 才具有真正的欄位寫入能力。
+            let selected_write = self.write_value.or_else(|| {
+                if selected_branch == Some(true) {
+                    self.method_branch_write.map(|(value, _)| value)
+                } else { None }
+            });
+            if let Some(value) = selected_write {
                 let authorized = tracker.check_ticket_access(
                     ticket, BorrowKind::ExclusiveWrite,
                 ).map_err(PrivateSelfMethodRuntimeError::Ticket)?;
@@ -1303,6 +1375,9 @@ impl PreparedPrivateSelfMethod {
                 runtime.write_int_field(
                     &self.owner, &self.field, value, self.owner_mutable,
                 ).map_err(PrivateSelfMethodRuntimeError::Resource)?;
+                if selected_branch == Some(true) && self.method_branch_write.is_some() {
+                    branch_write_applied = true;
+                }
             }
             // 真方法 self 欄位讀取須以存活 BorrowTicket 授權，不可
             // 僅因原 AST 名稱看似 self 而直接取用所有者。
@@ -1315,28 +1390,16 @@ impl PreparedPrivateSelfMethod {
                 .map_err(PrivateSelfMethodRuntimeError::Resource)? else {
                 return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
             };
-            let selected_calculation = if let Some((condition, _)) =
-                self.method_branch {
-                // 真 self 已進框架、有效 BorrowTicket 及欄位值在手後才
-                // 讀取原 Checker bool 條件；未選葉不能生效或提前返回。
-                let observed = if let Some(id) = self.method_branch_parameter {
-                    *bool_parameter_frame.get(&id).ok_or(
-                        PrivateSelfMethodRuntimeError::WrongReceiver,
-                    )?
-                } else { condition };
-                if observed != condition {
-                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+            let selected_calculation = match selected_branch {
+                Some(true) => PrivateSelfIntReturn::Field,
+                Some(false) => {
+                    if let Some((literal, _)) = self.method_branch_else {
+                        PrivateSelfIntReturn::Constant(literal)
+                    } else {
+                        self.return_calculation.clone()
+                    }
                 }
-                branch_checked = Some(observed);
-                if observed {
-                    PrivateSelfIntReturn::Field
-                } else if let Some((literal, _)) = self.method_branch_else {
-                    PrivateSelfIntReturn::Constant(literal)
-                } else {
-                    self.return_calculation.clone()
-                }
-            } else {
-                self.return_calculation.clone()
+                None => self.return_calculation.clone(),
             };
             let calculated = match selected_calculation {
                 PrivateSelfIntReturn::Field => value,
@@ -1461,6 +1524,8 @@ impl PreparedPrivateSelfMethod {
             result, events, method_entered, method_exited, ticket_returned,
             ordinary_calls_completed,
             branch_checked,
+            branch_write_applied,
+            expected_branch_write: self.method_branch_write.is_some(),
             expected_branch: self.method_branch.map(|(condition, _)| condition),
             main_local_slots_after_exit: main_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
