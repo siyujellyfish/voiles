@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "保留原 2026-11-08 original_status 歷史快照；F1～F4、C1～C4、R1～R4 已逐項正式閉合，B1 的 11 筆獨立 Gate 須最新 PR HEAD 與合併 main 同 SHA 三必要 CI completed/success 才能認列；其餘 13 條 OpenEngineering。P18.1～P18.3 Passed；P18.4～P18.6 未正式 Passed，嚴格 --check 不得提前成功。",
+  "rule": "歷史 original_status 原封不動。F1～F4、C1～C4、R1～R4 與 B1 已於 main 真驗收；B2/B3 各 20/42 真來源專用 Gate 完成後，只有新 PR 最新 HEAD 與合併 main 同 SHA 三必要 CI completed/success 方能正式計入 Closed。B4、B5、T1～T4、M1～M3、A1～A2 等 11 條義務仍 OpenEngineering。六 Phase 僅 P18.1～P18.3 Passed，P18.4～P18.6 不提前 Passed。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -232,21 +232,33 @@
       "id": "B2",
       "phase": "P18.4",
       "batch": "V3",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r02_三層move資源與兩層旁觀str不同id各自唯一清理",
-      "remaining": "多 Move＋Borrow、跨幀實參失敗與唯一資源交付",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "B2-01～B2-20 原 Checker→真 Runtime 的 20 項 Move／Borrow／ResourceId 安全來源與四類正反證據已建立專用逐項 --exact Gate；正式認列以新 PR 最新 HEAD 與 Squash merge 後 main 同 SHA 三 CI completed/success 為門檻。B4／B5 仍 OpenEngineering，P18.4 不提前 Passed。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "B2-01..B2-20",
+        "tests": "src/struct_stage/execute_call_borrow.rs",
+        "gate": "tools/核對G18-P18.4-B2整筆Move借用共帳.py",
+        "report": "AI-build/G18-P18.4-B2-B3-多資源借用身分閉合證據-20261113.md"
+      }
     },
     {
       "id": "B3",
       "phase": "P18.4",
       "batch": "V3",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r05_雙str實參真借用必反序歸還且不提前釋放資源",
-      "remaining": "同源與異源 BorrowTicket、BorrowFact、ResourceId 一一對應",
-      "work_file": "src/borrow_safety.rs"
+      "remaining": "B3-01～B3-42 原 Checker→真 Runtime 的 42 項 Move／Borrow／ResourceId 安全來源與四類正反證據已建立專用逐項 --exact Gate；正式認列以新 PR 最新 HEAD 與 Squash merge 後 main 同 SHA 三 CI completed/success 為門檻。B4／B5 仍 OpenEngineering，P18.4 不提前 Passed。",
+      "work_file": "src/borrow_safety.rs",
+      "closure_proof": {
+        "contract": "B3-01..B3-42",
+        "tests": "src/struct_stage/execute_call_borrow.rs",
+        "gate": "tools/核對G18-P18.4-B3真Borrow來源身分.py",
+        "report": "AI-build/G18-P18.4-B2-B3-多資源借用身分閉合證據-20261113.md"
+      }
     },
     {
       "id": "B4",
