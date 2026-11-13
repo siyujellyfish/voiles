@@ -333,6 +333,9 @@ jobs:
       - name: G18 P18.4-B4 同步self與普通int真巢狀呼叫七項橋接 Gate
         run: python3 tools/核對G18-P18.4-B4同步方法普通函式橋接.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 main普通fn返回後self借用時序七項 Gate
+        run: python3 tools/核對G18-P18.4-B4主函式普通呼叫方法時序.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
         run: python3 tools/核對G18原六項驗收差距.py --test-bin target/p02/p04_source_internal --audit
       - name: G18 V1 R07 原六項正式 --check 結果／阻塞狀態一致性 Gate

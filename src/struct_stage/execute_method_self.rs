@@ -371,12 +371,29 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            if !calls.is_empty() || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+            let direct_helper = calls.len() == 1 && matches!(
+                &plan,
+                PrivateScalarReturnExpr::Call {
+                    name, arguments, awaited: false,
+                } if arguments.is_empty()
+                    && method_helper.as_ref().is_some_and(|(target, _)| target == name)
+            );
+            if (!calls.is_empty() && !direct_helper)
+                || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 初始化不支援未接通的普通函式呼叫",
+                    "main int 初始化只支援同源 Checker 核准的純整數零參數 helper",
                 ));
             }
-            let value = match plan.evaluate(&known_int_values) {
+            // 同一份原 Checker 無副作用、單一常值 helper，可建立
+            // 靜態數值快照供來源防偽；真正函式進退只能在 execute
+            // 按原 main 執行次序產生，這裡不得預寫動態事件。
+            let expected = if direct_helper {
+                method_helper.as_ref()
+                    .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                        "main helper 缺少原 Checker 唯一純值工作計畫",
+                    ))?.1.evaluate(&BTreeMap::new())
+            } else { plan.evaluate(&known_int_values) };
+            let value = match expected {
                 Ok(value) => value,
                 // 已核准動態名稱參與的運算可能溢位；prepare 只
                 // 封存真計畫，execute 再回報受控溢位且清理已建局部。
@@ -920,9 +937,34 @@ impl PreparedPrivateSelfMethod {
         }
         let mut main_values = BTreeMap::<DeclarationId, i64>::new();
         let mut main_initialization_error = None;
+        // 普通函式可以在 self 方法開始前實際完成；與方法本體
+        // 及其真正 BorrowTicket 使用同一動態進退帳，不能在
+        // prepare 預寫假 FunctionEntered／Returned。
+        let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
+        let mut ordinary_calls_completed = 0usize;
         for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
             .zip(&self.main_init_plans) {
-            let actual = match initializer.evaluate(&main_values) {
+            let executed = match initializer {
+                PrivateScalarReturnExpr::Call {
+                    name, arguments, awaited: false,
+                } if arguments.is_empty()
+                    && self.method_helper.as_ref().is_some_and(|(target, _)| target == name) => {
+                    let (_, helper) = self.method_helper.as_ref()
+                        .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
+                    exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
+                    let value = helper.evaluate(&BTreeMap::new());
+                    if value.is_ok() {
+                        exit_events.push(PrivateSharedCallExitEvent::Returned);
+                        exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                            returned: true,
+                        });
+                        ordinary_calls_completed += 1;
+                    }
+                    value
+                }
+                _ => initializer.evaluate(&main_values),
+            };
+            let actual = match executed {
                 Ok(value) => value,
                 Err(PrivateScalarCallRuntimeError::IntegerOverflow) => {
                     main_initialization_error =
@@ -959,9 +1001,7 @@ impl PreparedPrivateSelfMethod {
         let mut method_entered = false;
         let mut method_exited = false;
         let mut method_local_events = Vec::<PrivateSelfMethodLocalEvent>::new();
-        let mut ordinary_calls_completed = 0usize;
         let mut initialized_method_locals = Vec::<DeclarationId>::new();
-        let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
         let main_locals_complete = main_initialization_error.is_none();
         let result = (|| -> Result<i64, PrivateSelfMethodRuntimeError> {
