@@ -87,8 +87,10 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"{項目} 正式狀態格式不正確")
         if 清冊["current_status"][項目] != 現狀[0]:
             raise ValueError(f"{項目} 現行正式狀態未與核准語意及機讀義務同步")
-        if 項目 != "P18.6" and 清冊["original_status"][項目] != 現狀[0]:
+        if 項目 not in {"P18.1", "P18.6"} and 清冊["original_status"][項目] != 現狀[0]:
             raise ValueError(f"{項目} 非本次核准範圍卻變更了原始驗收狀態")
+        if 項目 == "P18.1" and 現狀[0] != "Passed":
+            raise ValueError("P18.1 必須與 F1～F4 正式四義務同步為 Passed")
         if 項目 == "P18.6" and 現狀[0] != "Incomplete":
             raise ValueError("D18-02 已核准但 A1/A2 尚無完整真任務證據，P18.6 只能 Incomplete")
     所有來源 = {來源 for 來源群 in 原證據.values() for 來源 in 來源群}
@@ -167,6 +169,17 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                     raise ValueError("F3 必須有十五等價類三十真來源證據才准 Closed")
                 if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
                     raise ValueError("F3 原始證據路徑不存在")
+            elif 名稱 == "F4":
+                必要證明 = {
+                    "contract": "F4-C01..F4-C13",
+                    "tests": "src/struct_stage/execute_call_scalar.rs",
+                    "gate": "tools/核對G18-F4可達函式圖原始義務閉合.py",
+                    "report": "AI-build/G18-P18-F4-可達函式圖原始義務閉合證據-20261113.md",
+                }
+                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                    raise ValueError("F4 原 Checker 靜態圖十三類閉合證明不完整")
+                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                    raise ValueError("F4 原始來源／專用 Gate 或報告不存在")
             elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
                 raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
             if 種類 in {"DecisionBlocked", "EngineeringPending"}:
@@ -180,13 +193,19 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
         每項義務[階段] += 1
         統計[狀態] += 1
 
+    if 清冊["current_status"]["P18.1"] != "Passed" or any(
+        item["phase"] == "P18.1" and item["status"] != "Closed"
+        for item in 清冊義務
+    ):
+        raise ValueError("P18.1 只有 F1～F4 四義務全 Closed 才可 Passed")
+
     for 階段, 預期 in 義務身分.items():
         if 每項義務[階段] != len(預期):
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 3 or 統計["OpenEngineering"] != 23 or 統計["BlockedDecision"] != 0:
-        raise ValueError("F1/F2/F3 閉合、其餘 23 條工程 OpenEngineering；不得提前 P18 Passed")
+    if 統計["Closed"] != 4 or 統計["OpenEngineering"] != 22 or 統計["BlockedDecision"] != 0:
+        raise ValueError("F1/F2/F3/F4 閉合、其餘 22 條工程 OpenEngineering；不得提前 P18 Passed")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -291,7 +310,7 @@ def main() -> int:
         f"26 條義務／{報告['closed']} 條已閉合／"
         f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
         f"25 筆獨立真 Rust 測試均已實跑；"
-        "P18 原六項仍 0/6 Passed。"
+        "P18 原六項僅 P18.1 Passed（1/6）；其餘五原項未 Passed。"
     )
     print("V0 完成只代表來源／義務清冊可信；R07 正式 --check 未完成仍必須非零。")
     return 0
