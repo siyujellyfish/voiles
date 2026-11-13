@@ -342,6 +342,9 @@ jobs:
       - name: G18 P18.6-M2 原Checker巢狀動態bool形參選葉與真歸票八項 Gate
         run: python3 tools/核對G18-P18.6-M2巢狀動態bool形參.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 巢狀else真加減溢位與原BorrowTicket歸還八項 Gate
+        run: python3 tools/核對G18-P18.6-M2巢狀else加減溢位.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.3／18.4 原 Checker str.move 真所有權跨函式十項正反 Gate
         run: python3 tools/核對G18整筆移動跨函式真資源.py --test-bin target/p02/p04_source_internal
 
