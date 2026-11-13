@@ -254,7 +254,8 @@ return plus(3)
         let position = out.events.iter().position(|event| matches!(
             event, PrivateScalarCallEvent::ParameterBound(..)
         )).unwrap();
-        out.events.insert(position + 1, out.events[position].clone());
+        let repeated = out.events[position].clone();
+        out.events.insert(position + 1, repeated);
         assert!(!out.has_balanced_frame_trace());
         assert!(matches!(
             plan.audit_graph_outcome(out),
