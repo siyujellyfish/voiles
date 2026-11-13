@@ -43,7 +43,7 @@
       "status": "OpenEngineering",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
-      "remaining": "PR #734/#735/#736 已各自完成 PR HEAD 與新 main 同 SHA 三必要 CI，包含 str-return 巢狀實參、原 Lexer 字面實參及同步 str Call 直接再 return 同 ResourceId 轉發。本批增加跨三層 Caller 的可配置步數中斷矩陣、兩個真獨立 str-return 暫存交參清理、分組括號、未到達分支、後序溢位與 ResourceId 事件重播八項候選 Gate；僅最新 PR HEAD／合併後 main 同 SHA 三必要 CI 成功方可認列。其它原 Checker 等價類與深層失敗防偽仍需審核；P16 已初始化 var str Call 覆寫仍由原 Checker 拒絕。F2=OpenEngineering、P18.1=SubsetVerified、F3 不開始。",
+      "remaining": "PR #734/#735/#736 已各自完成 PR HEAD 與新 main 同 SHA 三必要 CI，包含 str-return 巢狀實參、原 Lexer 字面實參及同步 str Call 直接再 return 同 ResourceId 轉發。本批增加跨三層 Caller 的可配置步數中斷矩陣、兩個真獨立 str-return 暫存交參清理、分組括號、未到達分支、後序溢位與 ResourceId 事件重播八項候選 Gate；僅最新 PR HEAD／合併後 main 同 SHA 三必要 CI 成功方可認列。其它原 Checker 等價類與深層失敗防偽仍需審核；P16 已初始化 var str Call 覆寫仍由原 Checker 拒絕。F2=OpenEngineering、P18.1=SubsetVerified、F3 不開始。 2026-11-13 工程候選新增 F2 雙 str-return 暫存已建立而第三 int 實參溢位的真逆序清理、每步數中斷 ResourceId 對帳、雙參數 target 重綁與跨來源 StrReturned 偽造反證四項；本批須十二項 Gate 與最新 PR HEAD／合併 main 同 SHA 三必要 CI 成功後才能認列證據。F2 仍 OpenEngineering，尚未取得各等價類與深層故障的完整義務閉合；未啟動 F3。",
       "work_file": "src/struct_stage/execute_call_scalar.rs"
     },
     {
