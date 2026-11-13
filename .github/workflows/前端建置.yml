@@ -135,6 +135,21 @@ jobs:
       - name: G18 P18.1-F2 原 Checker 混合實參與原始資源責任九項正反驗收
         run: python3 tools/核對G18-F2混合參數閉合.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.3-R1 原始遞迴錯誤與資源獨立 Gate
+        run: python3 tools/核對G18-P18.3-R1原遞迴真返回.py --test-bin target/p02/p04_source_internal --check
+
+      - name: G18 P18.3-R2 原始遞迴錯誤與資源獨立 Gate
+        run: python3 tools/核對G18-P18.3-R2動態預算.py --test-bin target/p02/p04_source_internal --check
+
+      - name: G18 P18.3-R3 原始遞迴錯誤與資源獨立 Gate
+        run: python3 tools/核對G18-P18.3-R3跨框架身分.py --test-bin target/p02/p04_source_internal --check
+
+      - name: G18 P18.3-R4 原始遞迴錯誤與資源獨立 Gate
+        run: python3 tools/核對G18-P18.3-R4失敗回滾.py --test-bin target/p02/p04_source_internal --check
+
+      - name: G18 P18.3 四原義務 62 筆正式閉合總 Gate
+        run: python3 tools/核對G18-P18.3原始四義務正式驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: G18 P18.2-C1 原始控制與清理正反正式驗收 Gate
         run: python3 tools/核對G18-P18.2-C1分支選葉.py --test-bin target/p02/p04_source_internal --check
 

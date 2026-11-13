@@ -1519,7 +1519,7 @@ from pathlib import Path
 狀態 = {
     "P18.1": ("Passed", "已核對原 Lexer／Parser／Checker／TypedHIR 唯一函式圖及 F1～F4 的七項、十五等價類三十項、十五等價類三十項、十三等價類二十六項獨立真正反 Gate；僅 P18.1 正式完成，其餘五個原 Phase 仍不得提前驗收"),
     "P18.2": ("Passed", "C1～C4 各有獨立原 Lexer／Parser／Checker 真動態來源 Gate：if／else-if／else、for／while、巢狀控制轉移、int/bool/str 逐作用域離域，共 44 筆互不重複正反 Rust 案例；僅 P18.2 正式完成，不擴張尚未核准語意"),
-    "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
+    "P18.3": ("Passed", "R1～R4 各有原 Checker 合法直接／互相遞迴停止及真呼叫圖、單次可配置 StepBudget／CallBudget、同名 DeclarationId 與真 ResourceId／BorrowTicket、正常／溢位／耗盡／注入故障及事件偽造拒絕共 62 筆不重複 Rust 真來源，未擴張非同步或公開執行入口"),
     "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG，借用別名再借用仍缺 VB14 安全證明與完整退出矩陣"),
     "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
     "P18.6": ("Incomplete", "D18-02-E1～E4=A、E5 維持 VB15-01-A 已正式核准；同步共享／獨占 self、多載及方法欄位真讀寫已有受限正反；原 Parser/Checker 直接 await async 普通函式 int／str.move 已真執行，真 BorrowTicket 安全點與 P16 ResourceId／錯誤回滾均有子集證據；仍缺完整協作式 suspend/resume/wakeup、取消後續真任務框架、async self 方法與同步方法混合 CFG 的原六項完整正反驗收；不得標 Passed"),
