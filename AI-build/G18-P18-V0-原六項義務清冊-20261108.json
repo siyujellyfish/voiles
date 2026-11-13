@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "F1/F2/F3 皆有獨立 Checker→Runtime 真正反 Gate 與 closure_proof。F3 十五等價類三十來源須在 PR 最新 HEAD 與合併 main 同 SHA 三必要 CI completed/success 後才認列；F4 至 A2 其餘 23 條 OpenEngineering，六 Phase 0/6 Passed，E1～E5 已正式核准。",
+  "rule": "P18.1 只有 F1～F4 原四義務各自 Closed（7+30+30+26 = 93 真 Rust 正反）且原始總 Gate 真重跑成功，在 PR 最新 HEAD 與合併 main 同 SHA 三必要 CI completed/success 才正式 Passed；其他五個 Phase 仍未驗收，22 條 OpenEngineering，P18 總體仍未完成。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -72,11 +72,17 @@
       "id": "F4",
       "phase": "P18.1",
       "batch": "V1",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "TraceRejection",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r01_普通函式不可達閉包計畫被增添目標須在執行前拒絕",
-      "remaining": "消除有 Checker 證據卻被標量來源閉包 Unsupported 的合法函式圖",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "F4-C01～F4-C13 已針對 Checker 可達／不可達函式圖、歷史預設 str 結構真修復、巢狀前向、旁觀合法宣告、計畫竄改與假事件，綁定 26 筆不重複 Rust 真正反；F1～F4 同批 93 項全 Gate 及 PR HEAD／main 同 SHA 三 CI 完成方認列 P18.1 正式 Passed。其餘 P18.2～18.6 22 條尚 OpenEngineering。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "F4-C01..F4-C13",
+        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "gate": "tools/核對G18-F4可達函式圖原始義務閉合.py",
+        "report": "AI-build/G18-P18-F4-可達函式圖原始義務閉合證據-20261113.md"
+      }
     },
     {
       "id": "C1",
@@ -300,7 +306,7 @@
     }
   ],
   "current_status": {
-    "P18.1": "SubsetVerified",
+    "P18.1": "Passed",
     "P18.2": "SubsetVerified",
     "P18.3": "Incomplete",
     "P18.4": "SubsetVerified",
