@@ -92,7 +92,7 @@ return owner.read(true)
         let plan = PreparedPrivateSelfMethod::prepare(BOOL_TRUE).unwrap();
         let a = plan.execute().unwrap();
         let b = plan.execute().unwrap();
-        assert_eq!((a.result, b.result), (Ok(7), Ok(7)));
+        assert_eq!((&a.result, &b.result), (&Ok(7), &Ok(7)));
         assert_eq!((a.branch_checked, b.branch_checked), (Some(true), Some(true)));
         assert!(a.has_balanced_self_borrow_trace());
         assert!(b.has_balanced_self_borrow_trace());
