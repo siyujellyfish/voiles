@@ -1517,7 +1517,7 @@ from pathlib import Path
 # 18.1／18.2／18.4／18.5 已有合法動態子集，但不能代表完整原項；
 # 18.3／18.6 已核准決策不等於全部工程／動靜正反驗收已通過。
 狀態 = {
-    "P18.1": ("SubsetVerified", "原 Checker 已接通 int/bool、可達 Copyable 結構局部 P16 真建構／離域、if/while/for、區塊局部、OwnedStr 常值／覆寫、str.move 跨函式雙 ResourceId 及 BorrowTicket 同函式子集、遞迴顯式框架／可配置預算；self／借用別名安全證明與任意合法型別混合函式圖仍需完整驗收"),
+    "P18.1": ("Passed", "已核對原 Lexer／Parser／Checker／TypedHIR 唯一函式圖及 F1～F4 的七項、十五等價類三十項、十五等價類三十項、十三等價類二十六項獨立真正反 Gate；僅 P18.1 正式完成，其餘五個原 Phase 仍不得提前驗收"),
     "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
     "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
     "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG，借用別名再借用仍缺 VB14 安全證明與完整退出矩陣"),
