@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "保留 2026-11-08 原 original_status 歷史快照，後續工程只依正式正反 Gate 逐條 Closed；F1 七項真函式來源 Closed 須同 PR HEAD 與新 main 同 SHA 三必要 CI 成功，其餘 25 條仍 OpenEngineering。原 P18.1 仍 SubsetVerified，六 Phase 仍 0/6 Passed；已核准 E1～E5，無重複待決項。",
+  "rule": "F1、F2 各自須有原 Checker→真正 Runtime 正反 Gate、獨立閉合證據、PR 最新 HEAD 及新 main 同 SHA 三必要 CI；只有通過後才正式 Closed。F3～A2 其餘 24 項 OpenEngineering，六 Phase 仍 0/6 Passed；E1～E5 已核准。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -40,11 +40,17 @@
       "id": "F2",
       "phase": "P18.1",
       "batch": "V1",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r04_已核准_bool_false_int_混合參數保持宣告順序和型別",
-      "remaining": "PR #734/#735/#736 已各自完成 PR HEAD 與新 main 同 SHA 三必要 CI，包含 str-return 巢狀實參、原 Lexer 字面實參及同步 str Call 直接再 return 同 ResourceId 轉發。本批增加跨三層 Caller 的可配置步數中斷矩陣、兩個真獨立 str-return 暫存交參清理、分組括號、未到達分支、後序溢位與 ResourceId 事件重播八項候選 Gate；僅最新 PR HEAD／合併後 main 同 SHA 三必要 CI 成功方可認列。其它原 Checker 等價類與深層失敗防偽仍需審核；P16 已初始化 var str Call 覆寫仍由原 Checker 拒絕。F2=OpenEngineering、P18.1=SubsetVerified、F3 不開始。 2026-11-13 工程候選新增 F2 雙 str-return 暫存已建立而第三 int 實參溢位的真逆序清理、每步數中斷 ResourceId 對帳、雙參數 target 重綁與跨來源 StrReturned 偽造反證四項；本批須十二項 Gate 與最新 PR HEAD／合併 main 同 SHA 三必要 CI 成功後才能認列證據。F2 仍 OpenEngineering，尚未取得各等價類與深層故障的完整義務閉合；未啟動 F3。",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "F2-C01～F2-C15 覆蓋已核准 int/bool/str 混合實參與返回、借用／Move／ResourceId、首次 str 接收及既有 Checker 禁用覆寫、未達呼叫零事件、逐步數及多資源回滾、來源與事件防偽；由獨立 30 項真執行 Gate 加上全部既有 F2 專項與 F00/G6/G17 回歸閉合。只在本 PR 最新 HEAD 與合併後 main 同 SHA 三必要 CI 完成且成功後才正式生效。F3／F4 與其餘二十四條義務仍 OpenEngineering；P18.1 仍 SubsetVerified。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "F2-C01..F2-C15",
+        "tests": "src/struct_stage/g18_f2_obligation_tests.rs",
+        "gate": "tools/核對G18-F2原始義務正式閉合.py",
+        "report": "AI-build/G18-P18-F2-原始義務閉合證據-20261113.md"
+      }
     },
     {
       "id": "F3",
