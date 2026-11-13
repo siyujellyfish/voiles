@@ -798,21 +798,72 @@ impl PreparedPrivateSelfMethod {
                                             "M2 巢狀 else 葉必須直接 return",
                                         ));
                                     };
-                                    if !matches!(&returned.expression.kind,
-                                        TermKind::FieldRead(receiver, name)
-                                            if receiver == "self" && name == &field.name)
-                                    {
-                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 巢狀 else 僅安全返回原 Checker self.int 欄位",
-                                        ));
-                                    }
+                                    // 重用同一原 Checker FieldRead/BinaryInt 左欄位右 Lexer
+                                    // int 精確來源檢核，只在實際選中內層 else 時求值。
+                                    let nested_else_calc = match &returned.expression.kind {
+                                                                TermKind::FieldRead(receiver, name)
+                                                                    if receiver == "self" && name == &field.name =>
+                                                                    PrivateSelfIntReturn::Field,
+                                                                TermKind::BinaryInt(binary) => {
+                                                                    let TermKind::FieldRead(receiver, name) =
+                                                                        &binary.left.kind else {
+                                                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else加減左端必須是原 self.int 欄位",
+                                                                        ));
+                                                                    };
+                                                                    let TermKind::Scalar(
+                                                                        crate::syntax_shared::ScalarLiteral::Integer(raw),
+                                                                    ) = &binary.right.kind else {
+                                                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else加減右端必須是原 Lexer int",
+                                                                        ));
+                                                                    };
+                                                                    let left = binary.left.node_span();
+                                                                    let right = binary.right.node_span();
+                                                                    let operator = verified.source.bytes.get(left.end..right.start)
+                                                                        .and_then(|raw| std::str::from_utf8(raw).ok())
+                                                                        .map(str::trim);
+                                                                    let expected = match binary.operator {
+                                                                        '+' => "+",
+                                                                        '-' => "-",
+                                                                        _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else只能使用已核准 int 加減運算子",
+                                                                        )),
+                                                                    };
+                                                                    if receiver != "self" || name != &field.name
+                                                                        || operator != Some(expected)
+                                                                        || !verified.tokens.iter().any(|token|
+                                                                            token.start == binary.right.start
+                                                                                && token.end == binary.right.end
+                                                                                && matches!(&token.kind,
+                                                                                    TokenKind::Integer(text) if text == raw)
+                                                                        ) {
+                                                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else算術缺少原 Checker/Lexer 欄位及運算子身分",
+                                                                        ));
+                                                                    }
+                                                                    let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                                                                        PrivateSelfMethodPrepareError::Unsupported(
+                                                                            "M2 巢狀 else加減值超出 i64",
+                                                                        )
+                                                                    )?;
+                                                                    match binary.operator {
+                                                                        '+' => PrivateSelfIntReturn::Add(literal),
+                                                                        '-' => PrivateSelfIntReturn::Subtract(literal),
+                                                                        _ => unreachable!("運算子已在原 Checker 權限驗證"),
+                                                                    }
+                                                                }
+                                                                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                                                    "M2 巢狀 else只接通原 Checker self.int 或其 int 加減",
+                                                                )),
+                                                            };
                                     (true_stmt, Some((condition, false_stmt.node_span())),
-                                        parameter_source)
-                                } else { (candidate, None, None) }
+                                        parameter_source, Some(nested_else_calc))
+                                } else { (candidate, None, None, None) }
                             } else {
                                 (branch.body.statements.last().expect(
                                     "原 Parser 已證明 true 葉非空",
-                                ), None, None)
+                                ), None, None, None)
                             };
                         let StmtKind::Return(early) = &early_stmt.kind else {
                             return Err(PrivateSelfMethodPrepareError::Unsupported(
