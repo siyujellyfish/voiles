@@ -366,6 +366,9 @@ jobs:
       - name: G18 P18.6-M2 原Checker巢狀true_else整數常值八項獨立安全 Gate
         run: python3 tools/核對G18-P18.6-M2巢狀整數常值返回.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 原Checker頂層else直接欄位與加減八項安全 Gate
+        run: python3 tools/核對G18-P18.6-M2頂層else欄位與加減.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 同步self與普通int真巢狀呼叫七項橋接 Gate
         run: python3 tools/核對G18-P18.4-B4同步方法普通函式橋接.py --test-bin target/p02/p04_source_internal
 
