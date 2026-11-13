@@ -1518,7 +1518,7 @@ from pathlib import Path
 # 18.3／18.6 已核准決策不等於全部工程／動靜正反驗收已通過。
 狀態 = {
     "P18.1": ("Passed", "已核對原 Lexer／Parser／Checker／TypedHIR 唯一函式圖及 F1～F4 的七項、十五等價類三十項、十五等價類三十項、十三等價類二十六項獨立真正反 Gate；僅 P18.1 正式完成，其餘五個原 Phase 仍不得提前驗收"),
-    "P18.2": ("SubsetVerified", "真 if／else-if、原 Checker 合法半開 for 與已驗證 bool while 現依可配置步數預算多輪重讀、continue／break 真清理；複雜動態控制及全矩陣仍待驗收"),
+    "P18.2": ("Passed", "C1～C4 各有獨立原 Lexer／Parser／Checker 真動態來源 Gate：if／else-if／else、for／while、巢狀控制轉移、int/bool/str 逐作用域離域，共 44 筆互不重複正反 Rust 案例；僅 P18.2 正式完成，不擴張尚未核准語意"),
     "P18.3": ("Incomplete", "已接通多資源遞迴真 BorrowTicket、str.move 跨函式與直接遞迴唯一 ResourceId，另同 Call move＋借用在各階段故障逆序清理；任意控制流／複合資源參數仍待完整正反"),
     "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG，借用別名再借用仍缺 VB14 安全證明與完整退出矩陣"),
     "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
