@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "F1、F2 各自須有原 Checker→真正 Runtime 正反 Gate、獨立閉合證據、PR 最新 HEAD 及新 main 同 SHA 三必要 CI；只有通過後才正式 Closed。F3～A2 其餘 24 項 OpenEngineering，六 Phase 仍 0/6 Passed；E1～E5 已核准。",
+  "rule": "F1/F2/F3 皆有獨立 Checker→Runtime 真正反 Gate 與 closure_proof。F3 十五等價類三十來源須在 PR 最新 HEAD 與合併 main 同 SHA 三必要 CI completed/success 後才認列；F4 至 A2 其餘 23 條 OpenEngineering，六 Phase 0/6 Passed，E1～E5 已正式核准。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -56,11 +56,17 @@
       "id": "F3",
       "phase": "P18.1",
       "batch": "V1",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r01_巢狀實參呼叫圖需收錄內外兩個int目標而略過無關函式",
-      "remaining": "return／宣告／賦值／條件／迴圈內的合法函式調用位置 2026-11-13 本批增設跨 return／宣告／賦值／if／for／while 真同圖六項正反，精確 --exact Gate 覆核每個真正退出；此為 F3 候選子集，須 PR HEAD 和 main 同 SHA 三必要 CI 以及其它可達等價類評估後才能閉合；仍 OpenEngineering。",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "F3-C01～F3-C15 由原 Checker 已核准的 return、宣告、賦值、if／else-if／else、for／while 位置三十項互不重複正反真執行驗證，包含原 Checker 拒絕非法 while 函式條件、不可達零副作用、借用／Move 回收、溢位不偽造返回及來源變造拒絕。此為 PR 合併候選，僅最新 HEAD 與新 main 同 SHA 三必要 CI 均成功後正式生效；F4 與其他 23 條義務仍 OpenEngineering，P18.1 未 Passed。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "F3-C01..F3-C15",
+        "tests": "src/struct_stage/g18_f3_call_site_tests.rs",
+        "gate": "tools/核對G18-F3原始義務正式閉合.py",
+        "report": "AI-build/G18-P18-F3-原始義務閉合證據-20261113.md"
+      }
     },
     {
       "id": "F4",
