@@ -28,6 +28,9 @@ struct PrivateSelfMethodOutcome {
     ticket_returned: bool,
     /// B4：原 Checker 普通函式在真正 self 框架內執行的已完成次數。
     ordinary_calls_completed: usize,
+    /// B4：已真正進入的普通函式次數，含執行期故障未返回的那一次。
+    /// 不能把已進入但 Unwind 的 helper 當成成功完成。
+    ordinary_calls_entered: usize,
     /// M2：真正進入同步方法後才觀測的原 Checker if 條件。
     /// 未進入的分支、借用前錯誤及方法入口注入失敗不得填寫。
     branch_checked: Option<bool>,
@@ -185,7 +188,10 @@ impl PrivateSelfMethodOutcome {
                 &self.exit_events, self.result.is_ok(),
             )
             && nested_depth == 0
-            && entered == usize::from(self.method_entered) + self.ordinary_calls_completed
+            && self.ordinary_calls_completed <= self.ordinary_calls_entered
+            && (!self.result.is_ok()
+                || self.ordinary_calls_completed == self.ordinary_calls_entered)
+            && entered == usize::from(self.method_entered) + self.ordinary_calls_entered
             && returned == usize::from(self.method_exited) + self.ordinary_calls_completed
             && acquired == all_issued && all_issued <= 1
             && (!self.method_exited || self.method_entered)
@@ -330,6 +336,18 @@ struct PreparedPrivateSelfMethod {
     argument_plans: Vec<PrivateScalarReturnExpr>,
 }
 
+/// B4：僅認同一原 Checker 已證的零參數、無副作用 Copyable int
+/// 常值與加減樹。拒絕 Call／Struct／Borrow／未證名稱，不由字串推導。
+fn private_self_pure_helper_int(expr: &PrivateScalarReturnExpr) -> bool {
+    match expr {
+        PrivateScalarReturnExpr::Constant(_) => true,
+        PrivateScalarReturnExpr::Addition(left, right)
+        | PrivateScalarReturnExpr::Subtraction(left, right) =>
+            private_self_pure_helper_int(left) && private_self_pure_helper_int(right),
+        _ => false,
+    }
+}
+
 impl PreparedPrivateSelfMethod {
     fn prepare(text: &str) -> Result<Self, PrivateSelfMethodPrepareError> {
         use crate::common_ir::{NodeRole, NodeSpan, ScalarType, VerifiedTypedMember};
@@ -378,8 +396,8 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "原 Checker 來源缺少唯一 main",
             ))?;
-        // 第一個 B4 真混合工作圖：普通函式僅限零參數、單一
-        // 已核准 int 常值返回，所有來源身分皆來自同一原 Checker。
+        // B4 真混合工作圖：普通函式僅限零參數、單一
+        // 原 Checker 已核准純整數常值／加減返回，保留動態溢位。
         let method_helper = verified.functions.iter().find(|fun| fun.name != "main")
             .map(|helper| {
                 if !helper.params.is_empty() || helper.result_ty != "int"
@@ -398,9 +416,9 @@ impl PreparedPrivateSelfMethod {
                 ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                     "B4 helper 返回缺少原 Checker TypedHIR／Lexer 證明",
                 ))?;
-                if !matches!(plan, PrivateScalarReturnExpr::Constant(_)) {
+                if !private_self_pure_helper_int(&plan) {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 helper 尚只接通無副作用的純 int 返回",
+                        "B4 helper 僅接通原 Checker 已核准的無副作用純 int 常值／加減",
                     ));
                 }
                 Ok((helper.name.clone(), plan))
@@ -1704,6 +1722,7 @@ impl PreparedPrivateSelfMethod {
         // prepare 預寫假 FunctionEntered／Returned。
         let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut ordinary_calls_completed = 0usize;
+        let mut ordinary_calls_entered = 0usize;
         let mut branch_checked = None::<bool>;
         let mut nested_branch_checked = None::<bool>;
         let mut branch_write_applied = false;
@@ -1720,6 +1739,7 @@ impl PreparedPrivateSelfMethod {
                     let (_, helper) = self.method_helper.as_ref()
                         .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
                     exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
+                    ordinary_calls_entered += 1;
                     let value = helper.evaluate(&BTreeMap::new());
                     if value.is_ok() {
                         exit_events.push(PrivateSharedCallExitEvent::Returned);
@@ -1727,6 +1747,13 @@ impl PreparedPrivateSelfMethod {
                             returned: true,
                         });
                         ordinary_calls_completed += 1;
+                    } else {
+                        // 故障發生於 main 的 helper 框架；不得再借 self，
+                        // 也不得留下沒有退出的普通函式或假 Returned。
+                        exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
+                        exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                            returned: false,
+                        });
                     }
                     value
                 }
@@ -1830,8 +1857,23 @@ impl PreparedPrivateSelfMethod {
                         let (_, checked) = self.method_helper.as_ref()
                             .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
                         exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
-                        let value = checked.evaluate(&BTreeMap::new())
-                            .map_err(|_| PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                        ordinary_calls_entered += 1;
+                        let value = match checked.evaluate(&BTreeMap::new()) {
+                            Ok(value) => value,
+                            Err(reason) => {
+                                // 內層 helper 真溢位：先從內層開始 Unwind，
+                                // 再由方法統一清理局部及歸還 self BorrowTicket。
+                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: false,
+                                });
+                                return Err(match reason {
+                                    PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                        PrivateSelfMethodRuntimeError::IntegerOverflow,
+                                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                                });
+                            }
+                        };
                         exit_events.push(PrivateSharedCallExitEvent::Returned);
                         exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
                             returned: true,
@@ -2058,7 +2100,12 @@ impl PreparedPrivateSelfMethod {
             exit_events.push(PrivateSharedCallExitEvent::Returned);
             Ok(calculated)
         })();
-        if result.is_err() && !exit_events.is_empty() {
+        if result.is_err() && !exit_events.is_empty()
+            && !exit_events.iter().any(|event| matches!(
+                event, PrivateSharedCallExitEvent::UnwindStarted
+            )) {
+            // helper 可能已在更內層真開始 Unwind；只能有一次事件，
+            // 避免外層方法重複虛報退出起點。
             exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
         }
         // 真局部依逆序離域，無論正常返回、溢位或方法中途故障。
@@ -2106,7 +2153,7 @@ impl PreparedPrivateSelfMethod {
         }
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
-            ordinary_calls_completed,
+            ordinary_calls_completed, ordinary_calls_entered,
             branch_checked,
             nested_branch_checked,
             nested_write_applied, nested_else_write_applied,
