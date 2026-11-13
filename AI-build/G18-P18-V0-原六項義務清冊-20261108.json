@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "original_status 保留 2026-11-08 歷史快照。F1～F4、C1～C4、R1～R4、B1～B3 已由 main 同 SHA 完整 CI 正式閉合；B5 42 真 Checker／BorrowSafety 案例需本 PR 最新 HEAD 與新 main 同 SHA 三 CI success 才正式生效。B4、T1～T4、M1～M3、A1～A2 共 10 條 OpenEngineering。P18 僅 P18.1～P18.3 Passed；P18.4～P18.6 不得提前標 Passed。",
+  "rule": "保留歷史 original_status；F1～F4、C1～C4、R1～R4、B1～B3、B5 已驗收。M1 27 真來源獨立 Gate 必須最新 PR HEAD 與 Squash merge 後新 main 同 SHA 三必要 CI completed/success 方能正式採計。B4、T1～T4、M2/M3、A1/A2 共九項 OpenEngineering；P18.1～P18.3 Passed 3/6，P18.4～P18.6 未 Passed，原 `--check` 應繼續失敗。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -330,11 +330,17 @@
       "id": "M1",
       "phase": "P18.6",
       "batch": "V6",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_method_self_tests::g18_f_同名方法單_int_實參依原_checker_型別選真共享多載",
-      "remaining": "S20 唯一方法簽章與零／多參數及歧義反例",
-      "work_file": "src/struct_stage/execute_method_self.rs"
+      "remaining": "S20 原 Checker 九項完整多載候選／數量／型別／歧義靜態正反，加十八項同一來源 PreparedPrivateSelfMethod 真運行零／單／多 int 方法、獨占自動 self、故障與身分篡改，已建立獨立共 27 筆逐項 --exact Gate。需本 PR 最新 HEAD 及 Squash merge 後 main 同 SHA 三必要 CI 成功方正式生效；M2/M3/A1/A2 仍 OpenEngineering，P18.6 仍 Incomplete。",
+      "work_file": "src/struct_stage/execute_method_self.rs",
+      "closure_proof": {
+        "contract": "M1-01..M1-27",
+        "tests": "src/struct_stage/method_overload_tests.rs",
+        "gate": "tools/核對G18-P18.6-M1原始方法簽章.py",
+        "report": "AI-build/G18-P18.6-M1-唯一方法靜態簽章閉合證據-20261113.md"
+      }
     },
     {
       "id": "M2",
