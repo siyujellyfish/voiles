@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "P18.1、P18.2 各須其原義務全部 Closed，P18.2 C1～C4 四獨立 Gate 共 44 真正反且總 Gate 重跑成功，最新 PR HEAD 及合併 main 同 SHA 三必要 CI completed/success 才 Passed；其餘 18 條 OpenEngineering、P18 總體 2/6 Passed 未結案。",
+  "rule": "P18.1～P18.3 分別必須原四義務全 Closed；R1～R4 62 獨立 Rust 真來源的 Gate 及總 Gate 均成功，PR 最新 HEAD 及合併 main 同 SHA 三必要 CI completed/success 後 P18.3 才正式 Passed。P18.4～P18.6 合計 14 條仍 OpenEngineering，P18 全體 3/6 未結案。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -152,41 +152,65 @@
       "id": "R1",
       "phase": "P18.3",
       "batch": "V5",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_c_合法直接_int_遞迴不得因圖成環被拒_且無_rust_堆疊溢位",
-      "remaining": "直接／互相遞迴與合法多資源及終止的真動態回傳",
-      "work_file": "src/struct_stage/execute_recursive_str.rs"
+      "remaining": "R1～R4 原 Checker／真顯式遞迴框架共 62 筆不重複正反（50 資源遞迴／12 Copyable、Move、預算及故障交叉），需獨立 Gate 和正式四義務總 Gate 在 PR 最新 HEAD 及合併 main 同 SHA 3 CI completed/success 才生效；不代表 P18.4～18.6 已完成。",
+      "work_file": "src/struct_stage/execute_recursive_str.rs",
+      "closure_proof": {
+        "contract": "R1-01..R1-16",
+        "tests": "src/struct_stage/execute_recursive_str.rs",
+        "gate": "tools/核對G18-P18.3-R1原遞迴真返回.py",
+        "report": "AI-build/G18-P18.3-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "R2",
       "phase": "P18.3",
       "batch": "V5",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeFailure",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_c_純值遞迴步數預算受控耗盡且深層框架逆序退出",
-      "remaining": "獨立每次執行預算／深層受控耗盡／清理",
-      "work_file": "src/struct_stage/execute_call_scalar.rs"
+      "remaining": "R1～R4 原 Checker／真顯式遞迴框架共 62 筆不重複正反（50 資源遞迴／12 Copyable、Move、預算及故障交叉），需獨立 Gate 和正式四義務總 Gate 在 PR 最新 HEAD 及合併 main 同 SHA 3 CI completed/success 才生效；不代表 P18.4～18.6 已完成。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "R2-01..R2-14",
+        "tests": "src/struct_stage/execute_recursive_str.rs",
+        "gate": "tools/核對G18-P18.3-R2動態預算.py",
+        "report": "AI-build/G18-P18.3-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "R3",
       "phase": "P18.3",
       "batch": "V5",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_private_owned_move_call_tests::g18_c_多函式逐層_move_同一_resourceid_末端真正釋放且返回逐框架退出",
-      "remaining": "多個 ResourceId、同名 DeclarationId 與多層 Move/Borrow 同步清理",
-      "work_file": "src/struct_stage/execute_recursive_str.rs"
+      "remaining": "R1～R4 原 Checker／真顯式遞迴框架共 62 筆不重複正反（50 資源遞迴／12 Copyable、Move、預算及故障交叉），需獨立 Gate 和正式四義務總 Gate 在 PR 最新 HEAD 及合併 main 同 SHA 3 CI completed/success 才生效；不代表 P18.4～18.6 已完成。",
+      "work_file": "src/struct_stage/execute_recursive_str.rs",
+      "closure_proof": {
+        "contract": "R3-01..R3-16",
+        "tests": "src/struct_stage/execute_recursive_str.rs",
+        "gate": "tools/核對G18-P18.3-R3跨框架身分.py",
+        "report": "AI-build/G18-P18.3-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "R4",
       "phase": "P18.3",
       "batch": "V4",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeFailure",
       "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r05_外層待呼叫借用與內層函式溢位須先還內票再還外票",
-      "remaining": "正常／提前 return／溢位／耗盡／故障完整共通退出",
-      "work_file": "src/struct_stage/shared_call_exit.rs"
+      "remaining": "R1～R4 原 Checker／真顯式遞迴框架共 62 筆不重複正反（50 資源遞迴／12 Copyable、Move、預算及故障交叉），需獨立 Gate 和正式四義務總 Gate 在 PR 最新 HEAD 及合併 main 同 SHA 3 CI completed/success 才生效；不代表 P18.4～18.6 已完成。",
+      "work_file": "src/struct_stage/shared_call_exit.rs",
+      "closure_proof": {
+        "contract": "R4-01..R4-16",
+        "tests": "src/struct_stage/execute_recursive_str.rs",
+        "gate": "tools/核對G18-P18.3-R4失敗回滾.py",
+        "report": "AI-build/G18-P18.3-原始四義務正式驗收證據-20261113.md"
+      }
     },
     {
       "id": "B1",
@@ -332,7 +356,7 @@
   "current_status": {
     "P18.1": "Passed",
     "P18.2": "Passed",
-    "P18.3": "Incomplete",
+    "P18.3": "Passed",
     "P18.4": "SubsetVerified",
     "P18.5": "SubsetVerified",
     "P18.6": "Incomplete"
