@@ -247,6 +247,19 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                     raise ValueError(f"P18.4 {名稱} 沒有原來源及 {數量} 筆獨立 Gate 閉合證明")
                 if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
                     raise ValueError(f"P18.4 {名稱} 真來源／Gate／報告不存在")
+            elif 名稱 == "B5":
+                # 原 P14/P15 Checker 與真 BorrowSafety 依 B5 七組 42 筆獨立
+                # Rust --exact Gate 證明；不因此解除 VB14 的無證再借限制。
+                必要證明 = {
+                    "contract": "B5-01..B5-42",
+                    "tests": "src/struct_stage/tests_lifetime_resources.rs",
+                    "gate": "tools/核對G18-P18.4-B5借用有效期與無證再借.py",
+                    "report": "AI-build/G18-P18.4-B5-借用生命期與退出票據正式證據-20261113.md",
+                }
+                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                    raise ValueError("B5 借用有效期與無證再借沒有 42 項獨立正反證據")
+                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                    raise ValueError("B5 Rust 來源／獨立 Gate／報告不存在")
             elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
                 raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
             if 種類 in {"DecisionBlocked", "EngineeringPending"}:
@@ -283,8 +296,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 15 or 統計["OpenEngineering"] != 11 or 統計["BlockedDecision"] != 0:
-        raise ValueError("F1～F4、C1～C4、R1～R4、B1～B3 閉合；其餘 11 條 OpenEngineering；不得提前 P18.4 Passed")
+    if 統計["Closed"] != 16 or 統計["OpenEngineering"] != 10 or 統計["BlockedDecision"] != 0:
+        raise ValueError("F1～F4、C1～C4、R1～R4、B1～B3、B5 閉合；B4 與 T/M/A 共 10 條 OpenEngineering；不得提前 P18.4 Passed")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -389,7 +402,7 @@ def main() -> int:
         f"26 條義務／{報告['closed']} 條已閉合／"
         f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
         f"25 筆獨立真 Rust 測試均已實跑；"
-        "P18 原六項 P18.1～P18.3 Passed（3/6）；B1 已主線正式閉合，B2／B3 同批獨立閉合候選，其餘三原項未 Passed。"
+        "P18 原六項 P18.1～P18.3 Passed（3/6）；B1～B3 主線已閉合，B5 獨立閉合候選，其餘三原項未 Passed。"
     )
     print("V0 完成只代表來源／義務清冊可信；R07 正式 --check 未完成仍必須非零。")
     return 0
