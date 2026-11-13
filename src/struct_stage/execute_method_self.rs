@@ -26,6 +26,8 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+    /// B4：原 Checker 普通函式在真正 self 框架內執行的已完成次數。
+    ordinary_calls_completed: usize,
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
     main_local_slots_after_exit: usize,
     method_local_slots_after_exit: usize,
@@ -104,11 +106,19 @@ impl PrivateSelfMethodOutcome {
         // 記錄在真正 FunctionEntered 之前，亦不應在其
         // FunctionExited 之後以 main 的匿名基底框架補造。
         let mut inside_method = false;
+        let mut nested_depth = 0usize;
         let mut local_events_inside_real_method = true;
         for event in &self.exit_events {
             match event {
-                PrivateSharedCallExitEvent::FunctionEntered => inside_method = true,
-                PrivateSharedCallExitEvent::FunctionExited { .. } => inside_method = false,
+                PrivateSharedCallExitEvent::FunctionEntered => {
+                    nested_depth += 1;
+                    inside_method = true;
+                }
+                PrivateSharedCallExitEvent::FunctionExited { .. } => {
+                    let Some(remaining) = nested_depth.checked_sub(1) else { return false; };
+                    nested_depth = remaining;
+                    inside_method = remaining > 0;
+                }
                 PrivateSharedCallExitEvent::LocalInitialized(_)
                     | PrivateSharedCallExitEvent::LocalAssigned(_)
                     | PrivateSharedCallExitEvent::LocalScopeEnded(_) if !inside_method => {
@@ -153,10 +163,10 @@ impl PrivateSelfMethodOutcome {
             && private_shared_call_exit_balanced(
                 &self.exit_events, self.result.is_ok(),
             )
-            && entered <= 1 && returned <= 1 && acquired == all_issued
-            && all_issued <= 1
-            && self.method_entered == (entered == 1)
-            && self.method_exited == (returned == 1)
+            && nested_depth == 0
+            && entered == usize::from(self.method_entered) + self.ordinary_calls_completed
+            && returned == usize::from(self.method_exited) + self.ordinary_calls_completed
+            && acquired == all_issued && all_issued <= 1
             && (!self.method_exited || self.method_entered)
             && self.method_exited == self.result.is_ok()
     }
@@ -207,6 +217,8 @@ struct PreparedPrivateSelfMethod {
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
     method_int_locals: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
+    /// B4：同一原 Checker 唯一零參數、純 int 返回的真普通函式計畫。
+    method_helper: Option<(String, PrivateScalarReturnExpr)>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
     method_int_assignments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     method: String,
@@ -236,9 +248,9 @@ impl PreparedPrivateSelfMethod {
         let verified = verify_source_with_ability(
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateSelfMethodPrepareError::Check)?;
-        if verified.structs.len() != 1 || verified.functions.len() != 1 {
+        if verified.structs.len() != 1 || !(1..=2).contains(&verified.functions.len()) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "僅支援一個原 Checker 結構和其真正 main",
+                "僅支援一個原 Checker 結構、main 和至多一個已核准的純 int helper",
             ));
         }
         let definition = verified.structs.values().next().expect("已驗證只有一結構");
@@ -274,7 +286,37 @@ impl PreparedPrivateSelfMethod {
         // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
         // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
         // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
-        let main = &verified.functions[0];
+        let main = verified.functions.iter().find(|fun| fun.name == "main")
+            .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                "原 Checker 來源缺少唯一 main",
+            ))?;
+        // 第一個 B4 真混合工作圖：普通函式僅限零參數、單一
+        // 已核准 int 常值返回，所有來源身分皆來自同一原 Checker。
+        let method_helper = verified.functions.iter().find(|fun| fun.name != "main")
+            .map(|helper| {
+                if !helper.params.is_empty() || helper.result_ty != "int"
+                    || helper.is_async || helper.body.statements.len() != 1 {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "B4 僅支援原 Checker 零參數純 int helper",
+                    ));
+                }
+                let StmtKind::Return(returned) = &helper.body.statements[0].kind else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "B4 普通函式必須具有真正 return 來源",
+                    ));
+                };
+                let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                    &returned.expression, &BTreeMap::new(), &verified,
+                ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                    "B4 helper 返回缺少原 Checker TypedHIR／Lexer 證明",
+                ))?;
+                if !matches!(plan, PrivateScalarReturnExpr::Constant(_)) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "B4 helper 尚只接通無副作用的純 int 返回",
+                    ));
+                }
+                Ok((helper.name.clone(), plan))
+            }).transpose()?;
         let last_main_statement = main.body.statements.last().ok_or(
             PrivateSelfMethodPrepareError::Unsupported("main 缺少真同步方法返回"),
         )?;
@@ -521,10 +563,16 @@ impl PreparedPrivateSelfMethod {
                     ))?;
                     let mut calls = Vec::new();
                     expr.collect_calls(&mut calls);
-                    if !calls.is_empty()
+                    let approved_helper = calls.len() == 1 && matches!(
+                        &expr,
+                        PrivateScalarReturnExpr::Call { name, arguments, awaited: false }
+                            if arguments.is_empty() &&
+                            method_helper.as_ref().is_some_and(|(target, _)| target == name)
+                    );
+                    if (!calls.is_empty() && !approved_helper)
                         || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "方法 int 局部不支援尚未接通的普通函式或不可達來源",
+                            "方法 int 局部不支援未核准的普通函式或不可達來源",
                         ));
                     }
                     method_int_locals.push((id, expr));
@@ -815,7 +863,7 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             write_value, return_calculation, method_int_locals,
-            method_int_assignments,
+            method_helper, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -833,6 +881,7 @@ impl PreparedPrivateSelfMethod {
             && self.write_value == fresh.write_value
             && self.return_calculation == fresh.return_calculation
             && self.method_int_locals == fresh.method_int_locals
+            && self.method_helper == fresh.method_helper
             && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
@@ -910,6 +959,7 @@ impl PreparedPrivateSelfMethod {
         let mut method_entered = false;
         let mut method_exited = false;
         let mut method_local_events = Vec::<PrivateSelfMethodLocalEvent>::new();
+        let mut ordinary_calls_completed = 0usize;
         let mut initialized_method_locals = Vec::<DeclarationId>::new();
         let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
@@ -956,12 +1006,32 @@ impl PreparedPrivateSelfMethod {
             // 由已取得的 self 真方法框架按宣告次序執行局部。
             // 不進入任何未達作用域的局部，也不誤用 main 的值槽。
             for (id, initializer) in &self.method_int_locals {
-                let calculated = initializer.evaluate(&parameter_frame)
-                    .map_err(|reason| match reason {
-                        PrivateScalarCallRuntimeError::IntegerOverflow =>
-                            PrivateSelfMethodRuntimeError::IntegerOverflow,
-                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                    })?;
+                let calculated = match initializer {
+                    PrivateScalarReturnExpr::Call { name, arguments, awaited: false }
+                        if arguments.is_empty() &&
+                            self.method_helper.as_ref().is_some_and(|(target, _)| target == name) => {
+                        // 不是 prepare 階段求值：只有走到方法此局部時，
+                        // 由同一原 Checker 的真 helper int 工作計畫執行，
+                        // 在 self 的真借用存活期間進／退普通函式框架。
+                        let (_, checked) = self.method_helper.as_ref()
+                            .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                        exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
+                        let value = checked.evaluate(&BTreeMap::new())
+                            .map_err(|_| PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                        exit_events.push(PrivateSharedCallExitEvent::Returned);
+                        exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                            returned: true,
+                        });
+                        ordinary_calls_completed += 1;
+                        value
+                    }
+                    _ => initializer.evaluate(&parameter_frame)
+                        .map_err(|reason| match reason {
+                            PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                PrivateSelfMethodRuntimeError::IntegerOverflow,
+                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                        })?,
+                };
                 if parameter_frame.insert(*id, calculated).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
@@ -1137,6 +1207,7 @@ impl PreparedPrivateSelfMethod {
         }
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            ordinary_calls_completed,
             main_local_slots_after_exit: main_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
             method_local_events,
