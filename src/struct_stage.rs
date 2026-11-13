@@ -1411,6 +1411,10 @@ include!("struct_stage/g18_b4_mixed_self_call_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_main_call_method_tests.rs");
 
+// G18／P18.4-B4：原 Checker 純 int helper 加減及 main／方法內溢位退出。
+#[cfg(test)]
+include!("struct_stage/g18_b4_helper_arithmetic_unwind_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");
