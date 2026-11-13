@@ -279,6 +279,8 @@ struct PreparedPrivateSelfMethod {
     /// M2：內層 if(Name) 的原 Checker bool 形參宣告身分；
     /// 無此值時嚴格使用 Lexer 真 bool 字面，不能把 int 轉為 bool。
     method_nested_branch_parameter: Option<DeclarationId>,
+    /// M2：原 Checker 巢狀 else 直接返回或 int 加減。
+    method_nested_else_calculation: Option<PrivateSelfIntReturn>,
     /// M2：只有原 Checker 真 bool 形式參數能成為方法 if 條件來源。
     method_branch_parameter: Option<DeclarationId>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
