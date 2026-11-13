@@ -624,9 +624,10 @@ impl PreparedPrivateSelfMethod {
                                             && matches!(&token.kind, TokenKind::Name(found)
                                                 if found == name)
                                     )
-                                    || verified.plan.scalar_hir.expression(
-                                        branch.condition.node_span(),
-                                    ).is_none_or(|fact| fact.ty != ScalarType::Bool)
+                                    // 方法 bool 條件的原 Checker 事實由
+                                    // method_bool_condition／VerifiedMethodSafety
+                                    // 簽發；它不一定進入只供 Copyable int
+                                    // 求值的 ScalarHIR，不得誤要求另一權威。
                                 {
                                     return Err(PrivateSelfMethodPrepareError::Unsupported(
                                         "M2 bool 參數條件與原 Checker 名稱身分不一致",
@@ -1795,8 +1796,14 @@ mod g18_private_method_self_tests {
         assert_eq!(outcome.result, Ok(10));
         assert!(outcome.ticket_returned);
         let bool_arg = "struct Counter{\nvar count:int = 7\nfn get(flag:bool)->int{\nreturn self.count\n}\n}\nfn main()->int{\nvar value:Counter = Counter()\nreturn value.get(true)\n}\n";
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(bool_arg),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        // 先前這個歷史案例預期尚未接通的 bool 方法為 Unsupported。
+        // M2 已核准 bool 形參值槽後，合法 true 原來源必真執行，
+        // 但不得轉為 int 或產生假的 UTF-8／借用票據。
+        let bool_out = checked(bool_arg).execute().unwrap();
+        assert_eq!(bool_out.result, Ok(7));
+        assert!(bool_out.ticket_returned);
+        assert!(bool_out.has_balanced_self_borrow_trace());
+        assert!(bool_out.events.is_empty());
     }
 
     fn method_param_source(body: &str, argument: &str) -> String {
