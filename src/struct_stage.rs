@@ -1427,6 +1427,10 @@ include!("struct_stage/g18_m2_if_else_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_m2_conditional_write_tests.rs");
 
+// G18／P18.6-M2：真 self 寫入後返回算術的受控溢位與票據退出驗收。
+#[cfg(test)]
+include!("struct_stage/g18_m2_post_write_overflow_tests.rs");
+
 // G18／F2：原 Checker 真 bool 返回與 bool 實參使用同一動態進退帳。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_return_tests.rs");
