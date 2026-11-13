@@ -1415,6 +1415,10 @@ include!("struct_stage/g18_b4_main_call_method_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_helper_arithmetic_unwind_tests.rs");
 
+// G18／P18.4-B4：原 Checker var int 真重賦已核准純 helper 的 RHS 及失敗原子性。
+#[cfg(test)]
+include!("struct_stage/g18_b4_helper_assignment_unwind_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");

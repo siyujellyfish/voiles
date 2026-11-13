@@ -1354,10 +1354,19 @@ impl PreparedPrivateSelfMethod {
                     ))?;
                     let mut calls = Vec::new();
                     expr.collect_calls(&mut calls);
-                    if !calls.is_empty()
+                    let direct_helper = calls.len() == 1 && matches!(
+                        &expr,
+                        PrivateScalarReturnExpr::Call {
+                            name, arguments, awaited: false,
+                        } if arguments.is_empty()
+                            && method_helper.as_ref().is_some_and(
+                                |(target, _)| target == name
+                            )
+                    );
+                    if (!calls.is_empty() && !direct_helper)
                         || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "方法 var int 更新不能偷渡未核准的普通函式呼叫",
+                            "方法 var int 更新只可使用原 Checker 純算式或直接純值 helper",
                         ));
                     }
                     method_int_assignments.push((id, expr));
@@ -1904,12 +1913,52 @@ impl PreparedPrivateSelfMethod {
                 if !initialized_method_locals.contains(id) {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
-                let value = expression.evaluate(&parameter_frame)
-                    .map_err(|reason| match reason {
-                        PrivateScalarCallRuntimeError::IntegerOverflow =>
-                            PrivateSelfMethodRuntimeError::IntegerOverflow,
-                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                    })?;
+                let value = match expression {
+                    PrivateScalarReturnExpr::Call {
+                        name, arguments, awaited: false,
+                    } if arguments.is_empty()
+                        && self.method_helper.as_ref().is_some_and(
+                            |(target, _)| target == name
+                        ) => {
+                        // B4：只有已完成前序宣告及賦值，真正執行到 RHS
+                        // 才進入 helper；成功返回後才原子提交 var int。
+                        let (_, checked) = self.method_helper.as_ref().ok_or(
+                            PrivateSelfMethodRuntimeError::WrongReceiver,
+                        )?;
+                        exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
+                        ordinary_calls_entered += 1;
+                        let result = checked.evaluate(&BTreeMap::new());
+                        match result {
+                            Ok(value) => {
+                                exit_events.push(PrivateSharedCallExitEvent::Returned);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: true,
+                                });
+                                ordinary_calls_completed += 1;
+                                value
+                            }
+                            Err(reason) => {
+                                // 右值失敗不得留下 LocalAssigned，原 var
+                                // 舊值仍有效，故障交由最外層逆序 ScopeEnded。
+                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: false,
+                                });
+                                return Err(match reason {
+                                    PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                        PrivateSelfMethodRuntimeError::IntegerOverflow,
+                                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                                });
+                            }
+                        }
+                    }
+                    _ => expression.evaluate(&parameter_frame)
+                        .map_err(|reason| match reason {
+                            PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                PrivateSelfMethodRuntimeError::IntegerOverflow,
+                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                        })?,
+                };
                 if parameter_frame.insert(*id, value).is_none() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
