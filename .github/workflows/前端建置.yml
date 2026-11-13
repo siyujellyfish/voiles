@@ -318,6 +318,9 @@ jobs:
       - name: G18 P18.4 同一 Call 真 str.move 與 BorrowTicket 十項正反 Gate
         run: python3 tools/核對G18同呼叫移動與借用真資源.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B1 原 Checker Copyable 參數不消耗來源十一項獨立真正反 Gate
+        run: python3 tools/核對G18-P18.4-B1原始Copyable責任.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.1～P18.6 六原項真來源與新採納 D18 政策尚缺驗收稽核
         run: python3 tools/核對G18原六項驗收差距.py --test-bin target/p02/p04_source_internal --audit
       - name: G18 V1 R07 原六項正式 --check 結果／阻塞狀態一致性 Gate

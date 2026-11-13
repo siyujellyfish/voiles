@@ -1399,6 +1399,10 @@ include!("struct_stage/g18_f3_call_site_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_f2_obligation_tests.rs");
 
+// G18／P18.4 B1：原 Checker Copyable 不消耗來源的獨立真正反矩陣。
+#[cfg(test)]
+include!("struct_stage/g18_b1_obligation_tests.rs");
+
 // G18／F2：原 Checker 真 bool 返回與 bool 實參使用同一動態進退帳。
 #[cfg(test)]
 include!("struct_stage/g18_f2_bool_return_tests.rs");
