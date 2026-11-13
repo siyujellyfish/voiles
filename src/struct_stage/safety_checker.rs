@@ -874,20 +874,30 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, method: &Function,
         returned: &crate::syntax_shared::ParsedReturn<Term>,
     ) -> Result<(), Diagnostic> {
-        // B4：本輪只在「直接局部初始化」允許 Checker 真函式索引
-        // 已證同步、零參數、單一 int 常值 return 的純助手。
-        // 不把它擴張至方法其他算式、重賦值、資源／別名／await。
+        // B4：只在「直接局部初始化」允許 Checker 真函式索引已證
+        // 同步、零參數、單一 Return 的無副作用純 int 算術。
+        // 這裡僅做可執行來源形狀預檢：所有型別、來源跨度與 int HIR
+        // 仍由原 Checker evaluate 及原 ScalarHIR 驗證，不自行授權。
+        fn pure_helper_int_tree(term: &Term) -> bool {
+            match &term.kind {
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Group(inner) => pure_helper_int_tree(inner),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && pure_helper_int_tree(&binary.left)
+                        && pure_helper_int_tree(&binary.right),
+                _ => false,
+            }
+        }
         let helper_is_proven = |name: &str| self.find_function(name).is_some_and(|helper| {
             !helper.is_async && helper.name != "main"
                 && helper.params.is_empty() && helper.result_ty == "int"
                 && helper.body.statements.len() == 1
                 && matches!(&helper.body.statements[0].kind,
                     StmtKind::Return(returned)
-                        if matches!(&returned.expression.kind,
-                            TermKind::Scalar(
-                                crate::syntax_shared::ScalarLiteral::Integer(_)
-                            )
-                        )
+                        if pure_helper_int_tree(&returned.expression)
                 )
         });
         fn pure_int(
