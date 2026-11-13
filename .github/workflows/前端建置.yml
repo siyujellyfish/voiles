@@ -333,6 +333,9 @@ jobs:
       - name: G18 P18.6-M2 真if_else雙葉獨占self更新及歸票八項 Gate
         run: python3 tools/核對G18-P18.6-M2雙葉獨占self寫入.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 else真寫入後加減溢位與BorrowTicket歸還八項 Gate
+        run: python3 tools/核對G18-P18.6-M2_else寫入後溢位歸票.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.3／18.4 原 Checker str.move 真所有權跨函式十項正反 Gate
         run: python3 tools/核對G18整筆移動跨函式真資源.py --test-bin target/p02/p04_source_internal
 
