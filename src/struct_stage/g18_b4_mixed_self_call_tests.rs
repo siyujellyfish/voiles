@@ -112,7 +112,9 @@ return owner.read()
             MIXED.replace("from_helper:int = helper()", "from_helper:int = helper(2)")
                 .replace("fn helper()->int{", "fn helper(n:int)->int{")
                 .replace("return 11\n}", "return n\n}"),
-            MIXED.replace("return 11\n}", "return 9223372036854775807+1\n}"),
+            // 原 Checker 合法的 i64 加減溢位改由 Runtime 真 Unwind；
+            // 這裡只保留超出 i64 詞彙範圍的靜態非法反例。
+            MIXED.replace("return 11\n}", "return 9223372036854775808\n}"),
         ] {
             // 原 Checker 能直接拒絕時，比執行器 Unsupported 更早
             // 且更強；兩者都必須在沒有動態執行前拒絕來源。
