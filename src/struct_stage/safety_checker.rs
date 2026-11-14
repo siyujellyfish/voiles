@@ -1192,6 +1192,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         if !Self::checked_return_type(&actual, &method.result_ty, true) {
             return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
         }
+        // B4／M3：沒有 Copyable int 局部的最後直接 Return，
+        // 與提前返回葉一樣只在原 Checker 已核准的純
+        // literal-int helper 上生成原 ScalarHIR，不另設型別器。
+        self.method_branch_checked_pure_helper_return(&return_value.expression)?;
         checked_returns.insert(method.body.last()
             .expect("已驗證方法最後必有 return").node_span());
         self.record_checked_method_safety(method, mode, checked_returns);
