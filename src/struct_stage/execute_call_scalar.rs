@@ -7063,9 +7063,12 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     /// 但未完成工作、仍在 ready 的工作及沒有 R05 證據的 Failed
     /// 都不得為了回收記憶體而遺失 BorrowTicket／ResourceId 責任。
     /// 已簽發的工作 ID 絕不重用；歷史排程與取消順序保留。
-    fn retire_terminal(
-        &mut self, id: u64,
-    ) -> Result<PrivateScalarRetiredJob, PrivateScalarCooperativeError> {
+    /// E3／T4：對任意已終結工作僅檢查原 FIFO 與 R05 真
+    /// 雙帳，不移交或消耗結果。shutdown 的整批預檢與
+    /// retire_terminal 必須共用相同守門，防止安全條件分叉。
+    fn verify_terminal_evidence(
+        &self, id: u64,
+    ) -> Result<PrivateDeferredAwaitStatus, PrivateScalarCooperativeError> {
         let job = self.jobs.get(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         let status = job.continuation.status;
@@ -7143,6 +7146,13 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             }
             _ => unreachable!("未完成狀態已於退休守門拒絕"),
         }
+        Ok(status)
+    }
+
+    fn retire_terminal(
+        &mut self, id: u64,
+    ) -> Result<PrivateScalarRetiredJob, PrivateScalarCooperativeError> {
+        let status = self.verify_terminal_evidence(id)?;
         let mut job = self.jobs.remove(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         match status {
@@ -7186,11 +7196,11 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 PrivateDeferredAwaitStatus::Succeeded
                 | PrivateDeferredAwaitStatus::Failed
                 | PrivateDeferredAwaitStatus::Cancelled => {
-                    // 已結束工作不得仍有可達的真持有者幀；
-                    // 否則不能將整批會話偽報為已安全結束。
-                    if job.continuation.checkpoint.is_some() {
-                        return Err(PrivateScalarCooperativeError::Engine);
-                    }
+                    // T4：整批關閉也必須先真核對每個已終結
+                    // 工作本身的原 FIFO／取消歷史與 R05/P16
+                    // 雙帳。不能先取消仍待命的另一份工作後，
+                    // 才發現這份偽造的終態根本不能安全退休。
+                    self.verify_terminal_evidence(id)?;
                 }
             }
         }
