@@ -99,6 +99,10 @@ mod g18_t4_verified_wake_drive_history_tests {
         assert_eq!(q.drive_order(), &[(id, PrivateScalarGraphPoll::Suspended)]);
         q.jobs.get_mut(&id).unwrap().continuation.status =
             PrivateDeferredAwaitStatus::Suspended;
+        // 被測的 ready token 仍是手工偽造，不能在還原狀態後
+        // 直接使用；必須移除，再由合法 wake 真正簽發。
+        q.ready.pop_front();
+        q.wake(id).unwrap();
         assert_eq!(q.drive_one().unwrap(),
             Some((id, PrivateScalarGraphPoll::Completed)));
         assert_eq!(q.outcome(id).unwrap().result, Ok(11));
