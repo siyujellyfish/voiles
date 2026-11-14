@@ -21,7 +21,7 @@ return owner.read(true)
 
     fn run(source: &str) -> PrivateSelfMethodOutcome {
         let prepared = PreparedPrivateSelfMethod::prepare(source).unwrap();
-        assert!(prepared.method_bool_argument.is_some(),
+        assert!(!prepared.method_bool_arguments.is_empty(),
             "bool 形參必須由原 Checker 建立專屬框架身分");
         let out = prepared.execute().unwrap();
         assert!(out.has_balanced_self_borrow_trace());
@@ -102,8 +102,8 @@ return owner.read(true)
     #[test]
     fn m2_bool_已核准形參動態值及DeclarationId遭篡改必在求值前拒絕() {
         let mut plan = PreparedPrivateSelfMethod::prepare(BOOL_TRUE).unwrap();
-        let (id, value) = plan.method_bool_argument.unwrap();
-        plan.method_bool_argument = Some((id, !value));
+        let (id, value) = plan.method_bool_arguments[0];
+        plan.method_bool_arguments[0] = (id, !value);
         assert!(matches!(
             plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)
         ));
