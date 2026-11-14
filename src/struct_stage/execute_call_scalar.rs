@@ -7034,10 +7034,70 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         Ok(())
     }
 
+    /// T4／E3：Prepared／Suspended 都須有可由原 FIFO 真實生成的
+    /// 待取消工作證據；不能僅信可被竄改的 status 標籤。
+    /// 此為唯讀預檢：不 poll、不取消、不移交 P16 事件，
+    /// 供單筆 cancel 與 shutdown 的整批前置驗證共同使用。
+    fn verify_cancellable_evidence(
+        &self, id: u64,
+    ) -> Result<(), PrivateScalarCooperativeError> {
+        let job = self.jobs.get(&id)
+            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        let continuation = &job.continuation;
+        // 已終止工作再取消仍依原 V7 E3 API 契約回
+        // WrongState，不被原取消歷史守門錯換為 Engine；
+        // 只有*宣稱仍待取消*的工作才驗其歷史是否偽造。
+        if !matches!(continuation.status,
+            PrivateDeferredAwaitStatus::Prepared
+            | PrivateDeferredAwaitStatus::Suspended
+        ) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
+        let polls = self.drive_order.iter()
+            .filter_map(|(logged_id, poll)| (*logged_id == id).then_some(*poll))
+            .collect::<Vec<_>>();
+        let cancellations = self.cancellation_order.iter()
+            .filter(|logged_id| **logged_id == id).count();
+        let ready_count = self.ready.iter().filter(|candidate| **candidate == id).count();
+        if cancellations != 0 || job.cancellation.is_some()
+            || continuation.outcome.is_some() || ready_count > 1 {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        match continuation.status {
+            PrivateDeferredAwaitStatus::Prepared => {
+                // 第一次 poll 前絕不可能擁有 checkpoint、任何
+                // 執行中事件或歷史完成／取消。來源核對拒絕
+                // 也不允許把曾經啟動的工作退回 Prepared。
+                if !polls.is_empty() || continuation.checkpoint.is_some()
+                    || !continuation.events.is_empty()
+                    || !continuation.resource_events.is_empty()
+                    || ready_count != 1 {
+                    return Err(PrivateScalarCooperativeError::Engine);
+                }
+            }
+            PrivateDeferredAwaitStatus::Suspended => {
+                // 可重複合法 wake／poll，故可有多個 Suspended；
+                // 但完成過、從未被真驅動過、沒有 checkpoint，
+                // 或取消後又偽造暫停均不可被當成安全點。
+                if polls.is_empty()
+                    || polls.iter().any(|poll|
+                        *poll != PrivateScalarGraphPoll::Suspended)
+                    || continuation.checkpoint.is_none()
+                    || continuation.pending_await().is_none() {
+                    return Err(PrivateScalarCooperativeError::Engine);
+                }
+                Self::verify_wakeup_safety(job)?;
+            }
+            _ => return Err(PrivateScalarCooperativeError::WrongState),
+        }
+        Ok(())
+    }
+
     /// E3-A：已暫停的真執行幀，走原 R05/P16/HC14 取消；
     /// 尚未啟動的工作只消耗 Prepared 計畫，零假資源事件。
     /// 任何安全檢查失敗都保留真 checkpoint 和原排程位置。
     fn cancel(&mut self, id: u64) -> Result<(), PrivateScalarCooperativeError> {
+        self.verify_cancellable_evidence(id)?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         match job.continuation.status {
@@ -7201,12 +7261,12 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         let mut pending = Vec::new();
         for (&id, job) in self.jobs.iter().rev() {
             match job.continuation.status {
-                PrivateDeferredAwaitStatus::Prepared => pending.push(id),
-                PrivateDeferredAwaitStatus::Suspended => {
-                    Self::verify_wakeup_safety(job)?;
-                    if job.continuation.pending_await().is_none() {
-                        return Err(PrivateScalarCooperativeError::Engine);
-                    }
+                PrivateDeferredAwaitStatus::Prepared
+                | PrivateDeferredAwaitStatus::Suspended => {
+                    // 在對任何工作做真正 P16/HC14 取消前，
+                    // 逐份核對原 FIFO 未完成狀態與每筆歷史。
+                    // 任一偽造工作不容許導致其他工作部分取消。
+                    self.verify_cancellable_evidence(id)?;
                     pending.push(id);
                 }
                 PrivateDeferredAwaitStatus::Running =>
