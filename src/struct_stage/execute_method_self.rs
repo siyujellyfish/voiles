@@ -280,7 +280,7 @@ struct PreparedPrivateSelfMethod {
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
     method_int_locals: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
-    /// B4：原 Checker 同源零至二個 int 形參的純整數 helper 真工作計畫。
+    /// B4：原 Checker 同源已核准 int 簽章的純整數 helper 真工作計畫。
     method_helper: Option<PrivateSelfApprovedHelper>,
     /// M2：真原 Parser 首句 if(bool 常值) 且葉內只提前 return self.int；
     /// 保留實際 Return 位置，未命中時落至最後一筆已核准 return。
@@ -465,16 +465,14 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "原 Checker 來源缺少唯一 main",
             ))?;
-        // B4：同源原 Checker 只允許零至二 int 參數、單筆 Return，
+        // B4：只接原 Checker 已核准的 int 形參簽章、單筆 Return，
         // 每個形參須有自身 Lexer／Parser／VerifiedTypedMember 真身分。
         // 不接受重複名稱、資源、Borrow 或任意再呼叫。
         let method_helper = verified.functions.iter().find(|fun| fun.name != "main")
             .map(|helper| {
-                if helper.params.len() > 2 {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 helper 僅允許零至二個原 Checker int 形參",
-                    ));
-                }
+                // 原 Checker 簽章與 Lexer／TypedMember 是唯一參數數量權威，
+                // 不另造「最多兩個」的執行器限制；每個純 int 引數
+                // 仍必須逐一真求值後，才可以進入普通函式框架。
                 let mut parameters = Vec::<DeclarationId>::new();
                 let mut names = BTreeMap::<String, DeclarationId>::new();
                 for param in &helper.params {
