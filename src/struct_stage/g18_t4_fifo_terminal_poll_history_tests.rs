@@ -54,8 +54,8 @@ mod g18_t4_fifo_terminal_poll_history_tests {
         let id = completed(&mut q, &plan);
         q.drive_order.push((id, PrivateScalarGraphPoll::Completed));
         let before = q.drive_order().to_vec();
-        assert_eq!(q.retire_terminal(id),
-            Err(PrivateScalarCooperativeError::Engine));
+        assert!(matches!(q.retire_terminal(id),
+            Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.drive_order(), before);
         assert!(q.jobs.contains_key(&id));
         assert_eq!(q.outcome(id).unwrap().result, Ok(11));
@@ -67,8 +67,8 @@ mod g18_t4_fifo_terminal_poll_history_tests {
         let mut q = PrivateScalarCooperativeQueue::new();
         let id = completed(&mut q, &plan);
         q.drive_order.push((id, PrivateScalarGraphPoll::Suspended));
-        assert_eq!(q.retire_terminal(id),
-            Err(PrivateScalarCooperativeError::Engine));
+        assert!(matches!(q.retire_terminal(id),
+            Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.status(id), Some(PrivateDeferredAwaitStatus::Succeeded));
         assert_eq!(q.jobs.len(), 1);
     }
@@ -99,8 +99,8 @@ mod g18_t4_fifo_terminal_poll_history_tests {
         assert_eq!(q.drive_one().unwrap(),
             Some((id, PrivateScalarGraphPoll::Completed)));
         q.drive_order.push((id, PrivateScalarGraphPoll::Completed));
-        assert_eq!(q.retire_terminal(id),
-            Err(PrivateScalarCooperativeError::Engine));
+        assert!(matches!(q.retire_terminal(id),
+            Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.status(id), Some(PrivateDeferredAwaitStatus::Failed));
         assert_eq!(q.outcome(id).unwrap().result,
             Err(PrivateScalarCallRuntimeError::CallBudget));
@@ -137,8 +137,8 @@ mod g18_t4_fifo_terminal_poll_history_tests {
         q.cancel(id).unwrap();
         q.drive_order.push((id, PrivateScalarGraphPoll::Completed));
         q.drive_order.push((id, PrivateScalarGraphPoll::Suspended));
-        assert_eq!(q.retire_terminal(id),
-            Err(PrivateScalarCooperativeError::Engine));
+        assert!(matches!(q.retire_terminal(id),
+            Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.shutdown(), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
         assert!(q.cancellation(id).is_some());
