@@ -7083,9 +7083,22 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             || !job.continuation.resource_events.is_empty() {
             return Err(PrivateScalarCooperativeError::Engine);
         }
+        // E3／T4：取消前是否曾真正 poll 過，是 FIFO 自己不可
+        // 重排的驅動歷史，而不是可由終態標籤或 resource 數量
+        // 推測。已開始執行後安全取消必有原 R05 退出證據；
+        // 從未啟動的 Prepared 取消則必須完全沒有該證據。
+        let last_drive = self.drive_order.iter().rev()
+            .find(|(logged_id, _)| *logged_id == id)
+            .map(|(_, poll)| *poll);
+        let cancelled_count = self.cancellation_order.iter()
+            .filter(|logged_id| **logged_id == id).count();
         match status {
             PrivateDeferredAwaitStatus::Succeeded
             | PrivateDeferredAwaitStatus::Failed => {
+                if last_drive != Some(PrivateScalarGraphPoll::Completed)
+                    || cancelled_count != 0 {
+                    return Err(PrivateScalarCooperativeError::Engine);
+                }
                 let outcome = job.continuation.outcome.as_ref()
                     .ok_or(PrivateScalarCooperativeError::Engine)?;
                 if outcome.result.is_ok()
@@ -7099,12 +7112,33 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 }
             }
             PrivateDeferredAwaitStatus::Cancelled => {
-                if job.continuation.outcome.is_some()
-                    || job.cancellation.as_ref().is_some_and(|evidence|
-                        !crate::owned_str_runtime::event_trace_balanced(
-                            &evidence.resource_events,
-                        )) {
+                if job.continuation.outcome.is_some() || cancelled_count != 1 {
                     return Err(PrivateScalarCooperativeError::Engine);
+                }
+                match (last_drive, job.cancellation.as_ref()) {
+                    (None, None) => {
+                        // 未真正進入過的 Prepared 取消，沒有任何
+                        // 真函式／P16／HC14 事件可移交。
+                    }
+                    (Some(PrivateScalarGraphPoll::Suspended), Some(evidence)) => {
+                        // 曾執行的 Suspended 必須真正逐框架退出。
+                        // 不只確認 ResourceId Created/Released 張數，
+                        // 還需拒絕 Unwind／FunctionExited／借票錯序
+                        // 或刪除後冒充乾淨取消的來源偽造。
+                        let audited = PrivateScalarCallOutcome {
+                            result: Err(PrivateScalarCallRuntimeError::StateMismatch),
+                            events: evidence.events.clone(),
+                            resource_events: evidence.resource_events.clone(),
+                            parameter_slots_after_exit: 0,
+                        };
+                        if !audited.has_balanced_frame_trace()
+                            || !crate::owned_str_runtime::event_trace_balanced(
+                                &evidence.resource_events,
+                            ) {
+                            return Err(PrivateScalarCooperativeError::Engine);
+                        }
+                    }
+                    _ => return Err(PrivateScalarCooperativeError::Engine),
                 }
             }
             _ => unreachable!("未完成狀態已於退休守門拒絕"),
