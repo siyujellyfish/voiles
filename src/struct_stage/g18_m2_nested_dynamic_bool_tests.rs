@@ -30,7 +30,7 @@ return owner.read(true)
         assert!(plan.method_nested_branch.is_some());
         assert_eq!(
             plan.method_nested_branch_parameter,
-            plan.method_bool_argument.map(|(id, _)| id),
+            plan.method_bool_arguments.first().map(|(id, _)| *id),
             "內層 bool 名稱只能與原 Checker 方法形參同一 DeclarationId",
         );
         let out = plan.execute().unwrap();
