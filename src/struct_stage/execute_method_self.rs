@@ -660,36 +660,44 @@ impl PreparedPrivateSelfMethod {
         let main_prepared_values = main_int_locals.iter()
             .map(|(_, id, value, _)| (*id, *value))
             .collect::<BTreeMap<_, _>>();
-        // M2：先由原 Parser 的方法實參與 Lexer 相同半開跨度確認
-        // 僅一個 bool 常值；不把 true/false 借用 i64 0/1 表示。
-        let bool_argument_literal = if call_arguments.len() == 1 {
-            let term = &call_arguments[0];
-            match &term.kind {
+        // M2／M3：對原 Parser 的每一個**位置**保留 bool/int
+        // 真型別；只允許一個原 Lexer bool 常值和任意已核准
+        // Copyable int 實參混合，不依值大小、名稱或固定形參
+        // 位置猜測。bool 不建立 i64 HIR，int 仍由原 Checker
+        // CheckedScalar／DeclarationId 求值與記錄。
+        let mut bool_argument_literal = None::<(usize, bool)>;
+        let mut parsed_argument_is_bool = Vec::<bool>::new();
+        let mut int_arguments = Vec::<i64>::new();
+        let mut argument_sources = Vec::<Option<DeclarationId>>::new();
+        let mut argument_plans = Vec::<PrivateScalarReturnExpr>::new();
+        for (index, arg) in call_arguments.iter().enumerate() {
+            let literal = match &arg.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Boolean(value),
                 ) if verified.tokens.iter().any(|token|
-                    token.start == term.start && token.end == term.end
+                    token.start == arg.start && token.end == arg.end
                         && matches!(&token.kind, TokenKind::Keyword(word)
                             if word == if *value { "true" } else { "false" })
                 ) => Some(*value),
                 _ => None,
+            };
+            if let Some(value) = literal {
+                // 此子集不猜測兩個 bool 形參的控制分支語意，
+                // 只建立唯一原 Checker 已核准 bool 動態框架。
+                if bool_argument_literal.replace((index, value)).is_some() {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "M2 混合方法此階段僅接受一個原 Lexer bool 形參",
+                    ));
+                }
+                parsed_argument_is_bool.push(true);
+                continue;
             }
-        } else { None };
-        let mut int_arguments = Vec::<i64>::new();
-        let mut argument_sources = Vec::<Option<DeclarationId>>::new();
-        let mut argument_plans = Vec::<PrivateScalarReturnExpr>::new();
-        for arg in call_arguments {
-            if bool_argument_literal.is_some() {
-                // 這是一個已核准 bool 形參，不是 int HIR 求值。
-                break;
-            }
+            parsed_argument_is_bool.push(false);
             let plan = PrivateScalarReturnExpr::from_checked_bindings(
                 arg, &main_bindings, &verified,
             ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                 "方法 int 實參缺少原 Checker TypedHIR／Reference／Arithmetic 真來源",
             ))?;
-            // 方法子集仍只接受純值加減／括號。未接通普通函式
-            // 呼叫嵌入方法實參前，不能用原純值樹偷渡一個額外 Call。
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
             if !calls.is_empty() || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
@@ -697,9 +705,8 @@ impl PreparedPrivateSelfMethod {
                     "方法 int 實參不支援未接通的巢狀函式呼叫",
                 ));
             }
-            // 保留原測試對已知常值的靜態來源快照；若動態加減
-            // 確實溢位，必須交由 execute 產生受控執行期錯誤，
-            // 不能在 prepare 靜態拒絕原 Checker 合法來源。
+            // 來源快照僅供嚴格防偽，實際在方法借票前由
+            // execute 根據當下 main 真框架重新求值。
             let prepared = match plan.evaluate(&main_prepared_values) {
                 Ok(value) => value,
                 Err(PrivateScalarCallRuntimeError::IntegerOverflow) => 0,
@@ -715,70 +722,83 @@ impl PreparedPrivateSelfMethod {
             argument_sources.push(source);
             argument_plans.push(plan);
         }
-        // 只選與原呼叫數量及已驗證 int 型別完全一致的候選。
+        // 方法多載仍由原 Checker 全簽章唯一性權威授權。
+        // 原 Parser 實參逐位型別必與候選方法每個 int／bool
+        // 形參對應，不把 bool 視為 int，亦不容許重新排列。
         let mut matches = definition.methods_named(called_method)
-            .filter(|candidate| {
-                if bool_argument_literal.is_some() {
-                    candidate.params.len() == 1 && candidate.params[0].ty == "bool"
-                } else {
-                    candidate.params.len() == int_arguments.len()
-                        && candidate.params.iter().all(|param| param.ty == "int")
-                }
-            });
+            .filter(|candidate|
+                candidate.params.len() == parsed_argument_is_bool.len()
+                    && candidate.params.iter().zip(&parsed_argument_is_bool)
+                        .all(|(param, is_bool)|
+                            if *is_bool { param.ty == "bool" }
+                            else { param.ty == "int" })
+            );
         let method = matches.next().ok_or(PrivateSelfMethodPrepareError::Unsupported(
-            "原 Checker 無符合呼叫名稱與零參數簽章的方法",
+            "原 Checker 無符合實參位置 int／bool 完整簽章的方法",
         ))?;
         if matches.next().is_some() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "無法唯一辨識零參數方法簽章",
+                "方法相同 int／bool 簽章候選未能唯一辨識",
             ));
         }
-        // 唯一性已驗證，先結束候選迭代器的借用，才能移交 verified。
         drop(matches);
         if method.result_ty != "int" || method.body.statements.is_empty() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "僅執行原 Checker 證明之同步 Copyable int 方法",
             ));
         }
-        // 所有參數必須來自**選中的**原 Checker 方法簽章、正式
-        // VerifiedTypedMember(Parameter) 與 Lexer 位置，不依數值猜測。
-        // 不同於一般函式，方法參數目前未另建 VerifiedDeclarationFacts；
-        // 以原 Parser 宣告起點作 DeclarationId 並要求 members 精確一致。
         let mut bindings = Vec::<(DeclarationId, i64)>::new();
-        for (param, value) in method.params.iter().zip(int_arguments.iter().copied()) {
-            let param_id = DeclarationId(param.declaration_start);
+        let mut method_bool_argument = None::<(DeclarationId, bool)>;
+        let mut int_values = int_arguments.iter().copied();
+        let mut bound_ids = std::collections::BTreeSet::<DeclarationId>::new();
+        for (index, param) in method.params.iter().enumerate() {
+            let id = DeclarationId(param.declaration_start);
             let member = VerifiedTypedMember::checked_private(
                 text, NodeRole::Parameter, param.declaration_span,
                 &param.name, param.name_span, &param.ty, param.type_span, false,
             ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                "方法參數缺少真 Parser／Lexer 位置及型別",
+                "M2 混合方法形參缺少原 Parser／Lexer 身分",
             ))?;
             if verified.plan.members.get(&member.identity) != Some(&member)
-                || bindings.iter().any(|(id, _)| id == &param_id) {
+                || !bound_ids.insert(id) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法參數缺少原 Checker 型別、位置或宣告身分唯一性",
+                    "M2 混合方法形參缺少原 Checker 成員型別或唯一 DeclarationId",
                 ));
             }
-            bindings.push((param_id, value));
+            match (param.ty.as_str(), parsed_argument_is_bool[index]) {
+                ("bool", true) => {
+                    let Some((position, value)) = bool_argument_literal else {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 bool 來源未與原 Checker 真形參位置綁定",
+                        ));
+                    };
+                    if position != index
+                        || method_bool_argument.replace((id, value)).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 bool 原 Lexer 位置與獨立動態形參身分衝突",
+                        ));
+                    }
+                }
+                ("int", false) => {
+                    let value = int_values.next().ok_or(
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "M2 int 實參未能匹配原 Parser 真形參次序",
+                        ),
+                    )?;
+                    bindings.push((id, value));
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 仍禁止未核准型別及 bool/int 混用形參",
+                )),
+            }
+        }
+        if int_values.next().is_some() {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "M2 多出的 int 實參不得冒充任何方法形參",
+            ));
         }
         let argument_binding = bindings.first().copied();
         let additional_argument_bindings = bindings.into_iter().skip(1).collect::<Vec<_>>();
-        let method_bool_argument = bool_argument_literal.map(|value| {
-            let param = &method.params[0];
-            let member = VerifiedTypedMember::checked_private(
-                text, NodeRole::Parameter, param.declaration_span,
-                &param.name, param.name_span, &param.ty, param.type_span, false,
-            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                "M2 bool 方法形參缺少真 Parser／Lexer 身分",
-            ))?;
-            if param.ty != "bool"
-                || verified.plan.members.get(&member.identity) != Some(&member) {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "M2 bool 形參未經原 Checker 正式驗證",
-                ));
-            }
-            Ok((DeclarationId(param.declaration_start), value))
-        }).transpose()?;
         // 兩語句模式先寫真 Copyable int 欄位，再直接讀取回傳；
         // 唯一是否可寫及 self 自動借用模式來自原 Checker MethodSafety。
         let write_value = if method.body.statements.len() == 2
@@ -844,9 +864,9 @@ impl PreparedPrivateSelfMethod {
                                         "M2 方法 bool 條件無合法傳入形參",
                                     ),
                                 )?;
-                                if method.params.len() != 1
-                                    || method.params[0].name != *name
-                                    || DeclarationId(method.params[0].declaration_start) != id
+                                if !method.params.iter().any(|param|
+                                    param.ty == "bool" && param.name == *name
+                                    && DeclarationId(param.declaration_start) == id)
                                     || !verified.tokens.iter().any(|token|
                                         token.start == branch.condition.start
                                             && token.end == branch.condition.end
@@ -940,9 +960,9 @@ impl PreparedPrivateSelfMethod {
                                                     "M2 內層 bool 形參缺少原 Checker 綁定",
                                                 ),
                                             )?;
-                                            if method.params.len() != 1
-                                                || method.params[0].name != *name
-                                                || DeclarationId(method.params[0].declaration_start) != id
+                                            if !method.params.iter().any(|param|
+                                                param.ty == "bool" && param.name == *name
+                                                && DeclarationId(param.declaration_start) == id)
                                                 || !verified.tokens.iter().any(|token|
                                                     token.start == inner.condition.start
                                                         && token.end == inner.condition.end
