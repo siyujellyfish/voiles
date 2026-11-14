@@ -24,7 +24,7 @@ return owner.read(true)
 
     fn run(source: &str) -> PrivateSelfMethodOutcome {
         let plan = PreparedPrivateSelfMethod::prepare(source).unwrap();
-        assert!(matches!(plan.method_branch_return,
+        assert!(matches!(&plan.method_branch_return,
             Some(PrivateSelfIntReturn::CheckedScalar(
                 PrivateScalarReturnExpr::Call { .. }
             ))));
