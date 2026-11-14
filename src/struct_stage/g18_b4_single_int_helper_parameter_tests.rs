@@ -168,8 +168,8 @@ return owner.read(4)
     #[test]
     fn b4_arg_原Checker拒絕多形參非法型別及篡改Helper身分() {
         for source in [
-            METHOD.replace("fn helper(step:int)->int", "fn helper(step:int,more:int,extra:int)->int")
-                .replace("helper(n+1)", "helper(n+1,2,3)"),
+            METHOD.replace("fn helper(step:int)->int", "fn helper(step:int,more:int,extra:bool)->int")
+                .replace("helper(n+1)", "helper(n+1,2,true)"),
             METHOD.replace("fn helper(step:int)->int", "fn helper(step:bool)->int"),
             METHOD.replace("return step+3", "return other+3"),
             METHOD.replace("helper(n+1)", "helper(1+helper(n))"),

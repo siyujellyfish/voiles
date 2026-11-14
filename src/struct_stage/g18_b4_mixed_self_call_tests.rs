@@ -111,10 +111,10 @@ return owner.read()
     #[test]
     fn b4_尚未證明的普通函式參數與可溢位計畫仍保守拒絕() {
         for source in [
-            // 零至二個已核准 int 形參現已接通；三個仍保守拒絕。
-            MIXED.replace("from_helper:int = helper()", "from_helper:int = helper(2,3,4)")
-                .replace("fn helper()->int{", "fn helper(a:int,b:int,c:int)->int{")
-                .replace("return 11\n}", "return a+b+c\n}"),
+            // 原 Checker 所有純 int 形參現都能接通；bool 混型仍拒絕。
+            MIXED.replace("from_helper:int = helper()", "from_helper:int = helper(2,3,true)")
+                .replace("fn helper()->int{", "fn helper(a:int,b:int,c:bool)->int{")
+                .replace("return 11\n}", "return a+b\n}"),
             // 原 Checker 合法的 i64 加減溢位改由 Runtime 真 Unwind；
             // 這裡只保留超出 i64 詞彙範圍的靜態非法反例。
             MIXED.replace("return 11\n}", "return 9223372036854775808\n}"),

@@ -179,8 +179,8 @@ return owner.read(5)
     fn b4_two_args_三參數非法型別未知名稱與篡改雙DeclarationId必拒絕() {
         for source in [
             METHOD.replace("fn combine(a:int,b:int)->int",
-                "fn combine(a:int,b:int,c:int)->int")
-                .replace("combine(n+7,n-2)", "combine(n+7,n-2,1)"),
+                "fn combine(a:int,b:int,c:bool)->int")
+                .replace("combine(n+7,n-2)", "combine(n+7,n-2,true)"),
             METHOD.replace("fn combine(a:int,b:int)->int",
                 "fn combine(a:int,b:bool)->int")
                 .replace("return a-b", "return a"),
