@@ -1455,6 +1455,11 @@ include!("struct_stage/g18_b4_m3_nested_if_helper_return_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_m3_final_helper_without_locals_tests.rs");
 
+// G18／P18.4-B4／M3：原 Checker 方法真 int 形參在直接
+// Return helper 的動態 HIR 中保持 DeclarationId／真值。
+#[cfg(test)]
+include!("struct_stage/g18_b4_m3_dynamic_int_return_helper_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");
