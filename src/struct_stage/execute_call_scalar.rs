@@ -6991,11 +6991,12 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         let Some(id) = self.ready.front().copied() else {
             return Ok(None);
         };
-        // 防止 wake 成功後、drive 前加入的新有效票據消耗原
-        // checkpoint。拒絕時 FIFO、工作 ID、資源與執行順序零變更。
-        let job = self.jobs.get(&id)
-            .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
-        Self::verify_wakeup_safety(job)?;
+        // T4：真正 consume FIFO 之前，Prepared／Suspended 的
+        // 整份原 poll／取消／終態／checkpoint 證據須與已驗收的
+        // cancel／shutdown 相同；不可只在退休時才發現偽造。
+        // 包含原 E5：wake 後增加的 BorrowTicket 仍會先被拒絕，
+        // 且失敗前零 pop_front／零資源框架變更。
+        self.verify_cancellable_evidence(id)?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         let poll = job.continuation.poll();
@@ -7029,7 +7030,10 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             || self.ready.contains(&id) {
             return Err(PrivateScalarCooperativeError::WrongState);
         }
-        Self::verify_wakeup_safety(job)?;
+        // 真醒來之前也必須由原 FIFO 證明這份工作曾經
+        // Suspended 且從未 Completed／Cancelled；不改原
+        // 後續 wake 僅新增一個 ready token 的語意。
+        self.verify_cancellable_evidence(id)?;
         self.ready.push_back(id);
         Ok(())
     }
