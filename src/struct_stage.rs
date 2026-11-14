@@ -1436,6 +1436,11 @@ include!("struct_stage/g18_b4_verified_int_helper_arity_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_method_return_helper_exit_tests.rs");
 
+// G18／P18.4-B4／M3：原 Checker 真 if 選中提前 Return helper、
+// 未選葉不得有普通函式／資源事件。
+#[cfg(test)]
+include!("struct_stage/g18_b4_m3_if_selected_helper_return_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");
