@@ -73,7 +73,7 @@ return owner.read()
     #[test]
     fn b4_原Checker普通函式返回工作計畫遭竄改不可偽造真結果() {
         let mut plan = PreparedPrivateSelfMethod::prepare(MIXED).unwrap();
-        plan.method_helper = Some(PrivateSelfApprovedHelper {
+        plan.method_helpers.insert("helper".to_owned(), PrivateSelfApprovedHelper {
             name: "helper".to_owned(),
             parameters: Vec::new(),
             returned: PrivateScalarReturnExpr::Constant(999),

@@ -408,6 +408,9 @@ jobs:
       - name: G18 P18.4-B4 M3 方法int實參直接純helper與借票前Unwind八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法實參純helper真退出.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 M3 原Checker多個純int helper與同步self跨退出八項 Gate
+        run: python3 tools/核對G18-P18.4-B4多helper方法退出.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 方法int形參動態Return-helper八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法int形參動態helper返回.py --test-bin target/p02/p04_source_internal
 

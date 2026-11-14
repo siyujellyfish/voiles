@@ -1506,6 +1506,7 @@ include!("struct_stage/g18_m2_m3_multiple_bool_checker_frames_tests.rs");
 // 同步 self 方法 int 實參，必須先完成子函式再借票。
 #[cfg(test)]
 include!("struct_stage/g18_b4_m3_helper_method_argument_tests.rs");
+include!("struct_stage/g18_b4_m3_multiple_approved_helpers_tests.rs");
 
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
