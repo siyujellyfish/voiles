@@ -378,6 +378,9 @@ jobs:
       - name: G18 P18.6-M2 B4-M3 真混合bool-int方法身份八項 Gate
         run: python3 tools/核對G18-P18.6-M2混合bool-int方法身分.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.5-T4 V7-E2 真wake與drive FIFO來源防偽八項 Gate
+        run: python3 tools/核對G18-P18.5-T4真wake與drive來源.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.5-T4 V7-E3 待取消Prepared Suspended真證據八項 Gate
         run: python3 tools/核對G18-P18.5-T4待取消工作真證據.py --test-bin target/p02/p04_source_internal
 
