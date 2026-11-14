@@ -372,6 +372,9 @@ jobs:
       - name: G18 P18.6-M2 巢狀true_else獨占寫入及真歸票八項 Gate
         run: python3 tools/核對G18-P18.6-M2巢狀雙葉獨占寫入.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 B4-M3 真混合bool-int方法身份八項 Gate
+        run: python3 tools/核對G18-P18.6-M2混合bool-int方法身分.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 方法int形參動態Return-helper八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法int形參動態helper返回.py --test-bin target/p02/p04_source_internal
 
