@@ -1460,6 +1460,11 @@ include!("struct_stage/g18_b4_m3_final_helper_without_locals_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_m3_dynamic_int_return_helper_tests.rs");
 
+// G18／P18.6-M2／P18.4-B4-M3：原 Parser 混合 bool/int
+// 位置真方法形參、控制選葉與普通 helper 同一 R05 歸票。
+#[cfg(test)]
+include!("struct_stage/g18_m2_m3_mixed_bool_int_method_args_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");
