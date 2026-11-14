@@ -7428,6 +7428,14 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     /// 會保守 Failed，不能謊報全部關閉或冒充原 Runtime 返回；
     /// 完全原子性的跨獨立 Runtime 故障回滾未經本批授權。
     fn shutdown(&mut self) -> Result<Vec<u64>, PrivateScalarCooperativeError> {
+        // 原 E3 契約：任何 Running（真正在執行中的狀態）
+        // 優先回 WrongState；入列憑據只稽核其餘可取消／
+        // 可退休工作，不能改寫既定錯誤分類或部分取消。
+        if self.jobs.values().any(|job|
+            job.continuation.status == PrivateDeferredAwaitStatus::Running
+        ) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
         self.verify_ready_fifo()?;
         let mut pending = Vec::new();
         for (&id, job) in self.jobs.iter().rev() {
