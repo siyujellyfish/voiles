@@ -280,7 +280,7 @@ struct PreparedPrivateSelfMethod {
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
     method_int_locals: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
-    /// B4：原 Checker 同源零／一 int 形參的純整數 helper 真工作計畫。
+    /// B4：原 Checker 同源零至二個 int 形參的純整數 helper 真工作計畫。
     method_helper: Option<PrivateSelfApprovedHelper>,
     /// M2：真原 Parser 首句 if(bool 常值) 且葉內只提前 return self.int；
     /// 保留實際 Return 位置，未命中時落至最後一筆已核准 return。
@@ -342,21 +342,21 @@ struct PreparedPrivateSelfMethod {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateSelfApprovedHelper {
     name: String,
-    parameter: Option<DeclarationId>,
+    parameters: Vec<DeclarationId>,
     returned: PrivateScalarReturnExpr,
 }
 
-/// 唯有 helper 中的單一 Checker 形參可作名稱節點。
+/// 唯有 helper 中原 Checker 真形參 DeclarationId 可作名稱節點。
 fn private_self_pure_helper_int(
-    expr: &PrivateScalarReturnExpr, parameter: Option<DeclarationId>,
+    expr: &PrivateScalarReturnExpr, parameters: &[DeclarationId],
 ) -> bool {
     match expr {
         PrivateScalarReturnExpr::Constant(_) => true,
-        PrivateScalarReturnExpr::Parameter(id) => parameter == Some(*id),
+        PrivateScalarReturnExpr::Parameter(id) => parameters.contains(id),
         PrivateScalarReturnExpr::Addition(left, right)
         | PrivateScalarReturnExpr::Subtraction(left, right) =>
-            private_self_pure_helper_int(left, parameter)
-                && private_self_pure_helper_int(right, parameter),
+            private_self_pure_helper_int(left, parameters)
+                && private_self_pure_helper_int(right, parameters),
         _ => false,
     }
 }
@@ -382,12 +382,10 @@ fn private_self_matches_helper_call(
         name, arguments, awaited: false,
     }) = (helper, plan) else { return false; };
     if name != &helper.name { return false; }
-    match (helper.parameter, arguments.as_slice()) {
-        (None, []) => true,
-        (Some(_), [PrivateScalarCallArgument::Int(expr)]) =>
-            private_self_pure_helper_argument(expr),
-        _ => false,
-    }
+    arguments.len() == helper.parameters.len() && arguments.iter().all(|arg|
+        matches!(arg, PrivateScalarCallArgument::Int(expr)
+            if private_self_pure_helper_argument(expr))
+    )
 }
 
 /// 先以呼叫者原 int frame 求完整實參；溢位不得進入 helper、
@@ -397,15 +395,26 @@ fn private_self_helper_argument_frame(
     arguments: &[PrivateScalarCallArgument],
     caller: &BTreeMap<DeclarationId, i64>,
 ) -> Result<BTreeMap<DeclarationId, i64>, PrivateScalarCallRuntimeError> {
-    match (helper.parameter, arguments) {
-        (None, []) => Ok(BTreeMap::new()),
-        (Some(id), [PrivateScalarCallArgument::Int(expr)])
-            if private_self_pure_helper_argument(expr) => {
-            let value = expr.evaluate(caller)?;
-            Ok(BTreeMap::from([(id, value)]))
-        }
-        _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+    if arguments.len() != helper.parameters.len() {
+        return Err(PrivateScalarCallRuntimeError::StateMismatch);
     }
+    let mut frame = BTreeMap::new();
+    // 已經由原 Checker 簽章保證各 int DeclarationId 唯一；
+    // 左至右先求所有實參。第二個若溢位，不允許前一個
+    // 已求值的純 Copyable 暫值被誤認為已進入 helper 框架。
+    for (id, arg) in helper.parameters.iter().zip(arguments) {
+        let PrivateScalarCallArgument::Int(expr) = arg else {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        };
+        if !private_self_pure_helper_argument(expr) {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+        let value = expr.evaluate(caller)?;
+        if frame.insert(*id, value).is_some() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+    }
+    Ok(frame)
 }
 
 impl PreparedPrivateSelfMethod {
@@ -456,31 +465,42 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "原 Checker 來源缺少唯一 main",
             ))?;
-        // B4：同源原 Checker 只允許零／一 int 參數、單筆 Return
-        // 的純 Copyable int helper，不接受資源、Borrow 或任意再呼叫。
+        // B4：同源原 Checker 只允許零至二 int 參數、單筆 Return，
+        // 每個形參須有自身 Lexer／Parser／VerifiedTypedMember 真身分。
+        // 不接受重複名稱、資源、Borrow 或任意再呼叫。
         let method_helper = verified.functions.iter().find(|fun| fun.name != "main")
             .map(|helper| {
-                let parameter = match helper.params.as_slice() {
-                    [] => None,
-                    [param] if param.ty == "int" && param.name != "self" => {
-                        let member = VerifiedTypedMember::checked_private(
-                            text, NodeRole::Parameter, param.declaration_span,
-                            &param.name, param.name_span, &param.ty,
-                            param.type_span, false,
-                        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                            "B4 helper int 形參缺少原 Lexer／Parser 宣告身分",
-                        ))?;
-                        if verified.plan.members.get(&member.identity) != Some(&member) {
-                            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                "B4 helper int 形參缺少正式 Checker 成員型別證明",
-                            ));
-                        }
-                        Some(DeclarationId(param.declaration_start))
+                if helper.params.len() > 2 {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "B4 helper 僅允許零至二個原 Checker int 形參",
+                    ));
+                }
+                let mut parameters = Vec::<DeclarationId>::new();
+                let mut names = BTreeMap::<String, DeclarationId>::new();
+                for param in &helper.params {
+                    let id = DeclarationId(param.declaration_start);
+                    if param.ty != "int" || param.name == "self"
+                        || names.contains_key(&param.name)
+                        || parameters.contains(&id) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "B4 helper 形參必須是不重複、原 Checker 證明的 int",
+                        ));
                     }
-                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 helper 僅允許零／一個原 Checker int 形參",
-                    )),
-                };
+                    let member = VerifiedTypedMember::checked_private(
+                        text, NodeRole::Parameter, param.declaration_span,
+                        &param.name, param.name_span, &param.ty,
+                        param.type_span, false,
+                    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                        "B4 helper int 形參缺少原 Lexer／Parser 宣告身分",
+                    ))?;
+                    if verified.plan.members.get(&member.identity) != Some(&member) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "B4 helper int 形參缺少正式 Checker 成員型別證明",
+                        ));
+                    }
+                    names.insert(param.name.clone(), id);
+                    parameters.push(id);
+                }
                 if helper.result_ty != "int" || helper.is_async
                     || helper.body.statements.len() != 1 {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -500,13 +520,13 @@ impl PreparedPrivateSelfMethod {
                 ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                     "B4 helper 返回缺少原 Checker TypedHIR／Lexer／形參證明",
                 ))?;
-                if !private_self_pure_helper_int(&plan, parameter) {
+                if !private_self_pure_helper_int(&plan, &parameters) {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
                         "B4 helper 僅接通原 Checker 無副作用 int 常值／形參／加減",
                     ));
                 }
                 Ok(PrivateSelfApprovedHelper {
-                    name: helper.name.clone(), parameter, returned: plan,
+                    name: helper.name.clone(), parameters, returned: plan,
                 })
             }).transpose()?;
         let last_main_statement = main.body.statements.last().ok_or(
