@@ -1236,6 +1236,74 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(mode)
     }
 
+    /// Caller 的原 int 名稱僅是 Copyable 值的合法候選：
+    /// 真正初始化、借用有效期與來源使用權仍必須由後續
+    /// self.evaluate／原 Checker Scopes 判斷，不能以型別猜值。
+    fn method_pure_int_caller_argument(&self, term: &Term, vars: &Scopes) -> bool {
+        match &term.kind {
+            TermKind::Scalar(
+                crate::syntax_shared::ScalarLiteral::Integer(_),
+            ) => true,
+            TermKind::Name(name) => Self::lookup(vars, name)
+                .is_some_and(|binding| binding.ty == "int"),
+            TermKind::Group(inner) =>
+                self.method_pure_int_caller_argument(inner, vars),
+            TermKind::BinaryInt(binary) =>
+                matches!(binary.operator, '+' | '-')
+                    && self.method_pure_int_caller_argument(&binary.left, vars)
+                    && self.method_pure_int_caller_argument(&binary.right, vars),
+            _ => false,
+        }
+    }
+
+    /// B4／M3：方法引數只接通「直接純 int 普通 helper」。
+    /// 真正詞彙／簽章與借用授權仍由後續原 Checker evaluate 核對；
+    /// 此處不為 Name、Move、Borrow 或巢狀 Call 添加新能力。
+    fn method_direct_pure_int_helper_argument(
+        &self, term: &Term, vars: &Scopes,
+    ) -> bool {
+        fn pure_helper_return(term: &Term, names: &[&str]) -> bool {
+            match &term.kind {
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Name(name) => names.contains(&name.as_str()),
+                TermKind::Group(inner) => pure_helper_return(inner, names),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && pure_helper_return(&binary.left, names)
+                        && pure_helper_return(&binary.right, names),
+                _ => false,
+            }
+        }
+        let (name, arguments, awaited): (&str, &[Term], bool) = match &term.kind {
+            TermKind::Call(call) =>
+                (call.name.as_str(), call.arguments.as_slice(), call.awaited),
+            TermKind::UnresolvedZeroArgs(name)
+                if matches!(self.resolve_empty_call(name),
+                    ZeroArgResolution::Function(_)) =>
+                (name.as_str(), &[], false),
+            _ => return false,
+        };
+        let Some(helper) = self.find_function(name) else { return false };
+        if awaited || helper.is_async || helper.name == "main"
+            || helper.result_ty != "int" || helper.params.len() != arguments.len()
+            || helper.body.statements.len() != 1
+            || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
+            || helper.params.iter().enumerate().any(|(i, p)|
+                helper.params[..i].iter().any(|old| old.name == p.name))
+            || !arguments.iter()
+                .all(|arg| self.method_pure_int_caller_argument(arg, vars)) {
+            return false;
+        }
+        let StmtKind::Return(returned) = &helper.body.statements[0].kind else {
+            return false;
+        };
+        let names = helper.params.iter().map(|p| p.name.as_str())
+            .collect::<Vec<_>>();
+        pure_helper_return(&returned.expression, &names)
+    }
+
     /// D18-02-A：只為「選擇多個同名方法候選」取得靜態型別，
     /// 不執行 .move()、讀取資源、簽發票據或改變任何 Scopes。
     /// 無法唯一判定的表達式必拒絕，不能退回舊的最後一個同名方法。
@@ -1259,6 +1327,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let definition = self.structs.get(&source.ty)?;
                 definition.field(field).map(|found| found.ty.clone())
             }
+            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)
+                if self.method_direct_pure_int_helper_argument(term, vars) =>
+                Some("int".to_owned()),
             _ => None,
         }
     }
@@ -1266,15 +1337,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 方法引數依來源順序在取得 self 借用前求值。
     /// 已核准 Copyable 參數可接受具名整筆 .move()；求值後必須
     /// 再查核接收者仍有效。仍禁止未完成的再借用／巢狀呼叫資源副作用。
-    fn method_argument_safe_before_borrow(term: &Term) -> bool {
+    fn method_argument_safe_before_borrow(
+        &self, term: &Term, vars: &Scopes,
+    ) -> bool {
         match &term.kind {
             TermKind::Group(inner) =>
-                Self::method_argument_safe_before_borrow(inner),
+                self.method_argument_safe_before_borrow(inner, vars),
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_) | TermKind::Move(_)
                 | TermKind::FieldRead(_, _) => true,
             TermKind::BinaryInt(binary) =>
-                Self::method_argument_safe_before_borrow(&binary.left)
-                    && Self::method_argument_safe_before_borrow(&binary.right),
+                self.method_argument_safe_before_borrow(&binary.left, vars)
+                    && self.method_argument_safe_before_borrow(&binary.right, vars),
+            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) =>
+                self.method_direct_pure_int_helper_argument(term, vars),
             _ => false,
         }
     }
@@ -1496,7 +1571,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 let mut argument_facts = Vec::new();
                 let mut borrowed_names: Vec<String> = Vec::new();
                 for (arg, parameter) in args.iter().zip(&method.params) {
-                    if !Self::method_argument_safe_before_borrow(arg) {
+                    if !self.method_argument_safe_before_borrow(arg, vars) {
                         return Err(self.error(
                             "P13：方法引數僅接受已驗證的純值或具名整筆移動", arg));
                     }

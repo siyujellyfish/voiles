@@ -381,6 +381,9 @@ jobs:
       - name: G18 P18.5-T3 R05 真BorrowTicket跨框架錯序與同層合法退出八項 Gate
         run: python3 tools/核對G18-P18.5-T3跨框架真票據錯序.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 M3 方法int實參直接純helper與借票前Unwind八項 Gate
+        run: python3 tools/核對G18-P18.4-B4方法實參純helper真退出.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 方法int形參動態Return-helper八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法int形參動態helper返回.py --test-bin target/p02/p04_source_internal
 
