@@ -7090,9 +7090,27 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         // 重排的驅動歷史，而不是可由終態標籤或 resource 數量
         // 推測。已開始執行後安全取消必有原 R05 退出證據；
         // 從未啟動的 Prepared 取消則必須完全沒有該證據。
-        let last_drive = self.drive_order.iter().rev()
-            .find(|(logged_id, _)| *logged_id == id)
-            .map(|(_, poll)| *poll);
+        // T4／E2：同一原工作 ID 的整條 FIFO 真驅動歷史，
+        // 除完成前的合法 await Suspended 外，只能出現唯一
+        // 且位於末尾的 Completed。僅檢查最後一次 poll，
+        // 會讓「完成後又暫停」與「重複 Completed」的偽造
+        // 歷史冒充正常終態，錯誤退休後更失去 R05 來源。
+        // 真工作只可由 drive_one 簽發這些事件；未知工作
+        // 狀態／尚未進入過的 Prepared 不得偽造 Completed。
+        let drive_history = self.drive_order.iter()
+            .filter_map(|(logged_id, poll)| (*logged_id == id).then_some(*poll))
+            .collect::<Vec<_>>();
+        if let Some(completed_at) = drive_history.iter().position(|poll|
+            *poll == PrivateScalarGraphPoll::Completed
+        ) {
+            if completed_at + 1 != drive_history.len()
+                || drive_history.iter().filter(|poll|
+                    **poll == PrivateScalarGraphPoll::Completed
+                ).count() != 1 {
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+        }
+        let last_drive = drive_history.last().copied();
         let cancelled_count = self.cancellation_order.iter()
             .filter(|logged_id| **logged_id == id).count();
         match status {
