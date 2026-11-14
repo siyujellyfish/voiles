@@ -168,8 +168,8 @@ return owner.read(4)
     #[test]
     fn b4_arg_原Checker拒絕多形參非法型別及篡改Helper身分() {
         for source in [
-            METHOD.replace("fn helper(step:int)->int", "fn helper(step:int,more:int)->int")
-                .replace("helper(n+1)", "helper(n+1,2)"),
+            METHOD.replace("fn helper(step:int)->int", "fn helper(step:int,more:int,extra:int)->int")
+                .replace("helper(n+1)", "helper(n+1,2,3)"),
             METHOD.replace("fn helper(step:int)->int", "fn helper(step:bool)->int"),
             METHOD.replace("return step+3", "return other+3"),
             METHOD.replace("helper(n+1)", "helper(1+helper(n))"),
@@ -181,7 +181,7 @@ return owner.read(4)
             ), "不得繞過原 Checker 的 int 參數身分／副作用限制：{source}");
         }
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helper.as_mut().unwrap().parameter = Some(DeclarationId(999999));
+        plan.method_helper.as_mut().unwrap().parameters = vec![DeclarationId(999999)];
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
