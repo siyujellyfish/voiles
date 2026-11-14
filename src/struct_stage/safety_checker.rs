@@ -807,20 +807,23 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// B4／M3：僅在方法真 Return 出口，為同一原 Checker 已核准的
     /// 無副作用純 int helper 生成原 ScalarHIR。這不是另一份型別決議：
     /// 所有形參、Call、Lexer 和 checked expression 都經原 evaluate，
-    /// 且本首批只取 Lexer int 常值／加減實參，避免建立未驗證 Scope。
+    /// 真方法 int 形參只可由原 Parser DeclarationId／Checker Scopes
+    /// 讀取；bool／str、self、未初始化局部及資源仍不可偷渡。
     fn method_branch_checked_pure_helper_return(
-        &self, term: &Term,
+        &self, method: &Function, term: &Term,
     ) -> Result<(), Diagnostic> {
-        fn literal_int_tree(term: &Term) -> bool {
+        fn approved_int_tree(term: &Term, method: &Function) -> bool {
             match &term.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(_),
                 ) => true,
-                TermKind::Group(inner) => literal_int_tree(inner),
+                TermKind::Name(name) => method.params.iter().any(|p|
+                    p.ty == "int" && p.name == *name && p.name != "self"),
+                TermKind::Group(inner) => approved_int_tree(inner, method),
                 TermKind::BinaryInt(binary) =>
                     matches!(binary.operator, '+' | '-')
-                        && literal_int_tree(&binary.left)
-                        && literal_int_tree(&binary.right),
+                        && approved_int_tree(&binary.left, method)
+                        && approved_int_tree(&binary.right, method),
                 _ => false,
             }
         }
@@ -858,7 +861,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
             || helper.params.iter().enumerate().any(|(i, p)|
                 helper.params[..i].iter().any(|q| q.name == p.name))
-            || !args.iter().all(literal_int_tree) {
+            || !args.iter().all(|arg| approved_int_tree(arg, method)) {
             return Ok(());
         }
         let names = helper.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
@@ -868,8 +871,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         if !pure_helper_body(&returned.expression, &names) {
             return Ok(());
         }
-        // 原 Checker 自己生成附跨度的 TypedHIR；不得自行填寫 HIR。
+        // 與 method_checked_int_locals 共用**同一**原 Checker
+        // Scopes／Binding／DeclarationId 構建契約，讓方法引數的
+        // HIR 使用真正形參身分，而非按名稱或 prepare 的預知值造假。
+        // bool 只作獨立條件框架，不能當成 int 實參。
         let mut vars = vec![Rc::new(HashMap::new())];
+        for parameter in &method.params {
+            if parameter.ty != "int" { continue; }
+            if parameter.name == "self"
+                || vars[0].contains_key(&parameter.name) {
+                return Err(self.error(
+                    "純 helper int 實參的原方法形參重複或非法", term,
+                ));
+            }
+            let id = DeclarationId(parameter.declaration_start);
+            Rc::make_mut(&mut vars[0]).insert(parameter.name.clone(),
+                Binding::new(
+                    id, "int".to_string(), false,
+                    ValueSlot::initialized(CopyPermission::Allowed), None, None,
+                ));
+            self.record_declaration(id, "int", false);
+        }
         let (ty, ready) = self.evaluate(term, &mut vars)?;
         if ty != "int" || !ready {
             return Err(self.error(
@@ -917,7 +939,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     // 僅在已核准提前 Return 葉的純 literal-int helper
                     // 產生原 Checker ScalarHIR；未選執行葉仍不在此求值。
-                    self.method_branch_checked_pure_helper_return(&value.expression)?;
+                    self.method_branch_checked_pure_helper_return(method, &value.expression)?;
                     // 真正核對返回類型與自借用責任後才認領此靜態
                     // 控制點；後續同一路徑不可達，不會憑 AST 假補。
                     checked_returns.insert(statement.node_span());
@@ -1207,7 +1229,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // B4／M3：沒有 Copyable int 局部的最後直接 Return，
         // 與提前返回葉一樣只在原 Checker 已核准的純
         // literal-int helper 上生成原 ScalarHIR，不另設型別器。
-        self.method_branch_checked_pure_helper_return(&return_value.expression)?;
+        self.method_branch_checked_pure_helper_return(method, &return_value.expression)?;
         checked_returns.insert(method.body.last()
             .expect("已驗證方法最後必有 return").node_span());
         self.record_checked_method_safety(method, mode, checked_returns);
