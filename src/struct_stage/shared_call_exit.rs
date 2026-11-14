@@ -42,6 +42,9 @@ fn private_shared_call_exit_balanced(
     // 有效期分別歸還；但內層 frame 新取得的票據尚有效時，
     // 外層票據不准先還，否則僅比對票據張數會漏掉巢狀錯序。
     let mut tickets = Vec::<(crate::borrow_safety::BorrowTicket, usize)>::new();
+    // HC14 真 BorrowTicket 是一次性身分：歸還後不能於下一個
+    // 普通函式或同步 self 框架再借入同一張已作廢票據。
+    let mut issued_tickets = Vec::<crate::borrow_safety::BorrowTicket>::new();
     let mut unwinding = false;
     let mut entered_any = false;
     for event in events {
@@ -49,10 +52,11 @@ fn private_shared_call_exit_balanced(
             PrivateSharedCallExitEvent::LoanAcquired(ticket) => {
                 // 已 Returned 的框架不能在清理期間重新借入；這不是
                 // 另一個合法的新引數求值位置。
-                if unwinding || tickets.iter().any(|(active, _)| active == ticket)
+                if unwinding || issued_tickets.contains(ticket)
                     || frames.last().is_some_and(|returned| *returned) {
                     return false;
                 }
+                issued_tickets.push(*ticket);
                 tickets.push((*ticket, frames.len()));
             }
             PrivateSharedCallExitEvent::FunctionEntered => {
@@ -132,6 +136,15 @@ fn private_shared_call_exit_balanced(
                 tickets.remove(index);
             }
             PrivateSharedCallExitEvent::FunctionExited { returned } => {
+                // 此函式在目前深度取得的票據必須先退出，再能
+                // FunctionExited；不能讓票據在已銷毀的 frame
+                // 外「漂浮」直到下一個同深度兄弟函式才歸還。
+                // 較淺外層票據仍允許在合法內層使用期內存活，
+                // 符合 self 借用於 Caller 簽發、由方法歸還的情況。
+                let depth = frames.len();
+                if tickets.iter().any(|(_, acquired_depth)| *acquired_depth == depth) {
+                    return false;
+                }
                 let Some(actual) = frames.pop() else { return false; };
                 if actual != *returned || (unwinding && *returned)
                     || (!unwinding && !*returned) {
