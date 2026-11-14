@@ -563,27 +563,30 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            let direct_helper = calls.len() == 1 && matches!(
-                &plan,
-                PrivateScalarReturnExpr::Call {
-                    name, arguments, awaited: false,
-                } if arguments.is_empty()
-                    && method_helper.as_ref().is_some_and(|(target, _)| target == name)
-            );
+            let direct_helper = calls.len() == 1
+                && private_self_matches_helper_call(&plan, method_helper.as_ref());
             if (!calls.is_empty() && !direct_helper)
                 || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 初始化只支援同源 Checker 核准的純整數零參數 helper",
+                    "main int 初始化只支援同源 Checker 核准的零／一 int 純值 helper",
                 ));
             }
             // 同一份原 Checker 無副作用、單一常值 helper，可建立
             // 靜態數值快照供來源防偽；真正函式進退只能在 execute
             // 按原 main 執行次序產生，這裡不得預寫動態事件。
             let expected = if direct_helper {
-                method_helper.as_ref()
-                    .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                let helper = method_helper.as_ref().ok_or(
+                    PrivateSelfMethodPrepareError::Unsupported(
                         "main helper 缺少原 Checker 唯一純值工作計畫",
-                    ))?.1.evaluate(&BTreeMap::new())
+                    ))?;
+                let PrivateScalarReturnExpr::Call { arguments, .. } = &plan else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main helper 必須保留原 Checker 真 Call 來源",
+                    ));
+                };
+                private_self_helper_argument_frame(
+                    helper, arguments, &known_int_values,
+                ).and_then(|frame| helper.returned.evaluate(&frame))
             } else { plan.evaluate(&known_int_values) };
             let value = match expected {
                 Ok(value) => value,
@@ -1398,12 +1401,10 @@ impl PreparedPrivateSelfMethod {
                     ))?;
                     let mut calls = Vec::new();
                     expr.collect_calls(&mut calls);
-                    let approved_helper = calls.len() == 1 && matches!(
-                        &expr,
-                        PrivateScalarReturnExpr::Call { name, arguments, awaited: false }
-                            if arguments.is_empty() &&
-                            method_helper.as_ref().is_some_and(|(target, _)| target == name)
-                    );
+                    let approved_helper = calls.len() == 1
+                        && private_self_matches_helper_call(
+                            &expr, method_helper.as_ref(),
+                        );
                     if (!calls.is_empty() && !approved_helper)
                         || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -1440,15 +1441,10 @@ impl PreparedPrivateSelfMethod {
                     ))?;
                     let mut calls = Vec::new();
                     expr.collect_calls(&mut calls);
-                    let direct_helper = calls.len() == 1 && matches!(
-                        &expr,
-                        PrivateScalarReturnExpr::Call {
-                            name, arguments, awaited: false,
-                        } if arguments.is_empty()
-                            && method_helper.as_ref().is_some_and(
-                                |(target, _)| target == name
-                            )
-                    );
+                    let direct_helper = calls.len() == 1
+                        && private_self_matches_helper_call(
+                            &expr, method_helper.as_ref(),
+                        );
                     if (!calls.is_empty() && !direct_helper)
                         || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
