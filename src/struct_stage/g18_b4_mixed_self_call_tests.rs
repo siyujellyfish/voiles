@@ -73,9 +73,11 @@ return owner.read()
     #[test]
     fn b4_原Checker普通函式返回工作計畫遭竄改不可偽造真結果() {
         let mut plan = PreparedPrivateSelfMethod::prepare(MIXED).unwrap();
-        plan.method_helper = Some((
-            "helper".to_owned(), PrivateScalarReturnExpr::Constant(999),
-        ));
+        plan.method_helper = Some(PrivateSelfApprovedHelper {
+            name: "helper".to_owned(),
+            parameter: None,
+            returned: PrivateScalarReturnExpr::Constant(999),
+        });
         assert!(matches!(
             plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)
         ));
@@ -109,9 +111,10 @@ return owner.read()
     #[test]
     fn b4_尚未證明的普通函式參數與可溢位計畫仍保守拒絕() {
         for source in [
-            MIXED.replace("from_helper:int = helper()", "from_helper:int = helper(2)")
-                .replace("fn helper()->int{", "fn helper(n:int)->int{")
-                .replace("return 11\n}", "return n\n}"),
+            // 一個已核准 int 形參現已接通；超過一個仍保守拒絕。
+            MIXED.replace("from_helper:int = helper()", "from_helper:int = helper(2,3)")
+                .replace("fn helper()->int{", "fn helper(a:int,b:int)->int{")
+                .replace("return 11\n}", "return a+b\n}"),
             // 原 Checker 合法的 i64 加減溢位改由 Runtime 真 Unwind；
             // 這裡只保留超出 i64 詞彙範圍的靜態非法反例。
             MIXED.replace("return 11\n}", "return 9223372036854775808\n}"),
