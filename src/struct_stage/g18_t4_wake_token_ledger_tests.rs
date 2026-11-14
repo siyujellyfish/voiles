@@ -157,7 +157,9 @@ mod g18_t4_wake_token_ledger_tests {
         let mut q = PrivateScalarCooperativeQueue::new();
         let corrupted = suspended(&mut q, &plan);
         let clean = suspended(&mut q, &plan);
-        q.wake_order.push(corrupted);
+        q.wake_order.push(PrivateScalarWakeReceipt {
+            id: corrupted, after_drive_count: q.drive_order.len(),
+        });
         assert_eq!(q.shutdown(), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.status(clean), Some(PrivateDeferredAwaitStatus::Suspended));
         assert_eq!(q.status(corrupted), Some(PrivateDeferredAwaitStatus::Suspended));
