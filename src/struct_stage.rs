@@ -1475,6 +1475,11 @@ include!("struct_stage/g18_r05_t3_nested_ticket_order_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_m2_m3_multiple_bool_checker_frames_tests.rs");
 
+// G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
+// 同步 self 方法 int 實參，必須先完成子函式再借票。
+#[cfg(test)]
+include!("struct_stage/g18_b4_m3_helper_method_argument_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");
