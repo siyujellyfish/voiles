@@ -171,7 +171,7 @@ return owner.read(from_helper)
     #[test]
     fn b4_helper_math_改寫原Checker加減計畫及偽造已進入計數均拒絕() {
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helper = Some(PrivateSelfApprovedHelper {
+        plan.method_helpers.insert("helper".to_owned(), PrivateSelfApprovedHelper {
             name: "helper".to_owned(),
             parameters: Vec::new(),
             returned: PrivateScalarReturnExpr::Constant(11),

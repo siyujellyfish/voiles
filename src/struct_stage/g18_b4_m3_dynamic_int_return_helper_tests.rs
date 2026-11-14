@@ -143,7 +143,7 @@ return owner.read(5)
                 "不得接受原 Checker 未證的來源：{src}");
         }
         let mut plan=PreparedPrivateSelfMethod::prepare(SOURCE).unwrap();
-        plan.method_helper.as_mut().unwrap().parameters.swap(0,1);
+        plan.method_helpers.get_mut("helper").unwrap().parameters.swap(0,1);
         assert!(matches!(plan.execute(),Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
 }

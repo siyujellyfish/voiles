@@ -181,11 +181,11 @@ return owner.read(4)
             ), "不得繞過原 Checker 的 int 參數身分／副作用限制：{source}");
         }
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helper.as_mut().unwrap().parameters = vec![DeclarationId(999999)];
+        plan.method_helpers.get_mut("helper").unwrap().parameters = vec![DeclarationId(999999)];
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helper.as_mut().unwrap().returned =
+        plan.method_helpers.get_mut("helper").unwrap().returned =
             PrivateScalarReturnExpr::Constant(7);
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
