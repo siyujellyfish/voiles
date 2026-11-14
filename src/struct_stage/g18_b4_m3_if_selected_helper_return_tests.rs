@@ -7,7 +7,7 @@ mod g18_b4_m3_if_selected_helper_return_tests {
     const SOURCE: &str = r#"struct Counter{
 var value:int = 7
 fn read(flag:bool)->int{
-if flag{
+if (flag){
 return helper(3,2)
 }
 return self.value
@@ -132,7 +132,7 @@ return owner.read(true)
     #[test]
     fn b4_selected_先獨占寫入self後選中helper返回與借用仍只一張票() {
         let src = SOURCE.replace(
-            "if flag{\nreturn helper(3,2)", "if flag{\nself.value = 10\nreturn helper(3,2)",
+            "if (flag){\nreturn helper(3,2)", "if (flag){\nself.value = 10\nreturn helper(3,2)",
         );
         let plan = PreparedPrivateSelfMethod::prepare(&src).unwrap();
         assert_eq!(plan.loan.kind, BorrowKind::ExclusiveWrite);
