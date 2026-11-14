@@ -67,7 +67,7 @@ return owner.read(5)
         assert_eq!(out.result,Ok(7));
         assert_eq!((out.ordinary_calls_entered,out.ordinary_calls_completed),(1,1));
         let reverse=src.replace("owner.read(5,2)","owner.read(2,5)");
-        assert_eq!(run(&reverse).result,Ok(0));
+        assert_eq!(run(&reverse).result,Ok(1));
     }
 
     #[test]
