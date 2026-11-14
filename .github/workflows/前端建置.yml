@@ -378,6 +378,9 @@ jobs:
       - name: G18 P18.6-M2 B4-M3 真混合bool-int方法身份八項 Gate
         run: python3 tools/核對G18-P18.6-M2混合bool-int方法身分.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.5-T4 V7-A2 整批關閉終態雙帳預檢與零部分取消八項 Gate
+        run: python3 tools/核對G18-P18.5-T4-V7整批關閉終態證據.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.5-T4 V7-A2 原Checker取消工作退休完整退出證據八項 Gate
         run: python3 tools/核對G18-P18.5-T4-V7取消工作退休雙帳.py --test-bin target/p02/p04_source_internal
 
