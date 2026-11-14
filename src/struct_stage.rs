@@ -1474,6 +1474,10 @@ include!("struct_stage/g18_r05_t3_nested_ticket_order_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_r05_t3_ticket_frame_lifetime_tests.rs");
 
+// G18／P18.5-T4／V7-A2：已執行 async 取消工作退休須真 R05／P16／HC14 雙帳。
+#[cfg(test)]
+include!("struct_stage/g18_v7_cancel_retire_proof_tests.rs");
+
 // G18／P18.6-M2／M3：多個原 Checker bool 方法形參
 // 各自 DeclId 驅動巢狀真選枝及共通純 helper 返回。
 #[cfg(test)]
