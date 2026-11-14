@@ -1021,6 +1021,13 @@ impl PreparedPrivateSelfMethod {
                                     // 重用同一原 Checker FieldRead/BinaryInt 左欄位右 Lexer
                                     // int 精確來源檢核，只在實際選中內層 else 時求值。
                                     let nested_else_calc = match &returned.expression.kind {
+                                                                TermKind::Call(_) =>
+                                                                    private_self_checked_helper_return_leaf(
+                                                                        &returned.expression,
+                                                                        &branch_helper_bindings,
+                                                                        &verified,
+                                                                        method_helper.as_ref(),
+                                                                    )?,
                                                                 TermKind::Scalar(
                                                                     crate::syntax_shared::ScalarLiteral::Integer(raw),
                                                                 ) => {
