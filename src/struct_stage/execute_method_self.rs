@@ -1823,30 +1823,37 @@ impl PreparedPrivateSelfMethod {
         for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
             .zip(&self.main_init_plans) {
             let executed = match initializer {
-                PrivateScalarReturnExpr::Call {
-                    name, arguments, awaited: false,
-                } if arguments.is_empty()
-                    && self.method_helper.as_ref().is_some_and(|(target, _)| target == name) => {
-                    let (_, helper) = self.method_helper.as_ref()
+                PrivateScalarReturnExpr::Call { arguments, .. }
+                    if private_self_matches_helper_call(
+                        initializer, self.method_helper.as_ref(),
+                    ) => {
+                    let helper = self.method_helper.as_ref()
                         .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
-                    exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
-                    ordinary_calls_entered += 1;
-                    let value = helper.evaluate(&BTreeMap::new());
-                    if value.is_ok() {
-                        exit_events.push(PrivateSharedCallExitEvent::Returned);
-                        exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                            returned: true,
-                        });
-                        ordinary_calls_completed += 1;
-                    } else {
-                        // 故障發生於 main 的 helper 框架；不得再借 self，
-                        // 也不得留下沒有退出的普通函式或假 Returned。
-                        exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
-                        exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                            returned: false,
-                        });
+                    // 任何實參溢位只屬 main 呼叫者，沒有真 helper Enter。
+                    match private_self_helper_argument_frame(
+                        helper, arguments, &main_values,
+                    ) {
+                        Err(problem) => Err(problem),
+                        Ok(frame) => {
+                            exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
+                            ordinary_calls_entered += 1;
+                            let value = helper.returned.evaluate(&frame);
+                            if value.is_ok() {
+                                exit_events.push(PrivateSharedCallExitEvent::Returned);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: true,
+                                });
+                                ordinary_calls_completed += 1;
+                            } else {
+                                // helper 本體溢位才進入失敗子框架退場。
+                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: false,
+                                });
+                            }
+                            value
+                        }
                     }
-                    value
                 }
                 _ => initializer.evaluate(&main_values),
             };
@@ -1939,17 +1946,24 @@ impl PreparedPrivateSelfMethod {
             // 不進入任何未達作用域的局部，也不誤用 main 的值槽。
             for (id, initializer) in &self.method_int_locals {
                 let calculated = match initializer {
-                    PrivateScalarReturnExpr::Call { name, arguments, awaited: false }
-                        if arguments.is_empty() &&
-                            self.method_helper.as_ref().is_some_and(|(target, _)| target == name) => {
-                        // 不是 prepare 階段求值：只有走到方法此局部時，
-                        // 由同一原 Checker 的真 helper int 工作計畫執行，
-                        // 在 self 的真借用存活期間進／退普通函式框架。
-                        let (_, checked) = self.method_helper.as_ref()
+                    PrivateScalarReturnExpr::Call { arguments, .. }
+                        if private_self_matches_helper_call(
+                            initializer, self.method_helper.as_ref(),
+                        ) => {
+                        // 不是 prepare 階段求值：先由 self 當前真值槽
+                        // 求已核准實參；參數未完成不得偽造 helper 進入。
+                        let checked = self.method_helper.as_ref()
                             .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                        let helper_frame = private_self_helper_argument_frame(
+                            checked, arguments, &parameter_frame,
+                        ).map_err(|reason| match reason {
+                            PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                PrivateSelfMethodRuntimeError::IntegerOverflow,
+                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                        })?;
                         exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
                         ordinary_calls_entered += 1;
-                        let value = match checked.evaluate(&BTreeMap::new()) {
+                        let value = match checked.returned.evaluate(&helper_frame) {
                             Ok(value) => value,
                             Err(reason) => {
                                 // 內層 helper 真溢位：先從內層開始 Unwind，
@@ -1996,20 +2010,25 @@ impl PreparedPrivateSelfMethod {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
                 let value = match expression {
-                    PrivateScalarReturnExpr::Call {
-                        name, arguments, awaited: false,
-                    } if arguments.is_empty()
-                        && self.method_helper.as_ref().is_some_and(
-                            |(target, _)| target == name
+                    PrivateScalarReturnExpr::Call { arguments, .. }
+                        if private_self_matches_helper_call(
+                            expression, self.method_helper.as_ref(),
                         ) => {
-                        // B4：只有已完成前序宣告及賦值，真正執行到 RHS
-                        // 才進入 helper；成功返回後才原子提交 var int。
-                        let (_, checked) = self.method_helper.as_ref().ok_or(
+                        // B4：先在方法已初始化的真槽中完成單一 int
+                        // 實參，才進入 helper，返回後方可提交 var 目標。
+                        let checked = self.method_helper.as_ref().ok_or(
                             PrivateSelfMethodRuntimeError::WrongReceiver,
                         )?;
+                        let helper_frame = private_self_helper_argument_frame(
+                            checked, arguments, &parameter_frame,
+                        ).map_err(|reason| match reason {
+                            PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                PrivateSelfMethodRuntimeError::IntegerOverflow,
+                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                        })?;
                         exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
                         ordinary_calls_entered += 1;
-                        let result = checked.evaluate(&BTreeMap::new());
+                        let result = checked.returned.evaluate(&helper_frame);
                         match result {
                             Ok(value) => {
                                 exit_events.push(PrivateSharedCallExitEvent::Returned);
