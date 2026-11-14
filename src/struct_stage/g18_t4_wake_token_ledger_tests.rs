@@ -32,7 +32,9 @@ mod g18_t4_wake_token_ledger_tests {
         let plan = checked();
         let mut q = PrivateScalarCooperativeQueue::new();
         let id = q.submit(&plan).unwrap();
-        q.wake_order.push(id);
+        q.wake_order.push(PrivateScalarWakeReceipt {
+            id, after_drive_count: q.drive_order.len(),
+        });
         assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.ready_ids(), [id]);
         assert_eq!(q.drive_order(), []);
@@ -64,7 +66,9 @@ mod g18_t4_wake_token_ledger_tests {
         let plan = checked();
         let mut q = PrivateScalarCooperativeQueue::new();
         let id = suspended(&mut q, &plan);
-        q.wake_order.push(id);
+        q.wake_order.push(PrivateScalarWakeReceipt {
+            id, after_drive_count: q.drive_order.len(),
+        });
         assert_eq!(q.wake(id), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.ready_ids(), []);
         assert_eq!(q.wake_order(), [id]);
@@ -79,7 +83,11 @@ mod g18_t4_wake_token_ledger_tests {
         let plan = checked();
         let mut q = PrivateScalarCooperativeQueue::new();
         let id = suspended(&mut q, &plan);
-        q.wake_order.extend([id, id]);
+        let stamp = q.drive_order.len();
+        q.wake_order.extend([
+            PrivateScalarWakeReceipt { id, after_drive_count: stamp },
+            PrivateScalarWakeReceipt { id, after_drive_count: stamp },
+        ]);
         assert_eq!(q.wake(id), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.ready_ids(), []);
         assert_eq!(q.drive_order().len(), 1);
@@ -103,7 +111,9 @@ mod g18_t4_wake_token_ledger_tests {
             Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.status(id), Some(PrivateDeferredAwaitStatus::Succeeded));
         assert_eq!(q.drive_order().len(), 2);
-        q.wake_order.push(id);
+        q.wake_order.push(PrivateScalarWakeReceipt {
+            id, after_drive_count: q.drive_order.len(),
+        });
         assert!(matches!(q.retire_terminal(id).unwrap(),
             PrivateScalarRetiredJob::Completed(_)));
     }
@@ -129,7 +139,9 @@ mod g18_t4_wake_token_ledger_tests {
         let id = suspended(&mut q, &plan);
         q.wake(id).unwrap();
         q.cancel(id).unwrap();
-        q.wake_order.push(id);
+        q.wake_order.push(PrivateScalarWakeReceipt {
+            id, after_drive_count: q.drive_order.len(),
+        });
         assert!(matches!(q.retire_terminal(id),
             Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
