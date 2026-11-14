@@ -7044,6 +7044,15 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         let job = self.jobs.get(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         let continuation = &job.continuation;
+        // 已終止工作再取消仍依原 V7 E3 API 契約回
+        // WrongState，不被原取消歷史守門錯換為 Engine；
+        // 只有*宣稱仍待取消*的工作才驗其歷史是否偽造。
+        if !matches!(continuation.status,
+            PrivateDeferredAwaitStatus::Prepared
+            | PrivateDeferredAwaitStatus::Suspended
+        ) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
         let polls = self.drive_order.iter()
             .filter_map(|(logged_id, poll)| (*logged_id == id).then_some(*poll))
             .collect::<Vec<_>>();
