@@ -1088,6 +1088,29 @@ impl PreparedPrivateSelfMethod {
                             ));
                         };
                         let true_return_plan = match &early.expression.kind {
+                            TermKind::Call(_) => {
+                                // B4／M3：原 Checker 在本葉 Return 位置
+                                // 以原 evaluate 真生成 ScalarHIR；此處只
+                                // 接同源 helper 與純 int literal 加減實參。
+                                // 不選到的葉不會產生任何普通函式事件。
+                                let bindings = method.params.iter().map(|param|
+                                    (param.name.clone(),
+                                        DeclarationId(param.declaration_start))
+                                ).collect::<BTreeMap<_, _>>();
+                                let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                                    &early.expression, &bindings, &verified,
+                                ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                                    "B4 true 葉 helper 缺少原 Checker Return TypedHIR",
+                                ))?;
+                                if !private_self_matches_helper_call(
+                                    &plan, method_helper.as_ref(),
+                                ) {
+                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                        "B4 true 葉只准原 Checker 直接純 int helper",
+                                    ));
+                                }
+                                PrivateSelfIntReturn::CheckedScalar(plan)
+                            },
                             TermKind::Scalar(
                                 crate::syntax_shared::ScalarLiteral::Integer(raw),
                             ) => {
