@@ -372,6 +372,9 @@ jobs:
       - name: G18 P18.6-M2 巢狀true_else獨占寫入及真歸票八項 Gate
         run: python3 tools/核對G18-P18.6-M2巢狀雙葉獨占寫入.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 M3 真else選中helper返回與獨占退票八項 Gate
+        run: python3 tools/核對G18-P18.4-B4真else選中helper返回.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 真if選中提前Return helper與未選葉八項 Gate
         run: python3 tools/核對G18-P18.4-B4真if選中helper返回.py --test-bin target/p02/p04_source_internal
 
