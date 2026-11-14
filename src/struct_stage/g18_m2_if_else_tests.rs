@@ -79,7 +79,7 @@ return owner.read(true)
             .replace("if(flag)", "if(false)")
             .replace("owner.read(true)", "owner.read()");
         let plan = PreparedPrivateSelfMethod::prepare(&source).unwrap();
-        assert!(plan.method_bool_argument.is_none());
+        assert!(plan.method_bool_arguments.is_empty());
         assert!(plan.method_branch_parameter.is_none());
         let output = plan.execute().unwrap();
         assert_eq!(output.result, Ok(22));
