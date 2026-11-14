@@ -6870,6 +6870,20 @@ struct PrivateScalarWakeReceipt {
     after_drive_count: usize,
 }
 
+/// E2：唯一真 submit／wake 可簽發 FIFO 佇列憑據；
+/// 授權歷史不隨 poll／cancel／退休而清除。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateScalarReadyIssueKind {
+    Submitted,
+    Woken,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrivateScalarReadyIssue {
+    id: u64,
+    kind: PrivateScalarReadyIssueKind,
+}
+
 #[derive(Default)]
 struct PrivateScalarCooperativeQueue<'a> {
     jobs: BTreeMap<u64, PrivateScalarCooperativeJob<'a>>,
@@ -6879,6 +6893,9 @@ struct PrivateScalarCooperativeQueue<'a> {
     /// V7-E2：只有真正通過 wake 安全點才可取得重新 poll 的 FIFO token。
     /// 原始 poll 與 wake 歷史分開記錄，避免手動插入 ready 假裝合法喚醒。
     wake_order: Vec<PrivateScalarWakeReceipt>,
+    /// 防止多工作已簽發 ready token 被調換順序：保留每筆入列
+    /// 的唯一授權次序，驗證時只讀、不重新創建任何動態工作。
+    ready_issues: Vec<PrivateScalarReadyIssue>,
     cancellation_order: Vec<u64>,
 }
 
@@ -6899,6 +6916,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         plan: &'a PreparedPrivateScalarCall,
         budget: PrivateScalarExecutionBudget,
     ) -> Result<u64, PrivateScalarCooperativeError> {
+        self.verify_ready_fifo()?;
         // 先在原 Checker 圖上真正建構可續行入口。
         // 來源無法核准時不消耗 ID、不加入任何工作。
         let continuation = PrivateScalarGraphContinuation::new_with_budget(plan, budget)
@@ -6910,6 +6928,9 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             continuation, cancellation: None,
         });
         self.ready.push_back(id);
+        self.ready_issues.push(PrivateScalarReadyIssue {
+            id, kind: PrivateScalarReadyIssueKind::Submitted,
+        });
         Ok(id)
     }
 
@@ -7011,6 +7032,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         // 包含原 E5：wake 後增加的 BorrowTicket 仍會先被拒絕，
         // 且失敗前零 pop_front／零資源框架變更。
         self.verify_cancellable_evidence(id)?;
+        self.verify_ready_fifo()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         let poll = job.continuation.poll();
@@ -7048,12 +7070,75 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         // Suspended 且從未 Completed／Cancelled；不改原
         // 後續 wake 僅新增一個 ready token 的語意。
         self.verify_cancellable_evidence(id)?;
+        self.verify_ready_fifo()?;
         self.ready.push_back(id);
+        self.ready_issues.push(PrivateScalarReadyIssue {
+            id, kind: PrivateScalarReadyIssueKind::Woken,
+        });
         // 只有成功完成 E5／FIFO 歷史預檢後才記錄此份喚醒授權；
         // 拒絕的重複／偽造 wake 不可獲得未來的再次 poll 資格。
         self.wake_order.push(PrivateScalarWakeReceipt {
             id, after_drive_count: self.drive_order.len(),
         });
+        Ok(())
+    }
+
+    /// T4／E2：原始 ready 必須保留所有真 submit／wake 簽發次序。
+    /// 不能只核對各工作 wake 次數或時間，讓多份合法 token
+    /// 被手動互換而仍可 drive；全批取消也須在任何 P16/HC14
+    /// 退出前預檢此條序列。此稽核不創造新狀態與借用責任。
+    fn verify_ready_fifo(
+        &self,
+    ) -> Result<(), PrivateScalarCooperativeError> {
+        let mut last_submitted = 0u64;
+        let mut submitted = std::collections::BTreeSet::new();
+        let mut expected_wakes = Vec::new();
+        for issue in &self.ready_issues {
+            match issue.kind {
+                PrivateScalarReadyIssueKind::Submitted => {
+                    let expected = last_submitted.checked_add(1)
+                        .ok_or(PrivateScalarCooperativeError::Engine)?;
+                    if issue.id != expected || issue.id > self.next_id
+                        || !submitted.insert(issue.id) {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                    last_submitted = issue.id;
+                }
+                PrivateScalarReadyIssueKind::Woken => {
+                    if !submitted.contains(&issue.id) {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                    expected_wakes.push(issue.id);
+                }
+            }
+        }
+        // 第一次入列只能 submit，後續新 token 必須有且只有
+        // 成功 wake 的原時間憑據；不能補一份偽造的 ready
+        // 事件以抵銷順序的竄改。
+        if expected_wakes.iter().copied().ne(
+            self.wake_order.iter().map(|receipt| receipt.id)
+        ) || self.jobs.keys().any(|id| !submitted.contains(id)) {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        let mut last_issue = None::<usize>;
+        for id in &self.ready {
+            let job = self.jobs.get(id)
+                .ok_or(PrivateScalarCooperativeError::Engine)?;
+            let (position, issue) = self.ready_issues.iter().enumerate().rev()
+                .find(|(_, issue)| issue.id == *id)
+                .ok_or(PrivateScalarCooperativeError::Engine)?;
+            if last_issue.is_some_and(|previous| position <= previous) {
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+            match (job.continuation.status, issue.kind) {
+                (PrivateDeferredAwaitStatus::Prepared,
+                    PrivateScalarReadyIssueKind::Submitted) |
+                (PrivateDeferredAwaitStatus::Suspended,
+                    PrivateScalarReadyIssueKind::Woken) => {}
+                _ => return Err(PrivateScalarCooperativeError::Engine),
+            }
+            last_issue = Some(position);
+        }
         Ok(())
     }
 
@@ -7164,6 +7249,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     /// 任何安全檢查失敗都保留真 checkpoint 和原排程位置。
     fn cancel(&mut self, id: u64) -> Result<(), PrivateScalarCooperativeError> {
         self.verify_cancellable_evidence(id)?;
+        self.verify_ready_fifo()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         match job.continuation.status {
@@ -7314,6 +7400,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         &mut self, id: u64,
     ) -> Result<PrivateScalarRetiredJob, PrivateScalarCooperativeError> {
         let status = self.verify_terminal_evidence(id)?;
+        self.verify_ready_fifo()?;
         let mut job = self.jobs.remove(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
         match status {
@@ -7341,6 +7428,15 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     /// 會保守 Failed，不能謊報全部關閉或冒充原 Runtime 返回；
     /// 完全原子性的跨獨立 Runtime 故障回滾未經本批授權。
     fn shutdown(&mut self) -> Result<Vec<u64>, PrivateScalarCooperativeError> {
+        // 原 E3 契約：任何 Running（真正在執行中的狀態）
+        // 優先回 WrongState；入列憑據只稽核其餘可取消／
+        // 可退休工作，不能改寫既定錯誤分類或部分取消。
+        if self.jobs.values().any(|job|
+            job.continuation.status == PrivateDeferredAwaitStatus::Running
+        ) {
+            return Err(PrivateScalarCooperativeError::WrongState);
+        }
+        self.verify_ready_fifo()?;
         let mut pending = Vec::new();
         for (&id, job) in self.jobs.iter().rev() {
             match job.continuation.status {

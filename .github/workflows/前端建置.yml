@@ -387,6 +387,9 @@ jobs:
       - name: G18 P18.5-T4 V7-E2 真wake跨工作poll時序八項 Gate
         run: python3 tools/核對G18-P18.5-T4真wake時序.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.5-T4 V7-E2 真submit／wake全域ready入列次序八項 Gate
+        run: python3 tools/核對G18-P18.5-T4真FIFO入列授權.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.5-T4 V7-E3 待取消Prepared Suspended真證據八項 Gate
         run: python3 tools/核對G18-P18.5-T4待取消工作真證據.py --test-bin target/p02/p04_source_internal
 
