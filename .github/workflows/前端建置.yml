@@ -372,6 +372,9 @@ jobs:
       - name: G18 P18.6-M2 巢狀true_else獨占寫入及真歸票八項 Gate
         run: python3 tools/核對G18-P18.6-M2巢狀雙葉獨占寫入.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 雙int形參真DeclId與由左至右求參溢位八項 Gate
+        run: python3 tools/核對G18-P18.4-B4雙int形參身份與求參順序.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 單int形參純helper真綁定與實參溢位歸票八項 Gate
         run: python3 tools/核對G18-P18.4-B4單int形參helper動態框架.py --test-bin target/p02/p04_source_internal
 

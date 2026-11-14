@@ -875,37 +875,44 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         returned: &crate::syntax_shared::ParsedReturn<Term>,
     ) -> Result<(), Diagnostic> {
         // B4：原 Checker 唯一普通函式索引可證的同步純 int helper，
-        // 限零或一個 int 形參、單 Return、無副作用純加減；名稱只
+        // 限零至兩個 int 形參、單 Return、無副作用純加減；名稱只
         // 能是該唯一形參。任意 Borrow／Move／Call／Self 欄位均拒絕。
         // 每個呼叫及其引數仍由同一 Checker evaluate 真正驗證 TypedHIR。
-        fn pure_helper_int_tree(term: &Term, parameter: Option<&str>) -> bool {
+        fn pure_helper_int_tree(term: &Term, parameters: &[&str]) -> bool {
             match &term.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(_),
                 ) => true,
-                TermKind::Name(name) => parameter == Some(name.as_str()),
-                TermKind::Group(inner) => pure_helper_int_tree(inner, parameter),
+                TermKind::Name(name) => parameters.contains(&name.as_str()),
+                TermKind::Group(inner) => pure_helper_int_tree(inner, parameters),
                 TermKind::BinaryInt(binary) =>
                     matches!(binary.operator, '+' | '-')
-                        && pure_helper_int_tree(&binary.left, parameter)
-                        && pure_helper_int_tree(&binary.right, parameter),
+                        && pure_helper_int_tree(&binary.left, parameters)
+                        && pure_helper_int_tree(&binary.right, parameters),
                 _ => false,
             }
         }
         let helper_arity = |name: &str| self.find_function(name).and_then(|helper| {
-            let parameter = match helper.params.as_slice() {
-                [] => None,
-                [single] if single.ty == "int" && single.name != "self" =>
-                    Some(single.name.as_str()),
-                _ => return None,
-            };
             if helper.is_async || helper.name == "main"
-                || helper.result_ty != "int" || helper.body.statements.len() != 1 {
+                || helper.result_ty != "int" || helper.body.statements.len() != 1
+                || helper.params.len() > 2 {
                 return None;
             }
+            // 原 Checker 已驗證一般函式參數，但 B4 再拒絕未核准
+            // 的型別、遮蔽與重複名稱。順序是正式 Parser 形參順序。
+            if helper.params.iter().any(|param|
+                param.ty != "int" || param.name == "self")
+                || helper.params.iter().enumerate().any(|(index, param)|
+                    helper.params[..index].iter().any(|earlier|
+                        earlier.name == param.name)) {
+                return None;
+            }
+            let parameters = helper.params.iter().map(|param|
+                param.name.as_str()
+            ).collect::<Vec<_>>();
             match &helper.body.statements[0].kind {
                 StmtKind::Return(returned)
-                    if pure_helper_int_tree(&returned.expression, parameter) =>
+                    if pure_helper_int_tree(&returned.expression, &parameters) =>
                     Some(helper.params.len()),
                 _ => None,
             }
