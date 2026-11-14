@@ -3045,9 +3045,12 @@ mod g18_private_method_self_tests {
         let wrong_name = multi_int_method_source("return missing", "11", "4");
         assert!(matches!(PreparedPrivateSelfMethod::prepare(&wrong_name),
             Err(PrivateSelfMethodPrepareError::Check(_))));
-        let mixed = "struct Counter{\nvar count:int = 7\nfn calculate(a:int,b:bool)->int{\nreturn a\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.calculate(11,true)\n}\n";
+        // 原 Checker 已核准的 (int,bool) 方法現可真執行；
+        // 舊「合法混型一律 Unsupported」反例改為真正非法的
+        // int→bool 實參錯配，原型別安全拒絕不許退步。
+        let mixed = "struct Counter{\nvar count:int = 7\nfn calculate(a:int,b:bool)->int{\nreturn a\n}\n}\nfn main()->int{\nconst value:Counter = Counter()\nreturn value.calculate(11,12)\n}\n";
         assert!(matches!(PreparedPrivateSelfMethod::prepare(mixed),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+            Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
 
