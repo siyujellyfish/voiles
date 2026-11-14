@@ -1478,6 +1478,10 @@ include!("struct_stage/g18_r05_t3_ticket_frame_lifetime_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_v7_cancel_retire_proof_tests.rs");
 
+// G18／P18.5-T4／V7-E3：待取消 Prepared／Suspended 真證據與整批安全前置守門。
+#[cfg(test)]
+include!("struct_stage/g18_t4_pending_cancel_evidence_tests.rs");
+
 // G18／P18.5-T4／V7-E2：整條 FIFO 驅動歷史不可重複 Completed／事後 Suspended。
 #[cfg(test)]
 include!("struct_stage/g18_t4_fifo_terminal_poll_history_tests.rs");
