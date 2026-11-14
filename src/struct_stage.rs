@@ -1470,6 +1470,11 @@ include!("struct_stage/g18_m2_m3_mixed_bool_int_method_args_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_r05_t3_nested_ticket_order_tests.rs");
 
+// G18／P18.6-M2／M3：多個原 Checker bool 方法形參
+// 各自 DeclId 驅動巢狀真選枝及共通純 helper 返回。
+#[cfg(test)]
+include!("struct_stage/g18_m2_m3_multiple_bool_checker_frames_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");

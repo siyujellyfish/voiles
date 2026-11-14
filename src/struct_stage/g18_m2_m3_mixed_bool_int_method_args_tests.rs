@@ -27,11 +27,11 @@ return owner.read(true,5)
 
     fn run(source:&str) -> PrivateSelfMethodOutcome {
         let plan=PreparedPrivateSelfMethod::prepare(source).unwrap();
-        assert!(plan.method_bool_argument.is_some(),
+        assert!(!plan.method_bool_arguments.is_empty(),
             "bool 必須由原 Lexer／Parser 宣告身分提供，不能當成 i64");
         assert!(plan.argument_binding.is_some(),
             "int 必須由獨立原 Checker int DeclarationId 真框架提供");
-        assert_ne!(plan.method_bool_argument.unwrap().0,plan.argument_binding.unwrap().0);
+        assert_ne!(plan.method_bool_arguments[0].0,plan.argument_binding.unwrap().0);
         let out=plan.execute().unwrap();
         assert!(out.has_balanced_self_borrow_trace() && out.ticket_returned);
         assert_eq!((out.main_local_slots_after_exit,out.method_local_slots_after_exit),(0,0));
@@ -153,10 +153,10 @@ return owner.read(true,5)
         }
         let mut plan=PreparedPrivateSelfMethod::prepare(SOURCE).unwrap();
         let int_id=plan.argument_binding.unwrap().0;
-        plan.method_bool_argument=Some((int_id,true));
+        plan.method_bool_arguments[0]=(int_id,true);
         assert!(matches!(plan.execute(),Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan=PreparedPrivateSelfMethod::prepare(SOURCE).unwrap();
-        let bool_id=plan.method_bool_argument.unwrap().0;
+        let bool_id=plan.method_bool_arguments[0].0;
         plan.argument_binding=Some((bool_id,5));
         assert!(matches!(plan.execute(),Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }

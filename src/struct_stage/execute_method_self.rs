@@ -322,7 +322,8 @@ struct PreparedPrivateSelfMethod {
     argument_binding: Option<(DeclarationId, i64)>,
     additional_argument_bindings: Vec<(DeclarationId, i64)>,
     /// M2：原 Lexer bool 字面作方法真形參，獨立於 i64 槽，無隱含轉型。
-    method_bool_argument: Option<(DeclarationId, bool)>,
+    /// M2／M3：原 Checker 各 bool 形參按 Parser 位置保留獨立 DeclId。
+    method_bool_arguments: Vec<(DeclarationId, bool)>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -660,12 +661,10 @@ impl PreparedPrivateSelfMethod {
         let main_prepared_values = main_int_locals.iter()
             .map(|(_, id, value, _)| (*id, *value))
             .collect::<BTreeMap<_, _>>();
-        // M2／M3：對原 Parser 的每一個**位置**保留 bool/int
-        // 真型別；只允許一個原 Lexer bool 常值和任意已核准
-        // Copyable int 實參混合，不依值大小、名稱或固定形參
-        // 位置猜測。bool 不建立 i64 HIR，int 仍由原 Checker
-        // CheckedScalar／DeclarationId 求值與記錄。
-        let mut bool_argument_literal = None::<(usize, bool)>;
+        // M2／M3：原 Parser 每個 bool/int 位置皆保存真型別；
+        // bool 只許原 Lexer true／false 並各自核對原 Checker
+        // DeclarationId，不額外設個數上限；int 維持原 ScalarHIR。
+        let mut bool_argument_literals = Vec::<(usize, bool)>::new();
         let mut parsed_argument_is_bool = Vec::<bool>::new();
         let mut int_arguments = Vec::<i64>::new();
         let mut argument_sources = Vec::<Option<DeclarationId>>::new();
@@ -682,13 +681,8 @@ impl PreparedPrivateSelfMethod {
                 _ => None,
             };
             if let Some(value) = literal {
-                // 此子集不猜測兩個 bool 形參的控制分支語意，
-                // 只建立唯一原 Checker 已核准 bool 動態框架。
-                if bool_argument_literal.replace((index, value)).is_some() {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "M2 混合方法此階段僅接受一個原 Lexer bool 形參",
-                    ));
-                }
+                // 名稱或相同布林值都不能取代各形參 DeclId。
+                bool_argument_literals.push((index, value));
                 parsed_argument_is_bool.push(true);
                 continue;
             }
@@ -748,7 +742,8 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         let mut bindings = Vec::<(DeclarationId, i64)>::new();
-        let mut method_bool_argument = None::<(DeclarationId, bool)>;
+        let mut method_bool_arguments = Vec::<(DeclarationId, bool)>::new();
+        let mut bool_values = bool_argument_literals.into_iter();
         let mut int_values = int_arguments.iter().copied();
         let mut bound_ids = std::collections::BTreeSet::<DeclarationId>::new();
         for (index, param) in method.params.iter().enumerate() {
@@ -767,17 +762,17 @@ impl PreparedPrivateSelfMethod {
             }
             match (param.ty.as_str(), parsed_argument_is_bool[index]) {
                 ("bool", true) => {
-                    let Some((position, value)) = bool_argument_literal else {
+                    let Some((position, value)) = bool_values.next() else {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
                             "M2 bool 來源未與原 Checker 真形參位置綁定",
                         ));
                     };
-                    if position != index
-                        || method_bool_argument.replace((id, value)).is_some() {
+                    if position != index {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "M2 bool 原 Lexer 位置與獨立動態形參身分衝突",
+                            "M2 bool 原 Lexer 位置與原 Parser 形參順序衝突",
                         ));
                     }
+                    method_bool_arguments.push((id, value));
                 }
                 ("int", false) => {
                     let value = int_values.next().ok_or(
@@ -792,9 +787,9 @@ impl PreparedPrivateSelfMethod {
                 )),
             }
         }
-        if int_values.next().is_some() {
+        if int_values.next().is_some() || bool_values.next().is_some() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "M2 多出的 int 實參不得冒充任何方法形參",
+                "M2 多出的 int／bool 實參不得冒充任何方法形參",
             ));
         }
         let argument_binding = bindings.first().copied();
@@ -859,11 +854,13 @@ impl PreparedPrivateSelfMethod {
                                         if word == if *value { "true" } else { "false" })
                             ) => (*value, None),
                             TermKind::Name(name) => {
-                                let (id, value) = method_bool_argument.ok_or(
-                                    PrivateSelfMethodPrepareError::Unsupported(
-                                        "M2 方法 bool 條件無合法傳入形參",
-                                    ),
-                                )?;
+                                let (id, value) = method.params.iter()
+                                    .find(|param| param.ty == "bool" && param.name == *name)
+                                    .and_then(|param| method_bool_arguments.iter().copied()
+                                        .find(|(id, _)| *id == DeclarationId(param.declaration_start)))
+                                    .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 方法 bool 條件缺少同一原 Checker 形參 DeclId",
+                                    ))?;
                                 if !method.params.iter().any(|param|
                                     param.ty == "bool" && param.name == *name
                                     && DeclarationId(param.declaration_start) == id)
@@ -955,11 +952,13 @@ impl PreparedPrivateSelfMethod {
                                                         if word == if *value { "true" } else { "false" })
                                         ) => (*value, None),
                                         TermKind::Name(name) => {
-                                            let (id, value) = method_bool_argument.ok_or(
-                                                PrivateSelfMethodPrepareError::Unsupported(
-                                                    "M2 內層 bool 形參缺少原 Checker 綁定",
-                                                ),
-                                            )?;
+                                            let (id, value) = method.params.iter()
+                                                .find(|param| param.ty == "bool" && param.name == *name)
+                                                .and_then(|param| method_bool_arguments.iter().copied()
+                                                    .find(|(id, _)| *id == DeclarationId(param.declaration_start)))
+                                                .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                                                    "M2 內層 bool 名稱缺少原 Checker 同一 DeclId",
+                                                ))?;
                                             if !method.params.iter().any(|param|
                                                 param.ty == "bool" && param.name == *name
                                                 && DeclarationId(param.declaration_start) == id)
@@ -1738,9 +1737,9 @@ impl PreparedPrivateSelfMethod {
             || ((method_nested_true_write.is_some() || method_nested_else_write.is_some())
                 && method_nested_branch.is_none())
             || (method_nested_branch_parameter.is_some()
-                && (method_nested_branch.is_none() || method_bool_argument.is_none()))
+                && (method_nested_branch.is_none() || method_bool_arguments.is_empty()))
             || (method_branch_else.is_some() && method_branch.is_none())
-            || (method_branch_parameter.is_some() && method_bool_argument.is_none())
+            || (method_branch_parameter.is_some() && method_bool_arguments.is_empty())
             || method_fact.span != method_span
             || method_fact.self_borrow != required_kind
             || !method_fact.checked_returns.contains(&last.node_span()) {
@@ -1793,7 +1792,7 @@ impl PreparedPrivateSelfMethod {
         if receiver != &owner.name || called != &method.name
             || args.len() != usize::from(argument_binding.is_some())
                 + additional_argument_bindings.len()
-                + usize::from(method_bool_argument.is_some())
+                + method_bool_arguments.len()
             || verified.plan.scalar_hir.expression(call_span)
                 .is_none_or(|fact| fact.ty != ScalarType::Int) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -1838,7 +1837,7 @@ impl PreparedPrivateSelfMethod {
             method_nested_else_write, method_branch_parameter, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
-            method_bool_argument, main_int_locals, main_init_plans, argument_sources, argument_plans,
+            method_bool_arguments, main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -1872,7 +1871,7 @@ impl PreparedPrivateSelfMethod {
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.argument_binding == fresh.argument_binding
             && self.additional_argument_bindings == fresh.additional_argument_bindings
-            && self.method_bool_argument == fresh.method_bool_argument
+            && self.method_bool_arguments == fresh.method_bool_arguments
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
@@ -2004,7 +2003,7 @@ impl PreparedPrivateSelfMethod {
             }
             // 完成原 Checker 參數的真值框架綁定；選中來源返回時
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
-            if let Some((id, value)) = self.method_bool_argument {
+            for (id, value) in self.method_bool_arguments.iter().copied() {
                 if bool_parameter_frame.insert(id, value).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
