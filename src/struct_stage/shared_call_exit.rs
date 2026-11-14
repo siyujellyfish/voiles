@@ -37,7 +37,11 @@ fn private_shared_call_exit_balanced(
     let mut local_scopes = vec![
         Vec::<(crate::ownership_ledger::DeclarationId, bool)>::new()
     ];
-    let mut tickets = Vec::<crate::borrow_safety::BorrowTicket>::new();
+    // 真票據身分與取得時所在的動態函式深度必須一起留存。
+    // 同一 frame 中獨立來源的多張共享票據可以按原 Checker
+    // 有效期分別歸還；但內層 frame 新取得的票據尚有效時，
+    // 外層票據不准先還，否則僅比對票據張數會漏掉巢狀錯序。
+    let mut tickets = Vec::<(crate::borrow_safety::BorrowTicket, usize)>::new();
     let mut unwinding = false;
     let mut entered_any = false;
     for event in events {
@@ -45,11 +49,11 @@ fn private_shared_call_exit_balanced(
             PrivateSharedCallExitEvent::LoanAcquired(ticket) => {
                 // 已 Returned 的框架不能在清理期間重新借入；這不是
                 // 另一個合法的新引數求值位置。
-                if unwinding || tickets.contains(ticket)
+                if unwinding || tickets.iter().any(|(active, _)| active == ticket)
                     || frames.last().is_some_and(|returned| *returned) {
                     return false;
                 }
-                tickets.push(*ticket);
+                tickets.push((*ticket, frames.len()));
             }
             PrivateSharedCallExitEvent::FunctionEntered => {
                 if unwinding || frames.last().is_some_and(|returned| *returned) {
@@ -113,9 +117,18 @@ fn private_shared_call_exit_balanced(
                 if !unwinding && !frames.last().is_some_and(|returned| *returned) {
                     return false;
                 }
-                let Some(index) = tickets.iter().position(|active| active == ticket) else {
+                let Some(index) = tickets.iter()
+                    .position(|(active, _)| active == ticket) else {
                     return false;
                 };
+                let depth = tickets[index].1;
+                // 內層真 frame 在外層票據取得後新簽的 BorrowTicket
+                // 必須先退場。相同深度的獨立借用不強制 LIFO，
+                // 不覆寫 VB14／P15 已核准的詞彙最後使用點。
+                if depth > frames.len()
+                    || tickets.iter().any(|(_, active_depth)| *active_depth > depth) {
+                    return false;
+                }
                 tickets.remove(index);
             }
             PrivateSharedCallExitEvent::FunctionExited { returned } => {
