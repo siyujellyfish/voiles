@@ -6869,6 +6869,9 @@ struct PrivateScalarCooperativeQueue<'a> {
     ready: std::collections::VecDeque<u64>,
     next_id: u64,
     drive_order: Vec<(u64, PrivateScalarGraphPoll)>,
+    /// V7-E2：只有真正通過 wake 安全點才可取得重新 poll 的 FIFO token。
+    /// 原始 poll 與 wake 歷史分開記錄，避免手動插入 ready 假裝合法喚醒。
+    wake_order: Vec<u64>,
     cancellation_order: Vec<u64>,
 }
 
@@ -6946,6 +6949,10 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
 
     fn cancellation_order(&self) -> &[u64] {
         &self.cancellation_order
+    }
+
+    fn wake_order(&self) -> &[u64] {
+        &self.wake_order
     }
 
     fn outcome(&self, id: u64) -> Option<&PrivateScalarCallOutcome> {
@@ -7035,6 +7042,9 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         // 後續 wake 僅新增一個 ready token 的語意。
         self.verify_cancellable_evidence(id)?;
         self.ready.push_back(id);
+        // 只有成功完成 E5／FIFO 歷史預檢後才記錄此份喚醒授權；
+        // 拒絕的重複／偽造 wake 不可獲得未來的再次 poll 資格。
+        self.wake_order.push(id);
         Ok(())
     }
 
@@ -7062,6 +7072,8 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             .collect::<Vec<_>>();
         let cancellations = self.cancellation_order.iter()
             .filter(|logged_id| **logged_id == id).count();
+        let wakes = self.wake_order.iter()
+            .filter(|logged_id| **logged_id == id).count();
         let ready_count = self.ready.iter().filter(|candidate| **candidate == id).count();
         if cancellations != 0 || job.cancellation.is_some()
             || continuation.outcome.is_some() || ready_count > 1 {
@@ -7075,7 +7087,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 if !polls.is_empty() || continuation.checkpoint.is_some()
                     || !continuation.events.is_empty()
                     || !continuation.resource_events.is_empty()
-                    || ready_count != 1 {
+                    || ready_count != 1 || wakes != 0 {
                     return Err(PrivateScalarCooperativeError::Engine);
                 }
             }
@@ -7087,7 +7099,14 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                     || polls.iter().any(|poll|
                         *poll != PrivateScalarGraphPoll::Suspended)
                     || continuation.checkpoint.is_none()
-                    || continuation.pending_await().is_none() {
+                    || continuation.pending_await().is_none()
+                    // 真首次 Suspended 沒有 wake；每次完成一筆
+                    // Suspended 後，下一筆 poll 必須有且只有
+                    // 一次已通過 wake() 的新授權。ready=1 表示
+                    // 最新 wake 尚未被 poll，ready=0 則已消耗。
+                    || polls.len().checked_sub(1)
+                        .and_then(|previous| previous.checked_add(ready_count))
+                        != Some(wakes) {
                     return Err(PrivateScalarCooperativeError::Engine);
                 }
                 Self::verify_wakeup_safety(job)?;
@@ -7177,11 +7196,16 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         let last_drive = drive_history.last().copied();
         let cancelled_count = self.cancellation_order.iter()
             .filter(|logged_id| **logged_id == id).count();
+        let wake_count = self.wake_order.iter()
+            .filter(|logged_id| **logged_id == id).count();
         match status {
             PrivateDeferredAwaitStatus::Succeeded
             | PrivateDeferredAwaitStatus::Failed => {
                 if last_drive != Some(PrivateScalarGraphPoll::Completed)
-                    || cancelled_count != 0 {
+                    || cancelled_count != 0
+                    // 第一筆 poll 由 submit 的 Prepared token 啟動，
+                    // 其後每筆 Suspended→poll 都必須有真 wake。
+                    || drive_history.len().checked_sub(1) != Some(wake_count) {
                     return Err(PrivateScalarCooperativeError::Engine);
                 }
                 let outcome = job.continuation.outcome.as_ref()
@@ -7203,9 +7227,20 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 match (last_drive, job.cancellation.as_ref()) {
                     (None, None) => {
                         // 未真正進入過的 Prepared 取消，沒有任何
-                        // 真函式／P16／HC14 事件可移交。
+                        // 真函式／P16／HC14 事件可移交，也不能有 wake。
+                        if wake_count != 0 {
+                            return Err(PrivateScalarCooperativeError::Engine);
+                        }
                     }
                     (Some(PrivateScalarGraphPoll::Suspended), Some(evidence)) => {
+                        // 可以在尚未 wake 或已 wake 且尚未再次 poll
+                        // 的安全點取消；不可有無法對帳的額外喚醒。
+                        let before_last = drive_history.len().checked_sub(1)
+                            .ok_or(PrivateScalarCooperativeError::Engine)?;
+                        if wake_count != before_last
+                            && wake_count != drive_history.len() {
+                            return Err(PrivateScalarCooperativeError::Engine);
+                        }
                         // 曾執行的 Suspended 必須真正逐框架退出。
                         // 不只確認 ResourceId Created/Released 張數，
                         // 還需拒絕 Unwind／FunctionExited／借票錯序

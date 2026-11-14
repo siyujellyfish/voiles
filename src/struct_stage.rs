@@ -1482,6 +1482,7 @@ include!("struct_stage/g18_v7_cancel_retire_proof_tests.rs");
 // 未選工作與已完成結果不得被重複消耗。
 #[cfg(test)]
 include!("struct_stage/g18_t4_verified_wake_drive_history_tests.rs");
+include!("struct_stage/g18_t4_wake_token_ledger_tests.rs");
 
 // G18／P18.5-T4／V7-E3：待取消 Prepared／Suspended 真證據與整批安全前置守門。
 #[cfg(test)]
