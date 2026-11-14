@@ -1560,6 +1560,12 @@ impl PreparedPrivateSelfMethod {
             (PrivateSelfIntReturn::CheckedScalar(plan), None)
         } else {
             match &returned.expression.kind {
+            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) => (
+                private_self_checked_helper_return_leaf(
+                    &returned.expression, &method_bindings, &verified,
+                    method_helper.as_ref(),
+                )?, None,
+            ),
             TermKind::FieldRead(receiver, read_field) =>
                 (PrivateSelfIntReturn::Field,
                     Some((receiver.as_str(), read_field.as_str()))),

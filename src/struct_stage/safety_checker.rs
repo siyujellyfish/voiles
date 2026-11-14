@@ -838,15 +838,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 _ => false,
             }
         }
-        let TermKind::Call(call) = &term.kind else { return Ok(()); };
-        let Some(helper) = self.find_function(&call.name) else { return Ok(()); };
-        if call.awaited || helper.is_async || helper.name == "main"
-            || helper.result_ty != "int" || helper.params.len() != call.arguments.len()
+        // F02 正式 Parser：零參數 name() 先保持未決節點，必須
+        // 經原 Checker ZeroArgResolution 唯一決定普通函式，
+        // 不得用字串名稱猜測或讓同名 struct 冒充 helper。
+        let (name, args, awaited): (&str, &[Term], bool) = match &term.kind {
+            TermKind::Call(call) => (
+                call.name.as_str(), call.arguments.as_slice(), call.awaited,
+            ),
+            TermKind::UnresolvedZeroArgs(name)
+                if matches!(self.resolve_empty_call(name),
+                    ZeroArgResolution::Function(_)) =>
+                (name.as_str(), &[], false),
+            _ => return Ok(()),
+        };
+        let Some(helper) = self.find_function(name) else { return Ok(()); };
+        if awaited || helper.is_async || helper.name == "main"
+            || helper.result_ty != "int" || helper.params.len() != args.len()
             || helper.body.statements.len() != 1
             || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
             || helper.params.iter().enumerate().any(|(i, p)|
                 helper.params[..i].iter().any(|q| q.name == p.name))
-            || !call.arguments.iter().all(literal_int_tree) {
+            || !args.iter().all(literal_int_tree) {
             return Ok(());
         }
         let names = helper.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
@@ -1192,6 +1204,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         if !Self::checked_return_type(&actual, &method.result_ty, true) {
             return Err(self.error("方法回傳型別與已驗證運算式不一致", return_value));
         }
+        // B4／M3：沒有 Copyable int 局部的最後直接 Return，
+        // 與提前返回葉一樣只在原 Checker 已核准的純
+        // literal-int helper 上生成原 ScalarHIR，不另設型別器。
+        self.method_branch_checked_pure_helper_return(&return_value.expression)?;
         checked_returns.insert(method.body.last()
             .expect("已驗證方法最後必有 return").node_span());
         self.record_checked_method_safety(method, mode, checked_returns);
