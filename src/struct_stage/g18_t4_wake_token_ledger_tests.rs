@@ -106,14 +106,14 @@ mod g18_t4_wake_token_ledger_tests {
             Some((id, PrivateScalarGraphPoll::Completed)));
         assert_eq!(q.outcome(id).unwrap().result, Ok(11));
         assert_eq!(q.wake_order(), [id]);
-        q.wake_order.pop();
+        // 刻意移除**真正** wake 憑據，恢復時須原件交還；
+        // 不能在完成兩次 poll 後用當下計數偽造舊時間點。
+        let original_wake = q.wake_order.pop().unwrap();
         assert!(matches!(q.retire_terminal(id),
             Err(PrivateScalarCooperativeError::Engine)));
         assert_eq!(q.status(id), Some(PrivateDeferredAwaitStatus::Succeeded));
         assert_eq!(q.drive_order().len(), 2);
-        q.wake_order.push(PrivateScalarWakeReceipt {
-            id, after_drive_count: q.drive_order.len(),
-        });
+        q.wake_order.push(original_wake);
         assert!(matches!(q.retire_terminal(id).unwrap(),
             PrivateScalarRetiredJob::Completed(_)));
     }
