@@ -874,49 +874,61 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, method: &Function,
         returned: &crate::syntax_shared::ParsedReturn<Term>,
     ) -> Result<(), Diagnostic> {
-        // B4：只在「直接局部初始化」允許 Checker 真函式索引已證
-        // 同步、零參數、單一 Return 的無副作用純 int 算術。
-        // 這裡僅做可執行來源形狀預檢：所有型別、來源跨度與 int HIR
-        // 仍由原 Checker evaluate 及原 ScalarHIR 驗證，不自行授權。
-        fn pure_helper_int_tree(term: &Term) -> bool {
+        // B4：原 Checker 唯一普通函式索引可證的同步純 int helper，
+        // 限零或一個 int 形參、單 Return、無副作用純加減；名稱只
+        // 能是該唯一形參。任意 Borrow／Move／Call／Self 欄位均拒絕。
+        // 每個呼叫及其引數仍由同一 Checker evaluate 真正驗證 TypedHIR。
+        fn pure_helper_int_tree(term: &Term, parameter: Option<&str>) -> bool {
             match &term.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(_),
                 ) => true,
-                TermKind::Group(inner) => pure_helper_int_tree(inner),
+                TermKind::Name(name) => parameter == Some(name.as_str()),
+                TermKind::Group(inner) => pure_helper_int_tree(inner, parameter),
                 TermKind::BinaryInt(binary) =>
                     matches!(binary.operator, '+' | '-')
-                        && pure_helper_int_tree(&binary.left)
-                        && pure_helper_int_tree(&binary.right),
+                        && pure_helper_int_tree(&binary.left, parameter)
+                        && pure_helper_int_tree(&binary.right, parameter),
                 _ => false,
             }
         }
-        let helper_is_proven = |name: &str| self.find_function(name).is_some_and(|helper| {
-            !helper.is_async && helper.name != "main"
-                && helper.params.is_empty() && helper.result_ty == "int"
-                && helper.body.statements.len() == 1
-                && matches!(&helper.body.statements[0].kind,
-                    StmtKind::Return(returned)
-                        if pure_helper_int_tree(&returned.expression)
-                )
+        let helper_arity = |name: &str| self.find_function(name).and_then(|helper| {
+            let parameter = match helper.params.as_slice() {
+                [] => None,
+                [single] if single.ty == "int" && single.name != "self" =>
+                    Some(single.name.as_str()),
+                _ => return None,
+            };
+            if helper.is_async || helper.name == "main"
+                || helper.result_ty != "int" || helper.body.statements.len() != 1 {
+                return None;
+            }
+            match &helper.body.statements[0].kind {
+                StmtKind::Return(returned)
+                    if pure_helper_int_tree(&returned.expression, parameter) =>
+                    Some(helper.params.len()),
+                _ => None,
+            }
         });
         fn pure_int(
-            term: &Term, helper_is_proven: &dyn Fn(&str) -> bool, allow_direct_helper: bool,
+            term: &Term, helper_arity: &dyn Fn(&str) -> Option<usize>,
+            allow_direct_helper: bool,
         ) -> bool {
             match &term.kind {
                 TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
                 | TermKind::Name(_) => true,
                 TermKind::Group(inner) =>
-                    pure_int(inner, helper_is_proven, allow_direct_helper),
+                    pure_int(inner, helper_arity, allow_direct_helper),
                 TermKind::BinaryInt(binary) =>
                     matches!(binary.operator, '+' | '-')
-                    && pure_int(&binary.left, helper_is_proven, false)
-                    && pure_int(&binary.right, helper_is_proven, false),
+                    && pure_int(&binary.left, helper_arity, false)
+                    && pure_int(&binary.right, helper_arity, false),
                 TermKind::UnresolvedZeroArgs(name) if allow_direct_helper =>
-                    helper_is_proven(name),
+                    helper_arity(name) == Some(0),
                 TermKind::Call(call) if allow_direct_helper =>
-                    !call.awaited && call.arguments.is_empty()
-                        && helper_is_proven(&call.name),
+                    !call.awaited && helper_arity(&call.name) == Some(call.arguments.len())
+                        && call.arguments.iter().all(|argument|
+                            pure_int(argument, helper_arity, false)),
                 _ => false,
             }
         }
@@ -956,7 +968,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         message: "方法 int 局部必須有已核准的初始化來源".into(),
                         span: Some(self.source.span(statement.start, statement.end)),
                     })?;
-                    if !pure_int(init, &helper_is_proven, true) {
+                    if !pure_int(init, &helper_arity, true) {
                         return Err(self.error(
                             "方法 int 局部不得含未驗證的 Borrow／Move／函式呼叫／self 欄位",
                             init,
@@ -988,7 +1000,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         // 與已核准的局部初始化相同：只有完整 RHS
                         // 直接呼叫原 Checker 已證的零參數純 int helper 可通過。
                         // BinaryInt 子樹仍由 pure_int(..., false) 禁止嵌入呼叫。
-                        || !pure_int(&assignment.expression, &helper_is_proven, true) {
+                        || !pure_int(&assignment.expression, &helper_arity, true) {
                         return Err(self.error(
                             "方法局部賦值僅接受已初始化的 var int 與純整數算式",
                             &assignment.expression,
@@ -1018,7 +1030,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }),
             }
         }
-        if !pure_int(&returned.expression, &helper_is_proven, false) {
+        if !pure_int(&returned.expression, &helper_arity, false) {
             return Err(self.error(
                 "方法局部返回僅接通原 Checker 的純 int 算術",
                 &returned.expression,
