@@ -875,7 +875,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         returned: &crate::syntax_shared::ParsedReturn<Term>,
     ) -> Result<(), Diagnostic> {
         // B4：原 Checker 唯一普通函式索引可證的同步純 int helper，
-        // 限零至兩個 int 形參、單 Return、無副作用純加減；名稱只
+        // 依正式簽章接任意數量 int 形參、單 Return、純加減；名稱只
         // 能是該唯一形參。任意 Borrow／Move／Call／Self 欄位均拒絕。
         // 每個呼叫及其引數仍由同一 Checker evaluate 真正驗證 TypedHIR。
         fn pure_helper_int_tree(term: &Term, parameters: &[&str]) -> bool {
@@ -894,8 +894,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
         let helper_arity = |name: &str| self.find_function(name).and_then(|helper| {
             if helper.is_async || helper.name == "main"
-                || helper.result_ty != "int" || helper.body.statements.len() != 1
-                || helper.params.len() > 2 {
+                || helper.result_ty != "int" || helper.body.statements.len() != 1 {
                 return None;
             }
             // 原 Checker 已驗證一般函式參數，但 B4 再拒絕未核准
