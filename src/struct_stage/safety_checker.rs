@@ -1036,9 +1036,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }),
             }
         }
-        if !pure_int(&returned.expression, &helper_arity, false) {
+        // B4／M3：原已核准純 int helper 現可位於最後的直接
+        // Return 退出邊；BinaryInt 子樹仍禁止 Call，必須真正到達
+        // 退出邊時才動態呼叫、先求參數後進普通函式框架。
+        if !pure_int(&returned.expression, &helper_arity, true) {
             return Err(self.error(
-                "方法局部返回僅接通原 Checker 的純 int 算術",
+                "方法局部返回僅接通原 Checker 的純 int 算術或直接 helper",
                 &returned.expression,
             ));
         }
