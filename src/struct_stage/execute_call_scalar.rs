@@ -6863,6 +6863,13 @@ enum PrivateScalarRetiredJob {
 /// 排程的「準備／可執行／已抵達 await／可喚醒」不等於
 /// 開放背景工作。每次 drive_one 僅消耗佇列頭的**一個**
 /// 原 Checker 計畫，至下一個真 await 或原函式正式完成。
+/// E2：每份真正 wake 的可追溯全域 poll 時間位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PrivateScalarWakeReceipt {
+    id: u64,
+    after_drive_count: usize,
+}
+
 #[derive(Default)]
 struct PrivateScalarCooperativeQueue<'a> {
     jobs: BTreeMap<u64, PrivateScalarCooperativeJob<'a>>,
@@ -6871,7 +6878,7 @@ struct PrivateScalarCooperativeQueue<'a> {
     drive_order: Vec<(u64, PrivateScalarGraphPoll)>,
     /// V7-E2：只有真正通過 wake 安全點才可取得重新 poll 的 FIFO token。
     /// 原始 poll 與 wake 歷史分開記錄，避免手動插入 ready 假裝合法喚醒。
-    wake_order: Vec<u64>,
+    wake_order: Vec<PrivateScalarWakeReceipt>,
     cancellation_order: Vec<u64>,
 }
 
@@ -6951,8 +6958,8 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         &self.cancellation_order
     }
 
-    fn wake_order(&self) -> &[u64] {
-        &self.wake_order
+    fn wake_order(&self) -> Vec<u64> {
+        self.wake_order.iter().map(|receipt| receipt.id).collect()
     }
 
     fn outcome(&self, id: u64) -> Option<&PrivateScalarCallOutcome> {
@@ -7044,7 +7051,42 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         self.ready.push_back(id);
         // 只有成功完成 E5／FIFO 歷史預檢後才記錄此份喚醒授權；
         // 拒絕的重複／偽造 wake 不可獲得未來的再次 poll 資格。
-        self.wake_order.push(id);
+        self.wake_order.push(PrivateScalarWakeReceipt {
+            id, after_drive_count: self.drive_order.len(),
+        });
+        Ok(())
+    }
+
+    /// T4／E2：原 wake 不只核對數量，還需核對相鄰 poll 的真時序。
+    /// 用全域 FIFO drive_order 索引查核，完全唯讀且不簽發新票據。
+    fn verify_wake_chronology(
+        &self, id: u64,
+    ) -> Result<(), PrivateScalarCooperativeError> {
+        // 真 wake 的全域 poll 時間只能不變或向前；不同工作可在
+        // 兩個 poll 之間依次醒來，不能用重排歷史冒充 FIFO。
+        if self.wake_order.iter().any(|receipt|
+            receipt.after_drive_count > self.drive_order.len()
+        ) || self.wake_order.windows(2).any(|pair|
+            pair[0].after_drive_count > pair[1].after_drive_count
+        ) {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        let polls = self.drive_order.iter().enumerate()
+            .filter_map(|(index, (job_id, _))| (*job_id == id).then_some(index))
+            .collect::<Vec<_>>();
+        let wakes = self.wake_order.iter()
+            .filter(|receipt| receipt.id == id)
+            .collect::<Vec<_>>();
+        for (index, receipt) in wakes.iter().enumerate() {
+            let previous = polls.get(index)
+                .ok_or(PrivateScalarCooperativeError::Engine)?;
+            if receipt.after_drive_count <= *previous
+                || polls.get(index + 1).is_some_and(|next|
+                    receipt.after_drive_count > *next
+                ) {
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+        }
         Ok(())
     }
 
@@ -7072,8 +7114,9 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             .collect::<Vec<_>>();
         let cancellations = self.cancellation_order.iter()
             .filter(|logged_id| **logged_id == id).count();
+        self.verify_wake_chronology(id)?;
         let wakes = self.wake_order.iter()
-            .filter(|logged_id| **logged_id == id).count();
+            .filter(|receipt| receipt.id == id).count();
         let ready_count = self.ready.iter().filter(|candidate| **candidate == id).count();
         if cancellations != 0 || job.cancellation.is_some()
             || continuation.outcome.is_some() || ready_count > 1 {
@@ -7196,8 +7239,9 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         let last_drive = drive_history.last().copied();
         let cancelled_count = self.cancellation_order.iter()
             .filter(|logged_id| **logged_id == id).count();
+        self.verify_wake_chronology(id)?;
         let wake_count = self.wake_order.iter()
-            .filter(|logged_id| **logged_id == id).count();
+            .filter(|receipt| receipt.id == id).count();
         match status {
             PrivateDeferredAwaitStatus::Succeeded
             | PrivateDeferredAwaitStatus::Failed => {
