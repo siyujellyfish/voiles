@@ -173,7 +173,7 @@ return owner.read(from_helper)
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
         plan.method_helper = Some(PrivateSelfApprovedHelper {
             name: "helper".to_owned(),
-            parameter: None,
+            parameters: Vec::new(),
             returned: PrivateScalarReturnExpr::Constant(11),
         });
         assert!(matches!(
