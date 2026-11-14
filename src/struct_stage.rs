@@ -1465,6 +1465,11 @@ include!("struct_stage/g18_b4_m3_dynamic_int_return_helper_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_m2_m3_mixed_bool_int_method_args_tests.rs");
 
+// G18／P18.5-T3／R05：真 BorrowSafety 票據的跨函式
+// 深度歸還序及同幀合法最後使用點正反稽核。
+#[cfg(test)]
+include!("struct_stage/g18_r05_t3_nested_ticket_order_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");
