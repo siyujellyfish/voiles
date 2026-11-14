@@ -804,6 +804,70 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         self.method_pure_value_type(owner, method, term)
     }
 
+    /// B4／M3：僅在方法真 Return 出口，為同一原 Checker 已核准的
+    /// 無副作用純 int helper 生成原 ScalarHIR。這不是另一份型別決議：
+    /// 所有形參、Call、Lexer 和 checked expression 都經原 evaluate，
+    /// 且本首批只取 Lexer int 常值／加減實參，避免建立未驗證 Scope。
+    fn method_branch_checked_pure_helper_return(
+        &self, term: &Term,
+    ) -> Result<(), Diagnostic> {
+        fn literal_int_tree(term: &Term) -> bool {
+            match &term.kind {
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Group(inner) => literal_int_tree(inner),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && literal_int_tree(&binary.left)
+                        && literal_int_tree(&binary.right),
+                _ => false,
+            }
+        }
+        fn pure_helper_body(term: &Term, parameters: &[&str]) -> bool {
+            match &term.kind {
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Name(name) => parameters.contains(&name.as_str()),
+                TermKind::Group(inner) => pure_helper_body(inner, parameters),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && pure_helper_body(&binary.left, parameters)
+                        && pure_helper_body(&binary.right, parameters),
+                _ => false,
+            }
+        }
+        let TermKind::Call(call) = &term.kind else { return Ok(()); };
+        let Some(helper) = self.find_function(&call.name) else { return Ok(()); };
+        if call.awaited || helper.is_async || helper.name == "main"
+            || helper.result_ty != "int" || helper.params.len() != call.arguments.len()
+            || helper.body.statements.len() != 1
+            || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
+            || helper.params.iter().enumerate().any(|(i, p)|
+                helper.params[..i].iter().any(|q| q.name == p.name))
+            || !call.arguments.iter().all(literal_int_tree) {
+            return Ok(());
+        }
+        let names = helper.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
+        let StmtKind::Return(returned) = &helper.body.statements[0].kind else {
+            return Ok(());
+        };
+        if !pure_helper_body(&returned.expression, &names) {
+            return Ok(());
+        }
+        // 原 Checker 自己生成附跨度的 TypedHIR；不得自行填寫 HIR。
+        let mut vars = vec![Rc::new(HashMap::new())];
+        let (ty, ready) = self.evaluate(term, &mut vars)?;
+        if ty != "int" || !ready {
+            return Err(self.error(
+                "M3 提前 return 的純 int helper 尚未完成 Checker 型別／可用性證明",
+                term,
+            ));
+        }
+        Ok(())
+    }
+
     /// 以所有可能執行路徑的操作推導方法整體借用模式；
     /// 任一路徑寫入都需要在方法入口取得獨占借用。
     fn method_writes(&self, owner: &str, method: &Function, body: &[Stmt],
@@ -839,6 +903,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !Self::checked_return_type(&actual, &method.result_ty, true) {
                         return Err(self.error("方法提前回傳型別與簽章不一致", value));
                     }
+                    // 僅在已核准提前 Return 葉的純 literal-int helper
+                    // 產生原 Checker ScalarHIR；未選執行葉仍不在此求值。
+                    self.method_branch_checked_pure_helper_return(&value.expression)?;
                     // 真正核對返回類型與自借用責任後才認領此靜態
                     // 控制點；後續同一路徑不可達，不會憑 AST 假補。
                     checked_returns.insert(statement.node_span());
