@@ -40,7 +40,7 @@ return owner.read(5)
 
     fn run(source: &str, count: usize) -> PrivateSelfMethodOutcome {
         let plan = PreparedPrivateSelfMethod::prepare(source).unwrap();
-        let helper = plan.method_helpers.get("helper").unwrap();
+        let helper = plan.method_helpers.get("aggregate").unwrap();
         assert_eq!(helper.parameters.len(), count);
         let unique = helper.parameters.iter().copied().collect::<std::collections::BTreeSet<_>>();
         assert_eq!(unique.len(), count, "各原 Checker 形參必須保有獨立身分");
@@ -188,11 +188,11 @@ return owner.read(5)
             ), "原 Checker 未授權型別／參數／巢狀語意不可接通：{source}");
         }
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helpers.get_mut("helper").unwrap().parameters.swap(0, 3);
+        plan.method_helpers.get_mut("aggregate").unwrap().parameters.swap(0, 3);
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helpers.get_mut("helper").unwrap().parameters.push(DeclarationId(999999));
+        plan.method_helpers.get_mut("aggregate").unwrap().parameters.push(DeclarationId(999999));
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }

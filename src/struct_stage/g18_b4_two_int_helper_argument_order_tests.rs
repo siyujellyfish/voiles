@@ -40,10 +40,10 @@ return owner.read(5)
 
     fn run(source: &str) -> PrivateSelfMethodOutcome {
         let plan = PreparedPrivateSelfMethod::prepare(source).unwrap();
-        assert_eq!(plan.method_helpers.get("helper").unwrap().parameters.len(), 2);
+        assert_eq!(plan.method_helpers.get("combine").unwrap().parameters.len(), 2);
         assert_ne!(
-            plan.method_helpers.get("helper").unwrap().parameters[0],
-            plan.method_helpers.get("helper").unwrap().parameters[1],
+            plan.method_helpers.get("combine").unwrap().parameters[0],
+            plan.method_helpers.get("combine").unwrap().parameters[1],
         );
         let out = plan.execute().unwrap();
         assert!(out.has_balanced_self_borrow_trace());
@@ -194,12 +194,12 @@ return owner.read(5)
             ), "不得接受未證多參／非法型別／巢狀呼叫：{source}");
         }
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        plan.method_helpers.get_mut("helper").unwrap().parameters.swap(0, 1);
+        plan.method_helpers.get_mut("combine").unwrap().parameters.swap(0, 1);
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan = PreparedPrivateSelfMethod::prepare(METHOD).unwrap();
-        let same = plan.method_helpers.get("helper").unwrap().parameters[0];
-        plan.method_helpers.get_mut("helper").unwrap().parameters[1] = same;
+        let same = plan.method_helpers.get("combine").unwrap().parameters[0];
+        plan.method_helpers.get_mut("combine").unwrap().parameters[1] = same;
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
