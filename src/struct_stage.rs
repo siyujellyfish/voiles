@@ -1478,6 +1478,11 @@ include!("struct_stage/g18_r05_t3_ticket_frame_lifetime_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_v7_cancel_retire_proof_tests.rs");
 
+// G18／P18.5-T4／V7-E2：wake／drive_one 均拒絕偽 FIFO 來源，
+// 未選工作與已完成結果不得被重複消耗。
+#[cfg(test)]
+include!("struct_stage/g18_t4_verified_wake_drive_history_tests.rs");
+
 // G18／P18.5-T4／V7-E3：待取消 Prepared／Suspended 真證據與整批安全前置守門。
 #[cfg(test)]
 include!("struct_stage/g18_t4_pending_cancel_evidence_tests.rs");
