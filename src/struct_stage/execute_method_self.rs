@@ -388,6 +388,28 @@ fn private_self_matches_helper_call(
     )
 }
 
+/// B4／M3：所有 true／else 真提前 Return 葉都從同一原
+/// Checker 已簽發的 ScalarHIR 重建 Helper Call，不准每個
+/// 分支重新發明型別決議或接收者／普通函式身分。
+fn private_self_checked_helper_return_leaf(
+    term: &Term,
+    bindings: &BTreeMap<String, DeclarationId>,
+    verified: &VerifiedPrivateSource,
+    helper: Option<&PrivateSelfApprovedHelper>,
+) -> Result<PrivateSelfIntReturn, PrivateSelfMethodPrepareError> {
+    let plan = PrivateScalarReturnExpr::from_checked_bindings(
+        term, bindings, verified,
+    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+        "B4 提前 Return helper 缺少原 Checker TypedHIR／Lexer",
+    ))?;
+    if !private_self_matches_helper_call(&plan, helper) {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "B4 提前 Return 僅允許原 Checker 已核准直接純 int helper",
+        ));
+    }
+    Ok(PrivateSelfIntReturn::CheckedScalar(plan))
+}
+
 /// 先以呼叫者原 int frame 求完整實參；溢位不得進入 helper、
 /// 更不可冒充 helper BorrowTicket 或 FunctionEntered。
 fn private_self_helper_argument_frame(
@@ -790,6 +812,9 @@ impl PreparedPrivateSelfMethod {
         // M2 第二批：保留原已驗證 bool 字面條件，再接通同一
         // Parser/Checker 的 bool 形參名稱。真值由 execute 的
         // 獨立 bool 參數框架讀取，不發明 int 隱含轉型。
+        let branch_helper_bindings = method.params.iter().map(|param|
+            (param.name.clone(), DeclarationId(param.declaration_start))
+        ).collect::<BTreeMap<_, _>>();
         let (method_branch, method_branch_parameter,
             method_branch_else, method_branch_else_write,
             method_branch_else_field_return, method_branch_else_calculation,
@@ -1088,29 +1113,10 @@ impl PreparedPrivateSelfMethod {
                             ));
                         };
                         let true_return_plan = match &early.expression.kind {
-                            TermKind::Call(_) => {
-                                // B4／M3：原 Checker 在本葉 Return 位置
-                                // 以原 evaluate 真生成 ScalarHIR；此處只
-                                // 接同源 helper 與純 int literal 加減實參。
-                                // 不選到的葉不會產生任何普通函式事件。
-                                let bindings = method.params.iter().map(|param|
-                                    (param.name.clone(),
-                                        DeclarationId(param.declaration_start))
-                                ).collect::<BTreeMap<_, _>>();
-                                let plan = PrivateScalarReturnExpr::from_checked_bindings(
-                                    &early.expression, &bindings, &verified,
-                                ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                                    "B4 true 葉 helper 缺少原 Checker Return TypedHIR",
-                                ))?;
-                                if !private_self_matches_helper_call(
-                                    &plan, method_helper.as_ref(),
-                                ) {
-                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                        "B4 true 葉只准原 Checker 直接純 int helper",
-                                    ));
-                                }
-                                PrivateSelfIntReturn::CheckedScalar(plan)
-                            },
+                            TermKind::Call(_) => private_self_checked_helper_return_leaf(
+                                &early.expression, &branch_helper_bindings, &verified,
+                                method_helper.as_ref(),
+                            )?,
                             TermKind::Scalar(
                                 crate::syntax_shared::ScalarLiteral::Integer(raw),
                             ) => {
@@ -1203,6 +1209,13 @@ impl PreparedPrivateSelfMethod {
                                         ));
                                     };
                                     match &returned.expression.kind {
+                                        TermKind::Call(_) => (
+                                            None, None, Some(stmt.node_span()),
+                                            Some(private_self_checked_helper_return_leaf(
+                                                &returned.expression, &branch_helper_bindings,
+                                                &verified, method_helper.as_ref(),
+                                            )?),
+                                        ),
                                         TermKind::Scalar(
                                             crate::syntax_shared::ScalarLiteral::Integer(raw),
                                         ) => {
@@ -1321,6 +1334,10 @@ impl PreparedPrivateSelfMethod {
                                         ));
                                     };
                                     let calculation = match &returned.expression.kind {
+                                        TermKind::Call(_) => private_self_checked_helper_return_leaf(
+                                            &returned.expression, &branch_helper_bindings, &verified,
+                                            method_helper.as_ref(),
+                                        )?,
                                         TermKind::FieldRead(target, name)
                                             if target == "self" && name == &field.name =>
                                             PrivateSelfIntReturn::Field,
