@@ -1431,6 +1431,11 @@ include!("struct_stage/g18_b4_two_int_helper_argument_order_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_verified_int_helper_arity_tests.rs");
 
+// G18／P18.4-B4／M3：原 Checker 方法末尾 Return 真普通 helper，
+// 求參與返回錯誤各自逐框架逆序退出（沿用原唯一 BorrowTicket）。
+#[cfg(test)]
+include!("struct_stage/g18_b4_method_return_helper_exit_tests.rs");
+
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
 include!("struct_stage/g18_m2_self_if_return_tests.rs");

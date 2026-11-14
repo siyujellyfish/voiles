@@ -1498,11 +1498,18 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            if !calls.is_empty() || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+            let direct_helper = calls.len() == 1
+                && private_self_matches_helper_call(
+                    &plan, method_helper.as_ref(),
+                );
+            if (!calls.is_empty() && !direct_helper)
+                || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "局部返回不支援尚未接通的函式 Call 或不可達來源",
+                    "方法 return 僅接通原 Checker 純 int 或單次直接純 helper 呼叫",
                 ));
             }
+            // return 自身才是真函式執行位置；不可在 prepare 預先
+            // Enter/Returned，也不可重用前一筆局部宣告的 helper 事件。
             (PrivateSelfIntReturn::CheckedScalar(plan), None)
         } else {
             match &returned.expression.kind {
@@ -2257,12 +2264,59 @@ impl PreparedPrivateSelfMethod {
                     lhs.checked_sub(value)
                         .ok_or(PrivateSelfMethodRuntimeError::IntegerOverflow)?
                 }
-                PrivateSelfIntReturn::CheckedScalar(ref plan) =>
-                    plan.evaluate(&parameter_frame).map_err(|reason| match reason {
-                        PrivateScalarCallRuntimeError::IntegerOverflow =>
-                            PrivateSelfMethodRuntimeError::IntegerOverflow,
-                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                    })?,
+                PrivateSelfIntReturn::CheckedScalar(ref plan) => {
+                    if private_self_matches_helper_call(
+                        plan, self.method_helper.as_ref(),
+                    ) {
+                        let helper = self.method_helper.as_ref().ok_or(
+                            PrivateSelfMethodRuntimeError::WrongReceiver,
+                        )?;
+                        let PrivateScalarReturnExpr::Call { arguments, .. } = plan else {
+                            return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                        };
+                        // B4/M3：直接 Return 僅在真到達這條退出邊後
+                        // 依原 Checker 位置求實參；求參溢位不得假
+                        // Enter helper，更不能提前退出方法或還票。
+                        let inner = private_self_helper_argument_frame(
+                            helper, arguments, &parameter_frame,
+                        ).map_err(|reason| match reason {
+                            PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                PrivateSelfMethodRuntimeError::IntegerOverflow,
+                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                        })?;
+                        exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
+                        ordinary_calls_entered += 1;
+                        match helper.returned.evaluate(&inner) {
+                            Ok(value) => {
+                                exit_events.push(PrivateSharedCallExitEvent::Returned);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: true,
+                                });
+                                ordinary_calls_completed += 1;
+                                value
+                            }
+                            Err(reason) => {
+                                // 真 helper 失敗先退內層，外層依原
+                                // R05 逆序離域並退還同一 self BorrowTicket。
+                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
+                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
+                                    returned: false,
+                                });
+                                return Err(match reason {
+                                    PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                        PrivateSelfMethodRuntimeError::IntegerOverflow,
+                                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                                });
+                            }
+                        }
+                    } else {
+                        plan.evaluate(&parameter_frame).map_err(|reason| match reason {
+                            PrivateScalarCallRuntimeError::IntegerOverflow =>
+                                PrivateSelfMethodRuntimeError::IntegerOverflow,
+                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                        })?
+                    }
+                },
             };
             method_exited = true;
             exit_events.push(PrivateSharedCallExitEvent::Returned);
