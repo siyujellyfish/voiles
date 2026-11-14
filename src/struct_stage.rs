@@ -1470,6 +1470,10 @@ include!("struct_stage/g18_m2_m3_mixed_bool_int_method_args_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_r05_t3_nested_ticket_order_tests.rs");
 
+// G18／P18.5-T3／R05：真 HC14 票據離域前必退與歸還後不得重新借入。
+#[cfg(test)]
+include!("struct_stage/g18_r05_t3_ticket_frame_lifetime_tests.rs");
+
 // G18／P18.6-M2／M3：多個原 Checker bool 方法形參
 // 各自 DeclId 驅動巢狀真選枝及共通純 helper 返回。
 #[cfg(test)]
