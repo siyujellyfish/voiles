@@ -980,8 +980,11 @@ impl PreparedPrivateSelfMethod {
                         "self 欄位寫入來源不是原 Checker Copyable int 方法形參",
                     ))?;
                     let id = DeclarationId(param.declaration_start);
-                    if !verified.plan.declarations.matches(id, "int", false)
-                        || !argument_binding.into_iter()
+                    // 方法形參的正式型別權威為上方原 Checker
+                    // VerifiedTypedMember(Parameter) + members 身分表，
+                    // 非一般局部宣告使用的 declarations 表；該表
+                    // 對方法形參無義務建立第二份可寫宣告。
+                    if !argument_binding.into_iter()
                             .chain(additional_argument_bindings.iter().copied())
                             .any(|(bound_id, _)| bound_id == id)
                         || !verified.tokens.iter().any(|token|
@@ -990,7 +993,7 @@ impl PreparedPrivateSelfMethod {
                                     if found == name)
                         ) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "self 參數寫入缺少原 Checker DeclarationId/型別與真 Lexer 名稱",
+                            "self 參數寫入缺少原 Checker 成員參數綁定 DeclarationId 或真 Lexer 名稱",
                         ));
                     }
                     (None, Some(id))
