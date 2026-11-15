@@ -2263,6 +2263,16 @@ impl PreparedPrivateSelfMethod {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         };
         if self.original.as_ref() != self.verified.source.bytes.as_slice()
+            // T3／V7：不能只比對已通過 Checker 的 HIR 與位元組，
+            // 還須在任何真 BorrowTicket／ResourceId 建立前，
+            // 對同一份**封存的原 Lexer tokens**重驗 AST
+            // await、receiver、method、點號、括號及 async
+            // 標頭。只重新 prepare 同原文字並比較快照，
+            // 無法證明執行物件內 AST/token 沒被替換。
+            || !verified_private_source_tokens(
+                text, &self.verified.tokens,
+                &self.verified.structs, &self.verified.functions,
+            )
             || !self.verified.plan.is_consistent(
                 &self.verified.structs, &self.verified.functions, text,
             ) || !self.matches_source(text) {
