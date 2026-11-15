@@ -786,7 +786,20 @@ impl VerifiedDeclarationFacts {
     /// F11：已成功型別檢查的所有純值 HIR 必須與同一 Checker 的
     /// 宣告／var-const 權威完全一致；只讀交叉稽核，不從 AST 猜測
     /// 動態資源實例、所有權或尚未核准的完整 CFG。
+    /// 原宣告帳的既有二參數核對保持不變；一般持有者與
+    /// P10/P13/P14 凍結 Gate 不得因新增方法形參而放寬。
     fn scalar_hir_is_consistent(
+        &self, hir: &crate::common_ir::VerifiedScalarHir, text: &str,
+    ) -> bool {
+        self.scalar_hir_is_consistent_with_methods(
+            hir, text, &HashMap::new(),
+        )
+    }
+
+    /// 原 Checker 專用：只在 VerifiedSafetyPlan 已核實
+    /// MethodSafety/MemberSources 後，額外允許同方法來源
+    /// 內已核准 Parameter TypedMember 的 int 引用。
+    fn scalar_hir_is_consistent_with_methods(
         &self, hir: &crate::common_ir::VerifiedScalarHir, text: &str,
         structs: &HashMap<String, StructDecl>,
     ) -> bool {
@@ -1151,7 +1164,7 @@ impl VerifiedSafetyPlan {
             && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.operations_match_verified_ast(structs, functions)
             && self.member_sources_are_consistent(structs, functions, text)
-            && self.declarations.scalar_hir_is_consistent(
+            && self.declarations.scalar_hir_is_consistent_with_methods(
                 &self.scalar_hir, text, structs,
             )
             && verified_private_syntax_roles(text, structs, functions)
