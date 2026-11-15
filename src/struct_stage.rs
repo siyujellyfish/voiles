@@ -1578,6 +1578,8 @@ include!("struct_stage/g18_v7_async_self_fifo_receipts_tests.rs");
 include!("struct_stage/g18_v7_async_self_terminal_retirement_tests.rs");
 // G18／T3：同一原Checker工作與真方法Outcome不得跨ID/來源互換。
 include!("struct_stage/g18_t3_async_self_outcome_origin_binding_tests.rs");
+// G18／T3/V7：所有未啟動async self工作在取消／喚醒前共同重驗原Checker。
+include!("struct_stage/g18_t3_v7_self_deferred_preflight_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");

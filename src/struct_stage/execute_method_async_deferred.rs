@@ -192,6 +192,15 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
                             && plan.call_span == job.origin.call_span
                             && plan.loan == job.origin.self_loan
                             && plan.awaited_method
+                            // T3：登錄時的源摘要與 BorrowFact
+                            // 正確，不代表準備後的 helper/HIR、
+                            // Token 或方法 return 計畫仍然完整。
+                            // 在任何 cancel/shutdown/新增工作/
+                            // wake 可能改動佇列前，都必重驗
+                            // 與真 execute() 同一份原 Checker
+                            // 來源契約，不能先取消被污染工作
+                            // 再用空計畫冒充合法終態。
+                            && plan.checked_source_still_intact()
                     ) && job.outcome.is_none(),
                 S::Succeeded | S::Failed =>
                     job.plan.is_none() && job.outcome.as_ref().is_some_and(|outcome|
