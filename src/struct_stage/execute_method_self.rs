@@ -26,6 +26,11 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+    /// V7：原 Checker 真直接 await async 方法的來源身分。
+    awaited_method: bool,
+    /// 動態抵達 await 並即將 Enter 方法時取得的真 self 票據
+    /// 在共享退出帳中的位置；prepare 絕不能預造此索引。
+    await_start_loan_index: Option<usize>,
     /// B4：原 Checker 普通函式在真正 self 框架內執行的已完成次數。
     ordinary_calls_completed: usize,
     /// B4：已真正進入的普通函式次數，含執行期故障未返回的那一次。
@@ -263,6 +268,17 @@ impl PrivateSelfMethodOutcome {
                 PrivateSharedCallExitEvent::LocalScopeEnded(_)
             ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
+            && (if self.awaited_method {
+                if self.method_entered {
+                    self.await_start_loan_index.is_some_and(|index|
+                        matches!(self.exit_events.get(index),
+                            Some(PrivateSharedCallExitEvent::LoanAcquired(ticket))
+                                if ticket.fact() == self.checked_loan)
+                        && matches!(self.exit_events.get(index + 1),
+                            Some(PrivateSharedCallExitEvent::FunctionEntered))
+                    )
+                } else { self.await_start_loan_index.is_none() }
+            } else { self.await_start_loan_index.is_none() })
             && approved_local_prefix
             && approved_assignments
             && local_projection == exit_projection
@@ -535,6 +551,8 @@ struct PreparedPrivateSelfMethod {
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
     method_int_assignments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     method: String,
+    /// 原 Parser 的 AwaitMethodCall，不以函式名稱猜測 async。
+    awaited_method: bool,
     method_span: crate::common_ir::NodeSpan,
     call_span: crate::common_ir::NodeSpan,
     loan: BorrowFact,
@@ -796,11 +814,14 @@ impl PreparedPrivateSelfMethod {
         let last_main_statement = main.body.statements.last().ok_or(
             PrivateSelfMethodPrepareError::Unsupported("main 缺少真同步方法返回"),
         )?;
-        let (called_method, call_arguments) = match &last_main_statement.kind {
+        let (called_method, call_arguments, awaited_method) = match &last_main_statement.kind {
             StmtKind::Return(returned) => match &returned.expression.kind {
-                TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice()),
+                TermKind::MethodCall(_, name, args) =>
+                    (name.as_str(), args.as_slice(), false),
+                TermKind::AwaitMethodCall(_, name, args) =>
+                    (name.as_str(), args.as_slice(), true),
                 _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main 最後 return 須是真同步方法呼叫",
+                    "main 最後 return 只接通原 Checker 同步方法或 async 直接 await",
                 )),
             },
             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -990,7 +1011,8 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         drop(matches);
-        if method.result_ty != "int" || method.body.statements.is_empty() {
+        if method.result_ty != "int" || method.body.statements.is_empty()
+            || method.is_async != awaited_method {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "僅執行原 Checker 證明之同步 Copyable int 方法",
             ));
@@ -2113,11 +2135,22 @@ impl PreparedPrivateSelfMethod {
                 "主函式必須直接 return 真方法呼叫",
             ));
         };
-        let TermKind::MethodCall(receiver, called, args) = &call_return.expression.kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "主函式須實際呼叫 S16 instance.method()",
-            ));
+        let (receiver, called, args) = match &call_return.expression.kind {
+            TermKind::MethodCall(owner, method, arguments)
+                if !awaited_method => (owner, method, arguments),
+            TermKind::AwaitMethodCall(owner, method, arguments)
+                if awaited_method => (owner, method, arguments),
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "主函式須由原 Checker 的同步方法或 async 直接 await 方法 AST 進入",
+            )),
         };
+        if awaited_method && !verified.tokens.iter().any(|token|
+            token.start == call_return.expression.start
+                && matches!(&token.kind, TokenKind::Name(word) if word == "await")) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "async 方法缺少原 Lexer 真 await 前綴 Token 與跨度",
+            ));
+        }
         let call_span = call_return.expression.node_span();
         if receiver != &owner.name || called != &method.name
             || args.len() != usize::from(argument_binding.is_some())
@@ -2168,7 +2201,7 @@ impl PreparedPrivateSelfMethod {
             method_nested_else_calculation, method_nested_true_write,
             method_nested_else_write, method_branch_int_plans,
             method_branch_parameter, method_int_assignments,
-            method: method_name, method_span, call_span, loan,
+            method: method_name, awaited_method, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_arguments, main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
@@ -2203,7 +2236,9 @@ impl PreparedPrivateSelfMethod {
             && self.method_branch_int_plans == fresh.method_branch_int_plans
             && self.method_branch_parameter == fresh.method_branch_parameter
             && self.method_int_assignments == fresh.method_int_assignments
-            && self.method == fresh.method && self.method_span == fresh.method_span
+            && self.method == fresh.method
+            && self.awaited_method == fresh.awaited_method
+            && self.method_span == fresh.method_span
             && self.call_span == fresh.call_span && self.loan == fresh.loan
             && self.argument_binding == fresh.argument_binding
             && self.additional_argument_bindings == fresh.additional_argument_bindings
@@ -2308,6 +2343,7 @@ impl PreparedPrivateSelfMethod {
         let mut facts = Vec::new();
         let mut method_entered = false;
         let mut method_exited = false;
+        let mut await_start_loan_index = None;
         let mut method_local_events = Vec::<PrivateSelfMethodLocalEvent>::new();
         let mut initialized_method_locals = Vec::<DeclarationId>::new();
         let mut parameter_frame = std::collections::BTreeMap::<DeclarationId, i64>::new();
@@ -2362,6 +2398,12 @@ impl PreparedPrivateSelfMethod {
             }
             let ticket = tracker.acquire(self.loan.source, self.loan.kind)
                 .map_err(PrivateSelfMethodRuntimeError::Ticket)?;
+            if self.awaited_method {
+                // V7 E1：真 main 引數全部求值之後，直到直接
+                // await 才開始簽發 self 票。方法本體不在 prepare
+                // 或未到達 await 前執行，不引入背景任務。
+                await_start_loan_index = Some(exit_events.len());
+            }
             exit_events.push(PrivateSharedCallExitEvent::LoanAcquired(ticket));
             tickets.push(ticket);
             facts.push(self.loan);
@@ -2784,6 +2826,7 @@ impl PreparedPrivateSelfMethod {
             .sum();
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            awaited_method: self.awaited_method, await_start_loan_index,
             ordinary_calls_completed, ordinary_calls_entered,
             branch_checked,
             nested_branch_checked,
