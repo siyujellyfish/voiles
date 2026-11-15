@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／P18.5-T4：原 Checker 真 FIFO 遺失待執行憑據十二項 Gate。"""
+"""G18／P18.5-T4：原 Checker 真 FIFO 遺失待執行憑據十八項 Gate。"""
 from __future__ import annotations
 
 import argparse
@@ -23,6 +23,12 @@ CASES = (
     "t4_missing_雙工作退休後裁掉尾筆提交仍拒絕新工作",
     "t4_missing_退休後next_id大於真提交歷史不得續發",
     "t4_missing_全空佇列偽造發號上限不可冒充零工作",
+    "t4_missing_退休完成後同步刪除Woken與wake收據也不可假報空",
+    "t4_missing_退休完成後篡改wake時間不得跳過原poll時序",
+    "t4_missing_退休後插入不存在工作身分的幽靈poll必拒絕",
+    "t4_missing_退休完成後偽造Completed再Suspended不可重啟已交付工作",
+    "t4_missing_另一Prepared仍存活時退休wake竄改須整批零取消",
+    "t4_missing_退休後偽造未知工作取消歷史不得延用空佇列",
 )
 
 
@@ -44,7 +50,7 @@ def main() -> int:
             if line.startswith(PREFIX) and line.endswith(": test")
         }
         expected = {PREFIX + name for name in CASES}
-        if len(expected) != 12 or found != expected:
+        if len(expected) != 18 or found != expected:
             raise ValueError(
                 "T4 ready 遺失測試清單不一致，缺 "
                 + str(sorted(expected - found)) + "；多 "
@@ -60,10 +66,10 @@ def main() -> int:
                 r"test result: ok\.\s+1 passed;\s+0 failed;\s+0 ignored;", output
             ):
                 raise ValueError(
-                    f"T4 遺失憑據 {index}/12 失敗：{case}\n" + output[-4000:]
+                    f"T4 遺失憑據 {index}/18 失敗：{case}\n" + output[-4000:]
                 )
-            print(f"T4 真 ready 守恆 {index}/12：{case}（通過）")
-        print("G18 T4/E2 真 FIFO 未消耗憑據雙向守恆十二項成功；原 T4 未全項閉合。")
+            print(f"T4 真 ready 守恆 {index}/18：{case}（通過）")
+        print("G18 T4/E2 真 FIFO 未消耗憑據雙向守恆十八項成功；原 T4 未全項閉合。")
         return 0
     except (OSError, ValueError) as error:
         print("G18 T4 FIFO ready 守恆 Gate 失敗：" + str(error), file=sys.stderr)

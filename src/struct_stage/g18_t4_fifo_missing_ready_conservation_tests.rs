@@ -234,4 +234,125 @@ mod g18_t4_fifo_missing_ready_conservation_tests {
         assert_eq!(q.drive_one().unwrap(), None);
         assert_eq!(q.submit(&plan).unwrap(), 1);
     }
+
+    #[test]
+    fn t4_missing_退休完成後同步刪除Woken與wake收據也不可假報空() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = suspend(&mut q, &plan);
+        q.wake(id).unwrap();
+        assert_eq!(q.drive_one().unwrap(),
+            Some((id, PrivateScalarGraphPoll::Completed)));
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Completed(_)));
+        let issue = q.ready_issues.pop().unwrap();
+        let receipt = q.wake_order.pop().unwrap();
+        assert_eq!(issue, PrivateScalarReadyIssue {
+            id, kind: PrivateScalarReadyIssueKind::Woken,
+        });
+        assert_eq!(receipt.id, id);
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.next_id, id);
+        assert_eq!(q.ready_ids(), []);
+        q.ready_issues.push(issue);
+        q.wake_order.push(receipt);
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_退休完成後篡改wake時間不得跳過原poll時序() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = suspend(&mut q, &plan);
+        q.wake(id).unwrap();
+        assert_eq!(q.drive_one().unwrap(),
+            Some((id, PrivateScalarGraphPoll::Completed)));
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Completed(_)));
+        let original = q.wake_order[0];
+        assert_eq!(original.after_drive_count, 1);
+        q.wake_order[0].after_drive_count = 0;
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        q.wake_order[0] = original;
+        assert_eq!(q.drive_one().unwrap(), None);
+    }
+
+    #[test]
+    fn t4_missing_退休後插入不存在工作身分的幽靈poll必拒絕() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = q.submit(&plan).unwrap();
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        q.drive_order.push((id + 1, PrivateScalarGraphPoll::Suspended));
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.drive_order.pop(),
+            Some((id + 1, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_退休完成後偽造Completed再Suspended不可重啟已交付工作() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = suspend(&mut q, &plan);
+        q.wake(id).unwrap();
+        assert_eq!(q.drive_one().unwrap(),
+            Some((id, PrivateScalarGraphPoll::Completed)));
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Completed(_)));
+        q.drive_order.push((id, PrivateScalarGraphPoll::Suspended));
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.drive_order.pop(),
+            Some((id, PrivateScalarGraphPoll::Suspended)));
+        assert_eq!(q.drive_one().unwrap(), None);
+    }
+
+    #[test]
+    fn t4_missing_另一Prepared仍存活時退休wake竄改須整批零取消() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let retired = suspend(&mut q, &plan);
+        q.wake(retired).unwrap();
+        assert_eq!(q.drive_one().unwrap(),
+            Some((retired, PrivateScalarGraphPoll::Completed)));
+        assert!(matches!(q.retire_terminal(retired).unwrap(),
+            PrivateScalarRetiredJob::Completed(_)));
+        let live = q.submit(&plan).unwrap();
+        let issue = q.ready_issues.remove(1);
+        let receipt = q.wake_order.pop().unwrap();
+        assert_eq!(issue.kind, PrivateScalarReadyIssueKind::Woken);
+        assert_eq!(q.shutdown(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.ready_ids(), [live]);
+        assert_eq!(q.status(live), Some(PrivateDeferredAwaitStatus::Prepared));
+        assert_eq!(q.cancellation_order(), []);
+        q.ready_issues.insert(1, PrivateScalarReadyIssue {
+            id: retired, kind: PrivateScalarReadyIssueKind::Woken,
+        });
+        q.wake_order.push(receipt);
+        assert_eq!(q.shutdown().unwrap(), [live]);
+        assert_eq!(q.cancellation_order(), [live]);
+    }
+
+    #[test]
+    fn t4_missing_退休後偽造未知工作取消歷史不得延用空佇列() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = q.submit(&plan).unwrap();
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        q.cancellation_order.push(id + 1);
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.cancellation_order.pop(), Some(id + 1));
+        assert_eq!(q.drive_one().unwrap(), None);
+    }
 }
