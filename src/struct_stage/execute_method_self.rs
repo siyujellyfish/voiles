@@ -409,10 +409,14 @@ fn private_self_checked_branch_write(
     helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
     checked_plans: &mut BTreeMap<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>,
 ) -> Result<PrivateSelfApprovedBranchWrite, PrivateSelfMethodPrepareError> {
-    match &value.kind {
+    // 原 Checker 已正式核准的 Group RHS 只解開原 Lexer
+    // 成對括號，不為巢狀表達式重新簽發任何欄位寫入權限。
+    // CheckedScalar 仍使用最外層 value 的真 NodeSpan／HIR。
+    let leaf = private_self_checked_ungrouped_return(verified, value)?;
+    match &leaf.kind {
         TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
             if !verified.tokens.iter().any(|token|
-                token.start == value.start && token.end == value.end
+                token.start == leaf.start && token.end == leaf.end
                     && matches!(&token.kind, TokenKind::Integer(text)
                         if text == raw)
             ) {
@@ -440,7 +444,7 @@ fn private_self_checked_branch_write(
             if !first.into_iter().chain(additional.iter().copied())
                 .any(|(bound, _)| bound == id)
                 || !verified.tokens.iter().any(|token|
-                    token.start == value.start && token.end == value.end
+                    token.start == leaf.start && token.end == leaf.end
                         && matches!(&token.kind, TokenKind::Name(found)
                             if found == name)
                 ) {
@@ -1124,12 +1128,17 @@ impl PreparedPrivateSelfMethod {
                     "self 欄位寫入目標不是原 Checker 所屬欄位",
                 ));
             }
-            match &value.kind {
+            // M2：直接 self 欄位 RHS 的合法括號由原
+            // Checker Group 型別核准，這裡再以真 Lexer
+            // 起訖位置逐層驗證。純 helper 算式仍只讀原
+            // value (完整 Group) 的 Checker ScalarHIR。
+            let leaf = private_self_checked_ungrouped_return(&verified, value)?;
+            match &leaf.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(raw),
                 ) => {
                     if !verified.tokens.iter().any(|token|
-                        token.start == value.start && token.end == value.end
+                        token.start == leaf.start && token.end == leaf.end
                             && matches!(&token.kind, TokenKind::Integer(text)
                                 if text == raw)
                     ) {
@@ -1161,7 +1170,7 @@ impl PreparedPrivateSelfMethod {
                             .chain(additional_argument_bindings.iter().copied())
                             .any(|(bound_id, _)| bound_id == id)
                         || !verified.tokens.iter().any(|token|
-                            token.start == value.start && token.end == value.end
+                            token.start == leaf.start && token.end == leaf.end
                                 && matches!(&token.kind, TokenKind::Name(found)
                                     if found == name)
                         ) {
