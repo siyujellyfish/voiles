@@ -39,3 +39,7 @@
 PR #810 首輪 HEAD `34a594078b9e463ec116275b68c5c41f9ff318c1` 的「Rust 前端建置」失敗（Rust E0004，兩筆），出現在原私有 AST 來源核對 `src/struct_stage/source_identity.rs` 與 `src/struct_stage/token_provenance.rs`，因新增 `AwaitMethodCall` 尚未被完全覆蓋。這兩處是原安全權威，**不能用 `_ => true` 或省略檢查**修復。
 
 修正後：`verified_private_syntax_roles` 必驗完整原 UTF-8 `await` 前綴及子引數角色包含；`verified_private_token_roles` 在原相鄰 Lexer Tokens 嚴格檢查 `await`、receiver、`.`、method、`(`、最後 `)` 與原 `NodeSpan`，並拒絕把 `await` AST 身分改為同步 `MethodCall`。此補齊正是獨立真 Checker 驗收的一部分。原 PR HEAD 編譯紅燈不可採計；必在修復後的最新 HEAD 重跑全部必要 CI。
+
+## 第二輪真 CI：既有負向診斷由語法拒絕改為靜態拒絕
+
+修復原來源稽核後的 PR HEAD `56c2707b05db47a10681f9da6b93f58d74d1052b`，Rust 核心測試 **2846 passed／1 failed**，失敗來自原 `v7_a1_直接await只接受已命名函式與合法具位置參數`：舊測試將 `await worker.borrow()` 預期 Syntax 錯誤，但**本次使用者正式核准** `await receiver.method(args)` 的 Parser 形式後，此字串已是合規語法結構；`worker` 在例子中是普通函式名、非合法方法接收者，故必由原 Checker **Static** 拒絕，不能把「不識別新語法」當成合法安全契約。更新該原測試成 Static 反向，並另加 `await worker.borrow` 缺少 `(` 的真 Syntax 負向。新方法仍不新增任何 `borrow()` 借用權能，不放寬 Checker 及原 F00/G6/G17，最新 PR HEAD 須重跑三必要 CI。
