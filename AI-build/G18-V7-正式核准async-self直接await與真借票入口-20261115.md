@@ -33,3 +33,9 @@
 本批必須最新 PR HEAD 的「Rust 前端建置」「Rust 獨立架構測試」「文件與工作紀錄」三項均 `completed/success`，作者/base/mergeable=clean 查實才 Squash merge；合併後新 main **同 SHA** 三項成功才採計。若原 Parser／Checker 靜態拒絕或 Rust 回歸揭露範圍不符，須先依 CI 原因保守修正，不得為追求驗收擅自放寬借用／取消。
 
 原 P18 六項正式 **3/6 Phase Passed，17/26 原義務 Closed**，B4、T1～T4、M2/M3、A1/A2 **仍為 OpenEngineering**。本批僅解除 A1 async self 真來源的第一個子缺口，不代表 A1/A2、P18.6 Passed；原 R07 `--check` 應維持嚴格未完成判定。後續仍須完成方法內的真安全點、同一原工作圖跨呼叫 suspend/resume、取消、失敗傳遞、逐幀 P16／HC14 清理與高風險交叉驗收，不得以本批十二項代替。
+
+## 首輪必要 CI 編譯失敗與來源稽核閉合
+
+PR #810 首輪 HEAD `34a594078b9e463ec116275b68c5c41f9ff318c1` 的「Rust 前端建置」失敗（Rust E0004，兩筆），出現在原私有 AST 來源核對 `src/struct_stage/source_identity.rs` 與 `src/struct_stage/token_provenance.rs`，因新增 `AwaitMethodCall` 尚未被完全覆蓋。這兩處是原安全權威，**不能用 `_ => true` 或省略檢查**修復。
+
+修正後：`verified_private_syntax_roles` 必驗完整原 UTF-8 `await` 前綴及子引數角色包含；`verified_private_token_roles` 在原相鄰 Lexer Tokens 嚴格檢查 `await`、receiver、`.`、method、`(`、最後 `)` 與原 `NodeSpan`，並拒絕把 `await` AST 身分改為同步 `MethodCall`。此補齊正是獨立真 Checker 驗收的一部分。原 PR HEAD 編譯紅燈不可採計；必在修復後的最新 HEAD 重跑全部必要 CI。
