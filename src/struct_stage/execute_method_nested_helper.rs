@@ -116,3 +116,96 @@ fn private_self_execute_nested_argument_call(
     }
     result
 }
+
+/// B4／M3：原 Checker 已允許 BinaryInt 左右各為已核准的
+/// Copyable int 普通函式值；不應因來源頂端不是 Call 就
+/// 推斷不可執行。只讀原 ScalarHIR 樹與已封存 helper 計畫。
+fn private_self_approved_int_call_arithmetic(
+    expr: &PrivateScalarReturnExpr,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
+) -> bool {
+    match expr {
+        PrivateScalarReturnExpr::Constant(_)
+        | PrivateScalarReturnExpr::Parameter(_) => true,
+        PrivateScalarReturnExpr::Addition(left, right)
+        | PrivateScalarReturnExpr::Subtraction(left, right) =>
+            private_self_approved_int_call_arithmetic(left, helpers)
+                && private_self_approved_int_call_arithmetic(right, helpers),
+        PrivateScalarReturnExpr::Call { .. } =>
+            private_self_resolve_nested_argument_call(expr, helpers).is_some(),
+        _ => false,
+    }
+}
+
+/// 只在 prepare 計算必須與真執行相符的 int 快照，
+/// 不產生任何動態 FunctionEntered 或 BorrowTicket。
+fn private_self_arithmetic_call_snapshot(
+    expr: &PrivateScalarReturnExpr,
+    caller: &BTreeMap<DeclarationId, i64>,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
+) -> Result<i64, PrivateScalarCallRuntimeError> {
+    match expr {
+        PrivateScalarReturnExpr::Constant(_)
+        | PrivateScalarReturnExpr::Parameter(_) => expr.evaluate(caller),
+        PrivateScalarReturnExpr::Addition(left, right) => {
+            let lhs = private_self_arithmetic_call_snapshot(left, caller, helpers)?;
+            let rhs = private_self_arithmetic_call_snapshot(right, caller, helpers)?;
+            lhs.checked_add(rhs).ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)
+        }
+        PrivateScalarReturnExpr::Subtraction(left, right) => {
+            let lhs = private_self_arithmetic_call_snapshot(left, caller, helpers)?;
+            let rhs = private_self_arithmetic_call_snapshot(right, caller, helpers)?;
+            lhs.checked_sub(rhs).ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)
+        }
+        PrivateScalarReturnExpr::Call { arguments, .. } => {
+            let helper = private_self_resolve_nested_argument_call(expr, helpers)
+                .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+            let frame = private_self_nested_argument_frame(
+                helper, arguments, caller, helpers,
+            )?;
+            helper.returned.evaluate(&frame)
+        }
+        _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+    }
+}
+
+/// 真動態 expression evaluator 依原 Parser 左到右順序逐個
+/// 求值，僅在原 Checker 完整核准的 Call 抵達時使用已
+/// 驗證的普通函式工作框架。外層純值算術溢位時絕不
+/// 補造不存在的父函式進退或借用票據。
+fn private_self_execute_arithmetic_call(
+    expr: &PrivateScalarReturnExpr,
+    caller: &BTreeMap<DeclarationId, i64>,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
+    events: &mut Vec<PrivateSharedCallExitEvent>,
+    entered: &mut usize,
+    completed: &mut usize,
+) -> Result<i64, PrivateScalarCallRuntimeError> {
+    match expr {
+        PrivateScalarReturnExpr::Constant(_)
+        | PrivateScalarReturnExpr::Parameter(_) => expr.evaluate(caller),
+        PrivateScalarReturnExpr::Addition(left, right) => {
+            let lhs = private_self_execute_arithmetic_call(
+                left, caller, helpers, events, entered, completed,
+            )?;
+            let rhs = private_self_execute_arithmetic_call(
+                right, caller, helpers, events, entered, completed,
+            )?;
+            lhs.checked_add(rhs).ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)
+        }
+        PrivateScalarReturnExpr::Subtraction(left, right) => {
+            let lhs = private_self_execute_arithmetic_call(
+                left, caller, helpers, events, entered, completed,
+            )?;
+            let rhs = private_self_execute_arithmetic_call(
+                right, caller, helpers, events, entered, completed,
+            )?;
+            lhs.checked_sub(rhs).ok_or(PrivateScalarCallRuntimeError::IntegerOverflow)
+        }
+        PrivateScalarReturnExpr::Call { .. } =>
+            private_self_execute_nested_argument_call(
+                expr, caller, helpers, events, entered, completed,
+            ),
+        _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+    }
+}

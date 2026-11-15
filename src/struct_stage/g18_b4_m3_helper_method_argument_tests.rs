@@ -158,7 +158,7 @@ return owner.read(helper(9,2))
         assert_eq!(out.result, Ok(-4));
         assert_eq!((out.ordinary_calls_entered,out.ordinary_calls_completed),(2,2));
         for src in [
-            SOURCE.replace("helper(9,2)","1+helper(9,2)"),
+            SOURCE.replace("helper(9,2)","1+unknown(9,2)"),
             SOURCE.replace("helper(9,2)","helper(9)"),
             SOURCE.replace("helper(9,2)","helper(9,true)"),
             SOURCE.replace("fn helper(a:int,b:int)->int",
