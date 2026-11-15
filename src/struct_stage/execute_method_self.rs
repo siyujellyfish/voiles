@@ -2321,6 +2321,28 @@ impl PreparedPrivateSelfMethod {
                 == fresh.verified.plan.declarations.call_borrows
     }
 
+    /// T3／V7：佇列在 suspend/cancel/shutdown/prepare 之前與
+    /// 真方法 execute() 共用**完全相同**的原 Checker 來源門檻。
+    /// 準備期合法不代表封存計畫與 Lexer/ScalarHIR 後續未遭變造；
+    /// 此唯讀預檢不建立 BorrowTicket、資源或函式事件。
+    fn checked_source_still_intact(&self) -> bool {
+        let Ok(text) = std::str::from_utf8(&self.verified.source.bytes) else {
+            return false;
+        };
+        self.original.as_ref() == self.verified.source.bytes.as_slice()
+            // 原 await Token、方法標頭／Receiver／Call 及深層
+            // Name/Type 必須來自同一份封存 Lexer，不能
+            // 只以重建原字串的 fresh Checker 取代 Token 稽核。
+            && verified_private_source_tokens(
+                text, &self.verified.tokens,
+                &self.verified.structs, &self.verified.functions,
+            )
+            && self.verified.plan.is_consistent(
+                &self.verified.structs, &self.verified.functions, text,
+            )
+            && self.matches_source(text)
+    }
+
     fn execute(&self) -> Result<PrivateSelfMethodOutcome, PrivateSelfMethodPrepareError> {
         self.execute_with_fault(false)
     }
@@ -2328,23 +2350,7 @@ impl PreparedPrivateSelfMethod {
     /// 僅 Rust 測試可注入方法存活期錯誤，不新增 voiles 例外語意。
     fn execute_with_fault(&self, fail_inside_method: bool)
         -> Result<PrivateSelfMethodOutcome, PrivateSelfMethodPrepareError> {
-        let Ok(text) = std::str::from_utf8(&self.verified.source.bytes) else {
-            return Err(PrivateSelfMethodPrepareError::SourceChanged);
-        };
-        if self.original.as_ref() != self.verified.source.bytes.as_slice()
-            // T3／V7：不能只比對已通過 Checker 的 HIR 與位元組，
-            // 還須在任何真 BorrowTicket／ResourceId 建立前，
-            // 對同一份**封存的原 Lexer tokens**重驗 AST
-            // await、receiver、method、點號、括號及 async
-            // 標頭。只重新 prepare 同原文字並比較快照，
-            // 無法證明執行物件內 AST/token 沒被替換。
-            || !verified_private_source_tokens(
-                text, &self.verified.tokens,
-                &self.verified.structs, &self.verified.functions,
-            )
-            || !self.verified.plan.is_consistent(
-                &self.verified.structs, &self.verified.functions, text,
-            ) || !self.matches_source(text) {
+        if !self.checked_source_still_intact() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         // 在建立任何 method self BorrowTicket 之前，以 main 真宣告順序
