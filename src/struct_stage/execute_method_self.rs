@@ -1957,9 +1957,16 @@ impl PreparedPrivateSelfMethod {
             // Enter/Returned，也不可重用前一筆局部宣告的 helper 事件。
             (PrivateSelfIntReturn::CheckedScalar(plan), None)
         } else {
-            match &returned.expression.kind {
-            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
-            TermKind::BinaryInt(_) | TermKind::Group(_)
+            // M2/B4：原 Checker 已遞迴核准 Group 的型別及 self
+            // 借用。執行器只以原 Lexer 成對括號查核後讀取
+            // 同一棵 AST 的內節點；不再因 Group 包住 FieldRead、
+            // Parameter、純 int 常值或 BinaryInt 而錯拒。
+            let ungrouped = private_self_checked_ungrouped_return(
+                &verified, &returned.expression,
+            )?;
+            match &ungrouped.kind {
+            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)
+            | TermKind::BinaryInt(_)
                 if PrivateScalarReturnExpr::first_source_call(
                     &returned.expression,
                 ).is_some() => (
@@ -1974,11 +1981,30 @@ impl PreparedPrivateSelfMethod {
             TermKind::Name(_) => {
                 let id = private_self_method_parameter_reference(
                     &verified, method, argument_binding,
-                    &additional_argument_bindings, &returned.expression,
+                    &additional_argument_bindings, ungrouped,
                 ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
                     "方法返回參數沒有原 Checker 身分及 Lexer 名稱證據",
                 ))?;
                 (PrivateSelfIntReturn::Parameter(id), None)
+            }
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+                // 同一原 Checker 的 int 返回型別，另外逐個核對
+                // 原 Lexer Integer 來源，不能由 Parser Group 殼
+                // 猜測數值或在 prepare 冒稱執行期 Return。
+                if !verified.tokens.iter().any(|token|
+                    token.start == ungrouped.start && token.end == ungrouped.end
+                        && matches!(&token.kind, TokenKind::Integer(text) if text == raw)
+                ) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法直接返回 int 常值缺少原 Lexer 真來源",
+                    ));
+                }
+                let value = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                    PrivateSelfMethodPrepareError::Unsupported(
+                        "方法直接返回 int 常值超出 i64",
+                    ),
+                )?;
+                (PrivateSelfIntReturn::Constant(value), None)
             }
             TermKind::BinaryInt(binary) => {
                 let left_span = binary.left.node_span();
@@ -1993,13 +2019,22 @@ impl PreparedPrivateSelfMethod {
                         "方法返回的加減運算子不符合原 Parser 來源位置",
                     ));
                 }
-                let (mut self_read, param_id) = match &binary.left.kind {
+                // 原 Parser 的左右節點跨度包含合法括號時，
+                // 運算子位置仍用完整外節點查核；值來源則
+                // 逐層回到原始 Lexer Name／FieldRead／Integer。
+                let left = private_self_checked_ungrouped_return(
+                    &verified, &binary.left,
+                )?;
+                let right = private_self_checked_ungrouped_return(
+                    &verified, &binary.right,
+                )?;
+                let (mut self_read, param_id) = match &left.kind {
                     TermKind::FieldRead(receiver, read_field) =>
                         (Some((receiver.as_str(), read_field.as_str())), None),
                     TermKind::Name(_) => {
                         let id = private_self_method_parameter_reference(
                             &verified, method, argument_binding,
-                            &additional_argument_bindings, &binary.left,
+                            &additional_argument_bindings, left,
                         ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
                             "方法加減參數沒有原 Checker 身分及 Lexer 名稱證據",
                         ))?;
@@ -2009,10 +2044,10 @@ impl PreparedPrivateSelfMethod {
                         "方法加減左端僅接通 self.int 或真正 int 參數",
                     )),
                 };
-                let operation = match &binary.right.kind {
+                let operation = match &right.kind {
                     TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
                         if !verified.tokens.iter().any(|token|
-                            token.start == binary.right.start && token.end == binary.right.end
+                            token.start == right.start && token.end == right.end
                                 && matches!(&token.kind, TokenKind::Integer(text) if text == raw)
                         ) {
                             return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -2037,7 +2072,7 @@ impl PreparedPrivateSelfMethod {
                     TermKind::Name(_) => {
                         let right_id = private_self_method_parameter_reference(
                             &verified, method, argument_binding,
-                            &additional_argument_bindings, &binary.right,
+                            &additional_argument_bindings, right,
                         ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
                             "右端 int 參數缺少真 Checker／Lexer 名稱身分",
                         ))?;
@@ -2903,6 +2938,33 @@ impl PreparedPrivateSelfMethod {
     }
 }
 
+
+/// M2/B4：只解開原 Parser 的 Group 外殼，所有括號必須與
+/// 原 Lexer '('/ ')' 真 Token 位置完全一致，且每一層內 span
+/// 嚴格包含於外 span。不得掃描原字串重建運算式或補授權。
+/// 已核准的型別、BorrowFact、方法簽章仍只由原 Checker 提供。
+fn private_self_checked_ungrouped_return<'a>(
+    verified: &VerifiedPrivateSource,
+    term: &'a Term,
+) -> Result<&'a Term, PrivateSelfMethodPrepareError> {
+    let mut current = term;
+    while let TermKind::Group(inner) = &current.kind {
+        if current.start >= inner.start || inner.end >= current.end
+            || !verified.tokens.iter().any(|token|
+                token.start == current.start
+                    && matches!(token.kind, TokenKind::Symbol('(')))
+            || !verified.tokens.iter().any(|token|
+                token.end == current.end
+                    && matches!(token.kind, TokenKind::Symbol(')')))
+        {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "方法 Group 返回缺少原 Lexer 括號來源或精確巢狀跨度",
+            ));
+        }
+        current = inner;
+    }
+    Ok(current)
+}
 
 /// 只承認選中方法原參數名稱，且該 int 參數的型別／位置已在
 /// prepare() 由原 Checker 封存的 VerifiedTypedMember(Parameter) 核對。
