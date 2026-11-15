@@ -475,6 +475,9 @@ jobs:
       - name: G18 V7-E2 原Checker async self就緒FIFO與轉移收據十五項 Gate
         run: python3 tools/核對G18-V7-E2非同步self就緒FIFO及轉移收據.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 V7-T4 E3 原Checker async self終態退休及全歷史收據十五項 Gate
+        run: python3 tools/核對G18-V7-T4非同步self終態退休與全歷史收據.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 真self借票後巢狀純int局部初始化與var更新八項 Gate
         run: python3 tools/核對G18-P18.4-B4巢狀純helper方法局部賦值.py --test-bin target/p02/p04_source_internal
 
