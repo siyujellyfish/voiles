@@ -1560,6 +1560,8 @@ include!("struct_stage/g18_b4_m3_nested_pure_helper_method_return_tests.rs");
 include!("struct_stage/g18_b4_m3_method_return_helper_arithmetic_tests.rs");
 // G18／P18.6-M3／B4：真 Group 包覆同步純 helper 的方法 Return。
 include!("struct_stage/g18_b4_m3_grouped_helper_method_return_tests.rs");
+// G18／B4/M3：真純int helper引數內算術與巢狀Call直接復用原ScalarHIR。
+include!("struct_stage/g18_b4_m3_helper_arithmetic_argument_tests.rs");
 // G18／M2-B4：原Checker方法Group純值返回、真self票據與直接await。
 include!("struct_stage/g18_m2_grouped_pure_self_return_tests.rs");
 // G18／V7-A1：原Lexer/Parser/Checker直接await async self真執行與借票。
