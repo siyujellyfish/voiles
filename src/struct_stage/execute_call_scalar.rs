@@ -7024,6 +7024,9 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         &mut self,
     ) -> Result<Option<(u64, PrivateScalarGraphPoll)>, PrivateScalarCooperativeError> {
         let Some(id) = self.ready.front().copied() else {
+            // 空佇列不等於真的沒有待執行工作；任何已簽發、
+            // 尚未消耗的 Prepared／Woken token 遺失都不得假回 None。
+            self.verify_ready_fifo()?;
             return Ok(None);
         };
         // T4：真正 consume FIFO 之前，Prepared／Suspended 的
@@ -7138,6 +7141,68 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 _ => return Err(PrivateScalarCooperativeError::Engine),
             }
             last_issue = Some(position);
+        }
+
+        // E2/T4：由真 poll 與真 wake 的數量重建每份**仍存活**
+        // 工作是否尚有未消耗的入列授權。僅驗「ready 中存在
+        // 的身分順序」會漏掉被直接刪去的 token，甚至令空
+        // 佇列回 Ok(None) 假裝工作均已驅動；必須雙向對帳。
+        // 已退休工作的舊簽發歷史仍供 wake/submit 連續性稽核，
+        // 但不能重新生出已移交的任何動態工作。
+        let mut pending = Vec::<(usize, u64)>::new();
+        for (&id, job) in &self.jobs {
+            let polls = self.drive_order.iter().filter(|(logged, _)|
+                *logged == id
+            ).count();
+            let wakes = self.wake_order.iter().filter(|receipt|
+                receipt.id == id
+            ).count();
+            let status = job.continuation.status;
+            let outstanding = match status {
+                PrivateDeferredAwaitStatus::Prepared => {
+                    if polls != 0 || wakes != 0 {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                    true
+                }
+                PrivateDeferredAwaitStatus::Suspended => {
+                    if polls == 0 {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                    if wakes == polls {
+                        true
+                    } else if wakes.checked_add(1) == Some(polls) {
+                        false
+                    } else {
+                        return Err(PrivateScalarCooperativeError::Engine);
+                    }
+                }
+                PrivateDeferredAwaitStatus::Running =>
+                    return Err(PrivateScalarCooperativeError::Engine),
+                PrivateDeferredAwaitStatus::Succeeded
+                | PrivateDeferredAwaitStatus::Failed
+                | PrivateDeferredAwaitStatus::Cancelled => false,
+            };
+            if outstanding {
+                let (position, issue) = self.ready_issues.iter().enumerate().rev()
+                    .find(|(_, issue)| issue.id == id)
+                    .ok_or(PrivateScalarCooperativeError::Engine)?;
+                let expected_kind = match status {
+                    PrivateDeferredAwaitStatus::Prepared =>
+                        PrivateScalarReadyIssueKind::Submitted,
+                    PrivateDeferredAwaitStatus::Suspended =>
+                        PrivateScalarReadyIssueKind::Woken,
+                    _ => unreachable!("只有 Prepared/Suspended 才有未消耗 token"),
+                };
+                if issue.kind != expected_kind {
+                    return Err(PrivateScalarCooperativeError::Engine);
+                }
+                pending.push((position, id));
+            }
+        }
+        pending.sort_unstable_by_key(|(position, _)| *position);
+        if pending.iter().map(|(_, id)| *id).ne(self.ready.iter().copied()) {
+            return Err(PrivateScalarCooperativeError::Engine);
         }
         Ok(())
     }
