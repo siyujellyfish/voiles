@@ -460,6 +460,9 @@ jobs:
       - name: G18 P18.6-M3 B4 原Checker方法Group純helperReturn八項 Gate
         run: python3 tools/核對G18-P18.6-M3方法Group純helper返回.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 P18.6-M3 原Checker方法helper算術實參十四項 Gate
+        run: python3 tools/核對G18-P18.4-B4方法純helper算術實參真退出.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.6-M2 B4 原Checker方法Group純值返回十五項 Gate
         run: python3 tools/核對G18-P18.6-M2原Checker方法括號純值返回.py --test-bin target/p02/p04_source_internal
 
