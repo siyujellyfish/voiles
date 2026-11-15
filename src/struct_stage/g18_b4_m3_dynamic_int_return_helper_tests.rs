@@ -135,7 +135,7 @@ return owner.read(5)
                 .replace("owner.read(5)","owner.read(true)"),
             SOURCE.replace("helper(n+3,2)","helper(m+3,2)"),
             SOURCE.replace("helper(n+3,2)","helper(n+3,1+helper(n,1))"),
-            SOURCE.replace("return helper(n+3,2)","return 1+helper(n+3,2)"),
+            SOURCE.replace("return helper(n+3,2)","return helper(n+3,2)+self.n"),
         ] {
             assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
                 Err(PrivateSelfMethodPrepareError::Check(_)) |
