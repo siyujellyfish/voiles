@@ -1004,6 +1004,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn method_branch_checked_pure_helper_return(
         &self, method: &Function, term: &Term,
     ) -> Result<(), Diagnostic> {
+        // M3/B4：原 method_return_type 已完整核准 int
+        // 算術及其中同步 Copyable 呼叫；與已驗收的 self
+        // 欄位 RHS 共用同一正式 Checker evaluate→ScalarHIR
+        // 簽發器。無 Call 的 FieldRead／Parameter 加減不
+        // 偷造 HIR，仍由既有專用欄位 Return 計畫處理。
+        if matches!(&term.kind, TermKind::BinaryInt(_)) {
+            self.record_method_checked_helper_write_hir(method, term)?;
+        }
         fn approved_int_tree(term: &Term, method: &Function) -> bool {
             match &term.kind {
                 TermKind::Scalar(
