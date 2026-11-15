@@ -139,7 +139,7 @@ return owner.read(plus(9,2),minus(9,2))
             SOURCE.replace("minus(9,2)","missing(9,2)"),
             // 巢狀直接純值 helper 已另立真正向；含函式的算術
             // 包裝仍未建立額外借用／退出證據，必須保守拒絕。
-            SOURCE.replace("plus(9,2)","1+plus(minus(9,2),2)"),
+            SOURCE.replace("plus(9,2)","1+unknown(minus(9,2),2)"),
             SOURCE.replace("fn minus(a:int,b:int)->int{\nreturn a-b",
                 "fn minus(a:int,b:int)->int{\nvar s:str = \"不能混入純值\"\nreturn a-b"),
         ] {

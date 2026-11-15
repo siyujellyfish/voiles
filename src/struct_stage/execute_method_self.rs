@@ -716,10 +716,10 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            let direct_helper = private_self_resolve_nested_argument_call(
+            let checked_arithmetic = private_self_approved_int_call_arithmetic(
                 &plan, &method_helpers,
-            ).is_some();
-            if (!calls.is_empty() && !direct_helper)
+            );
+            if (!calls.is_empty() && !checked_arithmetic)
                 || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
                     "方法 int 實參只接通原 Checker 純值或單次直接純 helper",
@@ -728,18 +728,15 @@ impl PreparedPrivateSelfMethod {
             // 此值僅是來源一致性快照；真正呼叫和函式事件必須
             // 在執行時依 main 的真 int frame 重新求值，且在
             // self BorrowTicket 取得之前完成整份參數計畫。
-            let preparation = match &plan {
-                PrivateScalarReturnExpr::Call { arguments, .. } if direct_helper => {
-                    let helper = private_self_resolve_nested_argument_call(
-                        &plan, &method_helpers,
-                    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                        "方法巢狀 int 實參缺少原 Checker 同源普通函式",
-                    ))?;
-                    private_self_nested_argument_frame(
-                        helper, arguments, &main_prepared_values, &method_helpers,
-                    ).and_then(|frame| helper.returned.evaluate(&frame))
-                }
-                _ => plan.evaluate(&main_prepared_values),
+            let preparation = if !calls.is_empty() && checked_arithmetic {
+                // 原 ScalarHIR 中的 Addition/Subtraction 也可持有
+                // 已核准純 int Call；準備時只求靜態一致性快照，
+                // 不能提前假造任何普通函式事件或 self 票據。
+                private_self_arithmetic_call_snapshot(
+                    &plan, &main_prepared_values, &method_helpers,
+                )
+            } else {
+                plan.evaluate(&main_prepared_values)
             };
             let prepared = match preparation {
                 Ok(value) => value,
@@ -2054,10 +2051,16 @@ impl PreparedPrivateSelfMethod {
                 .zip(&self.argument_plans) {
                 // 按原方法引數次序真正求值；尚未完成全部引數前
                 // 不會取得 self BorrowTicket 或偽造進入方法框架。
-                let actual = if private_self_resolve_nested_argument_call(
-                    expression, &self.method_helpers,
-                ).is_some() {
-                    private_self_execute_nested_argument_call(
+                let mut source_calls = Vec::new();
+                expression.collect_calls(&mut source_calls);
+                let actual = if !source_calls.is_empty()
+                    && private_self_approved_int_call_arithmetic(
+                        expression, &self.method_helpers,
+                    ) {
+                    // 在借入 self 前依原 Parser 左到右真正求完整
+                    // 算式，內層 Call 各自真退出；任何失敗不得
+                    // 提前進入同步方法或簽發 BorrowTicket。
+                    private_self_execute_arithmetic_call(
                         expression, &main_values, &self.method_helpers,
                         &mut exit_events, &mut ordinary_calls_entered,
                         &mut ordinary_calls_completed,
