@@ -7131,6 +7131,41 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         ) || self.jobs.keys().any(|id| !submitted.contains(id)) {
             return Err(PrivateScalarCooperativeError::Engine);
         }
+        // T4／E2：即使原工作已正式退休，仍必須由不可重用的
+        // submit ID 核對其真 poll／wake 歷史。過去僅對仍在 jobs
+        // 的狀態檢查完整性，刪除一筆退休工作的 Woken token
+        // 連同 wake 收據後，空 ready/jobs 會錯誤通過。
+        // 此處不重建或重新執行任何已退休的真動態框架。
+        if self.drive_order.iter().any(|(id, _)| !submitted.contains(id))
+            || self.cancellation_order.iter().any(|id| !submitted.contains(id))
+        {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        for id in &submitted {
+            let drives = self.drive_order.iter()
+                .filter_map(|(logged, poll)|
+                    (*logged == *id).then_some(*poll))
+                .collect::<Vec<_>>();
+            let wakes = self.wake_order.iter()
+                .filter(|receipt| receipt.id == *id).count();
+            // 首次 poll 必須由 Submitted，後續每次都要先有
+            // 真 wake。最後停在 Suspended 時允許一次尚未消耗
+            // 的 wake，成功／失敗完成只允許尾端唯一 Completed。
+            if wakes > drives.len()
+                || drives.len().checked_sub(wakes).is_none_or(|delta|
+                    delta > 1)
+                || drives.iter().take(drives.len().saturating_sub(1))
+                    .any(|poll| *poll != PrivateScalarGraphPoll::Suspended)
+                || drives.iter().filter(|poll|
+                    **poll == PrivateScalarGraphPoll::Completed
+                ).count() > 1
+            {
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+            // 退休後的收據時間也不可倒退、移至原 poll 之前
+            // 或移過下一次原 poll；共用已驗證的真時序檢查器。
+            self.verify_wake_chronology(*id)?;
+        }
         let mut last_issue = None::<usize>;
         for id in &self.ready {
             let job = self.jobs.get(id)
