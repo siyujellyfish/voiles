@@ -7115,6 +7115,14 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 }
             }
         }
+        // 即使所有工作均已正常完成／取消且自 jobs 退休，
+        // next_id 仍是唯一真實簽發 ID 上限；ready_issues 的
+        // Submitted 歷史必須無遺漏地包含 1..=next_id。
+        // 否則刪掉最後一筆已退休工作授權後，空 ready／jobs
+        // 會被錯誤認定為合法，並破壞下一個 ID 的完整性。
+        if last_submitted != self.next_id {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
         // 第一次入列只能 submit，後續新 token 必須有且只有
         // 成功 wake 的原時間憑據；不能補一份偽造的 ready
         // 事件以抵銷順序的竄改。
