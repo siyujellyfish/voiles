@@ -624,9 +624,11 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            let direct_helper = calls.len() == 1
-                && private_self_matches_helper_call(&plan, &method_helpers);
-            if (!calls.is_empty() && !direct_helper)
+            let checked_calls = !calls.is_empty()
+                && private_self_approved_int_call_arithmetic(
+                    &plan, &method_helpers,
+                );
+            if (!calls.is_empty() && !checked_calls)
                 || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
                     "main int 初始化只支援同源 Checker 核准的零／一 int 純值 helper",
@@ -635,21 +637,13 @@ impl PreparedPrivateSelfMethod {
             // 同一份原 Checker 無副作用、單一常值 helper，可建立
             // 靜態數值快照供來源防偽；真正函式進退只能在 execute
             // 按原 main 執行次序產生，這裡不得預寫動態事件。
-            let expected = if direct_helper {
-                let helper = private_self_resolve_helper_call(
-                    &plan, &method_helpers,
-                ).ok_or(
-                    PrivateSelfMethodPrepareError::Unsupported(
-                        "main helper 缺少原 Checker 唯一純值工作計畫",
-                    ))?;
-                let PrivateScalarReturnExpr::Call { arguments, .. } = &plan else {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main helper 必須保留原 Checker 真 Call 來源",
-                    ));
-                };
-                private_self_helper_argument_frame(
-                    helper, arguments, &known_int_values,
-                ).and_then(|frame| helper.returned.evaluate(&frame))
+            let expected = if checked_calls {
+                // 真 main 作用域依原 Checker/TypedHIR 建立的純值
+                // 算術可包含同步函式；prepare 不容許預造
+                // Enter/Returned 或任何 BorrowTicket。
+                private_self_arithmetic_call_snapshot(
+                    &plan, &known_int_values, &method_helpers,
+                )
             } else { plan.evaluate(&known_int_values) };
             let value = match expected {
                 Ok(value) => value,
@@ -1956,41 +1950,22 @@ impl PreparedPrivateSelfMethod {
         let mut nested_else_write_applied = false;
         for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
             .zip(&self.main_init_plans) {
-            let executed = match initializer {
-                PrivateScalarReturnExpr::Call { arguments, .. }
-                    if private_self_matches_helper_call(
-                        initializer, &self.method_helpers,
-                    ) => {
-                    let helper = private_self_resolve_helper_call(
-                        initializer, &self.method_helpers,
-                    ).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
-                    // 任何實參溢位只屬 main 呼叫者，沒有真 helper Enter。
-                    match private_self_helper_argument_frame(
-                        helper, arguments, &main_values,
-                    ) {
-                        Err(problem) => Err(problem),
-                        Ok(frame) => {
-                            exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
-                            ordinary_calls_entered += 1;
-                            let value = helper.returned.evaluate(&frame);
-                            if value.is_ok() {
-                                exit_events.push(PrivateSharedCallExitEvent::Returned);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: true,
-                                });
-                                ordinary_calls_completed += 1;
-                            } else {
-                                // helper 本體溢位才進入失敗子框架退場。
-                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: false,
-                                });
-                            }
-                            value
-                        }
-                    }
-                }
-                _ => initializer.evaluate(&main_values),
+            let mut source_calls = Vec::new();
+            initializer.collect_calls(&mut source_calls);
+            let executed = if !source_calls.is_empty()
+                && private_self_approved_int_call_arithmetic(
+                    initializer, &self.method_helpers,
+                ) {
+                // 真 main int 局部在 self 借票前執行；原 Parser
+                // 算術左右各自可進入已核准普通函式，但任何
+                // RHS 故障不得假初始化後續 int 局部或方法。
+                private_self_execute_arithmetic_call(
+                    initializer, &main_values, &self.method_helpers,
+                    &mut exit_events, &mut ordinary_calls_entered,
+                    &mut ordinary_calls_completed,
+                )
+            } else {
+                initializer.evaluate(&main_values)
             };
             let actual = match executed {
                 Ok(value) => value,

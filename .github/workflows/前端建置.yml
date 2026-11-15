@@ -429,6 +429,9 @@ jobs:
       - name: G18 P18.4-B4 M3 方法直接int實參混合普通helper算術八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法實參純int函式算式.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 M3 原main局部純int函式左右算術八項 Gate
+        run: python3 tools/核對G18-P18.4-B4主函式int局部函式算式.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 方法int形參動態Return-helper八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法int形參動態helper返回.py --test-bin target/p02/p04_source_internal
 
