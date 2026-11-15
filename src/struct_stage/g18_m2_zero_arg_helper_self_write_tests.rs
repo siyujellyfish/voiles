@@ -97,10 +97,11 @@ return owner.set(true)
         let loan_return = out.exit_events.iter().position(|e| matches!(
             e, PrivateSharedCallExitEvent::LoanReturned(_)
         )).unwrap();
-        let last_helper_exit = out.exit_events.iter().rposition(|e| matches!(
+        // 方法自己的 FunctionExited 在歸還 self 票據之後，
+        // 只能在還票前的真子框架區間核對兩次 helper 退出。
+        assert_eq!(out.exit_events[..loan_return].iter().filter(|e| matches!(
             e, PrivateSharedCallExitEvent::FunctionExited { returned: true }
-        )).unwrap();
-        assert!(last_helper_exit < loan_return);
+        )).count(), 2);
     }
 
     #[test]
