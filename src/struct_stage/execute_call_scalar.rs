@@ -9893,8 +9893,18 @@ mod g18_v7_private_deferred_await_tests {
         assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
         assert!(queue.execution_order().is_empty());
         assert!(queue.jobs[&id].outcome.is_none());
+        // T3／V7：舊測試只驗醒來前拒絕、卻容許直接
+        // 取消污染來源以抹掉原計畫。新的取消前來源守門
+        // 必須保留污染證據；還原真 Checker 工作後才可取消。
+        assert_eq!(queue.cancel(id),
+            Err(PrivateDeferredAwaitError::SourceChanged));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert!(queue.jobs[&id].plan.is_some());
+        queue.jobs.get_mut(&id).unwrap().plan =
+            Some(PreparedPrivateScalarCall::prepare(&src(17)).unwrap());
         queue.cancel(id).unwrap();
         assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert!(queue.jobs[&id].plan.is_none());
     }
 
     #[test]
