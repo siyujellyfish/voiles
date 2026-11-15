@@ -113,7 +113,7 @@ return owner.read(true)
     fn m2_nested_write_竄改兩葉原寫入計畫拒絕且方法故障零假更新() {
         let mut plan = PreparedPrivateSelfMethod::prepare(SOURCE).unwrap();
         let (_, span) = plan.method_nested_true_write.unwrap();
-        plan.method_nested_true_write = Some((99, span));
+        plan.method_nested_true_write = Some((PrivateSelfApprovedBranchWrite::Literal(99), span));
         assert!(matches!(
             plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)
         ));
