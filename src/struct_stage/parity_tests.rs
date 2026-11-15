@@ -1918,7 +1918,13 @@ mod v7_direct_await_source_tests {
             let diagnostic = inspected(code).unwrap_err();
             assert_eq!(diagnostic.kind, DiagnosticKind::Static);
         }
-        let malformed = "async fn worker()->int{\nreturn 1\n}\nfn main()->int{\nreturn await worker.borrow()\n}\n";
+        // V7 新已核准 await receiver.method() 語法後，這份
+        // 來源已可解析，但 worker 是函式而非實例；必由
+        // 原 Checker 靜態拒絕，不得冒稱合法 self 借用。
+        let not_receiver = "async fn worker()->int{\nreturn 1\n}\nfn main()->int{\nreturn await worker.borrow()\n}\n";
+        assert_eq!(inspected(not_receiver).unwrap_err().kind, DiagnosticKind::Static);
+        // 缺少方法呼叫左括號仍是真 Parser 語法錯誤。
+        let malformed = "async fn worker()->int{\nreturn 1\n}\nfn main()->int{\nreturn await worker.borrow\n}\n";
         assert_eq!(inspected(malformed).unwrap_err().kind, DiagnosticKind::Syntax);
     }
 
