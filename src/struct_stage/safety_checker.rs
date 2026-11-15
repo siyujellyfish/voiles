@@ -804,6 +804,119 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         record(self, method, term);
     }
 
+    /// G18／M2/B4：原 Checker 已准許同步 self 欄位 RHS 使用
+    /// Copyable int 普通函式；但只有純算術路徑有完整 ScalarHIR。
+    /// 在原 method_pure_value_type 已核准型別、欄位可寫和借用
+    /// 模式後，從同一正式 Checker evaluate 生成含 Call 子樹的
+    /// TypedHIR。不能由執行器自行補造型別權威。
+    ///
+    /// 只對靜態可證明無副作用的已核准普通函式交付新 HIR；
+    /// 其餘原合法但未接通的語意保持原 Checker 狀態，不予
+    /// 產生執行器準備憑據，也不縮減既有 Checker 接受範圍。
+    fn record_method_checked_helper_write_hir(
+        &self, method: &Function, term: &Term,
+    ) -> Result<(), Diagnostic> {
+        fn helper_return_only_pure_int(
+            term: &Term, parameter_names: &[&str],
+        ) -> bool {
+            match &term.kind {
+                TermKind::Group(inner) =>
+                    helper_return_only_pure_int(inner, parameter_names),
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Name(name) => parameter_names.contains(&name.as_str()),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && helper_return_only_pure_int(&binary.left, parameter_names)
+                        && helper_return_only_pure_int(&binary.right, parameter_names),
+                _ => false,
+            }
+        }
+        fn approved_rhs<C: Fn(&str) -> CopyPermission>(
+            checker: &Checker<'_, C>, method: &Function, term: &Term,
+            found_call: &mut bool,
+        ) -> bool {
+            match &term.kind {
+                TermKind::Group(inner) =>
+                    approved_rhs(checker, method, inner, found_call),
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Name(name) => method.params.iter().any(|parameter|
+                    parameter.name == *name && parameter.ty == "int"
+                        && parameter.name != "self"),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && approved_rhs(checker, method, &binary.left, found_call)
+                        && approved_rhs(checker, method, &binary.right, found_call),
+                TermKind::Call(call) => {
+                    let Some(helper) = checker.find_function(&call.name) else {
+                        return false;
+                    };
+                    if call.awaited || helper.is_async || helper.name == "main"
+                        || helper.result_ty != "int"
+                        || helper.params.len() != call.arguments.len()
+                        || helper.body.statements.len() != 1
+                        || helper.params.iter().any(|param|
+                            param.name == "self" || param.ty != "int")
+                        || helper.params.iter().enumerate().any(|(i, param)|
+                            helper.params[..i].iter().any(|prior|
+                                prior.name == param.name))
+                    {
+                        return false;
+                    }
+                    let StmtKind::Return(returned) = &helper.body.statements[0].kind
+                    else { return false; };
+                    let names = helper.params.iter()
+                        .map(|param| param.name.as_str()).collect::<Vec<_>>();
+                    if !helper_return_only_pure_int(&returned.expression, &names)
+                        || !call.arguments.iter().all(|arg|
+                            approved_rhs(checker, method, arg, found_call)) {
+                        return false;
+                    }
+                    *found_call = true;
+                    true
+                }
+                _ => false,
+            }
+        }
+        let mut found_call = false;
+        if !approved_rhs(self, method, term, &mut found_call) || !found_call {
+            return Ok(());
+        }
+        // 僅建構方法真正 Copyable int 形參 Scope，不碰真執行期
+        // BorrowTicket／ResourceId；用原 Checker evaluate 逐節點
+        // 真記錄 TypedUse、Call 與 Arithmetic，避免第二套 HIR。
+        let mut vars = vec![Rc::new(HashMap::new())];
+        for parameter in &method.params {
+            if parameter.ty == "int" && parameter.name != "self" {
+                let id = DeclarationId(parameter.declaration_start);
+                if vars[0].contains_key(&parameter.name) {
+                    return Err(self.error(
+                        "M2 選葉純 helper 方法 int 形參不能重複", term,
+                    ));
+                }
+                Rc::make_mut(&mut vars[0]).insert(
+                    parameter.name.clone(),
+                    Binding::new(
+                        id, "int".to_string(), false,
+                        ValueSlot::initialized(CopyPermission::Allowed),
+                        None, None,
+                    ),
+                );
+                self.record_declaration(id, "int", false);
+            }
+        }
+        let (ty, ready) = self.evaluate(term, &mut vars)?;
+        if ty != "int" || !ready {
+            return Err(self.error(
+                "M2 選葉純 helper RHS 缺少原 Checker int 完整可用性", term,
+            ));
+        }
+        Ok(())
+    }
+
     fn method_bool_condition(&self, owner: &str, method: &Function, term: &Term)
         -> Result<(), Diagnostic> {
         let ty = self.method_pure_value_type(owner, method, term)?;
@@ -1017,6 +1130,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 才可交付給同一 P10/P18 ScalarHIR 編譯器。
                     if target.ty == "int" {
                         self.record_method_pure_int_hir(method, value);
+                        self.record_method_checked_helper_write_hir(method, value)?;
                     }
                     writes = true;
                 }
