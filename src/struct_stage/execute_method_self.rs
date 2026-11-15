@@ -1112,11 +1112,11 @@ impl PreparedPrivateSelfMethod {
                     }
                     (None, Some(id), None)
                 }
-                TermKind::BinaryInt(_) => {
-                    // 自原 Checker 成員簽章建構唯一合法 int
-                    // 形參集；ScalarHIR 必先確認完整運算是 int。
-                    // 暫不接通普通函式、self 欄位重新讀取、
-                    // bool／str／Move／Borrow 值作寫入 RHS。
+                TermKind::BinaryInt(_) | TermKind::Call(_) => {
+                    // 自原 Checker 成員簽章建構唯一 int 形參集；
+                    // 本次可復用 M2/B4 已真驗證的同步純 int helper
+                    // RHS ScalarHIR。未經原 Checker 證明的資源、
+                    // await／Borrow／Move／self 欄位讀取仍保守拒絕。
                     let parameters = method.params.iter().filter(|param|
                         param.ty == "int" && param.name != "self"
                     ).map(|param| {
@@ -1131,14 +1131,16 @@ impl PreparedPrivateSelfMethod {
                     if !matches!(plan,
                         PrivateScalarReturnExpr::Addition(_, _)
                         | PrivateScalarReturnExpr::Subtraction(_, _)
-                    ) || !private_self_pure_helper_int(&plan, &authorized)
-                        || !authorized.iter().all(|id|
-                            argument_binding.into_iter()
-                                .chain(additional_argument_bindings.iter().copied())
-                                .any(|(bound, _)| bound == *id)
-                        ) {
+                        | PrivateScalarReturnExpr::Call { awaited: false, .. }
+                    ) || !private_self_approved_int_call_arithmetic(
+                        &plan, &method_helpers,
+                    ) || !authorized.iter().all(|id|
+                        argument_binding.into_iter()
+                            .chain(additional_argument_bindings.iter().copied())
+                            .any(|(bound, _)| bound == *id)
+                    ) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "self 算術寫入僅限原 Checker Copyable int 形參與常值",
+                            "self 直接 RHS 僅允許原 Checker 純 Copyable int／同步 helper",
                         ));
                     }
                     (None, None, Some(plan))
@@ -2507,7 +2509,23 @@ impl PreparedPrivateSelfMethod {
                     .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)
             ).transpose()?;
             let checked_arithmetic_write = self.write_checked_int.as_ref()
-                .map(|expression| expression.evaluate(&parameter_frame))
+                .map(|expression| {
+                    // 原 Checker 封存的直接 RHS 真值，仍只在
+                    // 自借用入口後執行；若存在已核准 Call，與
+                    // 選中分支共用 SharedCallExit 真框架及溢位
+                    // Unwind，寫入一定在全部子函式成功返回之後。
+                    let mut calls = Vec::new();
+                    expression.collect_calls(&mut calls);
+                    if calls.is_empty() {
+                        expression.evaluate(&parameter_frame)
+                    } else {
+                        private_self_execute_arithmetic_call(
+                            expression, &parameter_frame, &self.method_helpers,
+                            &mut exit_events, &mut ordinary_calls_entered,
+                            &mut ordinary_calls_completed,
+                        )
+                    }
+                })
                 .transpose().map_err(|reason| match reason {
                     PrivateScalarCallRuntimeError::IntegerOverflow =>
                         PrivateSelfMethodRuntimeError::IntegerOverflow,
