@@ -126,27 +126,95 @@ impl PrivateSelfMethodOutcome {
             && (!self.result.is_ok()
                 || assigned_local_ids.len()
                     == self.expected_method_assignment_ids.len());
-        // 同步方法只有一個已核准的 self 框架；局部不應被
-        // 記錄在真正 FunctionEntered 之前，亦不應在其
-        // FunctionExited 之後以 main 的匿名基底框架補造。
-        let mut inside_method = false;
+        // T3／B4／M3：局部事件必須位於原 Checker 取得 self
+        // BorrowTicket 後所進入的「該方法框架」，而不是任意
+        // FunctionEntered 的框架。先前只要 nested_depth > 0
+        // 便視為 inside_method，導致把同數量的 LocalInitialized／
+        // ScopeEnded 搬到 main 的普通 helper 或方法內子 helper，
+        // 仍能同時通過 SharedExit 與方法局部雙帳。
+        //
+        // 唯一授權序列：原 self LoanAcquired 位於呼叫者深度 0；
+        // 之後第一個 FunctionEntered 才是原方法框架深度 1，
+        // 方法內 helper 再進入深度 2+。局部只可在深度 1、
+        // 且原 self 票據仍存活時改變；須先還票再退出方法。
+        // 取得票後但尚未進入方法時若發生合法故障，則允許
+        // Unwind／LoanReturned，不可製造任何方法局部事件。
         let mut nested_depth = 0usize;
-        let mut local_events_inside_real_method = true;
+        let mut method_frame_depth = None::<usize>;
+        let mut method_entry_observed = false;
+        let mut method_exit_observed = false;
+        let mut method_loan_seen = false;
+        let mut method_loan_pending = false;
+        let mut method_loan_active = false;
         for event in &self.exit_events {
+            if method_loan_pending && !matches!(event,
+                PrivateSharedCallExitEvent::FunctionEntered
+                    | PrivateSharedCallExitEvent::UnwindStarted
+                    | PrivateSharedCallExitEvent::LoanReturned(_)
+            ) {
+                return false;
+            }
             match event {
+                PrivateSharedCallExitEvent::LoanAcquired(ticket)
+                    if ticket.fact() == self.checked_loan => {
+                    // 同一 self 借用只准在普通函式全部退出後由
+                    // 原 main Caller 簽發；不能在子 helper 框架
+                    // 冒充方法借票，也不能重簽另一份相同權限。
+                    if nested_depth != 0 || method_loan_seen
+                        || method_entry_observed || method_exit_observed {
+                        return false;
+                    }
+                    method_loan_seen = true;
+                    method_loan_pending = true;
+                    method_loan_active = true;
+                }
                 PrivateSharedCallExitEvent::FunctionEntered => {
-                    nested_depth += 1;
-                    inside_method = true;
+                    if method_loan_pending {
+                        if nested_depth != 0 || method_entry_observed {
+                            return false;
+                        }
+                        method_frame_depth = Some(1);
+                        method_entry_observed = true;
+                        method_loan_pending = false;
+                    }
+                    let Some(next) = nested_depth.checked_add(1) else {
+                        return false;
+                    };
+                    nested_depth = next;
+                }
+                PrivateSharedCallExitEvent::LoanReturned(ticket)
+                    if ticket.fact() == self.checked_loan => {
+                    if !method_loan_active || method_frame_depth.is_some_and(
+                        |method_depth| nested_depth != method_depth,
+                    ) {
+                        return false;
+                    }
+                    method_loan_active = false;
+                    method_loan_pending = false;
                 }
                 PrivateSharedCallExitEvent::FunctionExited { .. } => {
-                    let Some(remaining) = nested_depth.checked_sub(1) else { return false; };
+                    if method_frame_depth == Some(nested_depth) {
+                        if method_loan_active || method_exit_observed {
+                            return false;
+                        }
+                        method_frame_depth = None;
+                        method_exit_observed = true;
+                    }
+                    let Some(remaining) = nested_depth.checked_sub(1) else {
+                        return false;
+                    };
                     nested_depth = remaining;
-                    inside_method = remaining > 0;
                 }
                 PrivateSharedCallExitEvent::LocalInitialized(_)
                     | PrivateSharedCallExitEvent::LocalAssigned(_)
-                    | PrivateSharedCallExitEvent::LocalScopeEnded(_) if !inside_method => {
-                    local_events_inside_real_method = false;
+                    | PrivateSharedCallExitEvent::LocalScopeEnded(_) => {
+                    // 普通 helper 與方法雖共用 CallExit 協定，
+                    // 卻不共享詞彙局部的所有權：即使兩份事件
+                    // 的 DeclId、次數、順序完全相同也不能改歸屬。
+                    if !method_loan_active
+                        || method_frame_depth != Some(nested_depth) {
+                        return false;
+                    }
                 }
                 _ => {}
             }
@@ -176,7 +244,6 @@ impl PrivateSelfMethodOutcome {
         self.ticket_returned
             && approved_local_prefix
             && approved_assignments
-            && local_events_inside_real_method
             && local_projection == exit_projection
             && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
@@ -188,6 +255,11 @@ impl PrivateSelfMethodOutcome {
                 &self.exit_events, self.result.is_ok(),
             )
             && nested_depth == 0
+            && method_frame_depth.is_none()
+            && method_entry_observed == self.method_entered
+            && method_exit_observed == self.method_entered
+            && !method_loan_pending && !method_loan_active
+            && (!self.method_entered || method_loan_seen)
             && self.ordinary_calls_completed <= self.ordinary_calls_entered
             && (!self.result.is_ok()
                 || self.ordinary_calls_completed == self.ordinary_calls_entered)
