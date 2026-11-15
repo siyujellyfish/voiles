@@ -66,8 +66,54 @@ fn verified_private_token_roles(
                     && term(&binary.right, tokens, audit),
             TermKind::Construct(_, fields) => fields.iter().all(|(_, arg)|
                 term(arg, tokens, audit)),
-            TermKind::MethodCall(_, _, args) => args.iter().all(|arg|
-                term(arg, tokens, audit)),
+            TermKind::MethodCall(_, _, args) => {
+                // 對同步方法，原 Parser 不得把 await 前綴
+                // 無聲刪掉而冒充未等待、未啟動的來源。
+                if tokens.binary_search_by_key(
+                    &value.start, |token| token.start,
+                ).ok().and_then(|index| tokens.get(index).zip(tokens.get(index + 1)))
+                    .is_some_and(|(prefix, next)|
+                        matches!(&prefix.kind, TokenKind::Name(word) if word == "await")
+                            && matches!(&next.kind, TokenKind::Name(_))) {
+                    return false;
+                }
+                args.iter().all(|arg| term(arg, tokens, audit))
+            },
+            TermKind::AwaitMethodCall(receiver, method, args) => {
+                // 只接受精確原 Lexer 六個相鄰 token 的
+                // await owner . method ( ... )；任何改名、
+                // 刪掉 await／點號、取錯結束跨度均拒絕。
+                let Some(index) = tokens.binary_search_by_key(
+                    &value.start, |token| token.start,
+                ).ok() else { return false; };
+                let Some(prefix) = tokens.get(index) else { return false; };
+                let Some(owner) = tokens.get(index + 1) else { return false; };
+                let Some(dot) = tokens.get(index + 2) else { return false; };
+                let Some(named) = tokens.get(index + 3) else { return false; };
+                let Some(left) = tokens.get(index + 4) else { return false; };
+                let close_valid = tokens.iter().any(|token|
+                    token.end == value.end
+                        && matches!(token.kind, TokenKind::Symbol(')')));
+                if !matches!(&prefix.kind, TokenKind::Name(word) if word == "await")
+                    || !matches!(&owner.kind, TokenKind::Name(word) if word == receiver)
+                    || !matches!(dot.kind, TokenKind::Symbol('.'))
+                    || !matches!(&named.kind, TokenKind::Name(word) if word == method)
+                    || !matches!(left.kind, TokenKind::Symbol('('))
+                    || prefix.start != value.start
+                    || prefix.end > owner.start || owner.end > dot.start
+                    || dot.end > named.start || named.end > left.start
+                    || !close_valid
+                    || audit.source.get(prefix.start..prefix.end) != Some("await")
+                    || audit.source.get(owner.start..owner.end) != Some(receiver.as_str())
+                    || audit.source.get(named.start..named.end) != Some(method.as_str())
+                {
+                    return false;
+                }
+                audit.record(NodeRole::Name,
+                    NodeSpan::new(prefix.start, prefix.end),
+                    Some(value.node_span()))
+                    && args.iter().all(|arg| term(arg, tokens, audit))
+            },
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)

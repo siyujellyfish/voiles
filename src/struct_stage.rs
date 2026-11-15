@@ -134,6 +134,9 @@ crate::common_ir::define_shared_expression_kind!(
         FieldMove(String, String),
         FieldRead(String, String),
         MethodCall(String, String, Vec<Term>),
+        /// V7／D18-02-E1-A：只允許直接 await owner.method(args)；
+        /// 與同步方法為不同正式 AST 身分，不補作新背景工作。
+        AwaitMethodCall(String, String, Vec<Term>),
     }
 );
 
@@ -1555,6 +1558,8 @@ include!("struct_stage/g18_b4_m3_nested_pure_helper_method_return_tests.rs");
 include!("struct_stage/g18_b4_m3_method_return_helper_arithmetic_tests.rs");
 // G18／P18.6-M3／B4：真 Group 包覆同步純 helper 的方法 Return。
 include!("struct_stage/g18_b4_m3_grouped_helper_method_return_tests.rs");
+// G18／V7-A1：原Lexer/Parser/Checker直接await async self真執行與借票。
+include!("struct_stage/g18_v7_async_self_direct_await_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");

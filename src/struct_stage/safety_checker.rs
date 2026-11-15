@@ -350,7 +350,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
-            TermKind::MethodCall(id, _, args) => id == name
+            TermKind::MethodCall(id, _, args)
+            | TermKind::AwaitMethodCall(id, _, args) => id == name
                 || args.iter().any(|arg| Self::term_mentions(arg, name)),
             TermKind::Construct(_, arguments) =>
                 arguments.iter().any(|(_, value)| Self::term_mentions(value, name)),
@@ -377,6 +378,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 .any(|(_, value)| Self::term_contains_direct_await(value)),
             TermKind::MethodCall(_, _, args) =>
                 args.iter().any(Self::term_contains_direct_await),
+            TermKind::AwaitMethodCall(_, _, _) => true,
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
@@ -409,7 +411,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 | TermKind::FieldRead(name, _) | TermKind::FieldMove(name, _)
                 if kind == ResolvedUseKind::All =>
                 Self::record_named_future_use(visible, used, name),
-            TermKind::MethodCall(receiver, _, arguments) => {
+            TermKind::MethodCall(receiver, _, arguments)
+            | TermKind::AwaitMethodCall(receiver, _, arguments) => {
                 if kind == ResolvedUseKind::All {
                     Self::record_named_future_use(visible, used, receiver);
                 }
@@ -1741,7 +1744,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok((field.ty.clone(), true))
             }
-            TermKind::MethodCall(receiver, name, args) => {
+            TermKind::MethodCall(receiver, name, args)
+            | TermKind::AwaitMethodCall(receiver, name, args) => {
+                // V7 先限直接 await 方法；原普通方法、方法形參及
+                // 唯一 S20 靜態簽章決議仍走同一 Checker 身分。
+                let direct_await = matches!(
+                    &term.kind, TermKind::AwaitMethodCall(_, _, _),
+                );
                 if receiver == "self" {
                     return Err(self.error("重入 self 方法的借用安全尚未驗證", term));
                 }
@@ -1785,13 +1794,29 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         }
                     }
                 };
-                // E1-A：未經直接 await 的同步表達式不得執行
-                // async 方法本體或提前取得其回傳值；後續專用
-                // await 來源另行接通，不繞過既有 BorrowFact 安全。
-                if method.is_async {
+                // E1-A：同步方法不能假冒 async，async 方法亦不能
+                // 在未 await 時開始執行。完整驗證於真正等待點前
+                // 完成；不讓任何有效借用跨到該安全點。
+                if method.is_async != direct_await {
                     return Err(self.error(
-                        "V7：async 方法需要已核准的直接 await 執行路徑", term,
+                        "V7：async 方法須直接 await，普通方法不得假裝 async", term,
                     ));
+                }
+                if direct_await {
+                    let live = Self::active_loan_snapshot(vars);
+                    if live.validate().is_err() || !live.facts().is_empty() {
+                        return Err(self.error(
+                            "VB15-01-A：有效借用不得跨 async 方法直接 await", term,
+                        ));
+                    }
+                    if args.iter().any(Self::term_contains_direct_await)
+                        || method.params.iter().any(|param|
+                            self.permission(&param.ty) != CopyPermission::Allowed)
+                    {
+                        return Err(self.error(
+                            "V7：async 方法直接 await 先限已證獨立 Copyable 參數，不接受巢狀等待", term,
+                        ));
+                    }
                 }
                 let mode = self.check_method(&owner_type, method)?;
                 if method.params.len() != args.len() {
@@ -2783,6 +2808,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 for (_, value) in args { self.reject_method_term(value)?; }
                 Ok(())
             }
+            TermKind::AwaitMethodCall(_, _, _) => Err(self.error(
+                "VB15-01-A：async 方法內再 await 尚無借用安全與可恢復框架證據", term,
+            )),
             TermKind::Call(call) => {
                 // 函式呼叫的合法型別、Copyable 資格與完整參數來源
                 // 由 method_pure_value_type 統一查核；仍先檢查 S15／S21。
