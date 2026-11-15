@@ -185,7 +185,7 @@ return owner.read(5)
                 "fn combine(a:int,b:bool)->int")
                 .replace("return a-b", "return a"),
             METHOD.replace("return a-b", "return a-other"),
-            METHOD.replace("combine(n+7,n-2)", "combine(n+7,combine(n,1))"),
+            METHOD.replace("combine(n+7,n-2)", "combine(n+7,1+combine(n,1))"),
         ] {
             assert!(matches!(
                 PreparedPrivateSelfMethod::prepare(&source),

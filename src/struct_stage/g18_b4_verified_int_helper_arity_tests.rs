@@ -179,7 +179,7 @@ return owner.read(5)
                 .replace("return a-b+c-d", "return a-b+c"),
             METHOD.replace("return a-b+c-d", "return a-b+c-other"),
             METHOD.replace("aggregate(n+3,2,n-1,1)",
-                "aggregate(n+3,2,n-1,aggregate(1,2,3,4))"),
+                "aggregate(n+3,2,n-1,1+aggregate(1,2,3,4))"),
         ] {
             assert!(matches!(
                 PreparedPrivateSelfMethod::prepare(&source),
