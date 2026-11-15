@@ -5,6 +5,9 @@
 // Runtime 執行，BorrowTicket 只在真正喚醒後進入方法時簽發。
 
 struct PrivateDeferredSelfAwaitJob {
+    /// 登錄工作時由**原 Checker 計畫**複製的唯讀來源身分。
+    /// 即使計畫在 wake 後移走，仍須能獨立核對真 Outcome。
+    origin: PrivateSelfExecutionOrigin,
     plan: Option<PreparedPrivateSelfMethod>,
     status: PrivateDeferredAwaitStatus,
     outcome: Option<PrivateSelfMethodOutcome>,
@@ -182,10 +185,23 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
             }
             let valid = match status {
                 S::Prepared | S::Suspended =>
-                    job.plan.is_some() && job.outcome.is_none(),
+                    job.plan.as_ref().is_some_and(|plan|
+                        plan.original.as_ref() == job.origin.source.as_ref()
+                            && plan.owner_id == job.origin.owner
+                            && plan.method_span == job.origin.method_span
+                            && plan.call_span == job.origin.call_span
+                            && plan.loan == job.origin.self_loan
+                            && plan.awaited_method
+                    ) && job.outcome.is_none(),
                 S::Succeeded | S::Failed =>
                     job.plan.is_none() && job.outcome.as_ref().is_some_and(|outcome|
-                        outcome.awaited_method && outcome.ticket_returned
+                        // T3：只核對 Outcome 自己的票據平衡不足以
+                        // 辨識它是不是**這個已登錄 ID**的真方法；
+                        // 原 UTF-8 位元組／方法跨度／實例來源／票據
+                        // 均必須與獨立準備期封存憑據完全一致。
+                        outcome.origin == job.origin
+                            && outcome.checked_loan == job.origin.self_loan
+                            && outcome.awaited_method && outcome.ticket_returned
                             && outcome.result.is_ok() == (status == S::Succeeded)
                             && outcome.has_balanced_self_borrow_trace()),
                 S::Cancelled => job.plan.is_none() && job.outcome.is_none(),
@@ -329,9 +345,10 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
                 "V7 async self 延遲工作 ID 已用盡",
             ),
         )?;
+        let origin = PrivateSelfExecutionOrigin::from_plan(&plan);
         self.next_id = id;
         self.jobs.insert(id, PrivateDeferredSelfAwaitJob {
-            plan: Some(plan), status: PrivateDeferredAwaitStatus::Prepared,
+            origin, plan: Some(plan), status: PrivateDeferredAwaitStatus::Prepared,
             outcome: None,
         });
         self.ready_history.push(PrivateSelfReadyTransition::Prepared(id));
