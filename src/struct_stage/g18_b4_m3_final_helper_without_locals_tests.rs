@@ -143,7 +143,7 @@ return owner.read()
         for src in [
             SOURCE.replace("helper(9,2)","helper(9,true)"),
             SOURCE.replace("helper(9,2)","helper(9)"),
-            SOURCE.replace("helper(9,2)","helper(9,helper(2,1))"),
+            SOURCE.replace("helper(9,2)","helper(9,1+helper(2,1))"),
             SOURCE.replace("return helper(9,2)","return 1+helper(9,2)"),
         ] {
             assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),

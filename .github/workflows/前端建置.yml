@@ -420,6 +420,9 @@ jobs:
       - name: G18 P18.4-B4 M3 巢狀純int普通helper作方法直接實參八項 Gate
         run: python3 tools/核對G18-P18.4-B4巢狀純helper方法實參.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 M3 真self借票後巢狀純int Return八項 Gate
+        run: python3 tools/核對G18-P18.4-B4巢狀純helper方法Return.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 方法int形參動態Return-helper八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法int形參動態helper返回.py --test-bin target/p02/p04_source_internal
 
