@@ -17,8 +17,7 @@ fn private_self_resolve_nested_argument_call<'a>(
         || !arguments.iter().all(|arg| matches!(
             arg,
             PrivateScalarCallArgument::Int(expr) if
-                private_self_pure_helper_argument(expr)
-                    || private_self_resolve_nested_argument_call(expr, helpers).is_some()
+                private_self_approved_int_call_arithmetic(expr, helpers)
         )) {
         return None;
     }
@@ -31,16 +30,13 @@ fn private_self_nested_argument_value(
     caller: &BTreeMap<DeclarationId, i64>,
     helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
 ) -> Result<i64, PrivateScalarCallRuntimeError> {
-    if private_self_pure_helper_argument(expr) {
-        return expr.evaluate(caller);
-    }
-    let helper = private_self_resolve_nested_argument_call(expr, helpers)
-        .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-    let PrivateScalarReturnExpr::Call { arguments, .. } = expr else {
+    // B4／M3：Checker 原先即可能核准「子 helper + int」
+    // 作上一層 Call 參數。Snapshot 僅計算原 ScalarHIR 真值，
+    // 此時不可假造 Entered、Returned 或 self BorrowTicket。
+    if !private_self_approved_int_call_arithmetic(expr, helpers) {
         return Err(PrivateScalarCallRuntimeError::StateMismatch);
-    };
-    let frame = private_self_nested_argument_frame(helper, arguments, caller, helpers)?;
-    helper.returned.evaluate(&frame)
+    }
+    private_self_arithmetic_call_snapshot(expr, caller, helpers)
 }
 
 /// 真 Checker 每個不同函式 DeclarationId 須以實參順序
@@ -88,13 +84,12 @@ fn private_self_execute_nested_argument_call(
         let PrivateScalarCallArgument::Int(expr) = argument else {
             return Err(PrivateScalarCallRuntimeError::StateMismatch);
         };
-        let value = if private_self_pure_helper_argument(expr) {
-            expr.evaluate(caller)?
-        } else {
-            private_self_execute_nested_argument_call(
-                expr, caller, helpers, events, entered, completed,
-            )?
-        };
+        // 左至右逐一由同一原 ScalarHIR 執行 Call／算術；
+        // 子呼叫成功後才計算上層運算，整份參數成功後才進
+        // 父 helper 框架；溢位不得偽造父 FunctionEntered。
+        let value = private_self_execute_arithmetic_call(
+            expr, caller, helpers, events, entered, completed,
+        )?;
         if frame.insert(*id, value).is_some() {
             return Err(PrivateScalarCallRuntimeError::StateMismatch);
         }
