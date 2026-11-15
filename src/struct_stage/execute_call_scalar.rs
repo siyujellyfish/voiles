@@ -6264,6 +6264,24 @@ impl PreparedPrivateScalarCall {
             && self.verified.plan.control_edges == fresh.verified.plan.control_edges
     }
 
+    /// T3／V7：普通函式延遲等待與真正 execute() 共用完全相同
+    /// 的原 Checker／Lexer／TypedHIR 封存來源預檢。只做唯讀
+    /// 驗證，不得在 suspend／cancel 前假執行任何普通函式。
+    fn checked_source_still_intact(&self) -> bool {
+        let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
+            return false;
+        };
+        self.original.as_ref() == self.verified.source.bytes.as_slice()
+            && verified_private_source_tokens(
+                source, &self.verified.tokens,
+                &self.verified.structs, &self.verified.functions,
+            )
+            && self.verified.plan.is_consistent(
+                &self.verified.structs, &self.verified.functions, source,
+            )
+            && self.matches_source(source)
+    }
+
     fn execute(&self) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
         self.execute_with_budget_and_fault(PrivateScalarExecutionBudget::default(), false)
     }
@@ -6431,21 +6449,10 @@ impl PreparedPrivateScalarCall {
             &str, &[crate::owned_str_runtime::ResourceEvent],
         )>,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
-        let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
-            return Err(PrivateScalarCallPrepareError::SourceChanged);
-        };
-        if self.original.as_ref() != self.verified.source.bytes.as_slice()
-            // T3／V7：完整來源位元組與 CheckedHIR 相同，仍不代表
-            // 動態執行物件內保存的 Lexer Token 未遭替換。
-            // 真執行前必須以同一份已封存 Token 與原 AST
-            // 重新核對 async fn、直接 await、函式名及括號。
-            || !verified_private_source_tokens(
-                source, &self.verified.tokens,
-                &self.verified.structs, &self.verified.functions,
-            )
-            || !self.verified.plan.is_consistent(
-                &self.verified.structs, &self.verified.functions, source,
-            ) || !self.matches_source(source) {
+        // 以與 V7 延遲普通函式 suspend/cancel/wake 完全相同
+        // 的單一權威再驗原封存 Lexer／AST／Checker 計畫；
+        // 必須在建立任何真正 BorrowTicket／ResourceId 之前。
+        if !self.checked_source_still_intact() {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         }
         // 即使原 Checker 合法遞迴，零執行預算也不得製造假的函式進入。
