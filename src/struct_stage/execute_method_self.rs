@@ -1352,7 +1352,11 @@ impl PreparedPrivateSelfMethod {
                                     // 重用同一原 Checker FieldRead/BinaryInt 左欄位右 Lexer
                                     // int 精確來源檢核，只在實際選中內層 else 時求值。
                                     let nested_else_calc = match &returned.expression.kind {
-                                                                TermKind::Call(_) =>
+                                                                TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
+                                                                TermKind::BinaryInt(_)
+                                                                    if PrivateScalarReturnExpr::first_source_call(
+                                                                        &returned.expression,
+                                                                    ).is_some() =>
                                                                     private_self_checked_helper_return_leaf(
                                                                         &returned.expression,
                                                                         &branch_helper_bindings,
@@ -1451,7 +1455,11 @@ impl PreparedPrivateSelfMethod {
                             ));
                         };
                         let true_return_plan = match &early.expression.kind {
-                            TermKind::Call(_) => private_self_checked_helper_return_leaf(
+                            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
+                            TermKind::BinaryInt(_)
+                                if PrivateScalarReturnExpr::first_source_call(
+                                    &early.expression,
+                                ).is_some() => private_self_checked_helper_return_leaf(
                                 &early.expression, &branch_helper_bindings, &verified,
                                 &method_helpers,
                             )?,
@@ -1547,7 +1555,11 @@ impl PreparedPrivateSelfMethod {
                                         ));
                                     };
                                     match &returned.expression.kind {
-                                        TermKind::Call(_) => (
+                                        TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
+                                        TermKind::BinaryInt(_)
+                                            if PrivateScalarReturnExpr::first_source_call(
+                                                &returned.expression,
+                                            ).is_some() => (
                                             None, None, Some(stmt.node_span()),
                                             Some(private_self_checked_helper_return_leaf(
                                                 &returned.expression, &branch_helper_bindings,
@@ -1660,7 +1672,11 @@ impl PreparedPrivateSelfMethod {
                                         ));
                                     };
                                     let calculation = match &returned.expression.kind {
-                                        TermKind::Call(_) => private_self_checked_helper_return_leaf(
+                                        TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
+                                        TermKind::BinaryInt(_)
+                                            if PrivateScalarReturnExpr::first_source_call(
+                                                &returned.expression,
+                                            ).is_some() => private_self_checked_helper_return_leaf(
                                             &returned.expression, &branch_helper_bindings, &verified,
                                             &method_helpers,
                                         )?,
@@ -1886,7 +1902,11 @@ impl PreparedPrivateSelfMethod {
             (PrivateSelfIntReturn::CheckedScalar(plan), None)
         } else {
             match &returned.expression.kind {
-            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) => (
+            TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
+            TermKind::BinaryInt(_)
+                if PrivateScalarReturnExpr::first_source_call(
+                    &returned.expression,
+                ).is_some() => (
                 private_self_checked_helper_return_leaf(
                     &returned.expression, &method_bindings, &verified,
                     &method_helpers,
