@@ -135,7 +135,7 @@ return owner.read(5)
     #[test]
     fn b4_return_nested_未證算術包裝資源與竄改任一子計畫先拒絕() {
         for src in [
-            SOURCE.replace("add(sub(n+2,1),3)","add(sub(n+2,1)+1,3)"),
+            SOURCE.replace("add(sub(n+2,1),3)","add(sub(n+2,1)+self.n,3)"),
             SOURCE.replace("fn sub(a:int,b:int)->int{\nreturn a-b",
                 "fn sub(a:int,b:int)->int{\nvar s:str = \"禁止副作用\"\nreturn a-b"),
             SOURCE.replace("add(sub(n+2,1),3)","add(missing(n+2,1),3)"),
