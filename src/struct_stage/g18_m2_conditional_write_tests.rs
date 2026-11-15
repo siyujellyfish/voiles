@@ -99,7 +99,7 @@ return owner.read(true)
     fn m2_write_真欄位值與Lexer跨度被竄改須在執行前拒絕() {
         let mut plan = PreparedPrivateSelfMethod::prepare(WRITE_TRUE).unwrap();
         let (value, span) = plan.method_branch_write.unwrap();
-        plan.method_branch_write = Some((value + 1, span));
+        plan.method_branch_write = Some((PrivateSelfApprovedBranchWrite::Literal(20), span));
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
 

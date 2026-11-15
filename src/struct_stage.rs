@@ -1518,6 +1518,7 @@ include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_t3_method_local_frame_provenance_tests.rs");
 include!("struct_stage/g18_t3_self_preborrow_call_order_tests.rs");
 include!("struct_stage/g18_m2_self_int_parameter_field_write_tests.rs");
+include!("struct_stage/g18_m2_conditional_int_parameter_write_tests.rs");
 
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]

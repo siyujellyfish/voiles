@@ -335,6 +335,71 @@ impl PrivateSelfMethodOutcome {
     }
 }
 
+/// M2：原 Checker 在 if／else 選中葉內已核准的 self.int 寫入來源。
+/// 只封存原 Lexer 常值或方法 Copyable int 形參 DeclarationId；
+/// 不能在 prepare 階段讀取未執行的分支或假建 BorrowTicket。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateSelfApprovedBranchWrite {
+    Literal(i64),
+    Parameter(DeclarationId),
+}
+
+/// 從原 Parser/Checker 方法形參＋已綁定 Caller 實參取得唯一
+/// 欄位寫入身分；不在另一套局部 declarations 表重簽參數。
+fn private_self_checked_branch_write(
+    value: &Term,
+    method: &Function,
+    first: Option<(DeclarationId, i64)>,
+    additional: &[(DeclarationId, i64)],
+    verified: &VerifiedPrivateSource,
+) -> Result<PrivateSelfApprovedBranchWrite, PrivateSelfMethodPrepareError> {
+    match &value.kind {
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
+            if !verified.tokens.iter().any(|token|
+                token.start == value.start && token.end == value.end
+                    && matches!(&token.kind, TokenKind::Integer(text)
+                        if text == raw)
+            ) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 選葉欄位常值缺少原 Lexer 精確身分",
+                ));
+            }
+            let literal = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 選葉欄位常值超過 i64 範圍",
+                ))?;
+            Ok(PrivateSelfApprovedBranchWrite::Literal(literal))
+        }
+        TermKind::Name(name) => {
+            // 原方法成員與形參已由 VerifiedTypedMember(Parameter)、
+            // MethodSafety 和原 Checker 全型別驗證，這裡只以
+            // DeclarationId／Lexer Name 證明使用的就是那個 int 參數。
+            let id = method.params.iter().find(|parameter|
+                parameter.name == *name && parameter.name != "self"
+                    && parameter.ty == "int"
+            ).map(|param| DeclarationId(param.declaration_start))
+                .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 選葉欄位來源不是原 Checker Copyable int 方法形參",
+                ))?;
+            if !first.into_iter().chain(additional.iter().copied())
+                .any(|(bound, _)| bound == id)
+                || !verified.tokens.iter().any(|token|
+                    token.start == value.start && token.end == value.end
+                        && matches!(&token.kind, TokenKind::Name(found)
+                            if found == name)
+                ) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 選葉 int 形參缺少原 Checker 宣告身分／真 Lexer 名稱",
+                ));
+            }
+            Ok(PrivateSelfApprovedBranchWrite::Parameter(id))
+        }
+        _ => Err(PrivateSelfMethodPrepareError::Unsupported(
+            "M2 選葉 self.int 寫入僅接受原 Checker int 常值或方法 int 形參",
+        )),
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateSelfIntReturn {
     Field,
@@ -394,14 +459,14 @@ struct PreparedPrivateSelfMethod {
     /// M2：單一 else 葉必須是原 Checker 真 return int 字面值及其位置。
     method_branch_else: Option<(i64, crate::common_ir::NodeSpan)>,
     /// M2：else 分支獨立的真 FieldAssign 值／原 NodeSpan。
-    method_branch_else_write: Option<(i64, crate::common_ir::NodeSpan)>,
+    method_branch_else_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
     /// else 直接讀取或寫入後返回 self.int 的原 Checked Return NodeSpan。
     method_branch_else_field_return: Option<crate::common_ir::NodeSpan>,
     /// M2：原 Checker else 直接讀取或寫入後的 Copyable 欄位／加減；
     /// 來源位置由 method_branch_else_field_return 另外核實。
     method_branch_else_calculation: Option<PrivateSelfIntReturn>,
     /// M2：原 Checker if true 葉內唯一可寫 self.int 的真位置與值。
-    method_branch_write: Option<(i64, crate::common_ir::NodeSpan)>,
+    method_branch_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
     /// M2：if 真返回葉可讀取原 Checker self.int 或受控加減；只有
     /// 真的到達此葉才計算，避免未選分支提前溢位。
     method_branch_return: Option<PrivateSelfIntReturn>,
@@ -413,8 +478,8 @@ struct PreparedPrivateSelfMethod {
     /// M2：原 Checker 巢狀 else 返回 int 常值、self.int 或其加減。
     method_nested_else_calculation: Option<PrivateSelfIntReturn>,
     /// 原 Checker 內層各葉可有一筆獨占 self.int 寫入，僅選中葉執行。
-    method_nested_true_write: Option<(i64, crate::common_ir::NodeSpan)>,
-    method_nested_else_write: Option<(i64, crate::common_ir::NodeSpan)>,
+    method_nested_true_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
+    method_nested_else_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
     /// M2：只有原 Checker 真 bool 形式參數能成為方法 if 條件來源。
     method_branch_parameter: Option<DeclarationId>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
@@ -1076,30 +1141,16 @@ impl PreparedPrivateSelfMethod {
                                     "M2 true 葉第一句只能是原 Checker self.int 欄位寫入",
                                 ));
                             };
-                            let TermKind::Scalar(
-                                crate::syntax_shared::ScalarLiteral::Integer(raw),
-                            ) = &value.kind else {
+                            if receiver != "self" || name != &field.name {
                                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 true 葉欄位寫入只能是原 Lexer int 字面",
-                                ));
-                            };
-                            if receiver != "self" || name != &field.name
-                                || !verified.tokens.iter().any(|token|
-                                    token.start == value.start && token.end == value.end
-                                        && matches!(&token.kind,
-                                            TokenKind::Integer(text) if text == raw)
-                                ) {
-                                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 true 葉欄位來源、型別或詞彙位置不符",
+                                    "M2 true 選葉寫入的 self 欄位身分不符",
                                 ));
                             }
-                            let literal = crate::syntax_shared::integer_i64(raw)
-                                .map_err(|_|
-                                    PrivateSelfMethodPrepareError::Unsupported(
-                                        "M2 true 葉欄位值超出原 int 安全範圍",
-                                    )
-                                )?;
-                            Some((literal, write.node_span()))
+                            let authorized = private_self_checked_branch_write(
+                                value, method, argument_binding,
+                                &additional_argument_bindings, &verified,
+                            )?;
+                            Some((authorized, write.node_span()))
                         } else { None };
                         // 真巢狀 CFG 最小子集：外層 true 葉只含一筆
                         // 內層 if(bool Lexer 常值)，其 true／else 葉各有
@@ -1185,36 +1236,26 @@ impl PreparedPrivateSelfMethod {
                                         } else { None },
                                     ];
                                     let nested_writes = writes.into_iter().map(|candidate|
-                                        -> Result<Option<(i64, NodeSpan)>, PrivateSelfMethodPrepareError> {
+                                        -> Result<Option<(PrivateSelfApprovedBranchWrite, NodeSpan)>,
+                                            PrivateSelfMethodPrepareError> {
                                         let Some(write) = candidate else { return Ok(None) };
-                                        let StmtKind::FieldAssign { receiver, field: name, value } =
-                                            &write.kind else {
+                                        let StmtKind::FieldAssign {
+                                            receiver, field: name, value,
+                                        } = &write.kind else {
                                             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                                "M2 巢狀可寫葉第一句必須是原 Checker self.int 欄位更新",
+                                                "M2 巢狀真選葉首句須是 Checker self.int 欄位更新",
                                             ));
                                         };
-                                        let TermKind::Scalar(
-                                            crate::syntax_shared::ScalarLiteral::Integer(raw),
-                                        ) = &value.kind else {
+                                        if receiver != "self" || name != &field.name {
                                             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                                "M2 巢狀可寫葉只接受原 Lexer int 常值",
-                                            ));
-                                        };
-                                        if receiver != "self" || name != &field.name
-                                            || !verified.tokens.iter().any(|token|
-                                                token.start == value.start && token.end == value.end
-                                                    && matches!(&token.kind,
-                                                        TokenKind::Integer(text) if text == raw)
-                                            ) {
-                                            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                                "M2 巢狀可寫欄位缺少原 Checker/Lexer 身分",
+                                                "M2 巢狀真選葉欄位身分不符",
                                             ));
                                         }
-                                        let literal = crate::syntax_shared::integer_i64(raw)
-                                            .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                                                "M2 巢狀寫入值超過 i64 安全範圍",
-                                            ))?;
-                                        Ok(Some((literal, write.node_span())))
+                                        let authorized = private_self_checked_branch_write(
+                                            value, method, argument_binding,
+                                            &additional_argument_bindings, &verified,
+                                        )?;
+                                        Ok(Some((authorized, write.node_span())))
                                     }).collect::<Result<Vec<_>, _>>()?;
                                     // 重用同一原 Checker FieldRead/BinaryInt 左欄位右 Lexer
                                     // int 精確來源檢核，只在實際選中內層 else 時求值。
@@ -1508,29 +1549,15 @@ impl PreparedPrivateSelfMethod {
                                             "M2 else 第一語句需為真 Checker self.int 寫入",
                                         ));
                                     };
-                                    let TermKind::Scalar(
-                                        crate::syntax_shared::ScalarLiteral::Integer(raw),
-                                    ) = &value.kind else {
+                                    if receiver != "self" || name != &field.name {
                                         return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 else 欄位只能寫入原 Lexer int 常值",
-                                        ));
-                                    };
-                                    if receiver != "self" || name != &field.name
-                                        || !verified.tokens.iter().any(|token|
-                                            token.start == value.start
-                                                && token.end == value.end
-                                                && matches!(&token.kind,
-                                                    TokenKind::Integer(text) if text == raw)
-                                        )
-                                    {
-                                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 else 寫入欄位名稱或 Lexer 座標未經證明",
+                                            "M2 else 真選葉寫入 self.int 欄位身分不符",
                                         ));
                                     }
-                                    let literal = crate::syntax_shared::integer_i64(raw)
-                                        .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                                            "M2 else 寫入整數超出 i64",
-                                        ))?;
+                                    let authorized = private_self_checked_branch_write(
+                                        value, method, argument_binding,
+                                        &additional_argument_bindings, &verified,
+                                    )?;
                                     let returned_stmt = &statements[1];
                                     let StmtKind::Return(returned) =
                                         &returned_stmt.kind else {
@@ -1600,7 +1627,7 @@ impl PreparedPrivateSelfMethod {
                                             "M2 else 寫入後只能 return self.int 或其原 Checker 加減",
                                         )),
                                     };
-                                    (None, Some((literal, assignment.node_span())),
+                                    (None, Some((authorized, assignment.node_span())),
                                         Some(returned_stmt.node_span()), Some(calculation))
                                 } else {
                                     return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -2331,10 +2358,30 @@ impl PreparedPrivateSelfMethod {
                 }
             }
             // 原 Checker 只簽發一張方法入口票據；僅選中葉可真寫。
-            // 已完成全部原 Checker 方法 int 形參真值綁定後，
-            // 方可從同一動態 DeclId frame 讀取欄位寫入值。
-            // 前方已取得唯一 self BorrowTicket；非法／缺失的
-            // 參數槽不可轉成沒有寫入的正常成功分支。
+            // 無論常值／動態 Copyable int，原 bool 控制葉真正命中
+            // 後，方可由同一方法參數 frame 取得其真 DeclId 值。
+            let selected_branch_write = match selected_branch {
+                Some(true) if self.method_nested_branch.is_some() =>
+                    if nested_branch_checked == Some(true) {
+                        self.method_nested_true_write
+                    } else {
+                        self.method_nested_else_write
+                    },
+                Some(true) => self.method_branch_write,
+                Some(false) => self.method_branch_else_write,
+                None => None,
+            };
+            let branch_write_value = match selected_branch_write.map(
+                |(source, _)| source
+            ) {
+                Some(PrivateSelfApprovedBranchWrite::Literal(value)) => Some(value),
+                Some(PrivateSelfApprovedBranchWrite::Parameter(id)) => Some(
+                    *parameter_frame.get(&id).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver,
+                    )?,
+                ),
+                None => None,
+            };
             let direct_parameter_write = self.write_parameter.map(|id|
                 parameter_frame.get(&id).copied()
                     .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)
@@ -2342,19 +2389,8 @@ impl PreparedPrivateSelfMethod {
             if self.write_value.is_some() && direct_parameter_write.is_some() {
                 return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
             }
-            let selected_write = self.write_value.or(direct_parameter_write).or_else(|| {
-                match selected_branch {
-                    Some(true) if self.method_nested_branch.is_some() =>
-                        if nested_branch_checked == Some(true) {
-                            self.method_nested_true_write.map(|(value, _)| value)
-                        } else {
-                            self.method_nested_else_write.map(|(value, _)| value)
-                        },
-                    Some(true) => self.method_branch_write.map(|(value, _)| value),
-                    Some(false) => self.method_branch_else_write.map(|(value, _)| value),
-                    None => None,
-                }
-            });
+            let selected_write = self.write_value.or(direct_parameter_write)
+                .or(branch_write_value);
             if let Some(value) = selected_write {
                 let authorized = tracker.check_ticket_access(
                     ticket, BorrowKind::ExclusiveWrite,

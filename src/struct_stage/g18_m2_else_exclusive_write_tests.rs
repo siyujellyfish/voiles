@@ -118,7 +118,7 @@ return owner.read(true)
     fn m2_else_write_已核准else值及Return位置遭篡改執行前拒絕() {
         let mut plan = PreparedPrivateSelfMethod::prepare(BOTH_WRITE).unwrap();
         let (value, span) = plan.method_branch_else_write.unwrap();
-        plan.method_branch_else_write = Some((value + 1, span));
+        plan.method_branch_else_write = Some((PrivateSelfApprovedBranchWrite::Literal(24), span));
         assert!(matches!(
             plan.execute(), Err(PrivateSelfMethodPrepareError::SourceChanged)
         ));
