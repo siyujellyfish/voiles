@@ -378,6 +378,10 @@ struct PreparedPrivateSelfMethod {
     field_immutable: bool,
     /// 真方法首句可為原 Checker 已驗證的 self.int 欄位獨占寫入。
     write_value: Option<i64>,
+    /// M2：本來 Checker 已核准 Copyable int 方法形參的
+    /// 欄位寫入，不在 prepare 當常值偷用。只能由原 Parser
+    /// DeclarationId 與真方法 int frame 到達寫入位置時求值。
+    write_parameter: Option<DeclarationId>,
     return_calculation: PrivateSelfIntReturn,
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
@@ -929,34 +933,76 @@ impl PreparedPrivateSelfMethod {
         let additional_argument_bindings = bindings.into_iter().skip(1).collect::<Vec<_>>();
         // 兩語句模式先寫真 Copyable int 欄位，再直接讀取回傳；
         // 唯一是否可寫及 self 自動借用模式來自原 Checker MethodSafety。
-        let write_value = if method.body.statements.len() == 2
-            && matches!(&method.body.statements[0].kind, StmtKind::FieldAssign { .. })
+        let (write_value, write_parameter) =
+            if method.body.statements.len() == 2
+                && matches!(&method.body.statements[0].kind,
+                    StmtKind::FieldAssign { .. })
         {
             let first = &method.body.statements[0];
-            let StmtKind::FieldAssign { receiver, field: target, value } = &first.kind else {
+            let StmtKind::FieldAssign {
+                receiver, field: target, value,
+            } = &first.kind else {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "獨占 self 子集僅允許原 Checker 第一語句為欄位賦值",
+                    "獨占 self 子集首句必須是原 Checker 真欄位賦值",
                 ));
             };
-            let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
-                &value.kind else {
+            if receiver != "self" || target != &field.name {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "本期 self 寫入僅限原 Lexer 真 int 常值",
-                ));
-            };
-            if receiver != "self" || target != &field.name
-                || !verified.tokens.iter().any(|token|
-                    token.start == value.start && token.end == value.end
-                        && matches!(&token.kind, TokenKind::Integer(text) if text == raw)
-                ) {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "欄位賦值的目標或整數記號未與原 Checker 方法一致",
+                    "self 欄位寫入目標不是原 Checker 所屬欄位",
                 ));
             }
-            Some(crate::syntax_shared::integer_i64(raw).map_err(|_|
-                PrivateSelfMethodPrepareError::Unsupported("寫入值超出 i64 範圍")
-            )?)
-        } else { None };
+            match &value.kind {
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(raw),
+                ) => {
+                    if !verified.tokens.iter().any(|token|
+                        token.start == value.start && token.end == value.end
+                            && matches!(&token.kind, TokenKind::Integer(text)
+                                if text == raw)
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "self 常值寫入缺少原 Parser/Lexer 精確座標",
+                        ));
+                    }
+                    let literal = crate::syntax_shared::integer_i64(raw)
+                        .map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                            "self 常值寫入超過 i64 範圍",
+                        ))?;
+                    (Some(literal), None)
+                }
+                TermKind::Name(name) => {
+                    // M2/B4：只從原方法正式 int 形參取得動態欄位
+                    // 寫入值，拒絕同名 main 局部或未核准所有權別名。
+                    let param = method.params.iter().find(|parameter|
+                        parameter.name == *name && parameter.ty == "int"
+                            && parameter.name != "self"
+                    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                        "self 欄位寫入來源不是原 Checker Copyable int 方法形參",
+                    ))?;
+                    let id = DeclarationId(param.declaration_start);
+                    // 方法形參的正式型別權威為上方原 Checker
+                    // VerifiedTypedMember(Parameter) + members 身分表，
+                    // 非一般局部宣告使用的 declarations 表；該表
+                    // 對方法形參無義務建立第二份可寫宣告。
+                    if !argument_binding.into_iter()
+                            .chain(additional_argument_bindings.iter().copied())
+                            .any(|(bound_id, _)| bound_id == id)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == value.start && token.end == value.end
+                                && matches!(&token.kind, TokenKind::Name(found)
+                                    if found == name)
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "self 參數寫入缺少原 Checker 成員參數綁定 DeclarationId 或真 Lexer 名稱",
+                        ));
+                    }
+                    (None, Some(id))
+                }
+                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "self 欄位直接寫入僅支持原 Lexer int 常值或同源 Copyable int 方法形參",
+                )),
+            }
+        } else { (None, None) };
         // M2 第二批：保留原已驗證 bool 字面條件，再接通同一
         // Parser/Checker 的 bool 形參名稱。真值由 execute 的
         // 獨立 bool 參數框架讀取，不發明 int 隱含轉型。
@@ -1586,7 +1632,13 @@ impl PreparedPrivateSelfMethod {
         let mut seen_assignment = false;
         for (index, statement) in method.body.statements.iter().enumerate()
             .take(method.body.statements.len() - 1) {
-            if (write_value.is_some() || method_branch.is_some()) && index == 0 {
+            // 原 M2 首句 FieldAssign 由真正欄位寫入計畫處理，
+            // 不屬於 Copyable int 局部宣告／重賦值群；
+            // 形參來源和 Lexer 常值來源必須同走這個已核准
+            // 的前置語句，否則會把原 Checker 可寫 self
+            // 的合法 FieldAssign 錯判成「未核准局部」。
+            if (write_value.is_some() || write_parameter.is_some()
+                || method_branch.is_some()) && index == 0 {
                 continue;
             }
             match &statement.kind {
@@ -1843,7 +1895,10 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "缺少正式 Checker 的 VerifiedMethodSafety",
             ))?;
-        let required_kind = if write_value.is_some()
+        // 原 Checker MethodSafety 的 self_borrow 以實際欄位
+        // 寫入推導；形參動態值寫入與 Lexer 常值寫入一樣
+        // 必須持唯一 ExclusiveWrite，不可誤判成 SharedRead。
+        let required_kind = if write_value.is_some() || write_parameter.is_some()
             || method_branch_write.is_some() || method_branch_else_write.is_some()
             || method_nested_true_write.is_some() || method_nested_else_write.is_some() {
             BorrowKind::ExclusiveWrite
@@ -1961,7 +2016,7 @@ impl PreparedPrivateSelfMethod {
         Ok(Self {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
-            write_value, return_calculation, method_int_locals,
+            write_value, write_parameter, return_calculation, method_int_locals,
             method_helpers, method_branch, method_branch_else,
             method_branch_else_write, method_branch_else_field_return,
             method_branch_else_calculation, method_branch_write, method_branch_return,
@@ -1983,6 +2038,7 @@ impl PreparedPrivateSelfMethod {
             && self.field == fresh.field && self.field_value == fresh.field_value
             && self.field_immutable == fresh.field_immutable
             && self.write_value == fresh.write_value
+            && self.write_parameter == fresh.write_parameter
             && self.return_calculation == fresh.return_calculation
             && self.method_int_locals == fresh.method_int_locals
             && self.method_helpers == fresh.method_helpers
@@ -2275,7 +2331,18 @@ impl PreparedPrivateSelfMethod {
                 }
             }
             // 原 Checker 只簽發一張方法入口票據；僅選中葉可真寫。
-            let selected_write = self.write_value.or_else(|| {
+            // 已完成全部原 Checker 方法 int 形參真值綁定後，
+            // 方可從同一動態 DeclId frame 讀取欄位寫入值。
+            // 前方已取得唯一 self BorrowTicket；非法／缺失的
+            // 參數槽不可轉成沒有寫入的正常成功分支。
+            let direct_parameter_write = self.write_parameter.map(|id|
+                parameter_frame.get(&id).copied()
+                    .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)
+            ).transpose()?;
+            if self.write_value.is_some() && direct_parameter_write.is_some() {
+                return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+            }
+            let selected_write = self.write_value.or(direct_parameter_write).or_else(|| {
                 match selected_branch {
                     Some(true) if self.method_nested_branch.is_some() =>
                         if nested_branch_checked == Some(true) {

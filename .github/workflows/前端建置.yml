@@ -417,6 +417,9 @@ jobs:
       - name: G18 P18.5-T3 B4 M3 原Checker main普通函式借self前真時序八項 Gate
         run: python3 tools/核對G18-P18.5-T3原main函式借票前時序.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 B4 原Checker int方法形參獨占self欄位寫入八項 Gate
+        run: python3 tools/核對G18-P18.6-M2原int形參獨占self欄位寫入.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 方法int實參直接純helper與借票前Unwind八項 Gate
         run: python3 tools/核對G18-P18.4-B4方法實參純helper真退出.py --test-bin target/p02/p04_source_internal
 
