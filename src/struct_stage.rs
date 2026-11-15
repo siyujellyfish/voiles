@@ -1549,6 +1549,8 @@ include!("struct_stage/g18_b4_m3_helper_method_argument_tests.rs");
 include!("struct_stage/g18_b4_m3_multiple_approved_helpers_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_argument_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_return_tests.rs");
+// G18／P18.4-B4／P18.6-M3：方法Return混合純helper與int加減。
+include!("struct_stage/g18_b4_m3_method_return_helper_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");
