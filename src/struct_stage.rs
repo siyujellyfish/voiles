@@ -1511,6 +1511,8 @@ include!("struct_stage/g18_r05_t3_nested_ticket_order_tests.rs");
 // G18／P18.5-T3／R05：真 HC14 票據離域前必退與歸還後不得重新借入。
 #[cfg(test)]
 include!("struct_stage/g18_r05_t3_ticket_frame_lifetime_tests.rs");
+// G18／P18.5-T3／R05：原Checker真方法跨孫層函式提前還票防偽。
+include!("struct_stage/g18_r05_t3_outer_ticket_grandchild_tests.rs");
 
 // G18／P18.5-T4／V7-A2：已執行 async 取消工作退休須真 R05／P16／HC14 雙帳。
 #[cfg(test)]
