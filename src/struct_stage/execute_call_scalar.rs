@@ -6435,6 +6435,14 @@ impl PreparedPrivateScalarCall {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         };
         if self.original.as_ref() != self.verified.source.bytes.as_slice()
+            // T3／V7：完整來源位元組與 CheckedHIR 相同，仍不代表
+            // 動態執行物件內保存的 Lexer Token 未遭替換。
+            // 真執行前必須以同一份已封存 Token 與原 AST
+            // 重新核對 async fn、直接 await、函式名及括號。
+            || !verified_private_source_tokens(
+                source, &self.verified.tokens,
+                &self.verified.structs, &self.verified.functions,
+            )
             || !self.verified.plan.is_consistent(
                 &self.verified.structs, &self.verified.functions, source,
             ) || !self.matches_source(source) {
@@ -6625,6 +6633,21 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
                 "V7 原 CheckedTask 須有正執行環境預算",
             ));
         }
+        // 原 CheckedGraph 的提交／建立位置也必須以原 Lexer
+        // 身分證據起始；非法封存 Token 不得消耗工作 ID、
+        // 持有新框架或延遲至首次 poll 才被發現。
+        let source = std::str::from_utf8(&plan.verified.source.bytes)
+            .map_err(|_| PrivateScalarCallPrepareError::SourceChanged)?;
+        if plan.original.as_ref() != plan.verified.source.bytes.as_slice()
+            || !verified_private_source_tokens(
+                source, &plan.verified.tokens,
+                &plan.verified.structs, &plan.verified.functions,
+            )
+            || !plan.verified.plan.is_consistent(
+                &plan.verified.structs, &plan.verified.functions, source,
+            ) || !plan.matches_source(source) {
+            return Err(PrivateScalarCallPrepareError::SourceChanged);
+        }
         Self::root_for_graph(plan, budget)?;
         Ok(Self {
             plan, budget, checkpoint: None, events: Vec::new(),
@@ -6645,6 +6668,12 @@ impl<'a> PrivateScalarGraphContinuation<'a> {
         let source = std::str::from_utf8(&self.plan.verified.source.bytes)
             .map_err(|_| PrivateScalarCallPrepareError::SourceChanged)?;
         if self.plan.original.as_ref() != self.plan.verified.source.bytes.as_slice()
+            // 跨 Rust 呼叫真正暫停／恢復時，原 Runner 不得
+            // 用最初 prepare 時已通過的詞彙身分替換本輪證據。
+            || !verified_private_source_tokens(
+                source, &self.plan.verified.tokens,
+                &self.plan.verified.structs, &self.plan.verified.functions,
+            )
             || !self.plan.verified.plan.is_consistent(
                 &self.plan.verified.structs, &self.plan.verified.functions, source,
             ) || !self.plan.matches_source(source) {
