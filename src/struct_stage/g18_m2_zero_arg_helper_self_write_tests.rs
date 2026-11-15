@@ -65,8 +65,8 @@ return owner.set(true)
     #[test]
     fn m2_zero_arg_直接self寫入真seed零參數回傳14並唯一歸票() {
         let plan = checked(DIRECT);
-        assert!(matches!(plan.write_checked_int,
-            Some(PrivateScalarReturnExpr::Call { ref name, ref arguments, awaited: false })
+        assert!(matches!(plan.write_checked_int.as_ref(),
+            Some(PrivateScalarReturnExpr::Call { name, arguments, awaited: false })
                 if name == "seed" && arguments.is_empty()
         ));
         let out = plan.execute().unwrap();
@@ -177,7 +177,7 @@ return owner.set(true)
             DIRECT.replace("fn seed()->int", "async fn seed()->int"),
             DIRECT.replace("fn seed()->int{\nreturn 14",
                 "fn seed()->int{\nvar s:str = \"不能偷用資源\"\nreturn 14"),
-            DIRECT.replace("seed()", "missing()"),
+            DIRECT.replace("self.n = seed()", "self.n = missing()"),
             DIRECT.replace("var owner:Counter", "const owner:Counter"),
             DIRECT.replace("fn seed()->int", "fn seed(value:int)->int"),
         ] {
