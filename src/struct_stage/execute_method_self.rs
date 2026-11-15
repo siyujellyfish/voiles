@@ -638,9 +638,11 @@ fn private_self_checked_helper_return_leaf(
     ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
         "B4 提前 Return helper 缺少原 Checker TypedHIR／Lexer",
     ))?;
-    if private_self_resolve_nested_argument_call(&plan, helpers).is_none() {
+    let mut calls = Vec::new();
+    plan.collect_calls(&mut calls);
+    if calls.is_empty() || !private_self_approved_int_call_arithmetic(&plan, helpers) {
         return Err(PrivateSelfMethodPrepareError::Unsupported(
-            "B4 提前 Return 缺少原 Checker 純 int helper 有限巢狀計畫",
+            "B4/M3 返回式缺少原 Checker 純 int helper 及算術完整工作圖",
         ));
     }
     Ok(PrivateSelfIntReturn::CheckedScalar(plan))
@@ -2676,25 +2678,25 @@ impl PreparedPrivateSelfMethod {
                     // 啟動其已核准純 int 子呼叫工作。每個巢狀
                     // helper 使用原 SharedCallExit；任何內層錯誤
                     // 均先逆序退子框架，再由外層方法歸還唯一票據。
-                    if private_self_resolve_nested_argument_call(
-                        plan, &self.method_helpers,
-                    ).is_some() {
-                        private_self_execute_nested_argument_call(
+                    let mut calls = Vec::new();
+                    plan.collect_calls(&mut calls);
+                    let actual = if calls.is_empty() {
+                        plan.evaluate(&parameter_frame)
+                    } else {
+                        // 原 Parser 左到右先求完整 int 算式，每個
+                        // 真 Call 由 SharedCallExit 逐框架進退；外層
+                        // 算術溢位不得重寫已完成的子函式 Returned。
+                        private_self_execute_arithmetic_call(
                             plan, &parameter_frame, &self.method_helpers,
                             &mut exit_events, &mut ordinary_calls_entered,
                             &mut ordinary_calls_completed,
-                        ).map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?
-                    } else {
-                        plan.evaluate(&parameter_frame).map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?
-                    }
+                        )
+                    };
+                    actual.map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?
                 },
             };
             method_exited = true;
