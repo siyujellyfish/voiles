@@ -1009,7 +1009,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // 欄位 RHS 共用同一正式 Checker evaluate→ScalarHIR
         // 簽發器。無 Call 的 FieldRead／Parameter 加減不
         // 偷造 HIR，仍由既有專用欄位 Return 計畫處理。
-        if matches!(&term.kind, TermKind::BinaryInt(_)) {
+        if matches!(&term.kind, TermKind::BinaryInt(_) | TermKind::Group(_)) {
+            // Group 是同一原 Parser 括號包覆的合法純值 AST，
+            // 只有原 Checker 能證明內部具有純 helper 時才
+            // 交付原 ScalarHIR；其餘 self.field 加減仍走
+            // 舊有專用 Return 路徑，不藉括號偷渡借用來源。
             self.record_method_checked_helper_write_hir(method, term)?;
         }
         fn approved_int_tree(term: &Term, method: &Function) -> bool {
