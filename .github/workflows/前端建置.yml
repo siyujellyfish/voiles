@@ -469,6 +469,9 @@ jobs:
       - name: G18 P18.5-T3 V7 普通async真圖與FIFO封存Lexer十項 Gate
         run: python3 tools/核對G18-P18.5-T3-V7普通async協作圖Lexer再稽核.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 V7-A1 E3 原Checker async self延遲與安全取消十二項 Gate
+        run: python3 tools/核對G18-V7-A1非同步self延遲直接等待與安全取消.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 真self借票後巢狀純int局部初始化與var更新八項 Gate
         run: python3 tools/核對G18-P18.4-B4巢狀純helper方法局部賦值.py --test-bin target/p02/p04_source_internal
 
