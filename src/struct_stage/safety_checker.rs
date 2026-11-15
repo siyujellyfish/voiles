@@ -850,13 +850,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     matches!(binary.operator, '+' | '-')
                         && approved_rhs(checker, method, &binary.left, found_call)
                         && approved_rhs(checker, method, &binary.right, found_call),
-                TermKind::Call(call) => {
-                    let Some(helper) = checker.find_function(&call.name) else {
+                TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) => {
+                    // F02：name() 在 Parser 先保持未決，必須先
+                    // 以原 Checker 的唯一零參數分類器排除同名
+                    // struct，不能由私有 RHS 執行器猜測符號。
+                    let (name, args, awaited): (&str, &[Term], bool) =
+                        match &term.kind {
+                            TermKind::Call(call) => (
+                                &call.name, &call.arguments, call.awaited,
+                            ),
+                            TermKind::UnresolvedZeroArgs(name)
+                                if matches!(checker.resolve_empty_call(name),
+                                    ZeroArgResolution::Function(_)) =>
+                                (name, &[], false),
+                            _ => return false,
+                        };
+                    let Some(helper) = checker.find_function(name) else {
                         return false;
                     };
-                    if call.awaited || helper.is_async || helper.name == "main"
+                    if awaited || helper.is_async || helper.name == "main"
                         || helper.result_ty != "int"
-                        || helper.params.len() != call.arguments.len()
+                        || helper.params.len() != args.len()
                         || helper.body.statements.len() != 1
                         || helper.params.iter().any(|param|
                             param.name == "self" || param.ty != "int")
@@ -871,7 +885,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let names = helper.params.iter()
                         .map(|param| param.name.as_str()).collect::<Vec<_>>();
                     if !helper_return_only_pure_int(&returned.expression, &names)
-                        || !call.arguments.iter().all(|arg|
+                        || !args.iter().all(|arg|
                             approved_rhs(checker, method, arg, found_call)) {
                         return false;
                     }
