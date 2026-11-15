@@ -134,6 +134,9 @@ crate::common_ir::define_shared_expression_kind!(
         FieldMove(String, String),
         FieldRead(String, String),
         MethodCall(String, String, Vec<Term>),
+        /// V7／D18-02-E1-A：只允許直接 await owner.method(args)；
+        /// 與同步方法為不同正式 AST 身分，不補作新背景工作。
+        AwaitMethodCall(String, String, Vec<Term>),
     }
 );
 
