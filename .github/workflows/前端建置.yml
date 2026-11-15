@@ -429,6 +429,9 @@ jobs:
       - name: G18 P18.6-M2 B4 原Checker直接純helper真函式寫self九項 Gate
         run: python3 tools/核對G18-P18.6-M2直接純helper獨占寫self.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 B4 原Checker零參數純helper直接與選葉寫self十項 Gate
+        run: python3 tools/核對G18-P18.6-M2原Checker零參數helper寫self.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.6-M2 原Checker if-else選葉int算術獨占寫入八項 Gate
         run: python3 tools/核對G18-P18.6-M2原Checker選葉int算術寫入.py --test-bin target/p02/p04_source_internal
 
