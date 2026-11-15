@@ -7115,6 +7115,14 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 }
             }
         }
+        // 即使所有工作均已正常完成／取消且自 jobs 退休，
+        // next_id 仍是唯一真實簽發 ID 上限；ready_issues 的
+        // Submitted 歷史必須無遺漏地包含 1..=next_id。
+        // 否則刪掉最後一筆已退休工作授權後，空 ready／jobs
+        // 會被錯誤認定為合法，並破壞下一個 ID 的完整性。
+        if last_submitted != self.next_id {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
         // 第一次入列只能 submit，後續新 token 必須有且只有
         // 成功 wake 的原時間憑據；不能補一份偽造的 ready
         // 事件以抵銷順序的竄改。
@@ -8817,11 +8825,19 @@ mod g18_v7_cooperative_graph_queue_tests {
         ));
         let mut queue = PrivateScalarCooperativeQueue::new();
         let valid = queue.submit(&plan).unwrap();
+        // 無法在真執行中憑空發放 2^64-1 份工作；測試直接
+        // 篡改發號器時，E2 原 Submitted 來源守恆必先拒絕，
+        // 不得以 IdExhausted 掩蓋損壞的工作發行歷史。
         queue.next_id = u64::MAX;
-        assert_eq!(queue.submit(&plan), Err(PrivateScalarCooperativeError::IdExhausted));
+        assert_eq!(queue.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(queue.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(queue.cancel(valid), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(queue.ready_ids(), [valid]);
         assert_eq!(queue.jobs.len(), 1);
         assert_eq!(queue.drive_order(), &[]);
+        // 還原唯一真 submit 的已發行 ID 後，原任務可正常
+        // 暫停與安全取消；u64 checked_add 的真正溢位分支不改。
+        queue.next_id = valid;
         assert_eq!(queue.drive_one().unwrap(), Some((valid, PrivateScalarGraphPoll::Suspended)));
         queue.cancel(valid).unwrap();
         assert_eq!(queue.status(valid), Some(PrivateDeferredAwaitStatus::Cancelled));

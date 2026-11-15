@@ -158,4 +158,80 @@ mod g18_t4_fifo_missing_ready_conservation_tests {
         assert_eq!(q.ready_ids(), [next]);
         assert_eq!(q.shutdown().unwrap(), [next]);
     }
+
+    #[test]
+    fn t4_missing_退休後最後Submitted歷史被抹除不得假回空() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = q.submit(&plan).unwrap();
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        assert_eq!(q.ready_ids(), []);
+        let issued = q.ready_issues.pop().unwrap();
+        assert_eq!(issued, PrivateScalarReadyIssue {
+            id, kind: PrivateScalarReadyIssueKind::Submitted,
+        });
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert!(q.drive_order().is_empty());
+        assert_eq!(q.next_id, id);
+        q.ready_issues.push(issued);
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_雙工作退休後裁掉尾筆提交仍拒絕新工作() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let first = q.submit(&plan).unwrap();
+        let second = q.submit(&plan).unwrap();
+        assert_eq!(q.shutdown().unwrap(), [second, first]);
+        for id in [second, first] {
+            assert!(matches!(q.retire_terminal(id).unwrap(),
+                PrivateScalarRetiredJob::Cancelled(None)));
+        }
+        let issued = q.ready_issues.pop().unwrap();
+        assert_eq!(issued, PrivateScalarReadyIssue {
+            id: second, kind: PrivateScalarReadyIssueKind::Submitted,
+        });
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.cancellation_order(), [second, first]);
+        q.ready_issues.push(issued);
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), second + 1);
+    }
+
+    #[test]
+    fn t4_missing_退休後next_id大於真提交歷史不得續發() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = q.submit(&plan).unwrap();
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        q.next_id += 1;
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert!(q.ready_ids().is_empty());
+        q.next_id = id;
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_全空佇列偽造發號上限不可冒充零工作() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        assert_eq!(q.drive_one().unwrap(), None);
+        q.next_id = 1;
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.ready_ids(), []);
+        assert!(q.drive_order().is_empty());
+        q.next_id = 0;
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), 1);
+    }
 }
