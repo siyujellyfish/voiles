@@ -1560,6 +1560,8 @@ include!("struct_stage/g18_b4_m3_nested_pure_helper_method_return_tests.rs");
 include!("struct_stage/g18_b4_m3_method_return_helper_arithmetic_tests.rs");
 // G18／P18.6-M3／B4：真 Group 包覆同步純 helper 的方法 Return。
 include!("struct_stage/g18_b4_m3_grouped_helper_method_return_tests.rs");
+// G18／M2-B4：原Checker方法Group純值返回、真self票據與直接await。
+include!("struct_stage/g18_m2_grouped_pure_self_return_tests.rs");
 // G18／V7-A1：原Lexer/Parser/Checker直接await async self真執行與借票。
 include!("struct_stage/g18_v7_async_self_direct_await_tests.rs");
 // G18／P18.5-T3：async self執行前封存Lexer/AST身份防偽。
