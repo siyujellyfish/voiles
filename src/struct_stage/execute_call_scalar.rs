@@ -6884,6 +6884,19 @@ struct PrivateScalarReadyIssue {
     kind: PrivateScalarReadyIssueKind,
 }
 
+/// T4／E2：已合法退休的真工作，不再持有 Checker 動態框架，
+/// 但每份歷史仍應有獨立、不可由空 jobs 推導為空的終態收據。
+/// 收據記錄原全域歷史位置及內容，後續提交／驅動／關閉
+/// 不可藉由同步刪除多本原帳而抹除既已完成的真 poll／wake。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateScalarRetiredEvidence {
+    status: PrivateDeferredAwaitStatus,
+    polls: Vec<(usize, PrivateScalarGraphPoll)>,
+    wakes: Vec<(usize, PrivateScalarWakeReceipt)>,
+    issued: Vec<(usize, PrivateScalarReadyIssueKind)>,
+    cancellations: Vec<usize>,
+}
+
 #[derive(Default)]
 struct PrivateScalarCooperativeQueue<'a> {
     jobs: BTreeMap<u64, PrivateScalarCooperativeJob<'a>>,
@@ -6897,6 +6910,9 @@ struct PrivateScalarCooperativeQueue<'a> {
     /// 的唯一授權次序，驗證時只讀、不重新創建任何動態工作。
     ready_issues: Vec<PrivateScalarReadyIssue>,
     cancellation_order: Vec<u64>,
+    /// 退休工作交付完整 Outcome／取消證據之後，只保留
+    /// 無資源持有權的唯讀歷史收據；不復活已退出的真框架。
+    retired: BTreeMap<u64, PrivateScalarRetiredEvidence>,
 }
 
 impl<'a> PrivateScalarCooperativeQueue<'a> {
@@ -7122,6 +7138,35 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         // 會被錯誤認定為合法，並破壞下一個 ID 的完整性。
         if last_submitted != self.next_id {
             return Err(PrivateScalarCooperativeError::Engine);
+        }
+        // 每個真 Submitted ID 恰好對應一份仍活躍工作，
+        // 或已有完整終態憑據的已退休工作；不得直接
+        // 刪去 jobs 或退休後的終態收據而假稱空佇列。
+        if self.jobs.len().checked_add(self.retired.len()) != Some(submitted.len())
+            || self.retired.keys().any(|id|
+                !submitted.contains(id) || self.jobs.contains_key(id))
+        {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        for (&id, evidence) in &self.retired {
+            let actual = self.capture_retired_evidence(id, evidence.status);
+            if actual != *evidence {
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
+            let last_poll = evidence.polls.last().map(|(_, poll)| *poll);
+            let terminal_consistent = match evidence.status {
+                PrivateDeferredAwaitStatus::Succeeded
+                | PrivateDeferredAwaitStatus::Failed =>
+                    last_poll == Some(PrivateScalarGraphPoll::Completed)
+                        && evidence.cancellations.is_empty(),
+                PrivateDeferredAwaitStatus::Cancelled =>
+                    last_poll != Some(PrivateScalarGraphPoll::Completed)
+                        && evidence.cancellations.len() == 1,
+                _ => false,
+            };
+            if !terminal_consistent {
+                return Err(PrivateScalarCooperativeError::Engine);
+            }
         }
         // 第一次入列只能 submit，後續新 token 必須有且只有
         // 成功 wake 的原時間憑據；不能補一份偽造的 ready
@@ -7504,13 +7549,41 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         Ok(status)
     }
 
+    /// 只從已發生的真全域事件擷取歷史位置，不建立任何
+    /// 新 SharedExit／ResourceEvent／BorrowTicket。既有
+    /// 事件向量在工作退休後仍保留且僅能追加。
+    fn capture_retired_evidence(
+        &self, id: u64, status: PrivateDeferredAwaitStatus,
+    ) -> PrivateScalarRetiredEvidence {
+        PrivateScalarRetiredEvidence {
+            status,
+            polls: self.drive_order.iter().copied().enumerate()
+                .filter_map(|(index, (logged, poll))|
+                    (logged == id).then_some((index, poll))).collect(),
+            wakes: self.wake_order.iter().copied().enumerate()
+                .filter_map(|(index, wake)|
+                    (wake.id == id).then_some((index, wake))).collect(),
+            issued: self.ready_issues.iter().copied().enumerate()
+                .filter_map(|(index, issue)|
+                    (issue.id == id).then_some((index, issue.kind))).collect(),
+            cancellations: self.cancellation_order.iter().enumerate()
+                .filter_map(|(index, logged)|
+                    (*logged == id).then_some(index)).collect(),
+        }
+    }
+
     fn retire_terminal(
         &mut self, id: u64,
     ) -> Result<PrivateScalarRetiredJob, PrivateScalarCooperativeError> {
         let status = self.verify_terminal_evidence(id)?;
         self.verify_ready_fifo()?;
+        if self.retired.contains_key(&id) {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        let receipt = self.capture_retired_evidence(id, status);
         let mut job = self.jobs.remove(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        self.retired.insert(id, receipt);
         match status {
             PrivateDeferredAwaitStatus::Succeeded
             | PrivateDeferredAwaitStatus::Failed => Ok(
