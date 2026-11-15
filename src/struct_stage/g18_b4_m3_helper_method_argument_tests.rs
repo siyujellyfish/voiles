@@ -151,8 +151,13 @@ return owner.read(helper(9,2))
 
     #[test]
     fn b4_method_arg_巢狀或非int普通函式拒絕及竄改實參計畫防偽() {
+        // 已核准的有限層純 Copyable int helper 現由原 Checker
+        // 同一實參工作圖真進退；不應再視為未接通。
+        let nested = SOURCE.replace("helper(9,2)", "helper(helper(1,2),3)");
+        let out = run(&nested);
+        assert_eq!(out.result, Ok(-4));
+        assert_eq!((out.ordinary_calls_entered,out.ordinary_calls_completed),(2,2));
         for src in [
-            SOURCE.replace("helper(9,2)","helper(helper(1,2),3)"),
             SOURCE.replace("helper(9,2)","1+helper(9,2)"),
             SOURCE.replace("helper(9,2)","helper(9)"),
             SOURCE.replace("helper(9,2)","helper(9,true)"),

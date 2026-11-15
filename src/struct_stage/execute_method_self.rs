@@ -716,8 +716,9 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            let direct_helper = calls.len() == 1
-                && private_self_matches_helper_call(&plan, &method_helpers);
+            let direct_helper = private_self_resolve_nested_argument_call(
+                &plan, &method_helpers,
+            ).is_some();
             if (!calls.is_empty() && !direct_helper)
                 || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -729,15 +730,13 @@ impl PreparedPrivateSelfMethod {
             // self BorrowTicket 取得之前完成整份參數計畫。
             let preparation = match &plan {
                 PrivateScalarReturnExpr::Call { arguments, .. } if direct_helper => {
-                    let helper = private_self_resolve_helper_call(
-                    &plan, &method_helpers,
-                ).ok_or(
-                        PrivateSelfMethodPrepareError::Unsupported(
-                            "方法實參直接 helper 缺少原 Checker 同源函式",
-                        ),
-                    )?;
-                    private_self_helper_argument_frame(
-                        helper, arguments, &main_prepared_values,
+                    let helper = private_self_resolve_nested_argument_call(
+                        &plan, &method_helpers,
+                    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法巢狀 int 實參缺少原 Checker 同源普通函式",
+                    ))?;
+                    private_self_nested_argument_frame(
+                        helper, arguments, &main_prepared_values, &method_helpers,
                     ).and_then(|frame| helper.returned.evaluate(&frame))
                 }
                 _ => plan.evaluate(&main_prepared_values),
@@ -2055,53 +2054,24 @@ impl PreparedPrivateSelfMethod {
                 .zip(&self.argument_plans) {
                 // 按原方法引數次序真正求值；尚未完成全部引數前
                 // 不會取得 self BorrowTicket 或偽造進入方法框架。
-                let actual = match expression {
-                    PrivateScalarReturnExpr::Call { arguments, .. }
-                        if private_self_matches_helper_call(
-                            expression, &self.method_helpers,
-                        ) => {
-                        let helper = private_self_resolve_helper_call(
-                            expression, &self.method_helpers,
-                        ).ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
-                        // 同一真 Caller：全部 Copyable int arguments 必須
-                        // 已完成，普通函式才可 Enter；實參溢位時
-                        // 方法尚未借入 self，也不造假 helper 框架。
-                        let frame = private_self_helper_argument_frame(
-                            helper, arguments, &main_values,
-                        ).map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?;
-                        exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
-                        ordinary_calls_entered += 1;
-                        match helper.returned.evaluate(&frame) {
-                            Ok(value) => {
-                                exit_events.push(PrivateSharedCallExitEvent::Returned);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: true,
-                                });
-                                ordinary_calls_completed += 1;
-                                value
-                            }
-                            Err(reason) => {
-                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: false,
-                                });
-                                return Err(match reason {
-                                    PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                        PrivateSelfMethodRuntimeError::IntegerOverflow,
-                                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                                });
-                            }
-                        }
-                    }
-                    _ => expression.evaluate(&main_values).map_err(|reason| match reason {
+                let actual = if private_self_resolve_nested_argument_call(
+                    expression, &self.method_helpers,
+                ).is_some() {
+                    private_self_execute_nested_argument_call(
+                        expression, &main_values, &self.method_helpers,
+                        &mut exit_events, &mut ordinary_calls_entered,
+                        &mut ordinary_calls_completed,
+                    ).map_err(|reason| match reason {
                         PrivateScalarCallRuntimeError::IntegerOverflow =>
                             PrivateSelfMethodRuntimeError::IntegerOverflow,
                         _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                    })?,
+                    })?
+                } else {
+                    expression.evaluate(&main_values).map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?
                 };
                 if actual != prepared || parameter_frame.insert(id, actual).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);

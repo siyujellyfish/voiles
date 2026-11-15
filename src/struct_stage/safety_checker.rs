@@ -1292,8 +1292,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
             || helper.params.iter().enumerate().any(|(i, p)|
                 helper.params[..i].iter().any(|old| old.name == p.name))
-            || !arguments.iter()
-                .all(|arg| self.method_pure_int_caller_argument(arg, vars)) {
+            // 只在原 AST 有限層巢狀直接純 int helper 的範圍
+            // 擴張：每一層均經原 Checker 同步、形參及純 Return
+            // 驗證；helper 本體禁止再次呼叫，故無動態遞迴、
+            // str Move／Borrow 或未知副作用。
+            || !arguments.iter().all(|arg|
+                self.method_pure_int_caller_argument(arg, vars)
+                    || self.method_direct_pure_int_helper_argument(arg, vars)
+            ) {
             return false;
         }
         let StmtKind::Return(returned) = &helper.body.statements[0].kind else {

@@ -1,0 +1,118 @@
+// G18／P18.4-B4／P18.6-M3：僅接通方法直接實參中的
+// 有限層原 Checker 純 int helper；不重解析、不開放
+// helper 本體遞迴、str 資源或跨 self 借用副作用。
+
+/// 與原 PrivateSelfApprovedHelper 身分同一來源；僅允許
+/// 任意有限 AST 層數的純 int 直接函式實參。
+fn private_self_resolve_nested_argument_call<'a>(
+    plan: &PrivateScalarReturnExpr,
+    helpers: &'a BTreeMap<String, PrivateSelfApprovedHelper>,
+) -> Option<&'a PrivateSelfApprovedHelper> {
+    let PrivateScalarReturnExpr::Call {
+        name, arguments, awaited: false,
+    } = plan else { return None; };
+    let helper = helpers.get(name)?;
+    if helper.name != *name
+        || arguments.len() != helper.parameters.len()
+        || !arguments.iter().all(|arg| matches!(
+            arg,
+            PrivateScalarCallArgument::Int(expr) if
+                private_self_pure_helper_argument(expr)
+                    || private_self_resolve_nested_argument_call(expr, helpers).is_some()
+        )) {
+        return None;
+    }
+    Some(helper)
+}
+
+/// prepare 只能計算一致性快照，不能在此產生執行期框架事件。
+fn private_self_nested_argument_value(
+    expr: &PrivateScalarReturnExpr,
+    caller: &BTreeMap<DeclarationId, i64>,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
+) -> Result<i64, PrivateScalarCallRuntimeError> {
+    if private_self_pure_helper_argument(expr) {
+        return expr.evaluate(caller);
+    }
+    let helper = private_self_resolve_nested_argument_call(expr, helpers)
+        .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+    let PrivateScalarReturnExpr::Call { arguments, .. } = expr else {
+        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+    };
+    let frame = private_self_nested_argument_frame(helper, arguments, caller, helpers)?;
+    helper.returned.evaluate(&frame)
+}
+
+/// 真 Checker 每個不同函式 DeclarationId 須以實參順序
+/// 一一綁定，不得將 int 值相等誤判為參數身份相同。
+fn private_self_nested_argument_frame(
+    helper: &PrivateSelfApprovedHelper,
+    arguments: &[PrivateScalarCallArgument],
+    caller: &BTreeMap<DeclarationId, i64>,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
+) -> Result<BTreeMap<DeclarationId, i64>, PrivateScalarCallRuntimeError> {
+    if arguments.len() != helper.parameters.len() {
+        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+    }
+    let mut frame = BTreeMap::new();
+    for (id, argument) in helper.parameters.iter().zip(arguments) {
+        let PrivateScalarCallArgument::Int(expr) = argument else {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        };
+        let value = private_self_nested_argument_value(expr, caller, helpers)?;
+        if frame.insert(*id, value).is_some() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+    }
+    Ok(frame)
+}
+
+/// Runtime 在原 main frame 順序真正求每個參數，僅當全部
+/// 子實參成功後才 Enter 父 helper；每次進退使用同一
+/// SharedCallExit 事件帳及原方法 BorrowTicket 取得前的順序。
+fn private_self_execute_nested_argument_call(
+    plan: &PrivateScalarReturnExpr,
+    caller: &BTreeMap<DeclarationId, i64>,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
+    events: &mut Vec<PrivateSharedCallExitEvent>,
+    entered: &mut usize,
+    completed: &mut usize,
+) -> Result<i64, PrivateScalarCallRuntimeError> {
+    let helper = private_self_resolve_nested_argument_call(plan, helpers)
+        .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+    let PrivateScalarReturnExpr::Call { arguments, .. } = plan else {
+        return Err(PrivateScalarCallRuntimeError::StateMismatch);
+    };
+    let mut frame = BTreeMap::new();
+    for (id, argument) in helper.parameters.iter().zip(arguments) {
+        let PrivateScalarCallArgument::Int(expr) = argument else {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        };
+        let value = if private_self_pure_helper_argument(expr) {
+            expr.evaluate(caller)?
+        } else {
+            private_self_execute_nested_argument_call(
+                expr, caller, helpers, events, entered, completed,
+            )?
+        };
+        if frame.insert(*id, value).is_some() {
+            return Err(PrivateScalarCallRuntimeError::StateMismatch);
+        }
+    }
+    events.push(PrivateSharedCallExitEvent::FunctionEntered);
+    *entered += 1;
+    let result = helper.returned.evaluate(&frame);
+    if result.is_ok() {
+        events.push(PrivateSharedCallExitEvent::Returned);
+        events.push(PrivateSharedCallExitEvent::FunctionExited {
+            returned: true,
+        });
+        *completed += 1;
+    } else {
+        events.push(PrivateSharedCallExitEvent::UnwindStarted);
+        events.push(PrivateSharedCallExitEvent::FunctionExited {
+            returned: false,
+        });
+    }
+    result
+}

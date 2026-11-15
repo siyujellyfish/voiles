@@ -167,6 +167,7 @@ include!("struct_stage/execute_call_scalar.rs");
 include!("struct_stage/execute_recursive_str.rs");
 // G18／P18.6：正式 Checker 已核准同步唯讀 self 的真 BorrowTicket。
 include!("struct_stage/execute_method_self.rs");
+include!("struct_stage/execute_method_nested_helper.rs");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
@@ -1509,6 +1510,7 @@ include!("struct_stage/g18_m2_m3_multiple_bool_checker_frames_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_b4_m3_helper_method_argument_tests.rs");
 include!("struct_stage/g18_b4_m3_multiple_approved_helpers_tests.rs");
+include!("struct_stage/g18_b4_m3_nested_pure_helper_method_argument_tests.rs");
 
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
