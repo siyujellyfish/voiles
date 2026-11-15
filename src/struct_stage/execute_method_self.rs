@@ -1525,10 +1525,10 @@ impl PreparedPrivateSelfMethod {
                     ))?;
                     let mut calls = Vec::new();
                     expr.collect_calls(&mut calls);
-                    let approved_helper = calls.len() == 1
-                        && private_self_matches_helper_call(
+                    let approved_helper =
+                        private_self_resolve_nested_argument_call(
                             &expr, &method_helpers,
-                        );
+                        ).is_some();
                     if (!calls.is_empty() && !approved_helper)
                         || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -1565,10 +1565,10 @@ impl PreparedPrivateSelfMethod {
                     ))?;
                     let mut calls = Vec::new();
                     expr.collect_calls(&mut calls);
-                    let direct_helper = calls.len() == 1
-                        && private_self_matches_helper_call(
+                    let direct_helper =
+                        private_self_resolve_nested_argument_call(
                             &expr, &method_helpers,
-                        );
+                        ).is_some();
                     if (!calls.is_empty() && !direct_helper)
                         || matches!(expr, PrivateScalarReturnExpr::Unreachable) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -1604,10 +1604,10 @@ impl PreparedPrivateSelfMethod {
             ))?;
             let mut calls = Vec::new();
             plan.collect_calls(&mut calls);
-            let direct_helper = calls.len() == 1
-                && private_self_matches_helper_call(
+            let direct_helper =
+                private_self_resolve_nested_argument_call(
                     &plan, &method_helpers,
-                );
+                ).is_some();
             if (!calls.is_empty() && !direct_helper)
                 || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -2097,54 +2097,27 @@ impl PreparedPrivateSelfMethod {
             // 由已取得的 self 真方法框架按宣告次序執行局部。
             // 不進入任何未達作用域的局部，也不誤用 main 的值槽。
             for (id, initializer) in &self.method_int_locals {
-                let calculated = match initializer {
-                    PrivateScalarReturnExpr::Call { arguments, .. }
-                        if private_self_matches_helper_call(
-                            initializer, &self.method_helpers,
-                        ) => {
-                        // 不是 prepare 階段求值：先由 self 當前真值槽
-                        // 求已核准實參；參數未完成不得偽造 helper 進入。
-                        let checked = private_self_resolve_helper_call(
-                            initializer, &self.method_helpers,
-                        ).ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
-                        let helper_frame = private_self_helper_argument_frame(
-                            checked, arguments, &parameter_frame,
-                        ).map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?;
-                        exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
-                        ordinary_calls_entered += 1;
-                        let value = match checked.returned.evaluate(&helper_frame) {
-                            Ok(value) => value,
-                            Err(reason) => {
-                                // 內層 helper 真溢位：先從內層開始 Unwind，
-                                // 再由方法統一清理局部及歸還 self BorrowTicket。
-                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: false,
-                                });
-                                return Err(match reason {
-                                    PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                        PrivateSelfMethodRuntimeError::IntegerOverflow,
-                                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                                });
-                            }
-                        };
-                        exit_events.push(PrivateSharedCallExitEvent::Returned);
-                        exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                            returned: true,
-                        });
-                        ordinary_calls_completed += 1;
-                        value
-                    }
-                    _ => initializer.evaluate(&parameter_frame)
-                        .map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?,
+                let calculated = if private_self_resolve_nested_argument_call(
+                    initializer, &self.method_helpers,
+                ).is_some() {
+                    // 僅在真 self 方法框架中，對原 Checker 已核准的
+                    // 直接巢狀純值 helper 逐層 Enter/Exited；若任一
+                    // 子引數或本體故障，絕不寫 LocalInitialized。
+                    private_self_execute_nested_argument_call(
+                        initializer, &parameter_frame, &self.method_helpers,
+                        &mut exit_events, &mut ordinary_calls_entered,
+                        &mut ordinary_calls_completed,
+                    ).map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?
+                } else {
+                    initializer.evaluate(&parameter_frame).map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?
                 };
                 if parameter_frame.insert(*id, calculated).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
@@ -2162,56 +2135,27 @@ impl PreparedPrivateSelfMethod {
                 if !initialized_method_locals.contains(id) {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
-                let value = match expression {
-                    PrivateScalarReturnExpr::Call { arguments, .. }
-                        if private_self_matches_helper_call(
-                            expression, &self.method_helpers,
-                        ) => {
-                        // B4：先在方法已初始化的真槽中完成單一 int
-                        // 實參，才進入 helper，返回後方可提交 var 目標。
-                        let checked = private_self_resolve_helper_call(
-                            expression, &self.method_helpers,
-                        ).ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
-                        let helper_frame = private_self_helper_argument_frame(
-                            checked, arguments, &parameter_frame,
-                        ).map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?;
-                        exit_events.push(PrivateSharedCallExitEvent::FunctionEntered);
-                        ordinary_calls_entered += 1;
-                        let result = checked.returned.evaluate(&helper_frame);
-                        match result {
-                            Ok(value) => {
-                                exit_events.push(PrivateSharedCallExitEvent::Returned);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: true,
-                                });
-                                ordinary_calls_completed += 1;
-                                value
-                            }
-                            Err(reason) => {
-                                // 右值失敗不得留下 LocalAssigned，原 var
-                                // 舊值仍有效，故障交由最外層逆序 ScopeEnded。
-                                exit_events.push(PrivateSharedCallExitEvent::UnwindStarted);
-                                exit_events.push(PrivateSharedCallExitEvent::FunctionExited {
-                                    returned: false,
-                                });
-                                return Err(match reason {
-                                    PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                        PrivateSelfMethodRuntimeError::IntegerOverflow,
-                                    _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                                });
-                            }
-                        }
-                    }
-                    _ => expression.evaluate(&parameter_frame)
-                        .map_err(|reason| match reason {
-                            PrivateScalarCallRuntimeError::IntegerOverflow =>
-                                PrivateSelfMethodRuntimeError::IntegerOverflow,
-                            _ => PrivateSelfMethodRuntimeError::WrongReceiver,
-                        })?,
+                let value = if private_self_resolve_nested_argument_call(
+                    expression, &self.method_helpers,
+                ).is_some() {
+                    // 原 var 值在完整 RHS 及所有子函式返回成功前
+                    // 不變；失敗無 LocalAssigned、仍由原方法
+                    // 逆序 ScopeEnded 並歸還同一張 self 票據。
+                    private_self_execute_nested_argument_call(
+                        expression, &parameter_frame, &self.method_helpers,
+                        &mut exit_events, &mut ordinary_calls_entered,
+                        &mut ordinary_calls_completed,
+                    ).map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?
+                } else {
+                    expression.evaluate(&parameter_frame).map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?
                 };
                 if parameter_frame.insert(*id, value).is_none() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);

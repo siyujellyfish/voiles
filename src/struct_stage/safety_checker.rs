@@ -1053,8 +1053,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     helper_arity(name) == Some(0),
                 TermKind::Call(call) if allow_direct_helper =>
                     !call.awaited && helper_arity(&call.name) == Some(call.arguments.len())
+                        // 僅允許另一個已由原 Checker 純 int 單 Return
+                        // 認證的直接子函式作引數；BinaryInt 分支仍以
+                        // false 禁止「1 + helper(...)」的隱含嵌套退出。
                         && call.arguments.iter().all(|argument|
-                            pure_int(argument, helper_arity, false)),
+                            pure_int(argument, helper_arity, true)),
                 _ => false,
             }
         }
