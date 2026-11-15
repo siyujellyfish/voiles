@@ -21,6 +21,39 @@ enum PrivateSelfReadyTransition {
     Cancelled(u64),
 }
 
+impl PrivateSelfReadyTransition {
+    fn job_id(self) -> u64 {
+        match self {
+            Self::Prepared(id) | Self::Suspended(id)
+            | Self::Woken(id, _) | Self::Cancelled(id) => id,
+        }
+    }
+}
+
+/// E3／T4：退休後不保留 Checker AST 或已完成整筆 Outcome；
+/// 但真 Ready 轉移在原全域歷史中的**每一個位置和內容**
+/// 都被獨立抄入結案收據。全體刪除多本動態帳時仍不能
+/// 偽裝「從未曾有過此工作」。這不是密碼學證明。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateSelfRetiredReceipt {
+    status: PrivateDeferredAwaitStatus,
+    transitions: Vec<(usize, PrivateSelfReadyTransition)>,
+    executed_at: Option<usize>,
+    cancelled_at: Option<usize>,
+    /// 只有真執行且 SharedExit 完整平衡的 async self
+    /// 才能保留它的原 Checker HC14 自借票來源身分。
+    checked_self_loan: Option<BorrowFact>,
+    result_succeeded: Option<bool>,
+}
+
+/// 結果所有權只移交呼叫端一次，退休佇列不得保留第二份
+/// BorrowTicket、MixedStructRuntime 或原 Checker 工作計畫。
+#[derive(Debug)]
+enum PrivateSelfRetiredJob {
+    Completed(PrivateSelfMethodOutcome),
+    Cancelled,
+}
+
 /// E1-A 延遲、E3-A 未啟動安全點取消：不以名稱重編譯另一份
 /// 方法、不移動已經進入的 self 動態框架，也不偷造 P16 事件。
 #[derive(Default)]
@@ -33,6 +66,8 @@ struct PrivateCheckedDeferredSelfAwaitQueue {
     /// 來源獨立的追加式工作轉移收據，保留取消及已完成歷史。
     ready_history: Vec<PrivateSelfReadyTransition>,
     cancellation_order: Vec<u64>,
+    /// 已結案工作只能留無動態資源持有權的唯一收據。
+    retired: BTreeMap<u64, PrivateSelfRetiredReceipt>,
 }
 
 impl PrivateCheckedDeferredSelfAwaitQueue {
@@ -101,13 +136,47 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
         if issued != self.next_id || ready != self.ready
             || executed != self.execution_order
             || cancelled != self.cancellation_order
-            || statuses.len() != self.jobs.len() {
+            || statuses.len() != self.jobs.len() + self.retired.len() {
             return Err(PrivateDeferredAwaitError::SourceChanged);
         }
         for (id, status) in statuses {
             let Some(job) = self.jobs.get(&id) else {
-                return Err(PrivateDeferredAwaitError::SourceChanged);
+                let Some(receipt) = self.retired.get(&id) else {
+                    return Err(PrivateDeferredAwaitError::SourceChanged);
+                };
+                let transitions = self.ready_history.iter().copied().enumerate()
+                    .filter(|(_, event)| event.job_id() == id)
+                    .collect::<Vec<_>>();
+                let executed_at = self.execution_order.iter().position(|x| *x == id);
+                let cancelled_at = self.cancellation_order.iter().position(|x| *x == id);
+                let completed = matches!(status,
+                    PrivateDeferredAwaitStatus::Succeeded
+                        | PrivateDeferredAwaitStatus::Failed);
+                if !matches!(status,
+                    PrivateDeferredAwaitStatus::Succeeded
+                        | PrivateDeferredAwaitStatus::Failed
+                        | PrivateDeferredAwaitStatus::Cancelled)
+                    || receipt.status != status
+                    || receipt.transitions != transitions
+                    || receipt.executed_at != executed_at
+                    || receipt.cancelled_at != cancelled_at
+                    || (completed && (executed_at.is_none()
+                        || cancelled_at.is_some()
+                        || receipt.checked_self_loan.is_none()
+                        || receipt.result_succeeded != Some(
+                            status == PrivateDeferredAwaitStatus::Succeeded,
+                        )))
+                    || (!completed && (executed_at.is_some()
+                        || cancelled_at.is_none()
+                        || receipt.checked_self_loan.is_some()
+                        || receipt.result_succeeded.is_some())) {
+                    return Err(PrivateDeferredAwaitError::SourceChanged);
+                }
+                continue;
             };
+            if self.retired.contains_key(&id) {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            }
             if job.status != status {
                 return Err(PrivateDeferredAwaitError::SourceChanged);
             }
@@ -135,6 +204,63 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
 
     fn cancellation_order(&self) -> &[u64] {
         &self.cancellation_order
+    }
+
+    fn retired_status(&self, id: u64) -> Option<PrivateDeferredAwaitStatus> {
+        self.retired.get(&id).map(|receipt| receipt.status)
+    }
+
+    /// 真終態交付時取走唯一 Outcome 或確認零動態取消，
+    /// 把原全域事件位置完整封存為獨立可驗的退休收據。
+    /// 未到合法終態的任務不可強制移除、不可當成已取消。
+    fn retire_terminal(
+        &mut self, id: u64,
+    ) -> Result<PrivateSelfRetiredJob, PrivateDeferredAwaitError> {
+        self.verify_ready_history()?;
+        if self.retired.contains_key(&id) {
+            return Err(PrivateDeferredAwaitError::AlreadyFinished);
+        }
+        let job = self.jobs.get(&id).ok_or(
+            PrivateDeferredAwaitError::UnknownTask,
+        )?;
+        let status = job.status;
+        if !matches!(status, PrivateDeferredAwaitStatus::Succeeded
+            | PrivateDeferredAwaitStatus::Failed
+            | PrivateDeferredAwaitStatus::Cancelled) {
+            return Err(PrivateDeferredAwaitError::WrongState);
+        }
+        let checked_self_loan = if let Some(outcome) = job.outcome.as_ref() {
+            if !outcome.awaited_method
+                || !outcome.ticket_returned
+                || !outcome.has_balanced_self_borrow_trace() {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            }
+            Some(outcome.checked_loan)
+        } else { None };
+        let result_succeeded = job.outcome.as_ref().map(|out| out.result.is_ok());
+        let receipt = PrivateSelfRetiredReceipt {
+            status,
+            transitions: self.ready_history.iter().copied().enumerate()
+                .filter(|(_, event)| event.job_id() == id)
+                .collect(),
+            executed_at: self.execution_order.iter().position(|x| *x == id),
+            cancelled_at: self.cancellation_order.iter().position(|x| *x == id),
+            checked_self_loan,
+            result_succeeded,
+        };
+        let mut job = self.jobs.remove(&id)
+            .expect("前方已查證唯一尚未退休的真終態工作");
+        self.retired.insert(id, receipt);
+        match status {
+            PrivateDeferredAwaitStatus::Succeeded
+            | PrivateDeferredAwaitStatus::Failed => Ok(
+                PrivateSelfRetiredJob::Completed(job.outcome.take()
+                    .expect("前方已核對的真 Checked self 執行結果")),
+            ),
+            PrivateDeferredAwaitStatus::Cancelled =>
+                Ok(PrivateSelfRetiredJob::Cancelled),
+            _ => unreachable!("前方已限定終態"),
+        }
     }
 
     /// E2：呼叫者明確驅動就緒 FIFO 第一份工作，不存在背景
