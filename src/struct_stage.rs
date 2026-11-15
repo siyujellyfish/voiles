@@ -1570,6 +1570,8 @@ include!("struct_stage/g18_t3_scalar_async_frozen_token_recheck_tests.rs");
 include!("struct_stage/g18_v7_async_self_deferred_session_tests.rs");
 // V7／E2：同一原Checker async self 真Ready FIFO、轉移收據與整批取消。
 include!("struct_stage/g18_v7_async_self_fifo_receipts_tests.rs");
+// V7／T4/E3：真async self終態退休唯一結果與原全域轉移位置收據。
+include!("struct_stage/g18_v7_async_self_terminal_retirement_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");
