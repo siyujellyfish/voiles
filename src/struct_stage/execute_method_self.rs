@@ -356,6 +356,7 @@ fn private_self_checked_branch_write(
     first: Option<(DeclarationId, i64)>,
     additional: &[(DeclarationId, i64)],
     verified: &VerifiedPrivateSource,
+    helpers: &BTreeMap<String, PrivateSelfApprovedHelper>,
     checked_plans: &mut BTreeMap<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>,
 ) -> Result<PrivateSelfApprovedBranchWrite, PrivateSelfMethodPrepareError> {
     match &value.kind {
@@ -399,7 +400,10 @@ fn private_self_checked_branch_write(
             }
             Ok(PrivateSelfApprovedBranchWrite::Parameter(id))
         }
-        TermKind::BinaryInt(_) => {
+        TermKind::BinaryInt(_) | TermKind::Call(_) => {
+            // 原方法唯一 int 參數 DeclId 與真 Checker ScalarHIR
+            // 交集；若 RHS 有普通函式，僅容許已獨立認證的
+            // 同步、單筆純 int 返回 helper，禁止引入借用／資源。
             let int_bindings = method.params.iter().filter(|param|
                 param.name != "self" && param.ty == "int"
             ).map(|param| (
@@ -408,30 +412,31 @@ fn private_self_checked_branch_write(
             let plan = PrivateScalarReturnExpr::from_checked_bindings(
                 value, &int_bindings, verified,
             ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                "M2 選葉整數加減缺少原 Checker 真 ScalarHIR／來源",
+                "M2 選葉 RHS 缺少原 Checker int ScalarHIR／Lexer 來源",
             ))?;
             let approved = int_bindings.values().copied().collect::<Vec<_>>();
             if !matches!(plan,
                 PrivateScalarReturnExpr::Addition(_, _)
                 | PrivateScalarReturnExpr::Subtraction(_, _)
-            ) || !private_self_pure_helper_int(&plan, &approved)
+                | PrivateScalarReturnExpr::Call { awaited: false, .. }
+            ) || !private_self_approved_int_call_arithmetic(&plan, helpers)
                 || approved.iter().any(|id| !first.into_iter()
                     .chain(additional.iter().copied())
                     .any(|(bound, _)| bound == *id)) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "M2 選葉算術只能是原 Checker Copyable int 方法形參／常值",
+                    "M2 選葉 RHS 只能是原 Checker 純 Copyable int／同步 helper 工作圖",
                 ));
             }
             let span = value.node_span();
             if checked_plans.insert(span, plan).is_some() {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "M2 選葉算術同一原來源不可重複簽發工作計畫",
+                    "M2 選葉 RHS 同一原來源不可重複簽發工作計畫",
                 ));
             }
             Ok(PrivateSelfApprovedBranchWrite::CheckedIntAt(span))
         }
         _ => Err(PrivateSelfMethodPrepareError::Unsupported(
-            "M2 選葉 self.int 寫入僅接受原 Checker int 常值、形參或純加減",
+            "M2 選葉 self.int 寫入僅接受原 Checker int 常值、形參／加減或純 helper",
         )),
     }
 }
@@ -1226,6 +1231,7 @@ impl PreparedPrivateSelfMethod {
                             let authorized = private_self_checked_branch_write(
                                 value, method, argument_binding,
                                 &additional_argument_bindings, &verified,
+                                &method_helpers,
                                 &mut method_branch_int_plans,
                             )?;
                             Some((authorized, write.node_span()))
@@ -1332,6 +1338,7 @@ impl PreparedPrivateSelfMethod {
                                         let authorized = private_self_checked_branch_write(
                                             value, method, argument_binding,
                                             &additional_argument_bindings, &verified,
+                                            &method_helpers,
                                             &mut method_branch_int_plans,
                                         )?;
                                         Ok(Some((authorized, write.node_span())))
@@ -1636,6 +1643,7 @@ impl PreparedPrivateSelfMethod {
                                     let authorized = private_self_checked_branch_write(
                                         value, method, argument_binding,
                                         &additional_argument_bindings, &verified,
+                                        &method_helpers,
                                         &mut method_branch_int_plans,
                                     )?;
                                     let returned_stmt = &statements[1];
@@ -2472,7 +2480,21 @@ impl PreparedPrivateSelfMethod {
                     // 真正讀取方法 int frame；未選葉零算術操作。
                     let plan = self.method_branch_int_plans.get(&span)
                         .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
-                    Some(plan.evaluate(&parameter_frame).map_err(|reason| match reason {
+                    // 僅真選中葉可執行其已核准的 Call；維持原
+                    // ScalarHIR 左右求值順序、SharedCallExit 進退與
+                    // 內層故障 Unwind，絕不預先啟動另一葉。
+                    let mut calls = Vec::new();
+                    plan.collect_calls(&mut calls);
+                    let result = if calls.is_empty() {
+                        plan.evaluate(&parameter_frame)
+                    } else {
+                        private_self_execute_arithmetic_call(
+                            plan, &parameter_frame, &self.method_helpers,
+                            &mut exit_events, &mut ordinary_calls_entered,
+                            &mut ordinary_calls_completed,
+                        )
+                    };
+                    Some(result.map_err(|reason| match reason {
                         PrivateScalarCallRuntimeError::IntegerOverflow =>
                             PrivateSelfMethodRuntimeError::IntegerOverflow,
                         _ => PrivateSelfMethodRuntimeError::WrongReceiver,

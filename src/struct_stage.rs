@@ -1558,6 +1558,8 @@ include!("struct_stage/g18_m2_self_int_parameter_field_write_tests.rs");
 include!("struct_stage/g18_m2_conditional_int_parameter_write_tests.rs");
 include!("struct_stage/g18_m2_self_checked_int_write_tests.rs");
 include!("struct_stage/g18_m2_conditional_checked_int_self_write_tests.rs");
+// G18／P18.6-M2／P18.4-B4：真選葉同步純 helper RHS 獨占寫 self。
+include!("struct_stage/g18_m2_selected_helper_self_write_tests.rs");
 
 // G18／P18.6 M2：原 Checker 同步 self 的 if/提前 return 真控制葉。
 #[cfg(test)]
