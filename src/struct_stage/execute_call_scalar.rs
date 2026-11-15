@@ -6264,6 +6264,24 @@ impl PreparedPrivateScalarCall {
             && self.verified.plan.control_edges == fresh.verified.plan.control_edges
     }
 
+    /// T3／V7：普通函式延遲等待與真正 execute() 共用完全相同
+    /// 的原 Checker／Lexer／TypedHIR 封存來源預檢。只做唯讀
+    /// 驗證，不得在 suspend／cancel 前假執行任何普通函式。
+    fn checked_source_still_intact(&self) -> bool {
+        let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
+            return false;
+        };
+        self.original.as_ref() == self.verified.source.bytes.as_slice()
+            && verified_private_source_tokens(
+                source, &self.verified.tokens,
+                &self.verified.structs, &self.verified.functions,
+            )
+            && self.verified.plan.is_consistent(
+                &self.verified.structs, &self.verified.functions, source,
+            )
+            && self.matches_source(source)
+    }
+
     fn execute(&self) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
         self.execute_with_budget_and_fault(PrivateScalarExecutionBudget::default(), false)
     }
@@ -6431,21 +6449,10 @@ impl PreparedPrivateScalarCall {
             &str, &[crate::owned_str_runtime::ResourceEvent],
         )>,
     ) -> Result<PrivateScalarCallOutcome, PrivateScalarCallPrepareError> {
-        let Ok(source) = std::str::from_utf8(&self.verified.source.bytes) else {
-            return Err(PrivateScalarCallPrepareError::SourceChanged);
-        };
-        if self.original.as_ref() != self.verified.source.bytes.as_slice()
-            // T3／V7：完整來源位元組與 CheckedHIR 相同，仍不代表
-            // 動態執行物件內保存的 Lexer Token 未遭替換。
-            // 真執行前必須以同一份已封存 Token 與原 AST
-            // 重新核對 async fn、直接 await、函式名及括號。
-            || !verified_private_source_tokens(
-                source, &self.verified.tokens,
-                &self.verified.structs, &self.verified.functions,
-            )
-            || !self.verified.plan.is_consistent(
-                &self.verified.structs, &self.verified.functions, source,
-            ) || !self.matches_source(source) {
+        // 以與 V7 延遲普通函式 suspend/cancel/wake 完全相同
+        // 的單一權威再驗原封存 Lexer／AST／Checker 計畫；
+        // 必須在建立任何真正 BorrowTicket／ResourceId 之前。
+        if !self.checked_source_still_intact() {
             return Err(PrivateScalarCallPrepareError::SourceChanged);
         }
         // 即使原 Checker 合法遞迴，零執行預算也不得製造假的函式進入。
@@ -9022,8 +9029,41 @@ struct PrivateCheckedDeferredAwaitQueue {
 impl PrivateCheckedDeferredAwaitQueue {
     fn new() -> Self { Self::default() }
 
+    /// T3／V7：取消／就緒之前，不僅核對被指定的工作，
+    /// 也必須核對所有仍 Prepared/Suspended 的同源計畫。
+    /// 原執行器自身的 Lexer／Checker 完整來源守門是唯一權威。
+    /// 此處只讀；不能因某份污染工作被取消後移除 AST，
+    /// 就讓整個佇列假稱其從未持有被變造的準備工作。
+    fn verify_pending_sources(&self) -> Result<(), PrivateDeferredAwaitError> {
+        for job in self.jobs.values() {
+            let legitimate = match job.status {
+                PrivateDeferredAwaitStatus::Prepared
+                | PrivateDeferredAwaitStatus::Suspended =>
+                    job.outcome.is_none() && job.plan.as_ref()
+                        .is_some_and(PreparedPrivateScalarCall::checked_source_still_intact),
+                PrivateDeferredAwaitStatus::Succeeded
+                | PrivateDeferredAwaitStatus::Failed =>
+                    job.plan.is_none() && job.outcome.as_ref().is_some_and(|out|
+                        out.has_balanced_frame_trace()
+                            && out.result.is_ok()
+                                == (job.status == PrivateDeferredAwaitStatus::Succeeded)),
+                PrivateDeferredAwaitStatus::Cancelled =>
+                    job.plan.is_none() && job.outcome.is_none(),
+                PrivateDeferredAwaitStatus::Running => false,
+            };
+            if !legitimate {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            }
+        }
+        Ok(())
+    }
+
     fn prepare(&mut self, source: &str)
         -> Result<u64, PrivateScalarCallPrepareError> {
+        self.verify_pending_sources().map_err(|_|
+            PrivateScalarCallPrepareError::Unsupported(
+                "V7普通async延遲佇列仍有來源不一致工作，禁止新增ID",
+            ))?;
         let plan = PreparedPrivateScalarCall::prepare(source)?;
         // E1：延遲啟動前必須確定 main 的唯一真正可達語句是
         // 直接 await return。若存在先前宣告、控制流程或複合
@@ -9045,8 +9085,11 @@ impl PrivateCheckedDeferredAwaitQueue {
                 "只有原 Checker 證明 main 無前置作用的直接 await 可延遲",
             ));
         }
-        let id = self.next_id.checked_add(1)
-            .expect("內部私有延遲工作 ID 已用盡，禁止回繞");
+        let id = self.next_id.checked_add(1).ok_or(
+            PrivateScalarCallPrepareError::Unsupported(
+                "V7普通async延遲工作ID已用盡，禁止回繞",
+            ),
+        )?;
         self.next_id = id;
         self.jobs.insert(id, PrivateDeferredAwaitJob {
             plan: Some(plan), status: PrivateDeferredAwaitStatus::Prepared,
@@ -9064,6 +9107,7 @@ impl PrivateCheckedDeferredAwaitQueue {
     /// 明確建立可跨 Rust 呼叫保存的安全點；目前尚未開始
     /// main 真執行，沒有任何資源／借用／控制事件可被偽造。
     fn suspend(&mut self, id: u64) -> Result<(), PrivateDeferredAwaitError> {
+        self.verify_pending_sources()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateDeferredAwaitError::UnknownTask)?;
         if job.status != PrivateDeferredAwaitStatus::Prepared {
@@ -9076,6 +9120,7 @@ impl PrivateCheckedDeferredAwaitQueue {
     /// E3：取消 Prepared 或 Suspended 但尚未啟動的工作；
     /// 不建立函式框架、不執行原來源，也不記入 Released 假事件。
     fn cancel(&mut self, id: u64) -> Result<(), PrivateDeferredAwaitError> {
+        self.verify_pending_sources()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateDeferredAwaitError::UnknownTask)?;
         if !matches!(job.status,
@@ -9092,6 +9137,7 @@ impl PrivateCheckedDeferredAwaitQueue {
     /// SourceChanged 在任何動態執行前拒絕，不消耗工作或偽造事件。
     fn wake(&mut self, id: u64)
         -> Result<&PrivateScalarCallOutcome, PrivateDeferredAwaitError> {
+        self.verify_pending_sources()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateDeferredAwaitError::UnknownTask)?;
         match job.status {
@@ -9847,8 +9893,18 @@ mod g18_v7_private_deferred_await_tests {
         assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
         assert!(queue.execution_order().is_empty());
         assert!(queue.jobs[&id].outcome.is_none());
+        // T3／V7：舊測試只驗醒來前拒絕、卻容許直接
+        // 取消污染來源以抹掉原計畫。新的取消前來源守門
+        // 必須保留污染證據；還原真 Checker 工作後才可取消。
+        assert_eq!(queue.cancel(id),
+            Err(PrivateDeferredAwaitError::SourceChanged));
+        assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Suspended));
+        assert!(queue.jobs[&id].plan.is_some());
+        queue.jobs.get_mut(&id).unwrap().plan =
+            Some(PreparedPrivateScalarCall::prepare(&src(17)).unwrap());
         queue.cancel(id).unwrap();
         assert_eq!(queue.status(id), Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert!(queue.jobs[&id].plan.is_none());
     }
 
     #[test]
