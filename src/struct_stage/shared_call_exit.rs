@@ -129,7 +129,15 @@ fn private_shared_call_exit_balanced(
                 // 內層真 frame 在外層票據取得後新簽的 BorrowTicket
                 // 必須先退場。相同深度的獨立借用不強制 LIFO，
                 // 不覆寫 VB14／P15 已核准的詞彙最後使用點。
+                // T3/R05：票據取得深度的**直接**借用框架
+                // 尚未真正 Returned／退出時，不得因更深一層
+                // 普通 helper 已 Returned（或先開始 Unwind）
+                // 就冒還較外層 self／Caller 票。只數票據而不
+                // 比對真框架距離，會把仍存活的外層借用提早歸還。
+                // 深度相同的獨立 shared loans 仍遵照原 P15
+                // 最後使用點，不額外強制全域 LIFO。
                 if depth > frames.len()
+                    || frames.len() > depth.saturating_add(1)
                     || tickets.iter().any(|(_, active_depth)| *active_depth > depth) {
                     return false;
                 }
