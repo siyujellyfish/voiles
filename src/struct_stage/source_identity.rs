@@ -39,6 +39,15 @@ fn verified_private_syntax_roles(
             },
             TermKind::MethodCall(_, _, arguments) =>
                 arguments.iter().all(|expression| term(expression, span, audit)),
+            TermKind::AwaitMethodCall(_, _, arguments) => {
+                // V7：必須是由原 Parser 保存的完整 await 前綴；
+                // 真 Name／點號／括號位置另由 token_provenance
+                // 的相鄰 Lexer Token 單一身分權威核對。
+                audit.source.get(span.start..span.start.saturating_add(5))
+                    == Some("await")
+                    && arguments.iter().all(|expression|
+                        term(expression, span, audit))
+            },
             TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_)
             | TermKind::Move(_) | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
