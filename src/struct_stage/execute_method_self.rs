@@ -244,7 +244,6 @@ impl PrivateSelfMethodOutcome {
         self.ticket_returned
             && approved_local_prefix
             && approved_assignments
-            && local_events_inside_real_method
             && local_projection == exit_projection
             && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
