@@ -454,6 +454,9 @@ jobs:
       - name: G18 P18.6-M3 B4 原Checker方法Return純helper算術十項 Gate
         run: python3 tools/核對G18-P18.6-M3方法Return純helper算術退出.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M3 B4 原Checker方法Group純helperReturn八項 Gate
+        run: python3 tools/核對G18-P18.6-M3方法Group純helper返回.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 真self借票後巢狀純int局部初始化與var更新八項 Gate
         run: python3 tools/核對G18-P18.4-B4巢狀純helper方法局部賦值.py --test-bin target/p02/p04_source_internal
 

@@ -1353,7 +1353,7 @@ impl PreparedPrivateSelfMethod {
                                     // int 精確來源檢核，只在實際選中內層 else 時求值。
                                     let nested_else_calc = match &returned.expression.kind {
                                                                 TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
-                                                                TermKind::BinaryInt(_)
+                                                                TermKind::BinaryInt(_) | TermKind::Group(_)
                                                                     if PrivateScalarReturnExpr::first_source_call(
                                                                         &returned.expression,
                                                                     ).is_some() =>
@@ -1456,7 +1456,7 @@ impl PreparedPrivateSelfMethod {
                         };
                         let true_return_plan = match &early.expression.kind {
                             TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
-                            TermKind::BinaryInt(_)
+                            TermKind::BinaryInt(_) | TermKind::Group(_)
                                 if PrivateScalarReturnExpr::first_source_call(
                                     &early.expression,
                                 ).is_some() => private_self_checked_helper_return_leaf(
@@ -1556,7 +1556,7 @@ impl PreparedPrivateSelfMethod {
                                     };
                                     match &returned.expression.kind {
                                         TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
-                                        TermKind::BinaryInt(_)
+                                        TermKind::BinaryInt(_) | TermKind::Group(_)
                                             if PrivateScalarReturnExpr::first_source_call(
                                                 &returned.expression,
                                             ).is_some() => (
@@ -1673,7 +1673,7 @@ impl PreparedPrivateSelfMethod {
                                     };
                                     let calculation = match &returned.expression.kind {
                                         TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
-                                        TermKind::BinaryInt(_)
+                                        TermKind::BinaryInt(_) | TermKind::Group(_)
                                             if PrivateScalarReturnExpr::first_source_call(
                                                 &returned.expression,
                                             ).is_some() => private_self_checked_helper_return_leaf(
@@ -1903,7 +1903,7 @@ impl PreparedPrivateSelfMethod {
         } else {
             match &returned.expression.kind {
             TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) |
-            TermKind::BinaryInt(_)
+            TermKind::BinaryInt(_) | TermKind::Group(_)
                 if PrivateScalarReturnExpr::first_source_call(
                     &returned.expression,
                 ).is_some() => (
