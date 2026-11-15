@@ -400,7 +400,8 @@ fn private_self_checked_branch_write(
             }
             Ok(PrivateSelfApprovedBranchWrite::Parameter(id))
         }
-        TermKind::BinaryInt(_) | TermKind::Call(_) => {
+        TermKind::BinaryInt(_) | TermKind::Call(_)
+        | TermKind::UnresolvedZeroArgs(_) => {
             // 原方法唯一 int 參數 DeclId 與真 Checker ScalarHIR
             // 交集；若 RHS 有普通函式，僅容許已獨立認證的
             // 同步、單筆純 int 返回 helper，禁止引入借用／資源。
@@ -1112,7 +1113,8 @@ impl PreparedPrivateSelfMethod {
                     }
                     (None, Some(id), None)
                 }
-                TermKind::BinaryInt(_) | TermKind::Call(_) => {
+                TermKind::BinaryInt(_) | TermKind::Call(_)
+        | TermKind::UnresolvedZeroArgs(_) => {
                     // 自原 Checker 成員簽章建構唯一 int 形參集；
                     // 本次可復用 M2/B4 已真驗證的同步純 int helper
                     // RHS ScalarHIR。未經原 Checker 證明的資源、
