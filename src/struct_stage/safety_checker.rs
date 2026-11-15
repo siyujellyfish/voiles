@@ -739,6 +739,71 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         }
     }
 
+    /// M2／B4：原方法純值 Checker 已證明合法的 int 加減，
+    /// 以與普通函式相同的 TypedHIR／DeclarationId 交付執行器。
+    /// 方法安全 Checker 原先只給出型別而不產生 HIR，因此
+    /// 即使靜態認證成功也無法由共通 int 編譯器真正執行。
+    /// 此處只在已核准 RHS 的所有葉均屬原 int 形參／Lexer
+    /// 整數時記錄完整證據；其他原合法形狀不產生假 HIR。
+    fn record_method_pure_int_hir(&self, method: &Function, term: &Term) {
+        use crate::common_ir::{ResolvedUse, ScalarType, TypedUse, VerifiedScalarArithmetic};
+        fn supported(method: &Function, term: &Term) -> bool {
+            match &term.kind {
+                TermKind::Group(inner) => supported(method, inner),
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => true,
+                TermKind::Name(name) => method.params.iter().any(|param|
+                    param.ty == "int" && param.name == *name && name != "self"
+                ),
+                TermKind::BinaryInt(binary) =>
+                    matches!(binary.operator, '+' | '-')
+                        && supported(method, &binary.left)
+                        && supported(method, &binary.right),
+                _ => false,
+            }
+        }
+        if !supported(method, term) {
+            return;
+        }
+        fn record<C: Fn(&str) -> CopyPermission>(
+            checker: &Checker<'_, C>, method: &Function, term: &Term,
+        ) {
+            match &term.kind {
+                TermKind::Group(inner) => record(checker, method, inner),
+                TermKind::Name(name) => {
+                    let param = method.params.iter().find(|param|
+                        param.name == *name && param.ty == "int"
+                    ).expect("已由原 Checker 完整證明的方法形參");
+                    checker.recorded_scalar_hir.borrow_mut().record_reference(
+                        TypedUse::new(term.node_span(), ResolvedUse::new(
+                            DeclarationId(param.declaration_start), ScalarType::Int,
+                        )),
+                    );
+                }
+                TermKind::BinaryInt(binary) => {
+                    record(checker, method, &binary.left);
+                    record(checker, method, &binary.right);
+                    checker.recorded_scalar_hir.borrow_mut().record_arithmetic(
+                        VerifiedScalarArithmetic {
+                            span: term.node_span(),
+                            left: binary.left.node_span(),
+                            right: binary.right.node_span(),
+                            operator: binary.operator,
+                        },
+                    );
+                }
+                TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Integer(_),
+                ) => {}
+                _ => unreachable!("前方已由 Checker 確認每個純 int 葉"),
+            }
+            checker.recorded_scalar_hir.borrow_mut()
+                .record_expression(term.node_span(), ScalarType::Int);
+        }
+        record(self, method, term);
+    }
+
     fn method_bool_condition(&self, owner: &str, method: &Function, term: &Term)
         -> Result<(), Diagnostic> {
         let ty = self.method_pure_value_type(owner, method, term)?;
@@ -946,6 +1011,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if permission != CopyPermission::Allowed {
                         return Err(self.reject_noncopyable(permission,
                             "P16 尚未核准方法覆寫既有資源的清理責任", value));
+                    }
+                    // 只有方法 RHS 的 Copyable int 型別、欄位
+                    // 權限與 BorrowSafety 全部由原 Checker 判准後，
+                    // 才可交付給同一 P10/P18 ScalarHIR 編譯器。
+                    if target.ty == "int" {
+                        self.record_method_pure_int_hir(method, value);
                     }
                     writes = true;
                 }
