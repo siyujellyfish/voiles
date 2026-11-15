@@ -342,6 +342,10 @@ impl PrivateSelfMethodOutcome {
 enum PrivateSelfApprovedBranchWrite {
     Literal(i64),
     Parameter(DeclarationId),
+    /// 已由原 Checker 完整認證的純 int 加減式；
+    /// span 對應真正 RHS，計畫另存於原 CheckedScalar 帳，
+    /// 避免破壞既有 Copy 語意與真分支選葉來源身分。
+    CheckedIntAt(crate::common_ir::NodeSpan),
 }
 
 /// 從原 Parser/Checker 方法形參＋已綁定 Caller 實參取得唯一
@@ -352,6 +356,7 @@ fn private_self_checked_branch_write(
     first: Option<(DeclarationId, i64)>,
     additional: &[(DeclarationId, i64)],
     verified: &VerifiedPrivateSource,
+    checked_plans: &mut BTreeMap<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>,
 ) -> Result<PrivateSelfApprovedBranchWrite, PrivateSelfMethodPrepareError> {
     match &value.kind {
         TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) => {
@@ -394,8 +399,39 @@ fn private_self_checked_branch_write(
             }
             Ok(PrivateSelfApprovedBranchWrite::Parameter(id))
         }
+        TermKind::BinaryInt(_) => {
+            let int_bindings = method.params.iter().filter(|param|
+                param.name != "self" && param.ty == "int"
+            ).map(|param| (
+                param.name.clone(), DeclarationId(param.declaration_start),
+            )).collect::<BTreeMap<_, _>>();
+            let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                value, &int_bindings, verified,
+            ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                "M2 選葉整數加減缺少原 Checker 真 ScalarHIR／來源",
+            ))?;
+            let approved = int_bindings.values().copied().collect::<Vec<_>>();
+            if !matches!(plan,
+                PrivateScalarReturnExpr::Addition(_, _)
+                | PrivateScalarReturnExpr::Subtraction(_, _)
+            ) || !private_self_pure_helper_int(&plan, &approved)
+                || approved.iter().any(|id| !first.into_iter()
+                    .chain(additional.iter().copied())
+                    .any(|(bound, _)| bound == *id)) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 選葉算術只能是原 Checker Copyable int 方法形參／常值",
+                ));
+            }
+            let span = value.node_span();
+            if checked_plans.insert(span, plan).is_some() {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "M2 選葉算術同一原來源不可重複簽發工作計畫",
+                ));
+            }
+            Ok(PrivateSelfApprovedBranchWrite::CheckedIntAt(span))
+        }
         _ => Err(PrivateSelfMethodPrepareError::Unsupported(
-            "M2 選葉 self.int 寫入僅接受原 Checker int 常值或方法 int 形參",
+            "M2 選葉 self.int 寫入僅接受原 Checker int 常值、形參或純加減",
         )),
     }
 }
@@ -485,6 +521,9 @@ struct PreparedPrivateSelfMethod {
     /// 原 Checker 內層各葉可有一筆獨占 self.int 寫入，僅選中葉執行。
     method_nested_true_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
     method_nested_else_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
+    /// 原 Checker 真選中葉 BinaryInt 工作計畫以 RHS NodeSpan
+    /// 對帳，不由 runtime 重掃來源或先求未選分支。
+    method_branch_int_plans: BTreeMap<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>,
     /// M2：只有原 Checker 真 bool 形式參數能成為方法 if 條件來源。
     method_branch_parameter: Option<DeclarationId>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
@@ -1110,6 +1149,8 @@ impl PreparedPrivateSelfMethod {
         let branch_helper_bindings = method.params.iter().map(|param|
             (param.name.clone(), DeclarationId(param.declaration_start))
         ).collect::<BTreeMap<_, _>>();
+        let mut method_branch_int_plans =
+            BTreeMap::<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>::new();
         let (method_branch, method_branch_parameter,
             method_branch_else, method_branch_else_write,
             method_branch_else_field_return, method_branch_else_calculation,
@@ -1185,6 +1226,7 @@ impl PreparedPrivateSelfMethod {
                             let authorized = private_self_checked_branch_write(
                                 value, method, argument_binding,
                                 &additional_argument_bindings, &verified,
+                                &mut method_branch_int_plans,
                             )?;
                             Some((authorized, write.node_span()))
                         } else { None };
@@ -1290,6 +1332,7 @@ impl PreparedPrivateSelfMethod {
                                         let authorized = private_self_checked_branch_write(
                                             value, method, argument_binding,
                                             &additional_argument_bindings, &verified,
+                                            &mut method_branch_int_plans,
                                         )?;
                                         Ok(Some((authorized, write.node_span())))
                                     }).collect::<Result<Vec<_>, _>>()?;
@@ -1593,6 +1636,7 @@ impl PreparedPrivateSelfMethod {
                                     let authorized = private_self_checked_branch_write(
                                         value, method, argument_binding,
                                         &additional_argument_bindings, &verified,
+                                        &mut method_branch_int_plans,
                                     )?;
                                     let returned_stmt = &statements[1];
                                     let StmtKind::Return(returned) =
@@ -2088,7 +2132,8 @@ impl PreparedPrivateSelfMethod {
             method_branch_else_calculation, method_branch_write, method_branch_return,
             method_nested_branch, method_nested_branch_parameter,
             method_nested_else_calculation, method_nested_true_write,
-            method_nested_else_write, method_branch_parameter, method_int_assignments,
+            method_nested_else_write, method_branch_int_plans,
+            method_branch_parameter, method_int_assignments,
             method: method_name, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_arguments, main_int_locals, main_init_plans, argument_sources, argument_plans,
@@ -2121,6 +2166,7 @@ impl PreparedPrivateSelfMethod {
             && self.method_nested_else_calculation == fresh.method_nested_else_calculation
             && self.method_nested_true_write == fresh.method_nested_true_write
             && self.method_nested_else_write == fresh.method_nested_else_write
+            && self.method_branch_int_plans == fresh.method_branch_int_plans
             && self.method_branch_parameter == fresh.method_branch_parameter
             && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method && self.method_span == fresh.method_span
@@ -2420,6 +2466,18 @@ impl PreparedPrivateSelfMethod {
                         PrivateSelfMethodRuntimeError::WrongReceiver,
                     )?,
                 ),
+                Some(PrivateSelfApprovedBranchWrite::CheckedIntAt(span)) => {
+                    // 僅被真 if/else/巢狀 bool 選中的 NodeSpan 才能
+                    // 在唯一 self ExclusiveWrite Ticket 持有期間
+                    // 真正讀取方法 int frame；未選葉零算術操作。
+                    let plan = self.method_branch_int_plans.get(&span)
+                        .ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                    Some(plan.evaluate(&parameter_frame).map_err(|reason| match reason {
+                        PrivateScalarCallRuntimeError::IntegerOverflow =>
+                            PrivateSelfMethodRuntimeError::IntegerOverflow,
+                        _ => PrivateSelfMethodRuntimeError::WrongReceiver,
+                    })?)
+                }
                 None => None,
             };
             let direct_parameter_write = self.write_parameter.map(|id|
