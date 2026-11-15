@@ -328,7 +328,7 @@ mod g18_t4_fifo_missing_ready_conservation_tests {
         let live = q.submit(&plan).unwrap();
         let issue = q.ready_issues.remove(1);
         let receipt = q.wake_order.pop().unwrap();
-        assert_eq!(issue.unwrap().kind, PrivateScalarReadyIssueKind::Woken);
+        assert_eq!(issue.kind, PrivateScalarReadyIssueKind::Woken);
         assert_eq!(q.shutdown(), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.ready_ids(), [live]);
         assert_eq!(q.status(live), Some(PrivateDeferredAwaitStatus::Prepared));
