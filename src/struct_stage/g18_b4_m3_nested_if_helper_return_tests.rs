@@ -163,7 +163,7 @@ return owner.read(true)
         let mut tampered=PreparedPrivateSelfMethod::prepare(SOURCE).unwrap();
         tampered.method_nested_else_calculation=Some(PrivateSelfIntReturn::Constant(-4));
         assert!(matches!(tampered.execute(),Err(PrivateSelfMethodPrepareError::SourceChanged)));
-        let illegal=SOURCE.replace("return helper(4,8)","return helper(4,1+helper(2,1))");
+        let illegal=SOURCE.replace("return helper(4,8)","return helper(4,1+self.n)");
         assert!(matches!(PreparedPrivateSelfMethod::prepare(&illegal),
             Err(PrivateSelfMethodPrepareError::Check(_)) |
             Err(PrivateSelfMethodPrepareError::Unsupported(_))));
