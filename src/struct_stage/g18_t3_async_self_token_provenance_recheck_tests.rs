@@ -111,9 +111,9 @@ return await owner.read()
     fn t3_async_token_偷改方法async宣告Token也不能忽略原來源() {
         let mut plan = checked();
         let index=plan.verified.tokens.iter().position(|token|
-            matches!(&token.kind,TokenKind::Name(word) if word=="async")
+            matches!(&token.kind,TokenKind::Keyword(word) if word=="async")
         ).expect("原async fn頭的Lexer身分");
-        plan.verified.tokens[index].kind = TokenKind::Name("sync".to_owned());
+        plan.verified.tokens[index].kind = TokenKind::Keyword("sync".to_owned());
         rejected(plan);
     }
 
