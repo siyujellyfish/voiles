@@ -64,9 +64,13 @@ mod g18_t4_pending_cancel_evidence_tests {
         q.wake(completed).unwrap();
         assert_eq!(q.drive_one().unwrap(),
             Some((completed, PrivateScalarGraphPoll::Completed)));
+        // 真待命工作必須先由合法 submit 簽發；已完成工作
+        // 被偽造回 Prepared 之後，新增 submit 應在全域前檢拒絕。
+        let pending = q.submit(&plan).unwrap();
         q.jobs.get_mut(&completed).unwrap().continuation.status =
             PrivateDeferredAwaitStatus::Prepared;
-        let pending = q.submit(&plan).unwrap();
+        assert!(matches!(q.submit(&plan),
+            Err(PrivateScalarCooperativeError::Engine)));
         let before_ready = q.ready_ids();
         assert_eq!(q.cancel(completed), Err(PrivateScalarCooperativeError::Engine));
         assert_eq!(q.shutdown(), Err(PrivateScalarCooperativeError::Engine));

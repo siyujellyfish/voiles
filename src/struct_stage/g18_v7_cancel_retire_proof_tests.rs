@@ -160,9 +160,18 @@ mod g18_v7_cancel_retire_proof_tests {
         assert_eq!(queue.drive_one().unwrap(),
             Some((finished, PrivateScalarGraphPoll::Suspended)));
         queue.wake(finished).unwrap();
-        // 未啟動工作排在前方；只移走它的 ready token，
-        // 不執行，也不讓其取得已完成來源的真身份。
-        queue.ready.retain(|candidate| *candidate != unstarted);
+        // 未啟動工作排在前方；直接刪去其合法 ready token
+        // 現已會由全域守恆拒絕，不能靠竄改佇列跳過身份。
+        let original = queue.ready.remove(0).unwrap();
+        assert_eq!(original, unstarted);
+        assert_eq!(queue.drive_one(),
+            Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(queue.drive_order().len(), 1);
+        queue.ready.push_front(unstarted);
+        // 真合法取消 Prepared 工作才會把它的 token 移出 FIFO。
+        // 之後即使把另一份成功結果移植給已取消的工作，
+        // 原 poll／取消歷史仍須拒絕假退休。
+        queue.cancel(unstarted).unwrap();
         assert_eq!(queue.drive_one().unwrap(),
             Some((finished, PrivateScalarGraphPoll::Completed)));
         let result = queue.jobs.get_mut(&finished).unwrap()
