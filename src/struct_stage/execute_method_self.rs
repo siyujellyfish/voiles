@@ -1632,7 +1632,13 @@ impl PreparedPrivateSelfMethod {
         let mut seen_assignment = false;
         for (index, statement) in method.body.statements.iter().enumerate()
             .take(method.body.statements.len() - 1) {
-            if (write_value.is_some() || method_branch.is_some()) && index == 0 {
+            // 原 M2 首句 FieldAssign 由真正欄位寫入計畫處理，
+            // 不屬於 Copyable int 局部宣告／重賦值群；
+            // 形參來源和 Lexer 常值來源必須同走這個已核准
+            // 的前置語句，否則會把原 Checker 可寫 self
+            // 的合法 FieldAssign 錯判成「未核准局部」。
+            if (write_value.is_some() || write_parameter.is_some()
+                || method_branch.is_some()) && index == 0 {
                 continue;
             }
             match &statement.kind {
