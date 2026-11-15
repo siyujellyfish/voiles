@@ -355,4 +355,149 @@ mod g18_t4_fifo_missing_ready_conservation_tests {
         assert_eq!(q.cancellation_order.pop(), Some(id + 1));
         assert_eq!(q.drive_one().unwrap(), None);
     }
+
+    #[test]
+    fn t4_missing_真退休完成後整段pollwake與授權被同步抹除不能假空() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = suspend(&mut q, &plan);
+        q.wake(id).unwrap();
+        assert_eq!(q.drive_one().unwrap(),
+            Some((id, PrivateScalarGraphPoll::Completed)));
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Completed(_)));
+        assert_eq!(q.retired.len(), 1);
+        let original_poll = q.drive_order.clone();
+        let original_wakes = q.wake_order.clone();
+        let original_issues = q.ready_issues.clone();
+        q.drive_order.clear();
+        q.wake_order.clear();
+        q.ready_issues.retain(|issue|
+            issue.kind == PrivateScalarReadyIssueKind::Submitted);
+        // 只看空 jobs/ready 與成對空 wake/issue 的舊稽核
+        // 會接受這種已完成工作消失的全部執行證據。
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert!(q.ready_ids().is_empty());
+        assert_eq!(q.next_id, id);
+        q.drive_order = original_poll;
+        q.wake_order = original_wakes;
+        q.ready_issues = original_issues;
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_真退休取消後同步清空poll取消歷史仍不能假空() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = suspend(&mut q, &plan);
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(Some(_))));
+        let polls = std::mem::take(&mut q.drive_order);
+        let cancelled = std::mem::take(&mut q.cancellation_order);
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert!(q.ready_ids().is_empty());
+        q.drive_order = polls;
+        q.cancellation_order = cancelled;
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_已退休唯一終態收據被刪除不可續發同一工作身份() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = q.submit(&plan).unwrap();
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        let receipt = q.retired.remove(&id).unwrap();
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.next_id, id);
+        q.retired.insert(id, receipt);
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn t4_missing_兩個退休取消歷史交換次序即使數量相同亦拒絕() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let first = q.submit(&plan).unwrap();
+        let second = q.submit(&plan).unwrap();
+        q.cancel(first).unwrap();
+        q.cancel(second).unwrap();
+        for id in [second, first] {
+            assert!(matches!(q.retire_terminal(id).unwrap(),
+                PrivateScalarRetiredJob::Cancelled(None)));
+        }
+        assert_eq!(q.cancellation_order(), [first, second]);
+        q.cancellation_order.swap(0, 1);
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        q.cancellation_order.swap(0, 1);
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), second + 1);
+    }
+
+    #[test]
+    fn t4_missing_仍有Prepared時退休收據缺失不得先部分shutdown() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let finished = q.submit(&plan).unwrap();
+        q.cancel(finished).unwrap();
+        assert!(matches!(q.retire_terminal(finished).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        let pending = q.submit(&plan).unwrap();
+        let receipt = q.retired.remove(&finished).unwrap();
+        assert_eq!(q.shutdown(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.status(pending), Some(PrivateDeferredAwaitStatus::Prepared));
+        assert_eq!(q.ready_ids(), [pending]);
+        assert_eq!(q.cancellation_order(), [finished]);
+        q.retired.insert(finished, receipt);
+        assert_eq!(q.shutdown().unwrap(), [pending]);
+        assert_eq!(q.cancellation_order(), [finished, pending]);
+    }
+
+    #[test]
+    fn t4_missing_兩個退休真poll位置對換不能冒充同數量歷史() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let first = suspend(&mut q, &plan);
+        let second = suspend(&mut q, &plan);
+        for id in [second, first] {
+            q.cancel(id).unwrap();
+            assert!(matches!(q.retire_terminal(id).unwrap(),
+                PrivateScalarRetiredJob::Cancelled(Some(_))));
+        }
+        assert_eq!(q.drive_order.len(), 2);
+        q.drive_order.swap(0, 1);
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        q.drive_order.swap(0, 1);
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), second + 1);
+    }
+
+    #[test]
+    fn t4_missing_退休Cancelled收據篡改為Succeeded不能掩蓋未完成工作() {
+        let plan = checked();
+        let mut q = PrivateScalarCooperativeQueue::new();
+        let id = q.submit(&plan).unwrap();
+        q.cancel(id).unwrap();
+        assert!(matches!(q.retire_terminal(id).unwrap(),
+            PrivateScalarRetiredJob::Cancelled(None)));
+        q.retired.get_mut(&id).unwrap().status =
+            PrivateDeferredAwaitStatus::Succeeded;
+        assert_eq!(q.drive_one(), Err(PrivateScalarCooperativeError::Engine));
+        assert_eq!(q.submit(&plan), Err(PrivateScalarCooperativeError::Engine));
+        q.retired.get_mut(&id).unwrap().status =
+            PrivateDeferredAwaitStatus::Cancelled;
+        assert_eq!(q.drive_one().unwrap(), None);
+        assert_eq!(q.submit(&plan).unwrap(), id + 1);
+    }
 }
