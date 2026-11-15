@@ -171,6 +171,8 @@ include!("struct_stage/execute_recursive_str.rs");
 // G18／P18.6：正式 Checker 已核准同步唯讀 self 的真 BorrowTicket。
 include!("struct_stage/execute_method_self.rs");
 include!("struct_stage/execute_method_nested_helper.rs");
+// V7/A1：同源 Checker async self 直接 await，跨 Rust 呼叫持有未啟動工作。
+include!("struct_stage/execute_method_async_deferred.rs");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
