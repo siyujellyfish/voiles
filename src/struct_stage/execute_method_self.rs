@@ -60,6 +60,10 @@ struct PrivateSelfMethodOutcome {
     /// 按來源先後排列；故障執行只容許已走到的合法前綴。
     expected_method_local_ids: Vec<DeclarationId>,
     expected_method_assignment_ids: Vec<DeclarationId>,
+    /// T3/B4/M3：原 main 真局部與方法直接實參的 CheckedScalar
+    /// 靜態 Call 總數。只有**全部**這些前置普通函式都真
+    /// 返回，才可能進入同步 self 方法並取得 BorrowTicket。
+    expected_pre_method_calls: usize,
     /// R05：真 BorrowSafety 簽發、方法 Return／Unwind 及歸還後
     /// 逐筆記錄；不再只靠方法布林旗標冒充退出已驗證。
     checked_loan: BorrowFact,
@@ -146,7 +150,24 @@ impl PrivateSelfMethodOutcome {
         let mut method_loan_seen = false;
         let mut method_loan_pending = false;
         let mut method_loan_active = false;
+        let mut pre_loan_calls_entered = 0usize;
+        let mut pre_loan_calls_completed = 0usize;
         for event in &self.exit_events {
+            // 真同步方法退出是此受限 main→self 工作圖最後
+            // 一條可觀察的 SharedCallExit 邊；之後不得再捏造
+            // 另一個普通函式框架、回傳或局部事件。
+            if method_exit_observed {
+                return false;
+            }
+            if !method_loan_seen {
+                if matches!(event, PrivateSharedCallExitEvent::FunctionEntered) {
+                    pre_loan_calls_entered += 1;
+                }
+                if matches!(event,
+                    PrivateSharedCallExitEvent::FunctionExited { returned: true }) {
+                    pre_loan_calls_completed += 1;
+                }
+            }
             if method_loan_pending && !matches!(event,
                 PrivateSharedCallExitEvent::FunctionEntered
                     | PrivateSharedCallExitEvent::UnwindStarted
@@ -260,6 +281,15 @@ impl PrivateSelfMethodOutcome {
             && method_exit_observed == self.method_entered
             && !method_loan_pending && !method_loan_active
             && (!self.method_entered || method_loan_seen)
+            // 不只驗證整份 Enter/Exit 次數，還要比對原 Checker
+            // main/實參 Call 圖在 self 借票前應完成的函式數量。
+            // 失敗未進方法時只允許已執行前綴，不能預設
+            // 尚未抵達的後續 helper 已產生 Enter 或 Returned。
+            && pre_loan_calls_entered <= self.expected_pre_method_calls
+            && pre_loan_calls_completed <= pre_loan_calls_entered
+            && (!self.method_entered
+                || (pre_loan_calls_entered == self.expected_pre_method_calls
+                    && pre_loan_calls_completed == self.expected_pre_method_calls))
             && self.ordinary_calls_completed <= self.ordinary_calls_entered
             && (!self.result.is_ok()
                 || self.ordinary_calls_completed == self.ordinary_calls_entered)
@@ -2467,6 +2497,14 @@ impl PreparedPrivateSelfMethod {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
         }
+        let expected_pre_method_calls = self.main_init_plans.iter()
+            .chain(self.argument_plans.iter())
+            .map(|expression| {
+                let mut calls = Vec::new();
+                expression.collect_calls(&mut calls);
+                calls.len()
+            })
+            .sum();
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
             ordinary_calls_completed, ordinary_calls_entered,
@@ -2490,6 +2528,7 @@ impl PreparedPrivateSelfMethod {
             expected_method_assignment_ids: self.method_int_assignments.iter().map(
                 |(id, _)| *id,
             ).collect(),
+            expected_pre_method_calls,
             checked_loan: self.loan, exit_events,
         };
         if !outcome.has_balanced_self_borrow_trace() {
