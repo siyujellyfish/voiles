@@ -18,6 +18,32 @@ enum PrivateSelfMethodRuntimeError {
     IntegerOverflow,
 }
 
+/// T3：方法真執行結果必帶原 Checker 來源的**完整 UTF-8 位元組**、
+/// 目標方法／呼叫 Span、唯一 owner DeclarationId 與真 self BorrowFact。
+/// 不只用同型別與已平衡的票據斷言此結果屬於某份 async 工作。
+/// 在仍活躍的原工作中保存獨立副本，防止兩份各自合法的
+/// Outcome 被互換後仍通過各自 SharedExit 的局部平衡檢查。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateSelfExecutionOrigin {
+    source: Box<[u8]>,
+    owner: DeclarationId,
+    method_span: crate::common_ir::NodeSpan,
+    call_span: crate::common_ir::NodeSpan,
+    self_loan: BorrowFact,
+}
+
+impl PrivateSelfExecutionOrigin {
+    fn from_plan(plan: &PreparedPrivateSelfMethod) -> Self {
+        Self {
+            source: plan.original.clone(),
+            owner: plan.owner_id,
+            method_span: plan.method_span,
+            call_span: plan.call_span,
+            self_loan: plan.loan,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PrivateSelfMethodOutcome {
     result: Result<i64, PrivateSelfMethodRuntimeError>,
@@ -26,6 +52,9 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+    /// 原方法執行結束前，從同一份已再驗的 Parser/Checker
+    /// 計畫獨立產生；不得在佇列醒來後依工作 ID 重新填入。
+    origin: PrivateSelfExecutionOrigin,
     /// V7：原 Checker 真直接 await async 方法的來源身分。
     awaited_method: bool,
     /// 動態抵達 await 並即將 Enter 方法時取得的真 self 票據
@@ -268,6 +297,11 @@ impl PrivateSelfMethodOutcome {
                 PrivateSharedCallExitEvent::LocalScopeEnded(_)
             ))).is_some_and(|(unwind, cleanup)| unwind < cleanup);
         self.ticket_returned
+            && self.origin.self_loan == self.checked_loan
+            && self.origin.owner == self.checked_loan.source
+            && !self.origin.source.is_empty()
+            && self.origin.call_span.start < self.origin.call_span.end
+            && self.origin.method_span.start < self.origin.method_span.end
             && (if self.awaited_method {
                 if self.method_entered {
                     self.await_start_loan_index.is_some_and(|index|
@@ -2836,6 +2870,7 @@ impl PreparedPrivateSelfMethod {
             .sum();
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            origin: PrivateSelfExecutionOrigin::from_plan(self),
             awaited_method: self.awaited_method, await_start_loan_index,
             ordinary_calls_completed, ordinary_calls_entered,
             branch_checked,
