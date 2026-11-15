@@ -150,7 +150,7 @@ return owner.read(false)
         for src in [
             SOURCE.replace("return helper(3,2)", "return helper(3,true)"),
             SOURCE.replace("return helper(3,2)", "return helper(3)"),
-            SOURCE.replace("return helper(3,2)", "return helper(3,helper(1,2))"),
+            SOURCE.replace("return helper(3,2)", "return helper(3,1+helper(1,2))"),
             SOURCE.replace("fn helper(a:int,b:int)->int", "fn helper(a:int,b:bool)->int")
                 .replace("return a+b", "return a"),
         ] {

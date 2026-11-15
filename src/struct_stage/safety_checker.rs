@@ -855,13 +855,32 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             _ => return Ok(()),
         };
         let Some(helper) = self.find_function(name) else { return Ok(()); };
+        // B4/M3：僅為辨識巢狀純 int helper 建立唯讀
+        // 原方法形參作用域，不提交值、票據或 Checker 事實；
+        // 真實型別／DeclarationId 仍於下方 self.evaluate 原位記錄。
+        let mut pure_caller = vec![Rc::new(HashMap::new())];
+        for parameter in &method.params {
+            if parameter.ty == "int" && parameter.name != "self" {
+                let id = DeclarationId(parameter.declaration_start);
+                Rc::make_mut(&mut pure_caller[0]).insert(
+                    parameter.name.clone(),
+                    Binding::new(
+                        id, "int".to_string(), false,
+                        ValueSlot::initialized(CopyPermission::Allowed), None, None,
+                    ),
+                );
+            }
+        }
         if awaited || helper.is_async || helper.name == "main"
             || helper.result_ty != "int" || helper.params.len() != args.len()
             || helper.body.statements.len() != 1
             || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
             || helper.params.iter().enumerate().any(|(i, p)|
                 helper.params[..i].iter().any(|q| q.name == p.name))
-            || !args.iter().all(|arg| approved_int_tree(arg, method)) {
+            || !args.iter().all(|arg|
+                approved_int_tree(arg, method)
+                    || self.method_direct_pure_int_helper_argument(arg, &pure_caller)
+            ) {
             return Ok(());
         }
         let names = helper.params.iter().map(|p| p.name.as_str()).collect::<Vec<_>>();
