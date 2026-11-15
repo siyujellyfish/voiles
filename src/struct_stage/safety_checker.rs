@@ -1008,11 +1008,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         &self, method: &Function, term: &Term,
     ) -> Result<(), Diagnostic> {
         // M3/B4：原 method_return_type 已完整核准 int
-        // 算術及其中同步 Copyable 呼叫；與已驗收的 self
+        // 算術及其中同步 Copyable 呼叫。即使頂層是
+        // Call(inner() + 2)，也必須由同一原 evaluate 記錄
+        // 引數內的全部 Call／Arithmetic TypedHIR，而非
+        // 僅在頂層 BinaryInt／Group 才產生真執行計畫。
+        // 與已驗收的 self
         // 欄位 RHS 共用同一正式 Checker evaluate→ScalarHIR
         // 簽發器。無 Call 的 FieldRead／Parameter 加減不
         // 偷造 HIR，仍由既有專用欄位 Return 計畫處理。
-        if matches!(&term.kind, TermKind::BinaryInt(_) | TermKind::Group(_)) {
+        if matches!(&term.kind,
+            TermKind::BinaryInt(_) | TermKind::Group(_)
+            | TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)
+        ) {
             // Group 是同一原 Parser 括號包覆的合法純值 AST，
             // 只有原 Checker 能證明內部具有純 helper 時才
             // 交付原 ScalarHIR；其餘 self.field 加減仍走
