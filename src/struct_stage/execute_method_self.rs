@@ -1895,7 +1895,10 @@ impl PreparedPrivateSelfMethod {
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "缺少正式 Checker 的 VerifiedMethodSafety",
             ))?;
-        let required_kind = if write_value.is_some()
+        // 原 Checker MethodSafety 的 self_borrow 以實際欄位
+        // 寫入推導；形參動態值寫入與 Lexer 常值寫入一樣
+        // 必須持唯一 ExclusiveWrite，不可誤判成 SharedRead。
+        let required_kind = if write_value.is_some() || write_parameter.is_some()
             || method_branch_write.is_some() || method_branch_else_write.is_some()
             || method_nested_true_write.is_some() || method_nested_else_write.is_some() {
             BorrowKind::ExclusiveWrite
