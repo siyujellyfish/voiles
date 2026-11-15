@@ -1568,6 +1568,8 @@ include!("struct_stage/g18_t3_async_self_token_provenance_recheck_tests.rs");
 include!("struct_stage/g18_t3_scalar_async_frozen_token_recheck_tests.rs");
 // G18／V7-A1/E3：async self 直接await延遲保留、喚醒與取消真驗收。
 include!("struct_stage/g18_v7_async_self_deferred_session_tests.rs");
+// V7／E2：同一原Checker async self 真Ready FIFO、轉移收據與整批取消。
+include!("struct_stage/g18_v7_async_self_fifo_receipts_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");
