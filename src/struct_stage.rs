@@ -788,6 +788,7 @@ impl VerifiedDeclarationFacts {
     /// 動態資源實例、所有權或尚未核准的完整 CFG。
     fn scalar_hir_is_consistent(
         &self, hir: &crate::common_ir::VerifiedScalarHir, text: &str,
+        structs: &HashMap<String, StructDecl>,
     ) -> bool {
         // 由同一個公私正式 Typed HIR 閘門驗證來源 UTF-8、
         // 三類 NodeIdentity 與已讀取運算式的型別一致性。
@@ -799,6 +800,27 @@ impl VerifiedDeclarationFacts {
                         .is_some_and(|decl| decl.declaration.0 <= entry.span.start
                             && crate::common_ir::ScalarType::from_name(decl.ty)
                                 == Some(entry.resolved.ty))
+                    || structs.values().flat_map(|definition|
+                        definition.methods.iter()
+                    ).any(|method| {
+                        // M2：原 Checker 的同步方法 int 形參只在
+                        // VerifiedTypedMember(Parameter) 身分表，
+                        // 未重建為擁有者 TypedDeclaration；僅接受
+                        // 原 Parser 真 method 範圍內、與該方法
+                        // 參數原宣告身分／型別／名稱完全一致的引用。
+                        // 公開與普通私有函式的既有宣告檢查不放寬。
+                        entry.span.start >= method.start
+                            && entry.span.end <= method.end
+                            && method.params.iter().any(|parameter|
+                                entry.resolved.declaration
+                                    == DeclarationId(parameter.declaration_start)
+                                && crate::common_ir::ScalarType::from_name(
+                                    &parameter.ty
+                                ) == Some(entry.resolved.ty)
+                                && text.get(entry.span.start..entry.span.end)
+                                    == Some(parameter.name.as_str())
+                            )
+                    })
             })
             && hir.verified_assignments().all(|entry| {
                 self.typed_declaration(entry.resolved.declaration)
@@ -1129,7 +1151,9 @@ impl VerifiedSafetyPlan {
             && self.declarations.evidence_is_consistent(structs, text)
             && self.declarations.operations_match_verified_ast(structs, functions)
             && self.member_sources_are_consistent(structs, functions, text)
-            && self.declarations.scalar_hir_is_consistent(&self.scalar_hir, text)
+            && self.declarations.scalar_hir_is_consistent(
+                &self.scalar_hir, text, structs,
+            )
             && verified_private_syntax_roles(text, structs, functions)
                 .is_some_and(|roles|
                     crate::common_ir::syntax_covers_verified_scalar_hir(
