@@ -10,6 +10,17 @@ struct PrivateDeferredSelfAwaitJob {
     outcome: Option<PrivateSelfMethodOutcome>,
 }
 
+/// E2：每次就緒、喚醒和取消均以原工作身分追加真轉移收據；
+/// 除了原 ready 佇列及最後 status，還需要一份獨立轉移歷史，
+/// 否則只要同時抹除兩本帳就可偽裝成沒有曾經執行的工作。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateSelfReadyTransition {
+    Prepared(u64),
+    Suspended(u64),
+    Woken(u64, PrivateDeferredAwaitStatus),
+    Cancelled(u64),
+}
+
 /// E1-A 延遲、E3-A 未啟動安全點取消：不以名稱重編譯另一份
 /// 方法、不移動已經進入的 self 動態框架，也不偷造 P16 事件。
 #[derive(Default)]
@@ -17,14 +28,152 @@ struct PrivateCheckedDeferredSelfAwaitQueue {
     jobs: BTreeMap<u64, PrivateDeferredSelfAwaitJob>,
     next_id: u64,
     execution_order: Vec<u64>,
+    /// 真單執行緒就緒工作；只能由明確 suspend 發行一次憑據。
+    ready: std::collections::VecDeque<u64>,
+    /// 來源獨立的追加式工作轉移收據，保留取消及已完成歷史。
+    ready_history: Vec<PrivateSelfReadyTransition>,
+    cancellation_order: Vec<u64>,
 }
 
 impl PrivateCheckedDeferredSelfAwaitQueue {
     fn new() -> Self { Self::default() }
 
+    /// 每次會改動真任務狀態之前完整重播原發行、就緒、完成及
+    /// 取消歷史，獨立比對 ready FIFO、工作狀態、兩份終態帳。
+    /// 不依賴單一空 ready／空執行結果就宣稱從未有工作。
+    fn verify_ready_history(&self) -> Result<(), PrivateDeferredAwaitError> {
+        use PrivateDeferredAwaitStatus as S;
+        use PrivateSelfReadyTransition as T;
+        let mut statuses = BTreeMap::<u64, S>::new();
+        let mut ready = std::collections::VecDeque::<u64>::new();
+        let mut executed = Vec::<u64>::new();
+        let mut cancelled = Vec::<u64>::new();
+        let mut issued = 0u64;
+        for event in &self.ready_history {
+            match *event {
+                T::Prepared(id) => {
+                    if issued.checked_add(1) != Some(id)
+                        || statuses.insert(id, S::Prepared).is_some() {
+                        return Err(PrivateDeferredAwaitError::SourceChanged);
+                    }
+                    issued = id;
+                }
+                T::Suspended(id) => {
+                    if statuses.get(&id) != Some(&S::Prepared)
+                        || ready.contains(&id) {
+                        return Err(PrivateDeferredAwaitError::SourceChanged);
+                    }
+                    statuses.insert(id, S::Suspended);
+                    ready.push_back(id);
+                }
+                T::Woken(id, terminal) => {
+                    if statuses.get(&id) != Some(&S::Suspended)
+                        || !matches!(terminal, S::Succeeded | S::Failed) {
+                        return Err(PrivateDeferredAwaitError::SourceChanged);
+                    }
+                    let Some(index) = ready.iter().position(|candidate|
+                        *candidate == id) else {
+                        return Err(PrivateDeferredAwaitError::SourceChanged);
+                    };
+                    ready.remove(index);
+                    statuses.insert(id, terminal);
+                    executed.push(id);
+                }
+                T::Cancelled(id) => {
+                    let Some(status) = statuses.get(&id).copied() else {
+                        return Err(PrivateDeferredAwaitError::SourceChanged);
+                    };
+                    if !matches!(status, S::Prepared | S::Suspended) {
+                        return Err(PrivateDeferredAwaitError::SourceChanged);
+                    }
+                    if status == S::Suspended {
+                        let Some(index) = ready.iter().position(|candidate|
+                            *candidate == id) else {
+                            return Err(PrivateDeferredAwaitError::SourceChanged);
+                        };
+                        ready.remove(index);
+                    }
+                    statuses.insert(id, S::Cancelled);
+                    cancelled.push(id);
+                }
+            }
+        }
+        if issued != self.next_id || ready != self.ready
+            || executed != self.execution_order
+            || cancelled != self.cancellation_order
+            || statuses.len() != self.jobs.len() {
+            return Err(PrivateDeferredAwaitError::SourceChanged);
+        }
+        for (id, status) in statuses {
+            let Some(job) = self.jobs.get(&id) else {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            };
+            if job.status != status {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            }
+            let valid = match status {
+                S::Prepared | S::Suspended =>
+                    job.plan.is_some() && job.outcome.is_none(),
+                S::Succeeded | S::Failed =>
+                    job.plan.is_none() && job.outcome.as_ref().is_some_and(|outcome|
+                        outcome.awaited_method && outcome.ticket_returned
+                            && outcome.result.is_ok() == (status == S::Succeeded)
+                            && outcome.has_balanced_self_borrow_trace()),
+                S::Cancelled => job.plan.is_none() && job.outcome.is_none(),
+                S::Running => false,
+            };
+            if !valid {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            }
+        }
+        Ok(())
+    }
+
+    fn ready_ids(&self) -> Vec<u64> {
+        self.ready.iter().copied().collect()
+    }
+
+    fn cancellation_order(&self) -> &[u64] {
+        &self.cancellation_order
+    }
+
+    /// E2：呼叫者明確驅動就緒 FIFO 第一份工作，不存在背景
+    /// 自動排程；一份方法直到 Returned／Unwind+LoanReturned 後
+    /// 才可能開始另一份，不容交錯持有兩個 self 借票框架。
+    fn drive_next(
+        &mut self,
+    ) -> Result<Option<(u64, &PrivateSelfMethodOutcome)>, PrivateDeferredAwaitError> {
+        self.verify_ready_history()?;
+        let Some(id) = self.ready.front().copied() else {
+            return Ok(None);
+        };
+        let result = self.wake(id)?;
+        Ok(Some((id, result)))
+    }
+
+    /// E3：只在所有工作收據、就緒及終態均可對帳時，才按
+    /// 逆登錄順序取消其餘尚未啟動工作，避免取消一半才發現
+    /// 別份真工作的 Ready／BorrowTicket 已被篡改。
+    fn shutdown(&mut self) -> Result<Vec<u64>, PrivateDeferredAwaitError> {
+        self.verify_ready_history()?;
+        let pending = self.jobs.iter().rev().filter_map(|(&id, job)|
+            matches!(job.status,
+                PrivateDeferredAwaitStatus::Prepared
+                    | PrivateDeferredAwaitStatus::Suspended).then_some(id)
+        ).collect::<Vec<_>>();
+        for id in &pending {
+            self.cancel(*id)?;
+        }
+        Ok(pending)
+    }
+
     fn prepare(
         &mut self, source: &str,
     ) -> Result<u64, PrivateSelfMethodPrepareError> {
+        self.verify_ready_history().map_err(|_|
+            PrivateSelfMethodPrepareError::Unsupported(
+                "V7 async self FIFO 歷史不一致，拒絕配發新工作 ID",
+            ))?;
         let plan = PreparedPrivateSelfMethod::prepare(source)?;
         // 此批僅允許 main 真建構一份合法 int struct owner，
         // 下一句即直接 await async self，沒有此前可執行
@@ -59,6 +208,7 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
             plan: Some(plan), status: PrivateDeferredAwaitStatus::Prepared,
             outcome: None,
         });
+        self.ready_history.push(PrivateSelfReadyTransition::Prepared(id));
         Ok(id)
     }
 
@@ -75,18 +225,22 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
     /// 直到 Rust 呼叫者明確執行 wake 前，都只保存真 Checked
     /// source／AST／Token，沒有 self 借票、資源、幀或 Returned。
     fn suspend(&mut self, id: u64) -> Result<(), PrivateDeferredAwaitError> {
+        self.verify_ready_history()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateDeferredAwaitError::UnknownTask)?;
         if job.status != PrivateDeferredAwaitStatus::Prepared {
             return Err(PrivateDeferredAwaitError::WrongState);
         }
         job.status = PrivateDeferredAwaitStatus::Suspended;
+        self.ready.push_back(id);
+        self.ready_history.push(PrivateSelfReadyTransition::Suspended(id));
         Ok(())
     }
 
     /// Prepared／Suspended 均尚未建立任何動態 self 框架，
     /// 因此只撤銷工作計畫身分，不預寫不存在的取消資源事件。
     fn cancel(&mut self, id: u64) -> Result<(), PrivateDeferredAwaitError> {
+        self.verify_ready_history()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateDeferredAwaitError::UnknownTask)?;
         if !matches!(job.status,
@@ -94,8 +248,17 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
                 | PrivateDeferredAwaitStatus::Suspended) {
             return Err(PrivateDeferredAwaitError::AlreadyFinished);
         }
+        if job.status == PrivateDeferredAwaitStatus::Suspended {
+            let Some(index) = self.ready.iter().position(|candidate|
+                *candidate == id) else {
+                return Err(PrivateDeferredAwaitError::SourceChanged);
+            };
+            self.ready.remove(index);
+        }
         job.plan = None;
         job.status = PrivateDeferredAwaitStatus::Cancelled;
+        self.ready_history.push(PrivateSelfReadyTransition::Cancelled(id));
+        self.cancellation_order.push(id);
         Ok(())
     }
 
@@ -105,6 +268,7 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
     fn wake(
         &mut self, id: u64,
     ) -> Result<&PrivateSelfMethodOutcome, PrivateDeferredAwaitError> {
+        self.verify_ready_history()?;
         let job = self.jobs.get_mut(&id)
             .ok_or(PrivateDeferredAwaitError::UnknownTask)?;
         match job.status {
@@ -132,6 +296,14 @@ impl PrivateCheckedDeferredSelfAwaitQueue {
         };
         job.plan = None;
         job.outcome = Some(outcome);
+        let Some(index) = self.ready.iter().position(|candidate|
+            *candidate == id) else {
+            return Err(PrivateDeferredAwaitError::SourceChanged);
+        };
+        self.ready.remove(index);
+        self.ready_history.push(PrivateSelfReadyTransition::Woken(
+            id, job.status,
+        ));
         self.execution_order.push(id);
         Ok(job.outcome.as_ref().expect("只保留真自借票執行結果"))
     }
