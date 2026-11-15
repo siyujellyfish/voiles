@@ -1562,6 +1562,8 @@ include!("struct_stage/g18_b4_m3_grouped_helper_method_return_tests.rs");
 include!("struct_stage/g18_v7_async_self_direct_await_tests.rs");
 // G18／P18.5-T3：async self執行前封存Lexer/AST身份防偽。
 include!("struct_stage/g18_t3_async_self_token_provenance_recheck_tests.rs");
+// G18／P18.5-T3：普通async原Checker圖與協作FIFO重核原Lexer身分。
+include!("struct_stage/g18_t3_scalar_async_frozen_token_recheck_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");
