@@ -171,6 +171,8 @@ include!("struct_stage/execute_recursive_str.rs");
 // G18／P18.6：正式 Checker 已核准同步唯讀 self 的真 BorrowTicket。
 include!("struct_stage/execute_method_self.rs");
 include!("struct_stage/execute_method_nested_helper.rs");
+// V7/A1：同源 Checker async self 直接 await，跨 Rust 呼叫持有未啟動工作。
+include!("struct_stage/execute_method_async_deferred.rs");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoanBinding {
@@ -1564,6 +1566,8 @@ include!("struct_stage/g18_v7_async_self_direct_await_tests.rs");
 include!("struct_stage/g18_t3_async_self_token_provenance_recheck_tests.rs");
 // G18／P18.5-T3：普通async原Checker圖與協作FIFO重核原Lexer身分。
 include!("struct_stage/g18_t3_scalar_async_frozen_token_recheck_tests.rs");
+// G18／V7-A1/E3：async self 直接await延遲保留、喚醒與取消真驗收。
+include!("struct_stage/g18_v7_async_self_deferred_session_tests.rs");
 include!("struct_stage/g18_b4_m3_nested_pure_helper_method_local_tests.rs");
 include!("struct_stage/g18_b4_m3_method_argument_int_call_arithmetic_tests.rs");
 include!("struct_stage/g18_b4_m3_main_local_int_call_arithmetic_tests.rs");
