@@ -2296,6 +2296,11 @@ impl PreparedPrivateSelfMethod {
     fn matches_source(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false; };
         self.original == fresh.original
+            // T3：此入口已用唯一原 Lexer／Parser／Checker 建立 fresh；
+            // 必須逐筆核對**完整** Token，不只查已使用的 Name/Type
+            // 角色。否則 method bool Group 原括號可能在 prepare 後
+            // 遭私有層更改卻仍因值葉相同而放行。
+            && self.verified.tokens == fresh.verified.tokens
             && self.struct_name == fresh.struct_name
             && self.owner == fresh.owner && self.owner_id == fresh.owner_id
             && self.owner_mutable == fresh.owner_mutable
