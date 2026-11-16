@@ -481,6 +481,9 @@ jobs:
       - name: G18 P18.4-B4 P18.6-M3 main可變布林原Checker重賦十項 Gate
         run: python3 tools/核對G18-P18.4-B4-M3主函式可變布林重賦.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 P18.6-M3 main原Parser跨型別逐語句真順序十項 Gate
+        run: python3 tools/核對G18-P18.4-B4-M3主函式跨型別逐語句順序.py --test-bin target/p02/p04_source_internal
+
       - name: G18 V7-A1 原Checker直接await async self方法十二項 Gate
         run: python3 tools/核對G18-V7-A1原Checker直接await非同步self方法.py --test-bin target/p02/p04_source_internal
 
