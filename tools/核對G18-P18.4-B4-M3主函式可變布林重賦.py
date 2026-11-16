@@ -13,7 +13,7 @@ PREFIX = "struct_stage::g18_b4_m3_main_bool_assignment_tests::"
 CASES = (
     "b4_bool_assign_原Checker_var_true更新false後方法零helper",
     "b4_bool_assign_原Checker_var_false更新true後方法只跑真選葉",
-    "b4_bool_assign_原Lexer合法Group常值與具名bool RHS可真求值",
+    "b4_bool_assign_原Lexer合法Group常值與具名bool_RHS可真求值",
     "b4_bool_assign_同一變數多次直線更新以最後真值傳方法",
     "b4_bool_assign_同一真DeclId自我複製只讀舊值再提交",
     "b4_bool_assign_交錯兩個可變bool正確保持逐筆原來源時序",
