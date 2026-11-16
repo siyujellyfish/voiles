@@ -2552,52 +2552,36 @@ impl PreparedPrivateSelfMethod {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         let mut main_values = BTreeMap::<DeclarationId, i64>::new();
-        // main bool 值槽來自原已核准常值宣告；讀取具名 bool 方法
-        // 實參必經同一 DeclarationId，不能由同名 int 或準備時
-        // 任意指定的 bool 常值冒充。純字面初始化不建立資源事件。
         let mut main_bool_values = BTreeMap::<DeclarationId, bool>::new();
-        if self.main_bool_sources.len() != self.main_bool_locals.len() {
+        if self.main_bool_sources.len() != self.main_bool_locals.len()
+            || self.main_int_locals.len() != self.main_init_plans.len()
+            || self.method_bool_sources.len() != self.method_bool_arguments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        for ((_, id, planned), source) in self.main_bool_locals.iter()
-            .zip(&self.main_bool_sources) {
-            // 真在原 main 作用域宣告位置讀取先前 bool 值槽，
-            // 不把 prepare 期間算出的別名值當成動態權威。
-            let actual = match source {
-                Some(source) => *main_bool_values.get(source)
-                    .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
-                None => *planned,
-            };
-            if actual != *planned || main_bool_values.insert(*id, actual).is_some() {
-                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        // R05／B4：任何真函式事件之前，先只讀驗證原 Parser
+        // 步驟清冊恰好涵蓋每筆宣告與賦值，且同類索引依序遞增。
+        // 來源篡改不得靠跳過某個 bool 宣告或重播 int helper 偷換帳。
+        let (mut next_bool, mut next_int, mut next_assign) = (0, 0, 0);
+        for step in &self.main_scalar_steps {
+            match step {
+                PrivateSelfMainScalarStep::BoolDeclare(index) if *index == next_bool =>
+                    next_bool += 1,
+                PrivateSelfMainScalarStep::IntDeclare(index) if *index == next_int =>
+                    next_int += 1,
+                PrivateSelfMainScalarStep::BoolAssign(index) if *index == next_assign =>
+                    next_assign += 1,
+                _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
             }
         }
-        if self.method_bool_sources.len() != self.method_bool_arguments.len() {
+        if next_bool != self.main_bool_locals.len()
+            || next_int != self.main_int_locals.len()
+            || next_assign != self.main_bool_assignments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
-        }
-        // 此批 bool 重賦值是無副作用的獨立直線子集；須先從原
-        // main 真值槽取完整 RHS 再提交目標，不能由 prepared
-        // 的相同 bool 數值偽造來源或讓失配發生在 self 借票後。
-        if !self.main_bool_assignments.is_empty() && !self.main_int_locals.is_empty() {
-            return Err(PrivateSelfMethodPrepareError::SourceChanged);
-        }
-        for (target, planned, source) in &self.main_bool_assignments {
-            if !main_bool_values.contains_key(target) {
-                return Err(PrivateSelfMethodPrepareError::SourceChanged);
-            }
-            let actual = match source {
-                Some(source) => *main_bool_values.get(source)
-                    .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
-                None => *planned,
-            };
-            if actual != *planned || main_bool_values.insert(*target, actual).is_none() {
-                return Err(PrivateSelfMethodPrepareError::SourceChanged);
-            }
         }
         let mut main_initialization_error = None;
-        // 普通函式可以在 self 方法開始前實際完成；與方法本體
-        // 及其真正 BorrowTicket 使用同一動態進退帳，不能在
-        // prepare 預寫假 FunctionEntered／Returned。
+        // 與一般函式共用真 Caller 動態進退帳。純 bool 宣告與
+        // 重賦不產生資源事件，int helper 在真正原語句位置才 Enter；
+        // 任何溢位中斷，後方 bool 更新與方法呼叫均不得執行。
         let mut exit_events = Vec::<PrivateSharedCallExitEvent>::new();
         let mut ordinary_calls_completed = 0usize;
         let mut ordinary_calls_entered = 0usize;
@@ -2607,36 +2591,65 @@ impl PreparedPrivateSelfMethod {
         let mut branch_else_write_applied = false;
         let mut nested_write_applied = false;
         let mut nested_else_write_applied = false;
-        for ((_, id, planned, _), initializer) in self.main_int_locals.iter()
-            .zip(&self.main_init_plans) {
-            let mut source_calls = Vec::new();
-            initializer.collect_calls(&mut source_calls);
-            let executed = if !source_calls.is_empty()
-                && private_self_approved_int_call_arithmetic(
-                    initializer, &self.method_helpers,
-                ) {
-                // 真 main int 局部在 self 借票前執行；原 Parser
-                // 算術左右各自可進入已核准普通函式，但任何
-                // RHS 故障不得假初始化後續 int 局部或方法。
-                private_self_execute_arithmetic_call(
-                    initializer, &main_values, &self.method_helpers,
-                    &mut exit_events, &mut ordinary_calls_entered,
-                    &mut ordinary_calls_completed,
-                )
-            } else {
-                initializer.evaluate(&main_values)
-            };
-            let actual = match executed {
-                Ok(value) => value,
-                Err(PrivateScalarCallRuntimeError::IntegerOverflow) => {
-                    main_initialization_error =
-                        Some(PrivateSelfMethodRuntimeError::IntegerOverflow);
-                    break;
+        for step in &self.main_scalar_steps {
+            match *step {
+                PrivateSelfMainScalarStep::BoolDeclare(index) => {
+                    let (_, id, planned) = &self.main_bool_locals[index];
+                    let actual = match self.main_bool_sources[index] {
+                        Some(source) => *main_bool_values.get(&source)
+                            .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                        None => *planned,
+                    };
+                    if actual != *planned
+                        || main_bool_values.insert(*id, actual).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
                 }
-                Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
-            };
-            if actual != *planned || main_values.insert(*id, actual).is_some() {
-                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                PrivateSelfMainScalarStep::BoolAssign(index) => {
+                    let (target, planned, source) = self.main_bool_assignments[index];
+                    if !main_bool_values.contains_key(&target) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    let actual = match source {
+                        Some(source) => *main_bool_values.get(&source)
+                            .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                        None => planned,
+                    };
+                    if actual != planned
+                        || main_bool_values.insert(target, actual).is_none() {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
+                PrivateSelfMainScalarStep::IntDeclare(index) => {
+                    let (_, id, planned, _) = &self.main_int_locals[index];
+                    let initializer = &self.main_init_plans[index];
+                    let mut source_calls = Vec::new();
+                    initializer.collect_calls(&mut source_calls);
+                    let executed = if !source_calls.is_empty()
+                        && private_self_approved_int_call_arithmetic(
+                            initializer, &self.method_helpers,
+                        ) {
+                        private_self_execute_arithmetic_call(
+                            initializer, &main_values, &self.method_helpers,
+                            &mut exit_events, &mut ordinary_calls_entered,
+                            &mut ordinary_calls_completed,
+                        )
+                    } else {
+                        initializer.evaluate(&main_values)
+                    };
+                    let actual = match executed {
+                        Ok(value) => value,
+                        Err(PrivateScalarCallRuntimeError::IntegerOverflow) => {
+                            main_initialization_error =
+                                Some(PrivateSelfMethodRuntimeError::IntegerOverflow);
+                            break;
+                        }
+                        Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                    };
+                    if actual != *planned || main_values.insert(*id, actual).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
             }
         }
         if self.argument_sources.len()
