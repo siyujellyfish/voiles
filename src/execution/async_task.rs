@@ -359,7 +359,7 @@ mod tests {
 // V7 A2／E3：將真正 P16 ResourceId 與 HC14 BorrowTicket 接到同一個
 // 內部暫停點退出工作框架。來源授權仍須由原 Checker 傳入：
 // 此層不解析 async fn，不簽發新的語言權限，也不是完整協程執行器。
-use crate::borrow_safety::{BorrowFact, BorrowSafetyError, BorrowTicket};
+use crate::borrow_safety::{BorrowFact, BorrowKind, BorrowSafetyError, BorrowTicket};
 use crate::owned_str_runtime::{self, OwnedStrRuntime, ResourceEvent, StrRuntimeError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -528,6 +528,31 @@ impl AsyncSafePointFrames {
         Ok(())
     }
 
+    /// T3／E4：真正錯誤退出前，跨所有動態框架對 HC14
+    /// Tracker 的票據身分、靜態 BorrowFact、重數與唯一序號整批
+    /// 唯讀預檢。不得先清理內框架資源，再在外框架發現票據被
+    /// 竄改；此檢查不新增靜態借用權限，也不釋放任何一張票據。
+    fn verify_unwind_loans(&self) -> Result<(), AsyncSafePointError> {
+        let mut tickets = Vec::<BorrowTicket>::new();
+        let mut facts = Vec::<BorrowFact>::new();
+        for frame in &self.frames {
+            for &(ticket, fact) in frame {
+                if ticket.fact() != fact || tickets.contains(&ticket) {
+                    return Err(AsyncSafePointError::Borrow(
+                        BorrowSafetyError::SnapshotMismatch,
+                    ));
+                }
+                // SharedRead 是只驗證票據存活的最小權限；
+                // 獨占票據亦能通過此核對，但不能由此建立寫入權。
+                self.loans.check_ticket_access(ticket, BorrowKind::SharedRead)?;
+                tickets.push(ticket);
+                facts.push(fact);
+            }
+        }
+        self.loans.verify_static_snapshot(facts.into_iter())?;
+        Ok(())
+    }
+
     /// E3／E4 同一個真 P16／HC14 退出核心：
     /// - 安全點取消時，跨 await 的有效票據早已被 VB15-01-A 禁止；
     /// - 執行中真 RuntimeFailure 則逐框架先還仍有效的 HC14 票據，
@@ -536,6 +561,11 @@ impl AsyncSafePointFrames {
     fn unwind_frames(
         &mut self, target: AsyncSafePointState, release_live_loans: bool,
     ) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
+        if release_live_loans {
+            // 非法票據不可導致子框架先 Released，父框架才失敗。
+            // 先確定全幀的真 tracker 序號及 BorrowFact 再依原序退出。
+            self.verify_unwind_loans()?;
+        }
         let count = self.frames.len();
         while !self.frames.is_empty() {
             let depth = self.frames.len();
@@ -1446,6 +1476,122 @@ mod v7_a2_safe_point_tests {
         assert_eq!(session.status(id), Some(DirectAwaitStatus::Cancelled));
         assert_eq!(frames.state, AsyncSafePointState::Cancelled);
         assert!(session.execution_order().is_empty());
+    }
+
+    #[test]
+    fn v7_t3_多框架父票據事實污染錯誤退出前須零部分資源釋放() {
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let outer = frames.declare_owned("父", "UTF-8父🪼").unwrap();
+        let outer_fact = BorrowFact::new(DeclarationId(9901), BorrowKind::SharedRead);
+        let outer_ticket = frames.acquire_for_frame(outer_fact).unwrap();
+        frames.enter_frame().unwrap();
+        let inner = frames.declare_owned("子", "UTF-8子🪼").unwrap();
+        let inner_fact = BorrowFact::new(DeclarationId(9902), BorrowKind::ExclusiveWrite);
+        let inner_ticket = frames.acquire_for_frame(inner_fact).unwrap();
+        let error = RuntimeFailure::global("原P17真動態故障");
+        // 以原內部錯序反例：只竄改父框架的 BorrowFact。
+        // 舊退出順序會先還內票和釋放子資源，才在父框架發現失配。
+        frames.frames[0][0].1 = BorrowFact::new(DeclarationId(9999), BorrowKind::SharedRead);
+        assert_eq!(frames.fail_running(error.clone()).err(), Some(
+            AsyncSafePointError::Borrow(BorrowSafetyError::SnapshotMismatch)
+        ));
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert_eq!(frames.frames.len(), 2);
+        assert!(frames.exit_events.is_empty());
+        assert_eq!(frames.resources.events(), &[
+            ResourceEvent::Created(outer), ResourceEvent::Created(inner),
+        ]);
+        assert_eq!(frames.resources.resource_id("父"), Ok(outer));
+        assert_eq!(frames.resources.resource_id("子"), Ok(inner));
+        assert!(frames.loans.check_ticket_access(
+            outer_ticket, BorrowKind::SharedRead).is_ok());
+        assert!(frames.loans.check_ticket_access(
+            inner_ticket, BorrowKind::ExclusiveWrite).is_ok());
+        frames.frames[0][0].1 = outer_fact;
+        let failed = frames.fail_running(error.clone()).unwrap();
+        assert_eq!(failed.error, error);
+        assert_eq!(failed.evidence.unwound_frames, 2);
+        assert_eq!(failed.evidence.resource_events, [
+            ResourceEvent::Created(outer), ResourceEvent::Created(inner),
+            ResourceEvent::Released(inner), ResourceEvent::Released(outer),
+        ]);
+        assert_eq!(failed.evidence.exit_events, [
+            AsyncSafeExitEvent::LoanReturned(inner_ticket),
+            AsyncSafeExitEvent::ResourceReleased(inner),
+            AsyncSafeExitEvent::FrameUnwound(2),
+            AsyncSafeExitEvent::LoanReturned(outer_ticket),
+            AsyncSafeExitEvent::ResourceReleased(outer),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
+    }
+
+    #[test]
+    fn v7_t3_跨框架重播同一真票據即使靜態重數相同亦不可先退出子框架() {
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let outer = frames.declare_owned("父", "父源").unwrap();
+        let fact = BorrowFact::new(DeclarationId(9903), BorrowKind::SharedRead);
+        let outer_ticket = frames.acquire_for_frame(fact).unwrap();
+        frames.enter_frame().unwrap();
+        let inner = frames.declare_owned("子", "子源").unwrap();
+        let inner_ticket = frames.acquire_for_frame(fact).unwrap();
+        assert_ne!(outer_ticket, inner_ticket);
+        // 兩筆真共享票據的 BorrowFact 數量相同，但父票據被重播內票序號。
+        frames.frames[0][0].0 = inner_ticket;
+        assert_eq!(frames.fail_running(RuntimeFailure::global("原錯誤")).err(), Some(
+            AsyncSafePointError::Borrow(BorrowSafetyError::SnapshotMismatch)
+        ));
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert_eq!(frames.frames.len(), 2);
+        assert!(frames.exit_events.is_empty());
+        assert_eq!(frames.resources.events(), &[
+            ResourceEvent::Created(outer), ResourceEvent::Created(inner),
+        ]);
+        assert!(frames.loans.check_ticket_access(
+            outer_ticket, BorrowKind::SharedRead).is_ok());
+        assert!(frames.loans.check_ticket_access(
+            inner_ticket, BorrowKind::SharedRead).is_ok());
+        frames.frames[0][0].0 = outer_ticket;
+        let failed = frames.fail_running(RuntimeFailure::global("原錯誤")).unwrap();
+        assert_eq!(failed.evidence.resource_events, [
+            ResourceEvent::Created(outer), ResourceEvent::Created(inner),
+            ResourceEvent::Released(inner), ResourceEvent::Released(outer),
+        ]);
+        assert_eq!(failed.evidence.exit_events.iter().filter(|event|
+            matches!(event, AsyncSafeExitEvent::LoanReturned(_))).count(), 2);
+    }
+
+    #[test]
+    fn v7_t3_退出前追蹤器多出無幀票據不得先釋放原框架資源() {
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("原資源", "借用事件🪼").unwrap();
+        let fact = BorrowFact::new(DeclarationId(9904), BorrowKind::SharedRead);
+        let owner = frames.acquire_for_frame(fact).unwrap();
+        // 額外的真票據未被任何動態框架承擔；必須整份帳拒絕。
+        let foreign = frames.loans.acquire(
+            DeclarationId(9905), BorrowKind::SharedRead,
+        ).unwrap();
+        assert_eq!(frames.fail_running(RuntimeFailure::global("原錯誤")).err(), Some(
+            AsyncSafePointError::Borrow(BorrowSafetyError::SnapshotMismatch)
+        ));
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert_eq!(frames.resources.resource_id("原資源"), Ok(resource));
+        assert_eq!(frames.resources.events(), &[ResourceEvent::Created(resource)]);
+        assert!(frames.exit_events.is_empty());
+        assert!(frames.loans.check_ticket_access(owner, BorrowKind::SharedRead).is_ok());
+        assert!(frames.loans.check_ticket_access(foreign, BorrowKind::SharedRead).is_ok());
+        frames.loans.release(foreign).unwrap();
+        let failed = frames.fail_running(RuntimeFailure::global("原錯誤")).unwrap();
+        assert_eq!(failed.evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(failed.evidence.exit_events, [
+            AsyncSafeExitEvent::LoanReturned(owner),
+            AsyncSafeExitEvent::ResourceReleased(resource),
+            AsyncSafeExitEvent::FrameUnwound(1),
+        ]);
     }
 
 }
