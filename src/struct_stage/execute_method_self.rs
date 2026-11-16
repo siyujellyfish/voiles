@@ -534,6 +534,7 @@ enum PrivateSelfMainScalarStep {
     BoolDeclare(usize),
     IntDeclare(usize),
     BoolAssign(usize),
+    IntAssign(usize),
 }
 
 struct PreparedPrivateSelfMethod {
@@ -624,6 +625,9 @@ struct PreparedPrivateSelfMethod {
     main_bool_assignments: Vec<(DeclarationId, bool, Option<DeclarationId>)>,
     /// 以原 Parser 逐語句記錄跨型別真執行次序。
     main_scalar_steps: Vec<PrivateSelfMainScalarStep>,
+    /// main var int 的原 Parser 真賦值目標與 Checker ScalarHIR，
+    /// 保存準備階段的期望值但執行時必重新求真 RHS。
+    main_int_assignments: Vec<(DeclarationId, i64, PrivateScalarReturnExpr)>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -903,6 +907,9 @@ impl PreparedPrivateSelfMethod {
         let mut main_bool_assignments =
             Vec::<(DeclarationId, bool, Option<DeclarationId>)>::new();
         let mut main_scalar_steps = Vec::<PrivateSelfMainScalarStep>::new();
+        let mut main_int_assignments =
+            Vec::<(DeclarationId, i64, PrivateScalarReturnExpr)>::new();
+        let mut known_int_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
@@ -914,6 +921,62 @@ impl PreparedPrivateSelfMethod {
             // 每個 Copyable int helper／bool 更新按相同直線圖執行，
             // 不能將 bool 副作用（即使純值）前移跨越 helper 出錯點。
             if let StmtKind::Assign(assignment) = &statement.kind {
+                if let Some(target) = known_int_bindings.get(&assignment.name).copied() {
+                    // 原 Checker 已驗證 var/int 可寫；Name token 與
+                    // 先前原 DeclId 精確對應，不能把主函式局部
+                    // 的移動／借用副作用當作純整數重新賦值。
+                    if known_int_mutability.get(&target) != Some(&true)
+                        || !verified.tokens.iter().any(|token|
+                            token.start == statement.start
+                                && matches!(&token.kind, TokenKind::Name(name)
+                                    if name == &assignment.name)
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main int 重賦目標缺少原 Checker var DeclId／Lexer Name",
+                        ));
+                    }
+                    let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                        &assignment.expression, &known_int_bindings, &verified,
+                    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                        "main int 賦值 RHS 缺少原 Checker ScalarHIR／可達來源",
+                    ))?;
+                    let mut calls = Vec::new();
+                    plan.collect_calls(&mut calls);
+                    let checked_calls = !calls.is_empty()
+                        && private_self_approved_int_call_arithmetic(
+                            &plan, &method_helpers,
+                        );
+                    if (!calls.is_empty() && !checked_calls)
+                        || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main var int 只接已證純整數 RHS 與同步 helper",
+                        ));
+                    }
+                    let expected = if checked_calls {
+                        private_self_arithmetic_call_snapshot(
+                            &plan, &known_int_values, &method_helpers,
+                        )
+                    } else {
+                        plan.evaluate(&known_int_values)
+                    };
+                    let value = match expected {
+                        Ok(value) => value,
+                        Err(PrivateScalarCallRuntimeError::IntegerOverflow) => 0,
+                        Err(_) => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main var int RHS 缺少已初始化原 Checker 名稱",
+                        )),
+                    };
+                    if known_int_values.insert(target, value).is_none() {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main var int 目標原值不存在",
+                        ));
+                    }
+                    main_int_assignments.push((target, value, plan));
+                    main_scalar_steps.push(PrivateSelfMainScalarStep::IntAssign(
+                        main_int_assignments.len() - 1,
+                    ));
+                    continue;
+                }
                 let target = known_bool_bindings.get(&assignment.name).copied()
                     .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                         "main bool 重賦值缺少已核准同一局部名稱",
@@ -1096,6 +1159,7 @@ impl PreparedPrivateSelfMethod {
             known_int_bindings.insert(local.name.clone(), id);
             known_int_values.insert(id, value);
             main_int_locals.push((local.name.clone(), id, value, source));
+            known_int_mutability.insert(id, local.mutable);
             main_init_plans.push(plan);
             main_scalar_steps.push(PrivateSelfMainScalarStep::IntDeclare(
                 main_int_locals.len() - 1,
@@ -1106,9 +1170,9 @@ impl PreparedPrivateSelfMethod {
         let main_bindings = main_int_locals.iter()
             .map(|(name, id, _, _)| (name.clone(), *id))
             .collect::<BTreeMap<_, _>>();
-        let main_prepared_values = main_int_locals.iter()
-            .map(|(_, id, value, _)| (*id, *value))
-            .collect::<BTreeMap<_, _>>();
+        // 原 main 宣告與重新賦值完成後的真型別快照；
+        // 不可回退到宣告期舊值去簽發方法 int 引數。
+        let main_prepared_values = known_int_values.clone();
         // M2／M3：原 Parser 每個 bool/int 位置皆保存真型別；
         // bool 只許原 Lexer true／false 並各自核對原 Checker
         // DeclarationId，不額外設個數上限；int 維持原 ScalarHIR。
@@ -2454,7 +2518,7 @@ impl PreparedPrivateSelfMethod {
             argument_binding, additional_argument_bindings,
             method_bool_arguments, method_bool_sources, main_bool_locals,
             main_bool_sources, main_bool_assignments, main_scalar_steps,
-            main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_int_assignments, main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2504,6 +2568,7 @@ impl PreparedPrivateSelfMethod {
             && self.main_bool_sources == fresh.main_bool_sources
             && self.main_bool_assignments == fresh.main_bool_assignments
             && self.main_scalar_steps == fresh.main_scalar_steps
+            && self.main_int_assignments == fresh.main_int_assignments
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
