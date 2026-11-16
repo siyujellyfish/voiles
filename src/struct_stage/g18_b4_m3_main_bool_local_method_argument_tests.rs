@@ -126,19 +126,28 @@ return owner.read(true,true,5)
     }
 
     #[test]
-    fn b4_main_bool_async_self已核准直接await來源同值槽與FIFO() {
+    fn b4_main_bool_async_self直接await執行_延遲佇列前置局部保守拒絕() {
         let src=main_locals("const gate:bool = true\nconst branch:bool = false\n",
             "await owner.read(((gate)),branch,5)")
             .replace("fn read(gate:bool,branch:bool,step:int)",
                 "async fn read(gate:bool,branch:bool,step:int)");
-        let mut queue=PrivateCheckedDeferredSelfAwaitQueue::new();
-        let id=queue.prepare(&src).expect("原Checker真核准main bool與async直接await");
-        queue.suspend(id).unwrap();
-        let (_,out)=queue.drive_next().unwrap().unwrap();
+        // 原 Checker 的直接 await 子集可以真執行。
+        let plan=checked(&src,2);
+        assert!(plan.awaited_method);
+        let out=plan.execute().unwrap();
         assert_eq!(out.result,Ok(2));
         assert!(out.awaited_method && out.ticket_returned);
         assert!(out.has_balanced_self_borrow_trace());
         assert_eq!((out.ordinary_calls_entered,out.ordinary_calls_completed),(1,1));
+        // V7 E1 延遲工作佇列當前明確禁止任何前置 main 局部。
+        // 不得靠本次 bool 值槽工程放寬 E1／E3 的未核准範圍。
+        let mut queue=PrivateCheckedDeferredSelfAwaitQueue::new();
+        assert!(matches!(queue.prepare(&src),
+            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        assert!(queue.jobs.is_empty());
+        assert_eq!(queue.next_id,0);
+        assert!(queue.execution_order().is_empty());
+        assert!(queue.ready_history.is_empty());
         queue.verify_ready_history().unwrap();
     }
 
