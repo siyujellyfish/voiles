@@ -609,6 +609,9 @@ struct PreparedPrivateSelfMethod {
     /// Bool 局部初始化若來源是先前已驗證 Copyable bool 宣告，
     /// 記錄原 Checker DeclarationId；字面／Group 常值為 None。
     main_bool_sources: Vec<Option<DeclarationId>>,
+    /// 僅接通全部 main Copyable bool 宣告後的原 Parser 直線
+    /// var bool 更新；每筆保留目標、準備值及真 RHS DeclId。
+    main_bool_assignments: Vec<(DeclarationId, bool, Option<DeclarationId>)>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -885,15 +888,83 @@ impl PreparedPrivateSelfMethod {
         let mut main_init_plans = Vec::<PrivateScalarReturnExpr>::new();
         let mut main_bool_locals = Vec::<(String, DeclarationId, bool)>::new();
         let mut main_bool_sources = Vec::<Option<DeclarationId>>::new();
+        let mut main_bool_assignments =
+            Vec::<(DeclarationId, bool, Option<DeclarationId>)>::new();
+        let mut seen_main_assignment = false;
+        let mut known_bool_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
         let mut known_int_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
         for statement in main.body.statements.iter().skip(1)
             .take(main.body.statements.len() - 2) {
+            // 保留原 Parser／Checker 的具名賦值 AST，並限制在
+            // 純 bool 宣告之後。此受限子集不接通有副作用的 int
+            // helper 與 bool 重賦交錯，也不私自新增一般 CFG。
+            if let StmtKind::Assign(assignment) = &statement.kind {
+                seen_main_assignment = true;
+                let target = known_bool_bindings.get(&assignment.name).copied()
+                    .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 重賦值缺少已核准同一局部名稱",
+                    ))?;
+                if known_bool_mutability.get(&target) != Some(&true)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == statement.start
+                            && matches!(&token.kind, TokenKind::Name(name)
+                                if name == &assignment.name)
+                    ) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 重賦值缺少可變 Checker DeclId／Lexer Name",
+                    ));
+                }
+                let leaf = private_self_checked_ungrouped_return(
+                    &verified, &assignment.expression,
+                )?;
+                let (value, source) = match &leaf.kind {
+                    TermKind::Scalar(
+                        crate::syntax_shared::ScalarLiteral::Boolean(value),
+                    ) if verified.tokens.iter().any(|token|
+                        token.start == leaf.start && token.end == leaf.end
+                            && matches!(&token.kind, TokenKind::Keyword(word)
+                                if word == if *value { "true" } else { "false" })
+                    ) => (*value, None),
+                    TermKind::Name(name) => {
+                        let source = known_bool_bindings.get(name).copied()
+                            .filter(|_| verified.tokens.iter().any(|token|
+                                token.start == leaf.start && token.end == leaf.end
+                                    && matches!(&token.kind, TokenKind::Name(found)
+                                        if found == name)
+                            ))
+                            .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                                "main bool 賦值 RHS 缺少前序 Checker／Lexer 名稱",
+                            ))?;
+                        let value = *known_bool_values.get(&source).ok_or(
+                            PrivateSelfMethodPrepareError::Unsupported(
+                                "main bool 賦值 RHS 尚未初始化",
+                            ),
+                        )?;
+                        (value, Some(source))
+                    }
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 重賦值只接通原 Checker 純 bool 常值或已初始化名稱",
+                    )),
+                };
+                if known_bool_values.insert(target, value).is_none() {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 重賦值沒有真正舊值",
+                    ));
+                }
+                main_bool_assignments.push((target, value, source));
+                continue;
+            }
+            if seen_main_assignment {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main bool 重賦值之後不可再建立新的局部作用域",
+                ));
+            }
             let StmtKind::Declare(local) = &statement.kind else {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "此同步方法子集只接通 main 已驗證 int 局部宣告",
+                    "main 此子集僅接通已核准 int／bool 局部與末尾 bool 直線重賦值",
                 ));
             };
             let id = DeclarationId(statement.start);
@@ -951,6 +1022,7 @@ impl PreparedPrivateSelfMethod {
                 known_bool_bindings.insert(local.name.clone(), id);
                 main_bool_locals.push((local.name.clone(), id, value));
                 main_bool_sources.push(source);
+                known_bool_mutability.insert(id, local.mutable);
                 continue;
             }
             if local.ty != "int" {
@@ -1013,6 +1085,13 @@ impl PreparedPrivateSelfMethod {
             known_int_values.insert(id, value);
             main_int_locals.push((local.name.clone(), id, value, source));
             main_init_plans.push(plan);
+        }
+        if !main_bool_assignments.is_empty() && !main_int_locals.is_empty() {
+            // 既有 main int helper 可能有真動態進退與溢位，故本批
+            // 不把它與 bool 更新交錯重排為另一份未證明工作圖。
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main bool 重賦只接通無其它 int 局部動態求值的直線子集",
+            ));
         }
         // 同步方法實參與普通函式共用原 Checker→TypedHIR 的
         // Copyable int 表達式編譯；不另造方法專屬的名稱／運算子解析。
@@ -2366,7 +2445,7 @@ impl PreparedPrivateSelfMethod {
             method: method_name, awaited_method, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_arguments, method_bool_sources, main_bool_locals,
-            main_bool_sources, main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_bool_sources, main_bool_assignments, main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2414,6 +2493,7 @@ impl PreparedPrivateSelfMethod {
             && self.method_bool_sources == fresh.method_bool_sources
             && self.main_bool_locals == fresh.main_bool_locals
             && self.main_bool_sources == fresh.main_bool_sources
+            && self.main_bool_assignments == fresh.main_bool_assignments
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
@@ -2484,6 +2564,25 @@ impl PreparedPrivateSelfMethod {
         }
         if self.method_bool_sources.len() != self.method_bool_arguments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
+        // 此批 bool 重賦值是無副作用的獨立直線子集；須先從原
+        // main 真值槽取完整 RHS 再提交目標，不能由 prepared
+        // 的相同 bool 數值偽造來源或讓失配發生在 self 借票後。
+        if !self.main_bool_assignments.is_empty() && !self.main_int_locals.is_empty() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
+        for (target, planned, source) in &self.main_bool_assignments {
+            if !main_bool_values.contains_key(target) {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+            let actual = match source {
+                Some(source) => *main_bool_values.get(source)
+                    .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                None => *planned,
+            };
+            if actual != *planned || main_bool_values.insert(*target, actual).is_none() {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
         }
         let mut main_initialization_error = None;
         // 普通函式可以在 self 方法開始前實際完成；與方法本體
