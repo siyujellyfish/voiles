@@ -600,6 +600,12 @@ struct PreparedPrivateSelfMethod {
     /// M2：原 Lexer bool 字面作方法真形參，獨立於 i64 槽，無隱含轉型。
     /// M2／M3：原 Checker 各 bool 形參按 Parser 位置保留獨立 DeclId。
     method_bool_arguments: Vec<(DeclarationId, bool)>,
+    /// Bool 實參來自同一原 Lexer true/false 時為 None；來自
+    /// main 具名 bool 局部時保存原 Checker DeclarationId。
+    method_bool_sources: Vec<Option<DeclarationId>>,
+    /// main 只允許已經原 Checker 型別驗證的 Copyable bool
+    /// 常值／合法 Group 初始化，按原宣告身分保留唯一值槽。
+    main_bool_locals: Vec<(String, DeclarationId, bool)>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -874,6 +880,9 @@ impl PreparedPrivateSelfMethod {
             String, DeclarationId, i64, Option<DeclarationId>,
         )>::new();
         let mut main_init_plans = Vec::<PrivateScalarReturnExpr>::new();
+        let mut main_bool_locals = Vec::<(String, DeclarationId, bool)>::new();
+        let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
+        let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
         let mut known_int_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
         for statement in main.body.statements.iter().skip(1)
@@ -889,10 +898,41 @@ impl PreparedPrivateSelfMethod {
                     "main int 局部須由原 Checker 證明已初始化",
                 ),
             )?;
-            if local.ty != "int"
-                || !verified.plan.declarations.matches(id, &local.ty, local.mutable) {
+            if !verified.plan.declarations.matches(id, &local.ty, local.mutable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 局部缺少原 Checker 宣告與型別身分",
+                    "main 局部缺少原 Checker 宣告與型別身分",
+                ));
+            }
+            if local.ty == "bool" {
+                // 目前只接通原 Checker 已合法核准的純 bool 常值。
+                // 不因主函式需要方法實參而自行引入一般 bool 算式、
+                // 資源、Borrow、Move 或其它動態布林副作用。
+                let leaf = private_self_checked_ungrouped_return(&verified, initializer)?;
+                let TermKind::Scalar(
+                    crate::syntax_shared::ScalarLiteral::Boolean(value),
+                ) = &leaf.kind else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 局部只接通原 Checker true/false 純值",
+                    ));
+                };
+                if !verified.tokens.iter().any(|token|
+                    token.start == leaf.start && token.end == leaf.end
+                        && matches!(&token.kind, TokenKind::Keyword(word)
+                            if word == if *value { "true" } else { "false" })
+                ) || known_int_bindings.contains_key(&local.name)
+                    || known_bool_bindings.contains_key(&local.name)
+                    || known_bool_values.insert(id, *value).is_some() {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 局部缺少原 Checker 宣告或 Lexer 真來源",
+                    ));
+                }
+                known_bool_bindings.insert(local.name.clone(), id);
+                main_bool_locals.push((local.name.clone(), id, *value));
+                continue;
+            }
+            if local.ty != "int" {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main 局部僅接已核准 Copyable int／bool 子集",
                 ));
             }
             // 與普通函式共用已核准 TypedHIR Expression／Reference／
@@ -940,6 +980,7 @@ impl PreparedPrivateSelfMethod {
                 _ => None,
             };
             if known_int_bindings.contains_key(&local.name)
+                || known_bool_bindings.contains_key(&local.name)
                 || known_int_values.contains_key(&id) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
                     "同作用域 Copyable int 局部重複宣告",
@@ -961,7 +1002,8 @@ impl PreparedPrivateSelfMethod {
         // M2／M3：原 Parser 每個 bool/int 位置皆保存真型別；
         // bool 只許原 Lexer true／false 並各自核對原 Checker
         // DeclarationId，不額外設個數上限；int 維持原 ScalarHIR。
-        let mut bool_argument_literals = Vec::<(usize, bool)>::new();
+        let mut bool_argument_literals =
+            Vec::<(usize, bool, Option<DeclarationId>)>::new();
         let mut parsed_argument_is_bool = Vec::<bool>::new();
         let mut int_arguments = Vec::<i64>::new();
         let mut argument_sources = Vec::<Option<DeclarationId>>::new();
@@ -977,12 +1019,21 @@ impl PreparedPrivateSelfMethod {
                     token.start == bool_leaf.start && token.end == bool_leaf.end
                         && matches!(&token.kind, TokenKind::Keyword(word)
                             if word == if *value { "true" } else { "false" })
-                ) => Some(*value),
+                ) => Some((*value, None)),
+                TermKind::Name(name) => known_bool_bindings.get(name).copied()
+                    .filter(|_| verified.tokens.iter().any(|token|
+                        token.start == bool_leaf.start && token.end == bool_leaf.end
+                            && matches!(&token.kind, TokenKind::Name(found)
+                                if found == name)
+                    ))
+                    .and_then(|source| known_bool_values.get(&source)
+                        .copied().map(|value| (value, Some(source)))),
                 _ => None,
             };
-            if let Some(value) = literal {
-                // 名稱或相同布林值都不能取代各形參 DeclId。
-                bool_argument_literals.push((index, value));
+            if let Some((value, source)) = literal {
+                // bool 真值可來自原 Lexer 常值或已初始化的 main
+                // bool 宣告；方法形參本身仍只由原 Checker DeclId 綁定。
+                bool_argument_literals.push((index, value, source));
                 parsed_argument_is_bool.push(true);
                 continue;
             }
@@ -1059,6 +1110,7 @@ impl PreparedPrivateSelfMethod {
         }
         let mut bindings = Vec::<(DeclarationId, i64)>::new();
         let mut method_bool_arguments = Vec::<(DeclarationId, bool)>::new();
+        let mut method_bool_sources = Vec::<Option<DeclarationId>>::new();
         let mut bool_values = bool_argument_literals.into_iter();
         let mut int_values = int_arguments.iter().copied();
         let mut bound_ids = std::collections::BTreeSet::<DeclarationId>::new();
@@ -1078,7 +1130,7 @@ impl PreparedPrivateSelfMethod {
             }
             match (param.ty.as_str(), parsed_argument_is_bool[index]) {
                 ("bool", true) => {
-                    let Some((position, value)) = bool_values.next() else {
+                    let Some((position, value, source)) = bool_values.next() else {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
                             "M2 bool 來源未與原 Checker 真形參位置綁定",
                         ));
@@ -1089,6 +1141,7 @@ impl PreparedPrivateSelfMethod {
                         ));
                     }
                     method_bool_arguments.push((id, value));
+                    method_bool_sources.push(source);
                 }
                 ("int", false) => {
                     let value = int_values.next().ok_or(
@@ -2289,7 +2342,8 @@ impl PreparedPrivateSelfMethod {
             method_branch_parameter, method_int_assignments,
             method: method_name, awaited_method, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
-            method_bool_arguments, main_int_locals, main_init_plans, argument_sources, argument_plans,
+            method_bool_arguments, method_bool_sources, main_bool_locals,
+            main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2334,6 +2388,8 @@ impl PreparedPrivateSelfMethod {
             && self.argument_binding == fresh.argument_binding
             && self.additional_argument_bindings == fresh.additional_argument_bindings
             && self.method_bool_arguments == fresh.method_bool_arguments
+            && self.method_bool_sources == fresh.method_bool_sources
+            && self.main_bool_locals == fresh.main_bool_locals
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
