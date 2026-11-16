@@ -18,7 +18,7 @@ CASES = (
     "b4_bool_assign_同一真DeclId自我複製只讀舊值再提交",
     "b4_bool_assign_交錯兩個可變bool正確保持逐筆原來源時序",
     "b4_bool_assign_原Checker合法async直接await執行成功但E1佇列拒絕前置",
-    "b4_bool_assign_原Checker const賦值與未知名稱靜態拒絕",
+    "b4_bool_assign_原Checker_const賦值與未知名稱靜態拒絕",
     "b4_bool_assign_準備後更改目標或RHS來源必在借self前拒絕",
     "b4_bool_assign_不同int局部真函式交錯仍保守拒絕未核准工作圖",
 )
