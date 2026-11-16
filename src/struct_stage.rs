@@ -1558,6 +1558,8 @@ include!("struct_stage/g18_b4_m3_main_bool_alias_chain_tests.rs");
 include!("struct_stage/g18_b4_m3_main_bool_assignment_tests.rs");
 // G18／B4/M3：main Copyable int/bool 混合原Parser順序真動態證據。
 include!("struct_stage/g18_b4_m3_main_scalar_ordered_steps_tests.rs");
+// G18／B4/M3：main var int真ScalarHIR重新賦值、helper與bool順序正反。
+include!("struct_stage/g18_b4_m3_main_int_assignment_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。
