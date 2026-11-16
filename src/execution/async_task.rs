@@ -1479,7 +1479,7 @@ mod v7_a2_safe_point_tests {
     }
 
     #[test]
-    fn v7_t3_多框架父票據事實污染錯誤退出前須零部分資源釋放() {
+    fn v7_unwind_t3_多框架父票據事實污染錯誤退出前須零部分資源釋放() {
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
         let outer = frames.declare_owned("父", "UTF-8父🪼").unwrap();
@@ -1527,7 +1527,7 @@ mod v7_a2_safe_point_tests {
     }
 
     #[test]
-    fn v7_t3_跨框架重播同一真票據即使靜態重數相同亦不可先退出子框架() {
+    fn v7_unwind_t3_跨框架重播同一真票據即使靜態重數相同亦不可先退出子框架() {
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
         let outer = frames.declare_owned("父", "父源").unwrap();
@@ -1563,7 +1563,7 @@ mod v7_a2_safe_point_tests {
     }
 
     #[test]
-    fn v7_t3_退出前追蹤器多出無幀票據不得先釋放原框架資源() {
+    fn v7_unwind_t3_退出前追蹤器多出無幀票據不得先釋放原框架資源() {
         let mut frames = AsyncSafePointFrames::new();
         frames.enter_frame().unwrap();
         let resource = frames.declare_owned("原資源", "借用事件🪼").unwrap();
