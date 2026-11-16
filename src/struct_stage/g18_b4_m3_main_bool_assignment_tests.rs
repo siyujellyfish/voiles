@@ -69,7 +69,7 @@ return owner.read(true,true,5)
     }
 
     #[test]
-    fn b4_bool_assign_原Lexer合法Group常值與具名bool RHS可真求值() {
+    fn b4_bool_assign_原Lexer合法Group常值與具名bool_RHS可真求值() {
         let src=source(
             "var gate:bool = true\nconst branch:bool = ((false))\ngate = ((branch))\n",
             "owner.read(((gate)),true,5)",
