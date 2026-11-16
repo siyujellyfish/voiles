@@ -606,6 +606,9 @@ struct PreparedPrivateSelfMethod {
     /// main 只允許已經原 Checker 型別驗證的 Copyable bool
     /// 常值／合法 Group 初始化，按原宣告身分保留唯一值槽。
     main_bool_locals: Vec<(String, DeclarationId, bool)>,
+    /// Bool 局部初始化若來源是先前已驗證 Copyable bool 宣告，
+    /// 記錄原 Checker DeclarationId；字面／Group 常值為 None。
+    main_bool_sources: Vec<Option<DeclarationId>>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -881,6 +884,7 @@ impl PreparedPrivateSelfMethod {
         )>::new();
         let mut main_init_plans = Vec::<PrivateScalarReturnExpr>::new();
         let mut main_bool_locals = Vec::<(String, DeclarationId, bool)>::new();
+        let mut main_bool_sources = Vec::<Option<DeclarationId>>::new();
         let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
         let mut known_int_bindings = BTreeMap::<String, DeclarationId>::new();
@@ -904,30 +908,49 @@ impl PreparedPrivateSelfMethod {
                 ));
             }
             if local.ty == "bool" {
-                // 目前只接通原 Checker 已合法核准的純 bool 常值。
-                // 不因主函式需要方法實參而自行引入一般 bool 算式、
-                // 資源、Borrow、Move 或其它動態布林副作用。
+                // 只接受原 Checker 已核准的 true/false 或先前
+                // 同一詞彙作用域的 Copyable bool Name；Group 由原
+                // Lexer 真括號解殼，禁止未證布林算式／Borrow／Move。
                 let leaf = private_self_checked_ungrouped_return(&verified, initializer)?;
-                let TermKind::Scalar(
-                    crate::syntax_shared::ScalarLiteral::Boolean(value),
-                ) = &leaf.kind else {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main bool 局部只接通原 Checker true/false 純值",
-                    ));
+                let (value, source) = match &leaf.kind {
+                    TermKind::Scalar(
+                        crate::syntax_shared::ScalarLiteral::Boolean(value),
+                    ) if verified.tokens.iter().any(|token|
+                        token.start == leaf.start && token.end == leaf.end
+                            && matches!(&token.kind, TokenKind::Keyword(word)
+                                if word == if *value { "true" } else { "false" })
+                    ) => (*value, None),
+                    TermKind::Name(name) => {
+                        let source = known_bool_bindings.get(name).copied().filter(|_| {
+                            verified.tokens.iter().any(|token|
+                                token.start == leaf.start && token.end == leaf.end
+                                    && matches!(&token.kind,
+                                        TokenKind::Name(found) if found == name)
+                            )
+                        }).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "main bool 別名缺少原 Checker 已初始化來源與 Lexer Name",
+                        ))?;
+                        let value = *known_bool_values.get(&source).ok_or(
+                            PrivateSelfMethodPrepareError::Unsupported(
+                                "main bool 別名沒有前序已初始化真值槽",
+                            ),
+                        )?;
+                        (value, Some(source))
+                    }
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool 僅接受原 Checker 字面值或已初始化具名 Copyable bool",
+                    )),
                 };
-                if !verified.tokens.iter().any(|token|
-                    token.start == leaf.start && token.end == leaf.end
-                        && matches!(&token.kind, TokenKind::Keyword(word)
-                            if word == if *value { "true" } else { "false" })
-                ) || known_int_bindings.contains_key(&local.name)
+                if known_int_bindings.contains_key(&local.name)
                     || known_bool_bindings.contains_key(&local.name)
-                    || known_bool_values.insert(id, *value).is_some() {
+                    || known_bool_values.insert(id, value).is_some() {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main bool 局部缺少原 Checker 宣告或 Lexer 真來源",
+                        "main bool 局部缺少唯一 Checker 宣告身分",
                     ));
                 }
                 known_bool_bindings.insert(local.name.clone(), id);
-                main_bool_locals.push((local.name.clone(), id, *value));
+                main_bool_locals.push((local.name.clone(), id, value));
+                main_bool_sources.push(source);
                 continue;
             }
             if local.ty != "int" {
@@ -2343,7 +2366,7 @@ impl PreparedPrivateSelfMethod {
             method: method_name, awaited_method, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_arguments, method_bool_sources, main_bool_locals,
-            main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_bool_sources, main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2390,6 +2413,7 @@ impl PreparedPrivateSelfMethod {
             && self.method_bool_arguments == fresh.method_bool_arguments
             && self.method_bool_sources == fresh.method_bool_sources
             && self.main_bool_locals == fresh.main_bool_locals
+            && self.main_bool_sources == fresh.main_bool_sources
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
@@ -2442,8 +2466,19 @@ impl PreparedPrivateSelfMethod {
         // 實參必經同一 DeclarationId，不能由同名 int 或準備時
         // 任意指定的 bool 常值冒充。純字面初始化不建立資源事件。
         let mut main_bool_values = BTreeMap::<DeclarationId, bool>::new();
-        for (_, id, value) in &self.main_bool_locals {
-            if main_bool_values.insert(*id, *value).is_some() {
+        if self.main_bool_sources.len() != self.main_bool_locals.len() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
+        for ((_, id, planned), source) in self.main_bool_locals.iter()
+            .zip(&self.main_bool_sources) {
+            // 真在原 main 作用域宣告位置讀取先前 bool 值槽，
+            // 不把 prepare 期間算出的別名值當成動態權威。
+            let actual = match source {
+                Some(source) => *main_bool_values.get(source)
+                    .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                None => *planned,
+            };
+            if actual != *planned || main_bool_values.insert(*id, actual).is_some() {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
         }
