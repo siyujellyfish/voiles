@@ -126,7 +126,7 @@ return owner.read(true,true,5)
     }
 
     #[test]
-    fn b4_bool_assign_原Checker const賦值與未知名稱靜態拒絕() {
+    fn b4_bool_assign_原Checker_const賦值與未知名稱靜態拒絕() {
         for src in [
             source("const gate:bool = true\ngate = false\n",
                 "owner.read(gate,true,5)"),
