@@ -17,7 +17,7 @@ CASES = (
     "b4_main_bool_兩份bool局部維持獨立DeclarationId及真選枝",
     "b4_main_bool_原型別重排int_bool形參不混用main兩種值槽",
     "b4_main_bool_main普通helper先返回再借self且保持選中葉helper",
-    "b4_main_bool_async_self已核准直接await來源同值槽與FIFO",
+    "b4_main_bool_async_self直接await執行_延遲佇列前置局部保守拒絕",
     "b4_main_bool_預備後主布林值槽竄改不可進入方法取得BorrowTicket",
     "b4_main_bool_布林實參來源跨DeclId偽裝不得先簽self票",
     "b4_main_bool_原Checker錯型別未知來源或含呼叫布林初始化均不可放行",
