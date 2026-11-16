@@ -162,17 +162,21 @@ return owner.read(true,true,5)
     }
 
     #[test]
-    fn b4_bool_assign_不同int局部真函式交錯仍保守拒絕未核准工作圖() {
+    fn b4_bool_assign_不同int局部真函式交錯由原Parser順序成功執行() {
         let src=source(
             "var gate:bool = true\nconst step:int = helper(7,2)\ngate = false\n",
             "owner.read(gate,true,step)",
         );
-        // 原 Checker 若核准具副作用函式前後的可變局部，
-        // 受限執行器仍不能偷把 bool 重賦提前於 helper 真執行。
-        verify_source_with_ability(
-            &src,crate::ownership_policy::approved_leaf_copy_permission,
-        ).expect("原Checker應核准main已有普通同步helper與可變bool");
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        // #831 以原 Parser 一體步驟表真正打通此前 Unsupported：
+        // main helper 必真完成 Returned／Exited，後續 bool 更新後
+        // 才能以最後值進入方法並歸還唯一 self BorrowTicket。
+        let outcome=run(&src,1,1,7,(Some(false),None),1);
+        let first_exit=outcome.exit_events.iter().position(|event|matches!(
+            event,PrivateSharedCallExitEvent::FunctionExited{returned:true}
+        )).unwrap();
+        let loan=outcome.exit_events.iter().position(|event|matches!(
+            event,PrivateSharedCallExitEvent::LoanAcquired(_)
+        )).unwrap();
+        assert!(first_exit<loan, "普通 helper 應先於方法自借票真退出");
     }
 }
