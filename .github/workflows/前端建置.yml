@@ -475,6 +475,9 @@ jobs:
       - name: G18 P18.4-B4 P18.6-M3 main布林值槽真方法實參十項 Gate
         run: python3 tools/核對G18-P18.4-B4-M3主函式布林值槽與方法實參.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4 P18.6-M3 main具名Copyable bool複製鏈九項 Gate
+        run: python3 tools/核對G18-P18.4-B4-M3主函式布林具名複製鏈.py --test-bin target/p02/p04_source_internal
+
       - name: G18 V7-A1 原Checker直接await async self方法十二項 Gate
         run: python3 tools/核對G18-V7-A1原Checker直接await非同步self方法.py --test-bin target/p02/p04_source_internal
 
