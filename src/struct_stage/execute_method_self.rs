@@ -2626,7 +2626,8 @@ impl PreparedPrivateSelfMethod {
         // R05／B4：任何真函式事件之前，先只讀驗證原 Parser
         // 步驟清冊恰好涵蓋每筆宣告與賦值，且同類索引依序遞增。
         // 來源篡改不得靠跳過某個 bool 宣告或重播 int helper 偷換帳。
-        let (mut next_bool, mut next_int, mut next_assign) = (0, 0, 0);
+        let (mut next_bool, mut next_int, mut next_assign, mut next_int_assign) =
+            (0, 0, 0, 0);
         for step in &self.main_scalar_steps {
             match step {
                 PrivateSelfMainScalarStep::BoolDeclare(index) if *index == next_bool =>
@@ -2635,12 +2636,15 @@ impl PreparedPrivateSelfMethod {
                     next_int += 1,
                 PrivateSelfMainScalarStep::BoolAssign(index) if *index == next_assign =>
                     next_assign += 1,
+                PrivateSelfMainScalarStep::IntAssign(index)
+                    if *index == next_int_assign => next_int_assign += 1,
                 _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
             }
         }
         if next_bool != self.main_bool_locals.len()
             || next_int != self.main_int_locals.len()
-            || next_assign != self.main_bool_assignments.len() {
+            || next_assign != self.main_bool_assignments.len()
+            || next_int_assign != self.main_int_assignments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         let mut main_initialization_error = None;
@@ -2682,6 +2686,40 @@ impl PreparedPrivateSelfMethod {
                     };
                     if actual != planned
                         || main_bool_values.insert(target, actual).is_none() {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
+                PrivateSelfMainScalarStep::IntAssign(index) => {
+                    let (target, planned, initializer) =
+                        &self.main_int_assignments[index];
+                    if !main_values.contains_key(target) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    let mut source_calls = Vec::new();
+                    initializer.collect_calls(&mut source_calls);
+                    let executed = if !source_calls.is_empty()
+                        && private_self_approved_int_call_arithmetic(
+                            initializer, &self.method_helpers,
+                        ) {
+                        private_self_execute_arithmetic_call(
+                            initializer, &main_values, &self.method_helpers,
+                            &mut exit_events, &mut ordinary_calls_entered,
+                            &mut ordinary_calls_completed,
+                        )
+                    } else {
+                        initializer.evaluate(&main_values)
+                    };
+                    let actual = match executed {
+                        Ok(value) => value,
+                        Err(PrivateScalarCallRuntimeError::IntegerOverflow) => {
+                            main_initialization_error =
+                                Some(PrivateSelfMethodRuntimeError::IntegerOverflow);
+                            break;
+                        }
+                        Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                    };
+                    if actual != *planned
+                        || main_values.insert(*target, actual).is_none() {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                 }
@@ -3228,6 +3266,7 @@ impl PreparedPrivateSelfMethod {
         // 不可留在下一份方法呼叫的執行環境中。
         main_bool_values.clear();
         let expected_pre_method_calls = self.main_init_plans.iter()
+            .chain(self.main_int_assignments.iter().map(|(_, _, plan)| plan))
             .chain(self.argument_plans.iter())
             .map(|expression| {
                 let mut calls = Vec::new();
