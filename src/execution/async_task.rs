@@ -24,6 +24,16 @@ pub(crate) enum DirectAwaitError {
     AlreadyAwaited,
     Cancelled,
     ActiveBorrowAcrossAwait,
+    /// 未啟動工作或旁觀工作封存的原 Checker 來源已遭變更。
+    SourceChanged,
+}
+
+/// 保留原正式靜態診斷，將內部工作簿來源污染與編號用盡另行分類。
+#[derive(Debug)]
+pub(crate) enum DirectAwaitPreparationError {
+    Checker(PreparationFailure),
+    SourceChanged,
+    TaskIdExhausted,
 }
 
 /// 只有已取得正式 P01 Checker 全套 HIR／可達性授權的工作
@@ -52,13 +62,37 @@ pub(crate) struct DirectAwaitSession {
 impl DirectAwaitSession {
     pub(crate) fn new() -> Self { Self::default() }
 
+    /// 只重用原 P01 Checker 和 P17 的同一來源身分驗證；不得在
+    /// 取消、建立另一工作或直接等待前丟棄有問題的未啟動計畫。
+    /// 已完成工作的真 Outcome 留在帳上，不假裝重新執行其本體。
+    fn verify_pending_sources(&self) -> bool {
+        self.tasks.values().all(|task| match task.status {
+            DirectAwaitStatus::Prepared | DirectAwaitStatus::Suspended => {
+                task.outcome.is_none() && task.plan.as_ref().is_some_and(|plan| {
+                    plan.is_same_verified_source() && plan.has_original_checker_facts()
+                })
+            }
+            DirectAwaitStatus::Running => false,
+            DirectAwaitStatus::Succeeded | DirectAwaitStatus::Failed => {
+                task.plan.is_none() && task.outcome.is_some()
+            }
+            DirectAwaitStatus::Cancelled => {
+                task.plan.is_none() && task.outcome.is_none()
+            }
+        })
+    }
+
     /// 保留原 Parser／Checker 的拒絕，不憑準備成功偽造執行事件。
     pub(crate) fn prepare_verified_scalar(
         &mut self, source: Vec<u8>, budget: ExecutionBudget,
-    ) -> Result<u64, PreparationFailure> {
-        let plan = PreparedProgram::prepare(source)?;
+    ) -> Result<u64, DirectAwaitPreparationError> {
+        let plan = PreparedProgram::prepare(source)
+            .map_err(DirectAwaitPreparationError::Checker)?;
+        if !self.verify_pending_sources() {
+            return Err(DirectAwaitPreparationError::SourceChanged);
+        }
         let id = self.next_id.checked_add(1)
-            .expect("內部非同步工作身分已用盡，禁止回繞重用");
+            .ok_or(DirectAwaitPreparationError::TaskIdExhausted)?;
         self.next_id = id;
         self.tasks.insert(id, CheckedTask {
             plan: Some(plan), budget,
@@ -79,10 +113,15 @@ impl DirectAwaitSession {
     /// 執行中的工作無法由此同步子集任意強制中斷。
     pub(crate) fn cancel_before_start(&mut self, id: u64)
         -> Result<(), DirectAwaitError> {
-        let task = self.tasks.get_mut(&id).ok_or(DirectAwaitError::UnknownTask)?;
-        if !matches!(task.status, DirectAwaitStatus::Prepared | DirectAwaitStatus::Suspended) {
+        let status = self.tasks.get(&id)
+            .ok_or(DirectAwaitError::UnknownTask)?.status;
+        if !matches!(status, DirectAwaitStatus::Prepared | DirectAwaitStatus::Suspended) {
             return Err(DirectAwaitError::AlreadyAwaited);
         }
+        if !self.verify_pending_sources() {
+            return Err(DirectAwaitError::SourceChanged);
+        }
+        let task = self.tasks.get_mut(&id).expect("已核對工作身分");
         task.plan = None;
         task.status = DirectAwaitStatus::Cancelled;
         Ok(())
@@ -100,6 +139,9 @@ impl DirectAwaitSession {
             DirectAwaitStatus::Prepared => {},
             DirectAwaitStatus::Cancelled => return Err(DirectAwaitError::Cancelled),
             _ => return Err(DirectAwaitError::AlreadyAwaited),
+        }
+        if !self.verify_pending_sources() {
+            return Err(DirectAwaitError::SourceChanged);
         }
         if self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
             return Err(DirectAwaitError::ActiveBorrowAcrossAwait);
@@ -221,6 +263,95 @@ mod tests {
         let next = session.prepare_verified_scalar(source(2), ExecutionBudget::default()).unwrap();
         assert_ne!(id, next);
         assert_eq!(session.await_direct(next).unwrap().result, Ok(Value::Int(2)));
+    }
+
+    #[test]
+    fn v7_t3_原來源位元組變造取消前須拒絕且恢復後可安全取消() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(source(7), ExecutionBudget::default()).unwrap();
+        session.tasks.get_mut(&id).unwrap().plan.as_mut().unwrap().source.bytes[0] = b'X';
+        assert_eq!(session.cancel_before_start(id), Err(DirectAwaitError::SourceChanged));
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert!(session.tasks[&id].plan.is_some());
+        assert!(session.execution_order().is_empty());
+        session.tasks.get_mut(&id).unwrap().plan = Some(PreparedProgram::prepare(source(7)).unwrap());
+        session.cancel_before_start(id).unwrap();
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Cancelled));
+        assert!(session.tasks[&id].plan.is_none());
+    }
+
+    #[test]
+    fn v7_t3_旁觀工作來源污染不得取消或直接執行合法工作() {
+        let mut session = DirectAwaitSession::new();
+        let good = session.prepare_verified_scalar(source(3), ExecutionBudget::default()).unwrap();
+        let bad = session.prepare_verified_scalar(source(4), ExecutionBudget::default()).unwrap();
+        session.tasks.get_mut(&bad).unwrap().plan.as_mut().unwrap().original_bytes[0] = b'X';
+        assert_eq!(session.cancel_before_start(good), Err(DirectAwaitError::SourceChanged));
+        assert_eq!(session.await_direct(good).err(), Some(DirectAwaitError::SourceChanged));
+        assert_eq!(session.status(good), Some(DirectAwaitStatus::Prepared));
+        assert!(session.execution_order().is_empty());
+        session.tasks.get_mut(&bad).unwrap().plan = Some(PreparedProgram::prepare(source(4)).unwrap());
+        assert_eq!(session.await_direct(good).unwrap().result, Ok(Value::Int(3)));
+        assert_eq!(session.status(bad), Some(DirectAwaitStatus::Prepared));
+    }
+
+    #[test]
+    fn v7_t3_原Checker可達HIR變造不得發新工作身分() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(source(5), ExecutionBudget::default()).unwrap();
+        let plan = session.tasks.get_mut(&id).unwrap().plan.as_mut().unwrap();
+        assert!(!plan.reachable_expressions.is_empty());
+        plan.reachable_expressions.clear();
+        let before = session.next_id;
+        assert!(matches!(
+            session.prepare_verified_scalar(source(6), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::SourceChanged)
+        ));
+        assert_eq!(session.next_id, before);
+        assert_eq!(session.tasks.len(), 1);
+        session.tasks.get_mut(&id).unwrap().plan = Some(PreparedProgram::prepare(source(5)).unwrap());
+        assert_eq!(session.prepare_verified_scalar(source(6), ExecutionBudget::default()).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn v7_t3_待啟動計畫缺失不得假取消且可修復() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(source(8), ExecutionBudget::default()).unwrap();
+        let missing = session.tasks.get_mut(&id).unwrap().plan.take().unwrap();
+        assert_eq!(session.cancel_before_start(id), Err(DirectAwaitError::SourceChanged));
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert!(session.execution_order().is_empty());
+        session.tasks.get_mut(&id).unwrap().plan = Some(missing);
+        assert_eq!(session.await_direct(id).unwrap().result, Ok(Value::Int(8)));
+    }
+
+    #[test]
+    fn v7_t3_工作身分耗盡受控拒絕不panic不回繞() {
+        let mut session = DirectAwaitSession::new();
+        let id = session.prepare_verified_scalar(source(1), ExecutionBudget::default()).unwrap();
+        session.next_id = u64::MAX;
+        assert!(matches!(
+            session.prepare_verified_scalar(source(2), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::TaskIdExhausted)
+        ));
+        assert_eq!(session.next_id, u64::MAX);
+        assert_eq!(session.tasks.len(), 1);
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert!(session.execution_order().is_empty());
+        session.next_id = id;
+        assert_eq!(session.prepare_verified_scalar(source(2), ExecutionBudget::default()).unwrap(), id + 1);
+    }
+
+    #[test]
+    fn v7_t3_已結束工作不得阻礙其他合法工作新增() {
+        let mut session = DirectAwaitSession::new();
+        let done = session.prepare_verified_scalar(source(9), ExecutionBudget::default()).unwrap();
+        assert_eq!(session.await_direct(done).unwrap().result, Ok(Value::Int(9)));
+        let next = session.prepare_verified_scalar(source(10), ExecutionBudget::default()).unwrap();
+        session.cancel_before_start(next).unwrap();
+        assert_eq!(session.status(done), Some(DirectAwaitStatus::Succeeded));
+        assert_eq!(session.status(next), Some(DirectAwaitStatus::Cancelled));
+        assert_eq!(session.execution_order(), &[done]);
     }
 }
 
@@ -507,6 +638,9 @@ impl AsyncSafePointFrames {
             Some(_) =>
                 return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::AlreadyAwaited)),
         }
+        if !session.verify_pending_sources() {
+            return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::SourceChanged));
+        }
         if session.loans.verify_static_snapshot(std::iter::empty()).is_err() {
             return Err(AsyncSafePointError::DirectAwait(
                 DirectAwaitError::ActiveBorrowAcrossAwait,
@@ -526,6 +660,9 @@ impl AsyncSafePointFrames {
             Some(_) => return Err(AsyncSafePointError::DirectAwait(
                 DirectAwaitError::AlreadyAwaited,
             )),
+        }
+        if !session.verify_pending_sources() {
+            return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::SourceChanged));
         }
         if session.loans.verify_static_snapshot(std::iter::empty()).is_err() {
             return Err(AsyncSafePointError::DirectAwait(
@@ -579,6 +716,9 @@ impl AsyncSafePointFrames {
         &mut self, session: &mut DirectAwaitSession, task: u64,
     ) -> Result<AsyncSafePointEvidence, AsyncSafePointError> {
         self.verify_pending_task(session, task)?;
+        if !session.verify_pending_sources() {
+            return Err(AsyncSafePointError::DirectAwait(DirectAwaitError::SourceChanged));
+        }
         // 必須先證明取消框架可安全退場，再消耗尚未啟動的真正工作。
         // 失敗時保持 session.Suspended／pending 身分／ResourceId 全部不變。
         self.verify_no_live_borrows()?;
@@ -1217,4 +1357,95 @@ mod v7_a2_safe_point_tests {
         ]);
         assert!(session.execution_order().is_empty());
     }
+    #[test]
+    fn v7_t3_待啟動計畫污染不可提前暫停與綁定等待者資源() {
+        let mut session = DirectAwaitSession::new();
+        let original = b"fn main()->int{ return 41 }".to_vec();
+        let id = session.prepare_verified_scalar(original.clone(), ExecutionBudget::default()).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("原", "未經核准不可暫停🪼").unwrap();
+        session.tasks.get_mut(&id).unwrap().plan.as_mut().unwrap().source.bytes[0] = b'X';
+        assert_eq!(
+            frames.suspend_verified_await(&mut session, id),
+            Err(AsyncSafePointError::DirectAwait(DirectAwaitError::SourceChanged))
+        );
+        assert_eq!(frames.state, AsyncSafePointState::Running);
+        assert!(frames.pending_verified_await.is_none());
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Prepared));
+        assert_eq!(frames.resources.resource_id("原"), Ok(resource));
+        assert!(session.execution_order().is_empty());
+        session.tasks.get_mut(&id).unwrap().plan = Some(PreparedProgram::prepare(original).unwrap());
+        frames.suspend_verified_await(&mut session, id).unwrap();
+        let evidence = frames.cancel_verified_await(&mut session, id).unwrap();
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(frames.state, AsyncSafePointState::Cancelled);
+    }
+
+    #[test]
+    fn v7_t3_已暫停工作污染拒絕喚醒不得提前解綁及改寫等待者狀態() {
+        let mut session = DirectAwaitSession::new();
+        let original = b"fn main()->int{ return 42 }".to_vec();
+        let id = session.prepare_verified_scalar(original.clone(), ExecutionBudget::default()).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("待醒", "真ResourceId").unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
+        session.tasks.get_mut(&id).unwrap().plan.as_mut().unwrap().original_bytes[0] = b'X';
+        assert!(matches!(
+            frames.wake_verified_await(&mut session, id),
+            Err(AsyncSafePointError::DirectAwait(DirectAwaitError::SourceChanged))
+        ));
+        assert_eq!(frames.state, AsyncSafePointState::Suspended);
+        assert!(frames.pending_verified_await.is_some());
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Suspended));
+        assert_eq!(frames.resources.resource_id("待醒"), Ok(resource));
+        assert_eq!(frames.resources.events(), &[ResourceEvent::Created(resource)]);
+        assert!(session.execution_order().is_empty());
+        session.tasks.get_mut(&id).unwrap().plan = Some(PreparedProgram::prepare(original).unwrap());
+        let AsyncSafePointSettlement::Succeeded { value, evidence } =
+            frames.wake_verified_await(&mut session, id).unwrap() else {
+                panic!("來源恢復後應交付原P17合法結果");
+            };
+        assert_eq!(value, Value::Int(42));
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(session.execution_order(), &[id]);
+    }
+
+    #[test]
+    fn v7_t3_已暫停工作污染拒絕取消保留真資源待修復再離域() {
+        let mut session = DirectAwaitSession::new();
+        let original = b"fn main()->int{ return 43 }".to_vec();
+        let id = session.prepare_verified_scalar(original.clone(), ExecutionBudget::default()).unwrap();
+        let mut frames = AsyncSafePointFrames::new();
+        frames.enter_frame().unwrap();
+        let resource = frames.declare_owned("待取消", "唯一 UTF-8🪼").unwrap();
+        frames.suspend_verified_await(&mut session, id).unwrap();
+        let plan = session.tasks.get_mut(&id).unwrap().plan.as_mut().unwrap();
+        assert!(!plan.reachable_expressions.is_empty());
+        plan.reachable_expressions.clear();
+        assert_eq!(
+            frames.cancel_verified_await(&mut session, id).err(),
+            Some(AsyncSafePointError::DirectAwait(DirectAwaitError::SourceChanged))
+        );
+        assert_eq!(frames.state, AsyncSafePointState::Suspended);
+        assert!(frames.pending_verified_await.is_some());
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Suspended));
+        assert_eq!(frames.resources.resource_id("待取消"), Ok(resource));
+        assert_eq!(frames.resources.events(), &[ResourceEvent::Created(resource)]);
+        assert!(session.execution_order().is_empty());
+        session.tasks.get_mut(&id).unwrap().plan = Some(PreparedProgram::prepare(original).unwrap());
+        let evidence = frames.cancel_verified_await(&mut session, id).unwrap();
+        assert_eq!(evidence.resource_events, [
+            ResourceEvent::Created(resource), ResourceEvent::Released(resource),
+        ]);
+        assert_eq!(session.status(id), Some(DirectAwaitStatus::Cancelled));
+        assert_eq!(frames.state, AsyncSafePointState::Cancelled);
+        assert!(session.execution_order().is_empty());
+    }
+
 }

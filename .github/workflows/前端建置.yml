@@ -493,6 +493,9 @@ jobs:
       - name: G18 P18.5-T3 V7 普通async延期工作全來源預檢十項 Gate
         run: python3 tools/核對G18-P18.5-T3-V7普通非同步延期工作全來源預檢.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.5-T3 V7 非公開直接await原Checker來源預檢九項 Gate
+        run: python3 tools/核對G18-P18.5-T3-V7直接await原Checker來源預檢.py --test-bin target/p02/p04_source_internal
+
       - name: G18 P18.4-B4 M3 真self借票後巢狀純int局部初始化與var更新八項 Gate
         run: python3 tools/核對G18-P18.4-B4巢狀純helper方法局部賦值.py --test-bin target/p02/p04_source_internal
 
