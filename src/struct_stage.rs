@@ -1548,6 +1548,8 @@ include!("struct_stage/g18_v7_shutdown_terminal_evidence_tests.rs");
 // 各自 DeclId 驅動巢狀真選枝及共通純 helper 返回。
 #[cfg(test)]
 include!("struct_stage/g18_m2_m3_multiple_bool_checker_frames_tests.rs");
+// G18／B4/M2/M3：原Checker bool Group實參／內外條件真執行及來源防偽。
+include!("struct_stage/g18_m2_m3_grouped_bool_method_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。

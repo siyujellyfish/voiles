@@ -967,11 +967,14 @@ impl PreparedPrivateSelfMethod {
         let mut argument_sources = Vec::<Option<DeclarationId>>::new();
         let mut argument_plans = Vec::<PrivateScalarReturnExpr>::new();
         for (index, arg) in call_arguments.iter().enumerate() {
-            let literal = match &arg.kind {
+            // 原 Checker 已核准 Group(bool) 型別；解殼必逐層核對
+            // 原 Parser AST／Lexer 真括號，實際字面值只從原值葉取得。
+            let bool_leaf = private_self_checked_ungrouped_return(&verified, arg)?;
+            let literal = match &bool_leaf.kind {
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Boolean(value),
                 ) if verified.tokens.iter().any(|token|
-                    token.start == arg.start && token.end == arg.end
+                    token.start == bool_leaf.start && token.end == bool_leaf.end
                         && matches!(&token.kind, TokenKind::Keyword(word)
                             if word == if *value { "true" } else { "false" })
                 ) => Some(*value),
@@ -1238,12 +1241,17 @@ impl PreparedPrivateSelfMethod {
                                 "M2 if true 葉只可單一 return 或先欄位寫入再 return",
                             ));
                         }
-                        let (condition, parameter_source) = match &branch.condition.kind {
+                        // 已驗證 bool 條件可包覆真 Group；名稱與常值
+                        // 只依內部真葉的 Lexer 精確位置，不憑外殼重簽權限。
+                        let condition_leaf = private_self_checked_ungrouped_return(
+                            &verified, &branch.condition,
+                        )?;
+                        let (condition, parameter_source) = match &condition_leaf.kind {
                             TermKind::Scalar(
                                 crate::syntax_shared::ScalarLiteral::Boolean(value),
                             ) if verified.tokens.iter().any(|token|
-                                token.start == branch.condition.start
-                                    && token.end == branch.condition.end
+                                token.start == condition_leaf.start
+                                    && token.end == condition_leaf.end
                                     && matches!(&token.kind, TokenKind::Keyword(word)
                                         if word == if *value { "true" } else { "false" })
                             ) => (*value, None),
@@ -1259,8 +1267,8 @@ impl PreparedPrivateSelfMethod {
                                     param.ty == "bool" && param.name == *name
                                     && DeclarationId(param.declaration_start) == id)
                                     || !verified.tokens.iter().any(|token|
-                                        token.start == branch.condition.start
-                                            && token.end == branch.condition.end
+                                        token.start == condition_leaf.start
+                                            && token.end == condition_leaf.end
                                             && matches!(&token.kind, TokenKind::Name(found)
                                                 if found == name)
                                     )
@@ -1323,12 +1331,15 @@ impl PreparedPrivateSelfMethod {
                                     }
                                     // 與外層 bool Name 共用同一原 Checker 形參
                                     // DeclarationId，不建立第二條不受約束的語意路徑。
-                                    let (condition, parameter_source) = match &inner.condition.kind {
+                                    let condition_leaf = private_self_checked_ungrouped_return(
+                                        &verified, &inner.condition,
+                                    )?;
+                                    let (condition, parameter_source) = match &condition_leaf.kind {
                                         TermKind::Scalar(
                                             crate::syntax_shared::ScalarLiteral::Boolean(value),
                                         ) if verified.tokens.iter().any(|token|
-                                            token.start == inner.condition.start
-                                                && token.end == inner.condition.end
+                                            token.start == condition_leaf.start
+                                                && token.end == condition_leaf.end
                                                 && matches!(&token.kind,
                                                     TokenKind::Keyword(word)
                                                         if word == if *value { "true" } else { "false" })
@@ -1345,8 +1356,8 @@ impl PreparedPrivateSelfMethod {
                                                 param.ty == "bool" && param.name == *name
                                                 && DeclarationId(param.declaration_start) == id)
                                                 || !verified.tokens.iter().any(|token|
-                                                    token.start == inner.condition.start
-                                                        && token.end == inner.condition.end
+                                                    token.start == condition_leaf.start
+                                                        && token.end == condition_leaf.end
                                                         && matches!(&token.kind,
                                                             TokenKind::Name(found) if found == name)
                                                 )
@@ -2285,6 +2296,11 @@ impl PreparedPrivateSelfMethod {
     fn matches_source(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false; };
         self.original == fresh.original
+            // T3：此入口已用唯一原 Lexer／Parser／Checker 建立 fresh；
+            // 必須逐筆核對**完整** Token，不只查已使用的 Name/Type
+            // 角色。否則 method bool Group 原括號可能在 prepare 後
+            // 遭私有層更改卻仍因值葉相同而放行。
+            && self.verified.tokens == fresh.verified.tokens
             && self.struct_name == fresh.struct_name
             && self.owner == fresh.owner && self.owner_id == fresh.owner_id
             && self.owner_mutable == fresh.owner_mutable
