@@ -2438,6 +2438,18 @@ impl PreparedPrivateSelfMethod {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         let mut main_values = BTreeMap::<DeclarationId, i64>::new();
+        // main bool 值槽來自原已核准常值宣告；讀取具名 bool 方法
+        // 實參必經同一 DeclarationId，不能由同名 int 或準備時
+        // 任意指定的 bool 常值冒充。純字面初始化不建立資源事件。
+        let mut main_bool_values = BTreeMap::<DeclarationId, bool>::new();
+        for (_, id, value) in &self.main_bool_locals {
+            if main_bool_values.insert(*id, *value).is_some() {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+        }
+        if self.method_bool_sources.len() != self.method_bool_arguments.len() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
         let mut main_initialization_error = None;
         // 普通函式可以在 self 方法開始前實際完成；與方法本體
         // 及其真正 BorrowTicket 使用同一動態進退帳，不能在
@@ -2520,8 +2532,19 @@ impl PreparedPrivateSelfMethod {
             }
             // 完成原 Checker 參數的真值框架綁定；選中來源返回時
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
-            for (id, value) in self.method_bool_arguments.iter().copied() {
-                if bool_parameter_frame.insert(id, value).is_some() {
+            for ((id, prepared), source) in self.method_bool_arguments.iter().copied()
+                .zip(&self.method_bool_sources) {
+                // 具名 Copyable bool 必須在真正執行時讀原 main 槽；
+                // 字面 bool 才使用 Lexer 已封存常值。來源失配不
+                // 取得 self 借票，不進入方法本體。
+                let value = match source {
+                    Some(source) => *main_bool_values.get(source).ok_or(
+                        PrivateSelfMethodRuntimeError::WrongReceiver,
+                    )?,
+                    None => prepared,
+                };
+                if value != prepared
+                    || bool_parameter_frame.insert(id, value).is_some() {
                     return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
                 }
             }
@@ -2979,6 +3002,9 @@ impl PreparedPrivateSelfMethod {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
         }
+        // main Copyable bool 的真局部生命期止於 main 返回，
+        // 不可留在下一份方法呼叫的執行環境中。
+        main_bool_values.clear();
         let expected_pre_method_calls = self.main_init_plans.iter()
             .chain(self.argument_plans.iter())
             .map(|expression| {
