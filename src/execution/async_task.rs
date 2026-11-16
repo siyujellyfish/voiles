@@ -43,6 +43,8 @@ struct CheckedTask {
     budget: ExecutionBudget,
     status: DirectAwaitStatus,
     outcome: Option<ExecutionOutcome>,
+    /// 真執行完成當下寫入的收據位置；取消與未啟動工作不發收據。
+    completed_order: Option<usize>,
 }
 
 /// 單執行緒、只在直接 await 時執行指定工作的內部子集。
@@ -66,18 +68,39 @@ impl DirectAwaitSession {
     /// 取消、建立另一工作或直接等待前丟棄有問題的未啟動計畫。
     /// 已完成工作的真 Outcome 留在帳上，不假裝重新執行其本體。
     fn verify_pending_sources(&self) -> bool {
+        // T4：工作本體 Outcome 與實際完成順序不得各自自稱可信。
+        // 未完成狀態沒有執行收據；每個完成工作恰有一個原位置。
+        let finished = self.tasks.values().filter(|task| matches!(
+            task.status, DirectAwaitStatus::Succeeded | DirectAwaitStatus::Failed,
+        )).count();
+        if self.execution_order.len() != finished
+            || self.execution_order.iter().enumerate().any(|(index, id)|
+                !self.tasks.get(id).is_some_and(|task|
+                    task.completed_order == Some(index)
+                        && matches!(task.status,
+                            DirectAwaitStatus::Succeeded | DirectAwaitStatus::Failed)
+                )) {
+            return false;
+        }
         self.tasks.values().all(|task| match task.status {
             DirectAwaitStatus::Prepared | DirectAwaitStatus::Suspended => {
-                task.outcome.is_none() && task.plan.as_ref().is_some_and(|plan| {
-                    plan.is_same_verified_source() && plan.has_original_checker_facts()
-                })
+                task.completed_order.is_none() && task.outcome.is_none()
+                    && task.plan.as_ref().is_some_and(|plan| {
+                        plan.is_same_verified_source() && plan.has_original_checker_facts()
+                    })
             }
             DirectAwaitStatus::Running => false,
-            DirectAwaitStatus::Succeeded | DirectAwaitStatus::Failed => {
-                task.plan.is_none() && task.outcome.is_some()
+            DirectAwaitStatus::Succeeded => {
+                task.plan.is_none() && task.completed_order.is_some()
+                    && task.outcome.as_ref().is_some_and(|outcome| outcome.result.is_ok())
+            }
+            DirectAwaitStatus::Failed => {
+                task.plan.is_none() && task.completed_order.is_some()
+                    && task.outcome.as_ref().is_some_and(|outcome| outcome.result.is_err())
             }
             DirectAwaitStatus::Cancelled => {
                 task.plan.is_none() && task.outcome.is_none()
+                    && task.completed_order.is_none()
             }
         })
     }
@@ -97,6 +120,7 @@ impl DirectAwaitSession {
         self.tasks.insert(id, CheckedTask {
             plan: Some(plan), budget,
             status: DirectAwaitStatus::Prepared, outcome: None,
+            completed_order: None,
         });
         Ok(id)
     }
@@ -146,6 +170,7 @@ impl DirectAwaitSession {
         if self.loans.verify_static_snapshot(std::iter::empty()).is_err() {
             return Err(DirectAwaitError::ActiveBorrowAcrossAwait);
         }
+        let completed_order = self.execution_order.len();
         let task = self.tasks.get_mut(&id).expect("已核對工作身分");
         let plan = task.plan.take().expect("準備完成工作必有唯一計畫");
         task.status = DirectAwaitStatus::Running;
@@ -156,6 +181,7 @@ impl DirectAwaitSession {
             DirectAwaitStatus::Failed
         };
         task.outcome = Some(outcome);
+        task.completed_order = Some(completed_order);
         self.execution_order.push(id);
         Ok(self.tasks.get(&id).and_then(|task| task.outcome.as_ref())
             .expect("只記錄真正執行器產生的結果"))
@@ -353,6 +379,105 @@ mod tests {
         assert_eq!(session.status(next), Some(DirectAwaitStatus::Cancelled));
         assert_eq!(session.execution_order(), &[done]);
     }
+    #[test]
+    fn v7_t4_receipt_真已完成工作收據位置篡改不得發行下一工作() {
+        let mut session = DirectAwaitSession::new();
+        let done = session.prepare_verified_scalar(source(11), ExecutionBudget::default()).unwrap();
+        assert_eq!(session.await_direct(done).unwrap().result, Ok(Value::Int(11)));
+        assert_eq!(session.tasks[&done].completed_order, Some(0));
+        session.tasks.get_mut(&done).unwrap().completed_order = Some(99);
+        let before = session.next_id;
+        assert!(matches!(
+            session.prepare_verified_scalar(source(12), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::SourceChanged)
+        ));
+        assert_eq!(session.next_id, before);
+        assert_eq!(session.tasks.len(), 1);
+        assert_eq!(session.execution_order(), &[done]);
+        session.tasks.get_mut(&done).unwrap().completed_order = Some(0);
+        let next = session.prepare_verified_scalar(source(12), ExecutionBudget::default()).unwrap();
+        assert_eq!(session.await_direct(next).unwrap().result, Ok(Value::Int(12)));
+        assert_eq!(session.tasks[&next].completed_order, Some(1));
+        assert_eq!(session.execution_order(), &[done, next]);
+    }
+
+    #[test]
+    fn v7_t4_receipt_完成順序互換或重播不得提前取消等待中的合法工作() {
+        let mut session = DirectAwaitSession::new();
+        let a = session.prepare_verified_scalar(source(21), ExecutionBudget::default()).unwrap();
+        let b = session.prepare_verified_scalar(source(22), ExecutionBudget::default()).unwrap();
+        let pending = session.prepare_verified_scalar(source(23), ExecutionBudget::default()).unwrap();
+        assert_eq!(session.await_direct(a).unwrap().result, Ok(Value::Int(21)));
+        assert_eq!(session.await_direct(b).unwrap().result, Ok(Value::Int(22)));
+        session.execution_order.swap(0, 1);
+        assert_eq!(session.cancel_before_start(pending), Err(DirectAwaitError::SourceChanged));
+        assert_eq!(session.status(pending), Some(DirectAwaitStatus::Prepared));
+        assert!(session.tasks[&pending].plan.is_some());
+        session.execution_order.swap(0, 1);
+        session.execution_order.push(b);
+        assert_eq!(session.await_direct(pending).err(), Some(DirectAwaitError::SourceChanged));
+        assert_eq!(session.status(pending), Some(DirectAwaitStatus::Prepared));
+        session.execution_order.pop();
+        assert_eq!(session.await_direct(pending).unwrap().result, Ok(Value::Int(23)));
+        assert_eq!(session.execution_order(), &[a, b, pending]);
+        assert_eq!(session.tasks[&pending].completed_order, Some(2));
+    }
+
+    #[test]
+    fn v7_t4_receipt_真成功失敗終態與原結果相矛盾不得清除來源() {
+        let mut session = DirectAwaitSession::new();
+        let ok = session.prepare_verified_scalar(source(31), ExecutionBudget::default()).unwrap();
+        let fail = session.prepare_verified_scalar(source(32), ExecutionBudget {
+            max_call_frames: 8, max_steps: 0,
+        }).unwrap();
+        assert_eq!(session.await_direct(ok).unwrap().result, Ok(Value::Int(31)));
+        assert!(session.await_direct(fail).unwrap().result.is_err());
+        assert_eq!(session.status(fail), Some(DirectAwaitStatus::Failed));
+        session.tasks.get_mut(&ok).unwrap().status = DirectAwaitStatus::Failed;
+        assert!(matches!(
+            session.prepare_verified_scalar(source(33), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::SourceChanged)
+        ));
+        session.tasks.get_mut(&ok).unwrap().status = DirectAwaitStatus::Succeeded;
+        session.tasks.get_mut(&fail).unwrap().status = DirectAwaitStatus::Succeeded;
+        assert!(matches!(
+            session.prepare_verified_scalar(source(33), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::SourceChanged)
+        ));
+        session.tasks.get_mut(&fail).unwrap().status = DirectAwaitStatus::Failed;
+        let next = session.prepare_verified_scalar(source(33), ExecutionBudget::default()).unwrap();
+        assert_eq!(session.await_direct(next).unwrap().result, Ok(Value::Int(33)));
+        assert_eq!(session.status(ok), Some(DirectAwaitStatus::Succeeded));
+        assert_eq!(session.status(fail), Some(DirectAwaitStatus::Failed));
+        assert_eq!(session.execution_order(), &[ok, fail, next]);
+    }
+
+    #[test]
+    fn v7_t4_receipt_未知完成工作與假取消收據拒絕但真取消不執行() {
+        let mut session = DirectAwaitSession::new();
+        let cancelled = session.prepare_verified_scalar(source(41), ExecutionBudget::default()).unwrap();
+        session.cancel_before_start(cancelled).unwrap();
+        assert_eq!(session.execution_order(), &[]);
+        session.execution_order.push(u64::MAX);
+        assert!(matches!(
+            session.prepare_verified_scalar(source(42), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::SourceChanged)
+        ));
+        session.execution_order.clear();
+        session.tasks.get_mut(&cancelled).unwrap().completed_order = Some(0);
+        assert!(matches!(
+            session.prepare_verified_scalar(source(42), ExecutionBudget::default()),
+            Err(DirectAwaitPreparationError::SourceChanged)
+        ));
+        session.tasks.get_mut(&cancelled).unwrap().completed_order = None;
+        let normal = session.prepare_verified_scalar(source(42), ExecutionBudget::default()).unwrap();
+        session.cancel_before_start(normal).unwrap();
+        assert_eq!(session.execution_order(), &[]);
+        assert_eq!(session.status(normal), Some(DirectAwaitStatus::Cancelled));
+        assert_eq!(session.tasks[&normal].completed_order, None);
+        assert_eq!(session.status(cancelled), Some(DirectAwaitStatus::Cancelled));
+    }
+
 }
 
 
