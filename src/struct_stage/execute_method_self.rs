@@ -526,6 +526,16 @@ enum PrivateSelfMethodLocalEvent {
     ScopeEnded(DeclarationId),
 }
 
+/// B4／M3：僅把原 Parser 直線 main 中已核准的 Copyable
+/// int／bool 事件沿源碼次序寫成單一可稽核步驟表。
+/// 真函式進退仍交給原 SharedCallExit，不新造 CFG 權威。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateSelfMainScalarStep {
+    BoolDeclare(usize),
+    IntDeclare(usize),
+    BoolAssign(usize),
+}
+
 struct PreparedPrivateSelfMethod {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -612,6 +622,8 @@ struct PreparedPrivateSelfMethod {
     /// 僅接通全部 main Copyable bool 宣告後的原 Parser 直線
     /// var bool 更新；每筆保留目標、準備值及真 RHS DeclId。
     main_bool_assignments: Vec<(DeclarationId, bool, Option<DeclarationId>)>,
+    /// 以原 Parser 逐語句記錄跨型別真執行次序。
+    main_scalar_steps: Vec<PrivateSelfMainScalarStep>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -890,7 +902,7 @@ impl PreparedPrivateSelfMethod {
         let mut main_bool_sources = Vec::<Option<DeclarationId>>::new();
         let mut main_bool_assignments =
             Vec::<(DeclarationId, bool, Option<DeclarationId>)>::new();
-        let mut seen_main_assignment = false;
+        let mut main_scalar_steps = Vec::<PrivateSelfMainScalarStep>::new();
         let mut known_bool_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
@@ -898,11 +910,10 @@ impl PreparedPrivateSelfMethod {
         let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
         for statement in main.body.statements.iter().skip(1)
             .take(main.body.statements.len() - 2) {
-            // 保留原 Parser／Checker 的具名賦值 AST，並限制在
-            // 純 bool 宣告之後。此受限子集不接通有副作用的 int
-            // helper 與 bool 重賦交錯，也不私自新增一般 CFG。
+            // 保留原 Parser／Checker 具名賦值 AST 的實際位置：
+            // 每個 Copyable int helper／bool 更新按相同直線圖執行，
+            // 不能將 bool 副作用（即使純值）前移跨越 helper 出錯點。
             if let StmtKind::Assign(assignment) = &statement.kind {
-                seen_main_assignment = true;
                 let target = known_bool_bindings.get(&assignment.name).copied()
                     .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                         "main bool 重賦值缺少已核准同一局部名稱",
@@ -955,12 +966,10 @@ impl PreparedPrivateSelfMethod {
                     ));
                 }
                 main_bool_assignments.push((target, value, source));
-                continue;
-            }
-            if seen_main_assignment {
-                return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main bool 重賦值之後不可再建立新的局部作用域",
+                main_scalar_steps.push(PrivateSelfMainScalarStep::BoolAssign(
+                    main_bool_assignments.len() - 1,
                 ));
+                continue;
             }
             let StmtKind::Declare(local) = &statement.kind else {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -1023,6 +1032,9 @@ impl PreparedPrivateSelfMethod {
                 main_bool_locals.push((local.name.clone(), id, value));
                 main_bool_sources.push(source);
                 known_bool_mutability.insert(id, local.mutable);
+                main_scalar_steps.push(PrivateSelfMainScalarStep::BoolDeclare(
+                    main_bool_locals.len() - 1,
+                ));
                 continue;
             }
             if local.ty != "int" {
@@ -1085,12 +1097,8 @@ impl PreparedPrivateSelfMethod {
             known_int_values.insert(id, value);
             main_int_locals.push((local.name.clone(), id, value, source));
             main_init_plans.push(plan);
-        }
-        if !main_bool_assignments.is_empty() && !main_int_locals.is_empty() {
-            // 既有 main int helper 可能有真動態進退與溢位，故本批
-            // 不把它與 bool 更新交錯重排為另一份未證明工作圖。
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main bool 重賦只接通無其它 int 局部動態求值的直線子集",
+            main_scalar_steps.push(PrivateSelfMainScalarStep::IntDeclare(
+                main_int_locals.len() - 1,
             ));
         }
         // 同步方法實參與普通函式共用原 Checker→TypedHIR 的
@@ -2445,7 +2453,8 @@ impl PreparedPrivateSelfMethod {
             method: method_name, awaited_method, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_arguments, method_bool_sources, main_bool_locals,
-            main_bool_sources, main_bool_assignments, main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_bool_sources, main_bool_assignments, main_scalar_steps,
+            main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2494,6 +2503,7 @@ impl PreparedPrivateSelfMethod {
             && self.main_bool_locals == fresh.main_bool_locals
             && self.main_bool_sources == fresh.main_bool_sources
             && self.main_bool_assignments == fresh.main_bool_assignments
+            && self.main_scalar_steps == fresh.main_scalar_steps
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
