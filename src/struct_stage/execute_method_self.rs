@@ -884,7 +884,13 @@ impl PreparedPrivateSelfMethod {
             PrivateSelfMethodPrepareError::Unsupported("main 缺少真同步方法返回"),
         )?;
         let (called_method, call_arguments, awaited_method) = match &last_main_statement.kind {
-            StmtKind::Return(returned) => match &returned.expression.kind {
+            // 原 Checker evaluate(Group) 對內層 MethodCall 的真正
+            // 借用與方法簽章仍在葉節點；括號只經原 Lexer 真 token
+            // 核對，不得由私有層文字掃描重新推導。
+            StmtKind::Return(returned) => match
+                &private_self_checked_ungrouped_return(
+                    &verified, &returned.expression,
+                )?.kind {
                 TermKind::MethodCall(_, name, args) =>
                     (name.as_str(), args.as_slice(), false),
                 TermKind::AwaitMethodCall(_, name, args) =>
@@ -2479,7 +2485,10 @@ impl PreparedPrivateSelfMethod {
                 "主函式必須直接 return 真方法呼叫",
             ));
         };
-        let (receiver, called, args) = match &call_return.expression.kind {
+        let checked_call_leaf = private_self_checked_ungrouped_return(
+            &verified, &call_return.expression,
+        )?;
+        let (receiver, called, args) = match &checked_call_leaf.kind {
             TermKind::MethodCall(owner, method, arguments)
                 if !awaited_method => (owner, method, arguments),
             TermKind::AwaitMethodCall(owner, method, arguments)
@@ -2489,13 +2498,17 @@ impl PreparedPrivateSelfMethod {
             )),
         };
         if awaited_method && !verified.tokens.iter().any(|token|
-            token.start == call_return.expression.start
+            // Group 外殼的 '(' 並非 await 的起點，必核對原
+            // Parser 真 AwaitMethodCall 值葉的 Lexer await 位置。
+            token.start == checked_call_leaf.start
                 && matches!(&token.kind, TokenKind::Name(word) if word == "await")) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "async 方法缺少原 Lexer 真 await 前綴 Token 與跨度",
             ));
         }
-        let call_span = call_return.expression.node_span();
+        // 唯有原 Checker 葉節點保有本次真 call_borrows_at()；
+        // 包覆 Group 只額外記 ScalarHIR，不可冒充方法呼叫跨度。
+        let call_span = checked_call_leaf.node_span();
         if receiver != &owner.name || called != &method.name
             || args.len() != usize::from(argument_binding.is_some())
                 + additional_argument_bindings.len()
