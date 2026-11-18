@@ -100,7 +100,8 @@ return owner.read(true,true,5)
         );
         let plan=PreparedPrivateSelfMethod::prepare(&src).unwrap();
         assert_eq!(plan.method_bool_sources,vec![
-            Some(plan.main_bool_locals[2].1),Some(plan.main_bool_locals[3].1),
+            Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[2].1)),
+            Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[3].1)),
         ]);
         run(&src,4,2,(Some(true),Some(false)),1);
     }

@@ -64,7 +64,7 @@ return owner.read(true,true,5)
     fn b4_main_bool_原Checker_const_true真值槽傳給方法選中內層helper() {
         let src=main_locals("const gate:bool = true\n", "owner.read(gate,true,5)");
         let plan=checked(&src,1);
-        assert_eq!(plan.method_bool_sources, vec![Some(plan.main_bool_locals[0].1),None]);
+        assert_eq!(plan.method_bool_sources, vec![Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[0].1)),None]);
         run(&src,1,6,(Some(true),Some(true)),1);
     }
 
@@ -90,7 +90,8 @@ return owner.read(true,true,5)
         let plan=checked(&src,2);
         assert_ne!(plan.main_bool_locals[0].1,plan.main_bool_locals[1].1);
         assert_eq!(plan.method_bool_sources,vec![
-            Some(plan.main_bool_locals[0].1),Some(plan.main_bool_locals[1].1),
+            Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[0].1)),
+            Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[1].1)),
         ]);
         run(&src,2,2,(Some(true),Some(false)),1);
     }
