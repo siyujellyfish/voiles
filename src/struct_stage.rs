@@ -1562,6 +1562,8 @@ include!("struct_stage/g18_b4_m3_main_scalar_ordered_steps_tests.rs");
 include!("struct_stage/g18_b4_m3_main_int_assignment_tests.rs");
 // G18／B4/M3：主函式未初始化 var int／bool 首次合法賦值真來源正反。
 include!("struct_stage/g18_b4_m3_main_uninitialized_scalar_tests.rs");
+// G18／B4/M3／T3：原Checker main Group方法Return內葉借票與await來源驗收。
+include!("struct_stage/g18_b4_m3_grouped_main_method_return_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。
