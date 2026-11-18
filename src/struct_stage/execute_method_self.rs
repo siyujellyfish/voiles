@@ -3571,6 +3571,7 @@ impl PreparedPrivateSelfMethod {
         let mut facts = Vec::new();
         let mut method_entered = false;
         let mut method_exited = false;
+        let mut direct_bool_write_observed = None::<(String, bool, bool)>;
         let mut await_start_loan_index = None;
         let mut method_local_events = Vec::<PrivateSelfMethodLocalEvent>::new();
         let mut initialized_method_locals = Vec::<DeclarationId>::new();
@@ -3915,6 +3916,48 @@ impl PreparedPrivateSelfMethod {
                     nested_else_write_applied = true;
                 }
             }
+            // M2：原兩語句方法第一筆是真 self.bool FieldAssign。
+            // 在同一 Checked self 方法框架／原唯一 ExclusiveWrite
+            // BorrowTicket 內先完整求 RHS，再 P16 原子提交，
+            // 立即讀回核對真值；不得預寫於 main 或方法進入前，
+            // 不可產生假 int LocalAssigned／OwnedStr ResourceId。
+            if let Some((field, source, planned)) = &self.direct_method_bool_write {
+                if selected_write.is_some()
+                    || tracker.check_ticket_access(ticket, BorrowKind::ExclusiveWrite)
+                        .map_err(PrivateSelfMethodRuntimeError::Ticket)? != self.owner_id {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                let before = match runtime.field(&self.owner, field) {
+                    Ok(Observed::Bool(value)) => value,
+                    _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                };
+                let actual = match source {
+                    PrivateSelfBoolWriteSource::Literal(value) => *value,
+                    PrivateSelfBoolWriteSource::Parameter(id) =>
+                        *bool_parameter_frame.get(id).ok_or(
+                            PrivateSelfMethodRuntimeError::WrongReceiver,
+                        )?,
+                    PrivateSelfBoolWriteSource::SelfField(name) =>
+                        match runtime.field(&self.owner, name) {
+                            Ok(Observed::Bool(value)) => value,
+                            _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                        },
+                };
+                if actual != *planned {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                runtime.write_bool_field(
+                    &self.owner, field, actual, self.owner_mutable,
+                ).map_err(PrivateSelfMethodRuntimeError::Resource)?;
+                let after = match runtime.field(&self.owner, field) {
+                    Ok(Observed::Bool(value)) => value,
+                    _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                };
+                if after != actual {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                direct_bool_write_observed = Some((field.clone(), before, after));
+            }
             // 真方法 self 欄位讀取須以存活 BorrowTicket 授權，不可
             // 僅因原 AST 名稱看似 self 而直接取用所有者。
             let authorized = tracker.check_ticket_access(ticket, BorrowKind::SharedRead)
@@ -4114,6 +4157,7 @@ impl PreparedPrivateSelfMethod {
             .sum();
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            direct_bool_write_observed,
             origin: PrivateSelfExecutionOrigin::from_plan(self),
             awaited_method: self.awaited_method, await_start_loan_index,
             ordinary_calls_completed, ordinary_calls_entered,
