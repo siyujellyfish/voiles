@@ -181,14 +181,25 @@ return owner.read(true,true,5)
 
     #[test]
     fn b4_self_bool_原Checker_async_self直接await真wake後讀bool條件() {
-        let src=source("var ready:bool = true\nvar backup:bool = false\n",
-            "owner.ready = false\n","self.ready","branch")
+        let src=source("var ready:bool = false\nvar backup:bool = false\n",
+            "","self.ready","branch")
             .replace("fn read(gate:bool,branch:bool,step:int)",
                 "async fn read(gate:bool,branch:bool,step:int)")
             .replace("return owner.read(true,true,5)",
                 "return await owner.read(true,true,5)");
         let mut queue=PrivateCheckedDeferredSelfAwaitQueue::new();
-        let id=queue.prepare(&src).expect("原 Checker合法 async self 直接await");
+        // E1 原契約只允許無前置作用的直接 await；原 Checker
+        // 允許的 main bool 欄位寫入不得偷渡延遲任務佇列。
+        let unsupported=src.replace(
+            "var owner:Counter = Counter()\n",
+            "var owner:Counter = Counter()\nowner.ready = true\n",
+        );
+        assert!(verify_source_with_ability(
+            &unsupported,crate::ownership_policy::approved_leaf_copy_permission,
+        ).is_ok(),"原 Checker 合法與 V7 限定可排程屬不同責任");
+        assert!(matches!(queue.prepare(&unsupported),
+            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        let id=queue.prepare(&src).expect("V7 無前置作用的原 Checker async self 直接await");
         assert_eq!(queue.status(id),Some(PrivateDeferredAwaitStatus::Prepared));
         queue.suspend(id).unwrap();
         assert_eq!(queue.status(id),Some(PrivateDeferredAwaitStatus::Suspended));
