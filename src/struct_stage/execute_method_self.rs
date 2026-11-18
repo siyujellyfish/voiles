@@ -1607,7 +1607,7 @@ impl PreparedPrivateSelfMethod {
                             declaration, owner, field: bool_field,
                         }) if declaration == main_owner_id
                             && owner == main_owner_name =>
-                            additional_copy_fields.iter().find(|(name, _, _)|
+                            known_copy_fields.iter().find(|(name, _, _)|
                                 name == &bool_field
                             ).and_then(|(_, seed, _)|
                                 match seed {
