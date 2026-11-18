@@ -535,6 +535,9 @@ enum PrivateSelfMainScalarStep {
     /// 原 Checker 允許的 var bool 尚未初始化宣告：只記語意身分，不產生值。
     BoolDeclareEmpty(usize),
     IntDeclare(usize),
+    /// 原 Checker 核准 owner Copyable int 欄位直接讀取後建立具名局部；
+    /// 真值只能從同一 MixedStructRuntime 目前欄位取得。
+    IntDeclareOwnerField(usize),
     /// 原 Checker 允許的 var int 尚未初始化宣告：只記語意身分，不產生值。
     IntDeclareEmpty(usize),
     BoolAssign(usize),
@@ -637,6 +640,9 @@ struct PreparedPrivateSelfMethod {
     /// main 原 Checker 證明的唯一持有者 var int 欄位直接寫入；
     /// 每筆 RHS 保留原 ScalarHIR，由真 Caller 求值後原子提交。
     main_owner_field_assignments: Vec<(i64, PrivateScalarReturnExpr)>,
+    /// main 已核准 owner.int FieldRead 到 int 局部的原 Checker
+    /// DeclarationId → 內層真 ScalarHIR／Lexer NodeSpan。
+    main_owner_field_read_sources: BTreeMap<DeclarationId, crate::common_ir::NodeSpan>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -926,6 +932,9 @@ impl PreparedPrivateSelfMethod {
             Vec::<(DeclarationId, i64, PrivateScalarReturnExpr)>::new();
         let mut main_owner_field_assignments =
             Vec::<(i64, PrivateScalarReturnExpr)>::new();
+        let mut main_owner_field_read_sources =
+            BTreeMap::<DeclarationId, crate::common_ir::NodeSpan>::new();
+        let mut known_owner_field_value = field_value;
         // 本期仍維持首句由原 Checker 核准的唯一 struct owner。
         // 只提早固定已解析的詞彙身分以核對主函式真欄位寫入，
         // 後段完整構造來源及 call_borrows 核證一項也不略過。
@@ -1000,6 +1009,7 @@ impl PreparedPrivateSelfMethod {
                     )),
                 };
                 main_owner_field_assignments.push((planned, plan));
+                known_owner_field_value = planned;
                 main_scalar_steps.push(PrivateSelfMainScalarStep::OwnerIntFieldAssign(
                     main_owner_field_assignments.len() - 1,
                 ));
@@ -1219,6 +1229,55 @@ impl PreparedPrivateSelfMethod {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
                     "main 局部僅接已核准 Copyable int／bool 子集",
                 ));
+            }
+            // 不新造 owner FieldRead 求值器：只有原 Parser AST
+            // 值葉直接指向唯一已核准 Copyable int 欄位、
+            // 且原 Checker 簽出 Int ScalarHIR 時才建立讀值步驟。
+            // Group 真括號及 Leaf Span 全由既有 Lexer 驗證器確認。
+            let leaf = private_self_checked_ungrouped_return(&verified, initializer)?;
+            if let TermKind::FieldRead(receiver, read_field) = &leaf.kind {
+                if receiver != &main_owner_name || read_field != &field.name
+                    || verified.plan.scalar_hir.expression(leaf.node_span())
+                        .is_none_or(|fact| fact.ty != ScalarType::Int)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == leaf.start
+                            && matches!(&token.kind, TokenKind::Name(name)
+                                if name == receiver)
+                    )
+                    || !verified.tokens.iter().any(|token|
+                        token.end == leaf.end
+                            && matches!(&token.kind, TokenKind::Name(name)
+                                if name == read_field)
+                    )
+                    || !verified.tokens.iter().any(|token|
+                        token.start > leaf.start && token.end < leaf.end
+                            && matches!(token.kind, TokenKind::Symbol('.'))
+                    )
+                    || known_bool_bindings.contains_key(&local.name)
+                    || known_int_bindings.contains_key(&local.name)
+                    || known_int_values.contains_key(&id) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main 欄位Copyable讀值缺少原Checker ScalarHIR／同一owner Lexer來源",
+                    ));
+                }
+                known_int_bindings.insert(local.name.clone(), id);
+                known_int_values.insert(id, known_owner_field_value);
+                main_int_locals.push((
+                    local.name.clone(), id, known_owner_field_value, None,
+                ));
+                known_int_mutability.insert(id, local.mutable);
+                // 僅維持既有 int main_init_plans 一一對應；真正
+                // IntDeclareOwnerField 動態步驟絕不以此快照求值。
+                main_init_plans.push(PrivateScalarReturnExpr::Constant(
+                    known_owner_field_value,
+                ));
+                if main_owner_field_read_sources.insert(id, leaf.node_span()).is_some() {
+                    return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                }
+                main_scalar_steps.push(PrivateSelfMainScalarStep::IntDeclareOwnerField(
+                    main_int_locals.len() - 1,
+                ));
+                continue;
             }
             // 與普通函式共用已核准 TypedHIR Expression／Reference／
             // Arithmetic、原 Lexer token 及括號身分，並只允許
@@ -2641,7 +2700,8 @@ impl PreparedPrivateSelfMethod {
             method_bool_arguments, method_bool_sources, main_bool_locals,
             main_bool_sources, main_bool_assignments, main_scalar_steps,
             main_int_assignments, main_owner_field_assignments,
-            main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_owner_field_read_sources, main_int_locals,
+            main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2693,6 +2753,7 @@ impl PreparedPrivateSelfMethod {
             && self.main_scalar_steps == fresh.main_scalar_steps
             && self.main_int_assignments == fresh.main_int_assignments
             && self.main_owner_field_assignments == fresh.main_owner_field_assignments
+            && self.main_owner_field_read_sources == fresh.main_owner_field_read_sources
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
