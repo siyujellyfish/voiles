@@ -47,7 +47,9 @@ return owner.set(9)
     fn b4_multi_fields_兩個var_int預設依原Checker順序同物件建構() {
         let src=extra("var spare:int = 3\n");
         let p=plan(&src);
-        assert_eq!(p.additional_int_fields,vec![("spare".to_owned(),3,false)]);
+        assert_eq!(p.additional_copy_fields,vec![
+            ("spare".to_owned(),PrivateSelfAdditionalCopyValue::Int(3),false)
+        ]);
         run(&src);
     }
 
@@ -55,7 +57,9 @@ return owner.set(9)
     fn b4_multi_fields_保留原Checker_const_int額外欄位不可當可寫() {
         let src=extra("const spare:int = 13\n");
         let p=plan(&src);
-        assert_eq!(p.additional_int_fields,vec![("spare".to_owned(),13,true)]);
+        assert_eq!(p.additional_copy_fields,vec![
+            ("spare".to_owned(),PrivateSelfAdditionalCopyValue::Int(13),true)
+        ]);
         run(&src);
     }
 
@@ -63,9 +67,9 @@ return owner.set(9)
     fn b4_multi_fields_三個int欄位依原Lexer宣告次序分別真預設() {
         let src=extra("var spare:int = 3\nconst payload:int = 17\n");
         let p=plan(&src);
-        assert_eq!(p.additional_int_fields,vec![
-            ("spare".to_owned(),3,false),
-            ("payload".to_owned(),17,true),
+        assert_eq!(p.additional_copy_fields,vec![
+            ("spare".to_owned(),PrivateSelfAdditionalCopyValue::Int(3),false),
+            ("payload".to_owned(),PrivateSelfAdditionalCopyValue::Int(17),true),
         ]);
         run(&src);
     }
@@ -97,7 +101,7 @@ return owner.set(9)
     fn b4_multi_fields_額外真Checker欄位封存預設遭改寫須先SourceChanged() {
         let src=extra("var spare:int = 3\n");
         let mut p=plan(&src);
-        p.additional_int_fields[0].1=99;
+        p.additional_copy_fields[0].1=PrivateSelfAdditionalCopyValue::Int(99);
         assert!(matches!(p.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
@@ -111,10 +115,12 @@ return owner.set(9)
     }
 
     #[test]
-    fn b4_multi_fields_未開放額外bool欄位不得冒充int預設() {
+    fn b4_multi_fields_額外bool已由原Checker核准時必真建構且不當作int() {
         let src=extra("var gate:bool = true\n");
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))
-                | Err(PrivateSelfMethodPrepareError::Check(_))));
+        let p=plan(&src);
+        assert_eq!(p.additional_copy_fields,vec![
+            ("gate".to_owned(),PrivateSelfAdditionalCopyValue::Bool(true),false),
+        ]);
+        run(&src);
     }
 }
