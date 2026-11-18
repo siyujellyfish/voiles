@@ -56,6 +56,8 @@ struct PrivateSelfMethodOutcome {
     /// 讀取 bool 欄位舊值、原子更新、再讀新值的可核查觀測，
     /// 不用假 LocalAssigned 或 OwnedStr ResourceId 冒充寫入。
     direct_bool_write_observed: Option<(String, bool, bool)>,
+    /// M2：只有已命中原Checker true葉的真P16 var bool寫入才有動態觀測。
+    branch_bool_write_observed: Option<(String, bool, bool)>,
     /// 原方法執行結束前，從同一份已再驗的 Parser/Checker
     /// 計畫獨立產生；不得在佇列醒來後依工作 ID 重新填入。
     origin: PrivateSelfExecutionOrigin,
@@ -686,6 +688,8 @@ struct PreparedPrivateSelfMethod {
     method_branch_else_calculation: Option<PrivateSelfIntReturn>,
     /// M2：原 Checker if true 葉內唯一可寫 self.int 的真位置與值。
     method_branch_write: Option<(PrivateSelfApprovedBranchWrite, crate::common_ir::NodeSpan)>,
+    /// 原Checker真true葉可有一筆獨立var self.bool常值寫入，不新增控制圖。
+    method_branch_bool_literal_write: Option<(String, bool, crate::common_ir::NodeSpan)>,
     /// M2：if 真返回葉可讀取原 Checker self.int 或受控加減；只有
     /// 真的到達此葉才計算，避免未選分支提前溢位。
     method_branch_return: Option<PrivateSelfIntReturn>,
@@ -2016,6 +2020,8 @@ impl PreparedPrivateSelfMethod {
         // 原 Parser 分支/Return 工作圖的任何控制點或退出責任。
         let mut method_branch_self_bool_field = None::<String>;
         let mut method_nested_self_bool_field = None::<String>;
+        let mut method_branch_bool_literal_write =
+            None::<(String, bool, crate::common_ir::NodeSpan)>;
         let (method_branch, method_branch_parameter,
             method_branch_else, method_branch_else_write,
             method_branch_else_field_return, method_branch_else_calculation,
@@ -2097,18 +2103,62 @@ impl PreparedPrivateSelfMethod {
                                     "M2 true 葉第一句只能是原 Checker self.int 欄位寫入",
                                 ));
                             };
-                            if receiver != "self" || name != &field.name {
+                            if receiver != "self" {
                                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                    "M2 true 選葉寫入的 self 欄位身分不符",
+                                    "M2 true 選葉寫入必須是原 Checker self",
                                 ));
                             }
-                            let authorized = private_self_checked_branch_write(
-                                value, method, argument_binding,
-                                &additional_argument_bindings, &verified,
-                                &method_helpers,
-                                &mut method_branch_int_plans,
-                            )?;
-                            Some((authorized, write.node_span()))
+                            if name != &field.name {
+                                // 唯一原 Checker MethodSafety 已授權可寫 var bool，
+                                // 只接已存在於真 P16 的獨立 Copyable 直接常值。
+                                if !known_copy_fields.iter().any(|(candidate, seed, immutable)|
+                                    candidate == name
+                                        && matches!(seed, PrivateSelfAdditionalCopyValue::Bool(_))
+                                        && !immutable)
+                                    || !verified.tokens.iter().any(|token|
+                                        token.start == write.start
+                                            && matches!(&token.kind, TokenKind::Name(found)
+                                                if found == "self")
+                                    )
+                                    || !verified.tokens.iter().any(|token|
+                                        token.start > write.start
+                                            && token.end <= value.start
+                                            && matches!(&token.kind, TokenKind::Name(found)
+                                                if found == name)
+                                    ) {
+                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 true 葉 bool 欄位缺少原 Checker 與 Lexer 可寫身分",
+                                    ));
+                                }
+                                let leaf=private_self_checked_ungrouped_return(&verified,value)?;
+                                let TermKind::Scalar(
+                                    crate::syntax_shared::ScalarLiteral::Boolean(bool_value),
+                                )=&leaf.kind else {
+                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 true 葉 bool 寫入 RHS 限原 Lexer 獨立真常值",
+                                    ));
+                                };
+                                if !verified.tokens.iter().any(|token|
+                                    token.start == leaf.start && token.end == leaf.end
+                                        && matches!(&token.kind, TokenKind::Keyword(word)
+                                            if word == if *bool_value { "true" } else { "false" })
+                                ) {
+                                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                        "M2 true 葉 bool 常值缺少原 Lexer 精確座標",
+                                    ));
+                                }
+                                method_branch_bool_literal_write =
+                                    Some((name.clone(),*bool_value,write.node_span()));
+                                None
+                            } else {
+                                let authorized = private_self_checked_branch_write(
+                                    value, method, argument_binding,
+                                    &additional_argument_bindings, &verified,
+                                    &method_helpers,
+                                    &mut method_branch_int_plans,
+                                )?;
+                                Some((authorized, write.node_span()))
+                            }
                         } else { None };
                         // 真巢狀 CFG 最小子集：外層 true 葉只含一筆
                         // 內層 if(bool Lexer 常值)，其 true／else 葉各有
@@ -2963,7 +3013,9 @@ impl PreparedPrivateSelfMethod {
         // 必須持唯一 ExclusiveWrite，不可誤判成 SharedRead。
         let required_kind = if write_value.is_some() || write_parameter.is_some()
             || write_checked_int.is_some() || direct_method_bool_write.is_some()
-            || method_branch_write.is_some() || method_branch_else_write.is_some()
+            || method_branch_write.is_some()
+            || method_branch_bool_literal_write.is_some()
+            || method_branch_else_write.is_some()
             || method_nested_true_write.is_some() || method_nested_else_write.is_some() {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
@@ -2996,6 +3048,8 @@ impl PreparedPrivateSelfMethod {
             || (method_branch_else.is_some() && method_branch.is_none())
             || (method_branch_parameter.is_some() && method_bool_arguments.is_empty())
             || (method_branch_self_bool_field.is_some() && method_branch.is_none())
+            || (method_branch_bool_literal_write.is_some() && method_branch.is_none())
+            || (method_branch_bool_literal_write.is_some() && method_branch_write.is_some())
             || (method_branch_parameter.is_some()
                 && method_branch_self_bool_field.is_some())
             || method_fact.span != method_span
@@ -3088,8 +3142,8 @@ impl PreparedPrivateSelfMethod {
             || method_nested_true_write.is_some()
             || method_nested_else_write.is_some();
         if (writes_first_int && field.immutable)
-            || ((writes_first_int || direct_method_bool_write.is_some())
-                && !owner.mutable) {
+            || ((writes_first_int || direct_method_bool_write.is_some()
+                || method_branch_bool_literal_write.is_some()) && !owner.mutable) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "獨占 self 只可修改原 Checker 已授權的 var 接收者及目標欄位",
             ));
@@ -3114,7 +3168,8 @@ impl PreparedPrivateSelfMethod {
             direct_method_bool_write, return_calculation, method_int_locals,
             method_helpers, method_branch, method_branch_else,
             method_branch_else_write, method_branch_else_field_return,
-            method_branch_else_calculation, method_branch_write, method_branch_return,
+            method_branch_else_calculation, method_branch_write,
+            method_branch_bool_literal_write, method_branch_return,
             method_nested_branch, method_nested_branch_parameter,
             method_nested_self_bool_field, method_nested_else_calculation, method_nested_true_write,
             method_nested_else_write, method_branch_int_plans,
@@ -3156,6 +3211,7 @@ impl PreparedPrivateSelfMethod {
             && self.method_branch_else_field_return == fresh.method_branch_else_field_return
             && self.method_branch_else_calculation == fresh.method_branch_else_calculation
             && self.method_branch_write == fresh.method_branch_write
+            && self.method_branch_bool_literal_write == fresh.method_branch_bool_literal_write
             && self.method_branch_return == fresh.method_branch_return
             && self.method_nested_branch == fresh.method_nested_branch
             && self.method_nested_branch_parameter == fresh.method_nested_branch_parameter
@@ -3308,6 +3364,7 @@ impl PreparedPrivateSelfMethod {
         let mut branch_checked = None::<bool>;
         let mut nested_branch_checked = None::<bool>;
         let mut branch_write_applied = false;
+        let mut branch_bool_write_observed = None::<(String,bool,bool)>;
         let mut branch_else_write_applied = false;
         let mut nested_write_applied = false;
         let mut nested_else_write_applied = false;
@@ -3918,6 +3975,36 @@ impl PreparedPrivateSelfMethod {
                     nested_else_write_applied = true;
                 }
             }
+            // M2：原 Checker 已選中的 true 葉也可在原共通
+            // 控制節點寫入唯一已核准 var self.bool。未選葉不得
+            // 做任何 P16 寫入；唯一 ExclusiveWrite Ticket
+            // 由方法入口發行，不得為分支另行借票。
+            if selected_branch == Some(true) {
+                if let Some((field, value, _span)) =
+                    &self.method_branch_bool_literal_write {
+                    if selected_write.is_some()
+                        || tracker.check_ticket_access(ticket, BorrowKind::ExclusiveWrite)
+                            .map_err(PrivateSelfMethodRuntimeError::Ticket)? != self.owner_id {
+                        return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                    }
+                    let before = match runtime.field(&self.owner, field) {
+                        Ok(Observed::Bool(value)) => value,
+                        _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                    };
+                    runtime.write_bool_field(
+                        &self.owner, field, *value, self.owner_mutable,
+                    ).map_err(PrivateSelfMethodRuntimeError::Resource)?;
+                    let after = match runtime.field(&self.owner, field) {
+                        Ok(Observed::Bool(value)) => value,
+                        _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                    };
+                    if after != *value {
+                        return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                    }
+                    branch_bool_write_observed = Some((field.clone(),before,after));
+                    branch_write_applied = true;
+                }
+            }
             // M2：原兩語句方法第一筆是真 self.bool FieldAssign。
             // 在同一 Checked self 方法框架／原唯一 ExclusiveWrite
             // BorrowTicket 內先完整求 RHS，再 P16 原子提交，
@@ -4159,7 +4246,7 @@ impl PreparedPrivateSelfMethod {
             .sum();
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
-            direct_bool_write_observed,
+            direct_bool_write_observed, branch_bool_write_observed,
             origin: PrivateSelfExecutionOrigin::from_plan(self),
             awaited_method: self.awaited_method, await_start_loan_index,
             ordinary_calls_completed, ordinary_calls_entered,
@@ -4171,7 +4258,8 @@ impl PreparedPrivateSelfMethod {
             expected_nested_branch: self.method_nested_branch.map(|(condition, _)| condition),
             branch_write_applied,
             branch_else_write_applied,
-            expected_branch_write: self.method_branch_write.is_some(),
+            expected_branch_write: self.method_branch_write.is_some()
+                || self.method_branch_bool_literal_write.is_some(),
             expected_branch_else_write: self.method_branch_else_write.is_some(),
             expected_branch: self.method_branch.map(|(condition, _)| condition),
             main_local_slots_after_exit: main_values.len(),
