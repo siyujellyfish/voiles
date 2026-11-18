@@ -180,6 +180,47 @@ return owner.read(true,true,5)
     }
 
     #[test]
+    fn b4_self_bool_原Checker_async_self直接await真wake後讀bool條件() {
+        let src=source("var ready:bool = true\nvar backup:bool = false\n",
+            "owner.ready = false\n","self.ready","branch")
+            .replace("fn read(gate:bool,branch:bool,step:int)",
+                "async fn read(gate:bool,branch:bool,step:int)")
+            .replace("return owner.read(true,true,5)",
+                "return await owner.read(true,true,5)");
+        let mut queue=PrivateCheckedDeferredSelfAwaitQueue::new();
+        let id=queue.prepare(&src).expect("原 Checker合法 async self 直接await");
+        assert_eq!(queue.status(id),Some(PrivateDeferredAwaitStatus::Prepared));
+        queue.suspend(id).unwrap();
+        assert_eq!(queue.status(id),Some(PrivateDeferredAwaitStatus::Suspended));
+        assert_eq!(queue.execution_order().len(),0,"wake 前不可假入方法或發自借票");
+        let (finished,out)=queue.drive_next().unwrap().expect("真FIFO wake與借票");
+        assert_eq!(finished,id);
+        assert_eq!(out.result,Ok(7));
+        assert_eq!(out.branch_checked,Some(false));
+        assert!(out.awaited_method && out.ticket_returned);
+        assert!(out.has_balanced_self_borrow_trace());
+        queue.verify_ready_history().unwrap();
+    }
+
+    #[test]
+    fn b4_self_bool_async_安全點取消未執行方法不產生借票或helper() {
+        let src=source("var ready:bool = true\nvar backup:bool = false\n",
+            "","self.ready","self.backup")
+            .replace("fn read(gate:bool,branch:bool,step:int)",
+                "async fn read(gate:bool,branch:bool,step:int)")
+            .replace("return owner.read(true,true,5)",
+                "return await owner.read(true,true,5)");
+        let mut queue=PrivateCheckedDeferredSelfAwaitQueue::new();
+        let id=queue.prepare(&src).unwrap();
+        queue.suspend(id).unwrap();
+        queue.cancel(id).unwrap();
+        assert_eq!(queue.status(id),Some(PrivateDeferredAwaitStatus::Cancelled));
+        assert!(queue.execution_order().is_empty());
+        assert!(queue.drive_next().unwrap().is_none());
+        queue.verify_ready_history().unwrap();
+    }
+
+    #[test]
     fn b4_self_bool_原Checker拒絕非bool或不存在的self條件() {
         for src in [
             source("var ready:bool = true\nvar backup:bool = false\n",
