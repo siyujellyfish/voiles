@@ -551,6 +551,14 @@ enum PrivateSelfAdditionalCopyValue {
     Bool(bool),
 }
 
+/// B4/M3：bool 實參只有原 Checker 的 main 局部 DeclId 或
+/// 同一真 P16 owner 的 CopyStructBoolField。字面值仍以 None 保存。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateSelfBoolArgumentSource {
+    MainLocal(DeclarationId),
+    OwnerField { declaration: DeclarationId, field: String },
+}
+
 struct PreparedPrivateSelfMethod {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -628,9 +636,9 @@ struct PreparedPrivateSelfMethod {
     /// M2：原 Lexer bool 字面作方法真形參，獨立於 i64 槽，無隱含轉型。
     /// M2／M3：原 Checker 各 bool 形參按 Parser 位置保留獨立 DeclId。
     method_bool_arguments: Vec<(DeclarationId, bool)>,
-    /// Bool 實參來自同一原 Lexer true/false 時為 None；來自
-    /// main 具名 bool 局部時保存原 Checker DeclarationId。
-    method_bool_sources: Vec<Option<DeclarationId>>,
+    /// None 代表真 Lexer bool 常值；其餘保存原 Checker main
+    /// bool 局部或同一 owner 的 CopyStructBoolField 來源身份。
+    method_bool_sources: Vec<Option<PrivateSelfBoolArgumentSource>>,
     /// main 只允許已經原 Checker 型別驗證的 Copyable bool
     /// 常值／合法 Group 初始化，按原宣告身分保留唯一值槽。
     main_bool_locals: Vec<(String, DeclarationId, bool)>,
@@ -1421,7 +1429,7 @@ impl PreparedPrivateSelfMethod {
         // bool 只許原 Lexer true／false 並各自核對原 Checker
         // DeclarationId，不額外設個數上限；int 維持原 ScalarHIR。
         let mut bool_argument_literals =
-            Vec::<(usize, bool, Option<DeclarationId>)>::new();
+            Vec::<(usize, bool, Option<PrivateSelfBoolArgumentSource>)>::new();
         let mut parsed_argument_is_bool = Vec::<bool>::new();
         let mut int_arguments = Vec::<i64>::new();
         let mut argument_sources = Vec::<Option<DeclarationId>>::new();
@@ -1445,7 +1453,43 @@ impl PreparedPrivateSelfMethod {
                                 if found == name)
                     ))
                     .and_then(|source| known_bool_values.get(&source)
-                        .copied().map(|value| (value, Some(source)))),
+                        .copied().map(|value|
+                            (value, Some(PrivateSelfBoolArgumentSource::MainLocal(source)))
+                        )),
+                TermKind::FieldRead(_, _) => {
+                    // 絕不重掃原字串推測欄位：只將原 main
+                    // 結構持有者 DeclId 交給同一 bool ScalarHIR Checker。
+                    let mut bindings = known_bool_bindings.clone();
+                    if bindings.insert(
+                        main_owner_name.clone(), main_owner_id,
+                    ).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "bool 方法實參 owner 不得和 main bool 局部混名",
+                        ));
+                    }
+                    match PrivateScalarBoolExpr::from_checked(
+                        bool_leaf, &bindings, &verified,
+                    ) {
+                        Ok(PrivateScalarBoolExpr::CopyStructBoolField {
+                            declaration, owner, field: bool_field,
+                        }) if declaration == main_owner_id
+                            && owner == main_owner_name =>
+                            additional_copy_fields.iter().find(|(name, _, _)|
+                                name == &bool_field
+                            ).and_then(|(_, seed, _)|
+                                match seed {
+                                    PrivateSelfAdditionalCopyValue::Bool(value) =>
+                                        Some((*value, Some(
+                                            PrivateSelfBoolArgumentSource::OwnerField {
+                                                declaration, field: bool_field,
+                                            }
+                                        ))),
+                                    _ => None,
+                                }
+                            ),
+                        _ => None,
+                    }
+                }
                 _ => None,
             };
             if let Some((value, source)) = literal {
@@ -1535,7 +1579,8 @@ impl PreparedPrivateSelfMethod {
         }
         let mut bindings = Vec::<(DeclarationId, i64)>::new();
         let mut method_bool_arguments = Vec::<(DeclarationId, bool)>::new();
-        let mut method_bool_sources = Vec::<Option<DeclarationId>>::new();
+        let mut method_bool_sources =
+            Vec::<Option<PrivateSelfBoolArgumentSource>>::new();
         let mut bool_values = bool_argument_literals.into_iter();
         let mut int_values = int_arguments.iter().copied();
         let mut bound_ids = std::collections::BTreeSet::<DeclarationId>::new();
@@ -3180,13 +3225,23 @@ impl PreparedPrivateSelfMethod {
             // 僅由同一 DeclarationId 讀取此框架，不重用 owner 值。
             for ((id, prepared), source) in self.method_bool_arguments.iter().copied()
                 .zip(&self.method_bool_sources) {
-                // 具名 Copyable bool 必須在真正執行時讀原 main 槽；
-                // 字面 bool 才使用 Lexer 已封存常值。來源失配不
-                // 取得 self 借票，不進入方法本體。
+                // bool 實參依原 Parser 位置在借入 self 之前求值；
+                // 原 main 局部讀當下真值槽，CopyStructBoolField
+                // 必從同一 P16 owner 讀現值，不得以 prepare 快照
+                // 冒充、偷轉 int、或另簽 BorrowTicket。
                 let value = match source {
-                    Some(source) => *main_bool_values.get(source).ok_or(
-                        PrivateSelfMethodRuntimeError::WrongReceiver,
-                    )?,
+                    Some(PrivateSelfBoolArgumentSource::MainLocal(source)) =>
+                        *main_bool_values.get(source).ok_or(
+                            PrivateSelfMethodRuntimeError::WrongReceiver,
+                        )?,
+                    Some(PrivateSelfBoolArgumentSource::OwnerField {
+                        declaration, field,
+                    }) if *declaration == self.owner_id =>
+                        match runtime.field(&self.owner, field) {
+                            Ok(Observed::Bool(value)) => value,
+                            _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                        },
+                    Some(_) => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
                     None => prepared,
                 };
                 if value != prepared
