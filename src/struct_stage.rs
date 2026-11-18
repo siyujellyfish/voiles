@@ -1578,6 +1578,9 @@ include!("struct_stage/g18_b4_m2_multiple_int_fields_self_tests.rs");
 // G18／B4/M2：額外純值int／bool欄位依原Checker宣告順序真P16建構。
 #[cfg(test)]
 include!("struct_stage/g18_b4_m2_mixed_copyable_fields_tests.rs");
+// G18／B4/M3：原Checker CopyStructBoolField真P16欄位作方法bool實參。
+#[cfg(test)]
+include!("struct_stage/g18_b4_m3_owner_bool_method_argument_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。
