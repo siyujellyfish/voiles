@@ -951,6 +951,9 @@ impl PreparedPrivateSelfMethod {
         let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
         let mut known_int_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
+        // 原 main 第一個 owner 的 int 欄位在構造後由真 P16 保存；
+        // 此值只供 prepare 同源快照，execute 必重新讀取目前持有者。
+        let mut known_owner_field_value = field_value;
         for statement in main.body.statements.iter().skip(1)
             .take(main.body.statements.len() - 2) {
             // 只有原 Checker 對唯一 main owner／真正欄位／
@@ -968,29 +971,48 @@ impl PreparedPrivateSelfMethod {
                         "main int 欄位寫入缺少原 Checker 唯一持有者／可寫欄位證據",
                     ));
                 }
+                // 不靠名稱推測持有者：先以真正 main 宣告 DeclarationId
+                // 納入已核准 Parser/Checker 的 int Expr 身分。
+                let mut int_with_owner = known_int_bindings.clone();
+                if int_with_owner.insert(
+                    main_owner_name.clone(), main_owner_id,
+                ).is_some() {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main owner 不得與 Copyable int 局部重用名稱",
+                    ));
+                }
                 let plan = PrivateScalarReturnExpr::from_checked_bindings(
-                    value, &known_int_bindings, &verified,
+                    value, &int_with_owner, &verified,
                 ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                     "main int 欄位 RHS 缺少同源 Checker ScalarHIR",
                 ))?;
+                // 經唯一原 Checker 簽章的 CopyStructIntField 在此保留，
+                // 僅在預備快照投影到已知前序真寫入值；原始 HIR 不變。
+                let bound = private_self_bind_owner_int_read(
+                    &plan, main_owner_id, &main_owner_name, &field.name,
+                    known_owner_field_value,
+                ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                    "main 欄位 RHS 存在未核准持有者／資源型別來源",
+                ))?;
                 let mut calls = Vec::new();
-                plan.collect_calls(&mut calls);
+                bound.collect_calls(&mut calls);
                 let checked_calls = !calls.is_empty()
                     && private_self_approved_int_call_arithmetic(
-                        &plan, &method_helpers,
+                        &bound, &method_helpers,
                     );
-                if (!calls.is_empty() && !checked_calls)
-                    || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+                if (!private_self_approved_int_call_arithmetic(
+                    &bound, &method_helpers,
+                )) || matches!(bound, PrivateScalarReturnExpr::Unreachable) {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
                         "main int 欄位僅接通已證純整數與同步純helper RHS",
                     ));
                 }
                 let expected = if checked_calls {
                     private_self_arithmetic_call_snapshot(
-                        &plan, &known_int_values, &method_helpers,
+                        &bound, &known_int_values, &method_helpers,
                     )
                 } else {
-                    plan.evaluate(&known_int_values)
+                    bound.evaluate(&known_int_values)
                 };
                 let planned = match expected {
                     Ok(v) => v,
@@ -999,6 +1021,9 @@ impl PreparedPrivateSelfMethod {
                         "main 欄位寫入缺少已初始化 RHS 來源",
                     )),
                 };
+                // 供下一筆 main 欄位自讀使用；溢位在真執行時會停止，
+                // 因此絕不使用此預備數值冒稱動態已提交。
+                known_owner_field_value = planned;
                 main_owner_field_assignments.push((planned, plan));
                 main_scalar_steps.push(PrivateSelfMainScalarStep::OwnerIntFieldAssign(
                     main_owner_field_assignments.len() - 1,
@@ -2814,19 +2839,31 @@ impl PreparedPrivateSelfMethod {
             match *step {
                 PrivateSelfMainScalarStep::OwnerIntFieldAssign(index) => {
                     let (planned, expression) = &self.main_owner_field_assignments[index];
+                    // 真 P16 讀取目前已構造／可能已被前序寫入的
+                    // 同一 owner；不得用 constructor 或 prepare 常值。
+                    let observed = match runtime.field(&self.owner, &self.field) {
+                        Ok(Observed::Int(value)) => value,
+                        _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                    };
+                    let bound = private_self_bind_owner_int_read(
+                        expression, self.owner_id, &self.owner, &self.field,
+                        observed,
+                    ).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
+                    if !private_self_approved_int_call_arithmetic(
+                        &bound, &self.method_helpers,
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
                     let mut calls = Vec::new();
-                    expression.collect_calls(&mut calls);
-                    let executed = if !calls.is_empty()
-                        && private_self_approved_int_call_arithmetic(
-                            expression, &self.method_helpers,
-                        ) {
+                    bound.collect_calls(&mut calls);
+                    let executed = if !calls.is_empty() {
                         private_self_execute_arithmetic_call(
-                            expression, &main_values, &self.method_helpers,
+                            &bound, &main_values, &self.method_helpers,
                             &mut exit_events, &mut ordinary_calls_entered,
                             &mut ordinary_calls_completed,
                         )
                     } else {
-                        expression.evaluate(&main_values)
+                        bound.evaluate(&main_values)
                     };
                     let actual = match executed {
                         Ok(value) => value,
