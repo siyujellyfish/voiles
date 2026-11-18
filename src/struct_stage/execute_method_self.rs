@@ -1307,9 +1307,18 @@ impl PreparedPrivateSelfMethod {
         }
         // 同步方法實參與普通函式共用原 Checker→TypedHIR 的
         // Copyable int 表達式編譯；不另造方法專屬的名稱／運算子解析。
-        let main_bindings = main_int_locals.iter()
+        let mut main_bindings = main_int_locals.iter()
             .map(|(name, id, _, _)| (name.clone(), *id))
             .collect::<BTreeMap<_, _>>();
+        // 方法 int 實參可以在原 Checker 核准下讀取同一
+        // main 結構持有者欄位；唯一 DeclId 不可與局部混名。
+        if main_bindings.insert(
+            main_owner_name.clone(), main_owner_id,
+        ).is_some() {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "方法實參的 owner 與 main int 局部不可混用 DeclarationId",
+            ));
+        }
         // 原 main 宣告與重新賦值完成後的真型別快照；
         // 不可回退到宣告期舊值去簽發方法 int 引數。
         let main_prepared_values = known_int_values.clone();
@@ -1357,15 +1366,22 @@ impl PreparedPrivateSelfMethod {
             ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                 "方法 int 實參缺少原 Checker TypedHIR／Reference／Arithmetic 真來源",
             ))?;
+            // 只為準備期**一致性快照**綁定前序真欄位結果；
+            // 封存原 Checker CopyStructIntField，動態呼叫時必重新讀 P16。
+            let bound = private_self_bind_owner_int_read(
+                &plan, main_owner_id, &main_owner_name, &field.name,
+                known_owner_field_value,
+            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                "方法實參缺少原 Checker 同一 owner.int 來源",
+            ))?;
             let mut calls = Vec::new();
-            plan.collect_calls(&mut calls);
+            bound.collect_calls(&mut calls);
             let checked_arithmetic = private_self_approved_int_call_arithmetic(
-                &plan, &method_helpers,
+                &bound, &method_helpers,
             );
-            if (!calls.is_empty() && !checked_arithmetic)
-                || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+            if !checked_arithmetic {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法 int 實參只接通原 Checker 純值或單次直接純 helper",
+                    "方法 int 實參只接通原 Checker 純值或同步純 helper",
                 ));
             }
             // 此值僅是來源一致性快照；真正呼叫和函式事件必須
@@ -1376,10 +1392,10 @@ impl PreparedPrivateSelfMethod {
                 // 已核准純 int Call；準備時只求靜態一致性快照，
                 // 不能提前假造任何普通函式事件或 self 票據。
                 private_self_arithmetic_call_snapshot(
-                    &plan, &main_prepared_values, &method_helpers,
+                    &bound, &main_prepared_values, &method_helpers,
                 )
             } else {
-                plan.evaluate(&main_prepared_values)
+                bound.evaluate(&main_prepared_values)
             };
             let prepared = match preparation {
                 Ok(value) => value,
@@ -3049,19 +3065,31 @@ impl PreparedPrivateSelfMethod {
             for ((id, prepared), expression) in self.argument_binding.into_iter()
                 .chain(self.additional_argument_bindings.iter().copied())
                 .zip(&self.argument_plans) {
+                // 真執行於方法實參位置重新讀同一 P16 owner.int；
+                // 不以 prepare 快照或方法借票後的值偽造來源。
+                let observed = match runtime.field(&self.owner, &self.field) {
+                    Ok(Observed::Int(value)) => value,
+                    _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                };
+                let bound = private_self_bind_owner_int_read(
+                    expression, self.owner_id, &self.owner, &self.field,
+                    observed,
+                ).ok_or(PrivateSelfMethodRuntimeError::WrongReceiver)?;
+                if !private_self_approved_int_call_arithmetic(
+                    &bound, &self.method_helpers,
+                ) {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
                 // 按原方法引數次序真正求值；尚未完成全部引數前
                 // 不會取得 self BorrowTicket 或偽造進入方法框架。
                 let mut source_calls = Vec::new();
-                expression.collect_calls(&mut source_calls);
-                let actual = if !source_calls.is_empty()
-                    && private_self_approved_int_call_arithmetic(
-                        expression, &self.method_helpers,
-                    ) {
+                bound.collect_calls(&mut source_calls);
+                let actual = if !source_calls.is_empty() {
                     // 在借入 self 前依原 Parser 左到右真正求完整
                     // 算式，內層 Call 各自真退出；任何失敗不得
                     // 提前進入同步方法或簽發 BorrowTicket。
                     private_self_execute_arithmetic_call(
-                        expression, &main_values, &self.method_helpers,
+                        &bound, &main_values, &self.method_helpers,
                         &mut exit_events, &mut ordinary_calls_entered,
                         &mut ordinary_calls_completed,
                     ).map_err(|reason| match reason {
@@ -3070,7 +3098,7 @@ impl PreparedPrivateSelfMethod {
                         _ => PrivateSelfMethodRuntimeError::WrongReceiver,
                     })?
                 } else {
-                    expression.evaluate(&main_values).map_err(|reason| match reason {
+                    bound.evaluate(&main_values).map_err(|reason| match reason {
                         PrivateScalarCallRuntimeError::IntegerOverflow =>
                             PrivateSelfMethodRuntimeError::IntegerOverflow,
                         _ => PrivateSelfMethodRuntimeError::WrongReceiver,
