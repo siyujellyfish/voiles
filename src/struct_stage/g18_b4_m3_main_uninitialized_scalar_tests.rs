@@ -186,7 +186,7 @@ return owner.read(true,true,5)
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut plan=checked(&src);
-        plan.main_int_assignments[0].0=DeclarationId(plan.main_int_assignments[0].0.0+1);
+        plan.main_int_assignments[0].0=plan.owner_id;
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
