@@ -1048,29 +1048,39 @@ impl PreparedPrivateSelfMethod {
                             "main int 重賦目標缺少原 Checker var DeclId／Lexer Name",
                         ));
                     }
+                    // 僅沿原 Checker DeclarationId／ScalarHIR 接入持有者，
+                    // prepare 不改原 Plan；真值仍以執行期 P16 為準。
+                    let mut bindings = known_int_bindings.clone();
+                    if bindings.insert(main_owner_name.clone(), main_owner_id)
+                        .is_some() {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main var int RHS owner 不可與局部混名",
+                        ));
+                    }
                     let plan = PrivateScalarReturnExpr::from_checked_bindings(
-                        &assignment.expression, &known_int_bindings, &verified,
+                        &assignment.expression, &bindings, &verified,
                     ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                         "main int 賦值 RHS 缺少原 Checker ScalarHIR／可達來源",
                     ))?;
-                    let mut calls = Vec::new();
-                    plan.collect_calls(&mut calls);
-                    let checked_calls = !calls.is_empty()
-                        && private_self_approved_int_call_arithmetic(
-                            &plan, &method_helpers,
-                        );
-                    if (!calls.is_empty() && !checked_calls)
-                        || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+                    let bound = private_self_bind_owner_int_read(
+                        &plan, main_owner_id, &main_owner_name, &field.name,
+                        known_owner_field_value,
+                    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                        "main int 賦值 RHS 缺少同源 Checker owner.int",
+                    ))?;
+                    if !private_self_approved_int_call_arithmetic(&bound, &method_helpers) {
                         return Err(PrivateSelfMethodPrepareError::Unsupported(
                             "main var int 只接已證純整數 RHS 與同步 helper",
                         ));
                     }
-                    let expected = if checked_calls {
+                    let mut calls = Vec::new();
+                    bound.collect_calls(&mut calls);
+                    let expected = if !calls.is_empty() {
                         private_self_arithmetic_call_snapshot(
-                            &plan, &known_int_values, &method_helpers,
+                            &bound, &known_int_values, &method_helpers,
                         )
                     } else {
-                        plan.evaluate(&known_int_values)
+                        bound.evaluate(&known_int_values)
                     };
                     let value = match expected {
                         Ok(value) => value,
@@ -1248,34 +1258,37 @@ impl PreparedPrivateSelfMethod {
             // 與普通函式共用已核准 TypedHIR Expression／Reference／
             // Arithmetic、原 Lexer token 及括號身分，並只允許
             // 先前已正式宣告的 Copyable int 名稱。
+            let mut bindings = known_int_bindings.clone();
+            if bindings.insert(main_owner_name.clone(), main_owner_id)
+                .is_some() {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 初始化 owner 不可與局部混名",
+                ));
+            }
             let plan = PrivateScalarReturnExpr::from_checked_bindings(
-                initializer, &known_int_bindings, &verified,
+                initializer, &bindings, &verified,
             ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
                 "main int 初始化缺少真 Checker TypedHIR／詞彙與位置",
             ))?;
-            let mut calls = Vec::new();
-            plan.collect_calls(&mut calls);
-            let checked_calls = !calls.is_empty()
-                && private_self_approved_int_call_arithmetic(
-                    &plan, &method_helpers,
-                );
-            if (!calls.is_empty() && !checked_calls)
-                || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+            let bound = private_self_bind_owner_int_read(
+                &plan, main_owner_id, &main_owner_name, &field.name,
+                known_owner_field_value,
+            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                "main int 初始化缺少同源 Checker owner.int",
+            ))?;
+            if !private_self_approved_int_call_arithmetic(&bound, &method_helpers) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 初始化只支援同源 Checker 核准的零／一 int 純值 helper",
+                    "main int 初始化只支援同源 Checker 核准的純值與同步 helper",
                 ));
             }
-            // 同一份原 Checker 無副作用、單一常值 helper，可建立
-            // 靜態數值快照供來源防偽；真正函式進退只能在 execute
-            // 按原 main 執行次序產生，這裡不得預寫動態事件。
-            let expected = if checked_calls {
-                // 真 main 作用域依原 Checker/TypedHIR 建立的純值
-                // 算術可包含同步函式；prepare 不容許預造
-                // Enter/Returned 或任何 BorrowTicket。
+            let mut calls = Vec::new();
+            bound.collect_calls(&mut calls);
+            // prepare 只計算原 HIR 一致性快照；Runtime 真讀欄位、真 Enter。
+            let expected = if !calls.is_empty() {
                 private_self_arithmetic_call_snapshot(
-                    &plan, &known_int_values, &method_helpers,
+                    &bound, &known_int_values, &method_helpers,
                 )
-            } else { plan.evaluate(&known_int_values) };
+            } else { bound.evaluate(&known_int_values) };
             let value = match expected {
                 Ok(value) => value,
                 // 已核准動態名稱參與的運算可能溢位；prepare 只
@@ -2955,19 +2968,30 @@ impl PreparedPrivateSelfMethod {
                     if !declared_int.contains(target) {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    // 僅於真正抵達 IntDeclare／IntAssign 位置，
+                    // 從同一 P16 owner 讀目前 int，不信任 prepare 快照。
+                    let observed = match runtime.field(&self.owner, &self.field) {
+                        Ok(Observed::Int(value)) => value,
+                        _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                    };
+                    let bound = private_self_bind_owner_int_read(
+                        initializer, self.owner_id, &self.owner, &self.field, observed,
+                    ).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
+                    if !private_self_approved_int_call_arithmetic(
+                        &bound, &self.method_helpers,
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
                     let mut source_calls = Vec::new();
-                    initializer.collect_calls(&mut source_calls);
-                    let executed = if !source_calls.is_empty()
-                        && private_self_approved_int_call_arithmetic(
-                            initializer, &self.method_helpers,
-                        ) {
+                    bound.collect_calls(&mut source_calls);
+                    let executed = if !source_calls.is_empty() {
                         private_self_execute_arithmetic_call(
-                            initializer, &main_values, &self.method_helpers,
+                            &bound, &main_values, &self.method_helpers,
                             &mut exit_events, &mut ordinary_calls_entered,
                             &mut ordinary_calls_completed,
                         )
                     } else {
-                        initializer.evaluate(&main_values)
+                        bound.evaluate(&main_values)
                     };
                     let actual = match executed {
                         Ok(value) => value,
@@ -2990,19 +3014,30 @@ impl PreparedPrivateSelfMethod {
                 PrivateSelfMainScalarStep::IntDeclare(index) => {
                     let (_, id, planned, _) = &self.main_int_locals[index];
                     let initializer = &self.main_init_plans[index];
+                    // 僅於真正抵達 IntDeclare／IntAssign 位置，
+                    // 從同一 P16 owner 讀目前 int，不信任 prepare 快照。
+                    let observed = match runtime.field(&self.owner, &self.field) {
+                        Ok(Observed::Int(value)) => value,
+                        _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                    };
+                    let bound = private_self_bind_owner_int_read(
+                        initializer, self.owner_id, &self.owner, &self.field, observed,
+                    ).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
+                    if !private_self_approved_int_call_arithmetic(
+                        &bound, &self.method_helpers,
+                    ) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
                     let mut source_calls = Vec::new();
-                    initializer.collect_calls(&mut source_calls);
-                    let executed = if !source_calls.is_empty()
-                        && private_self_approved_int_call_arithmetic(
-                            initializer, &self.method_helpers,
-                        ) {
+                    bound.collect_calls(&mut source_calls);
+                    let executed = if !source_calls.is_empty() {
                         private_self_execute_arithmetic_call(
-                            initializer, &main_values, &self.method_helpers,
+                            &bound, &main_values, &self.method_helpers,
                             &mut exit_events, &mut ordinary_calls_entered,
                             &mut ordinary_calls_completed,
                         )
                     } else {
-                        initializer.evaluate(&main_values)
+                        bound.evaluate(&main_values)
                     };
                     let actual = match executed {
                         Ok(value) => value,
