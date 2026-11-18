@@ -502,6 +502,9 @@ jobs:
       - name: G18 P18.4-B4／P18.6-M3 主函式整數局部真owner欄位八項獨立Gate
         run: python3 tools/核對G18-P18.4-B4-M3主函式欄位局部值槽.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4／P18.6-M2 多int預設欄位真持有者八項獨立Gate
+        run: python3 tools/核對G18-P18.4-B4-M2多int欄位真持有者.py --test-bin target/p02/p04_source_internal
+
       - name: G18 V7-A1 原Checker直接await async self方法十二項 Gate
         run: python3 tools/核對G18-V7-A1原Checker直接await非同步self方法.py --test-bin target/p02/p04_source_internal
 
