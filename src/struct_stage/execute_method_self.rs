@@ -553,6 +553,9 @@ struct PreparedPrivateSelfMethod {
     field: String,
     field_value: i64,
     field_immutable: bool,
+    /// 原 Checker 宣告次序的額外 Copyable int 預設欄位；
+    /// 不假造任何 OwnedStr 或 BorrowTicket，且不授權本方法存取。
+    additional_int_fields: Vec<(String, i64, bool)>,
     /// 真方法首句可為原 Checker 已驗證的 self.int 欄位獨占寫入。
     write_value: Option<i64>,
     /// M2：本來 Checker 已核准 Copyable int 方法形參的
@@ -781,9 +784,9 @@ impl PreparedPrivateSelfMethod {
             ));
         }
         let definition = verified.structs.values().next().expect("已驗證只有一結構");
-        if definition.fields.len() != 1 || definition.methods.is_empty() {
+        if definition.fields.is_empty() || definition.methods.is_empty() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "僅接通單一 Copyable int 欄位及具原 Checker 簽章的同步方法",
+                "需要至少一個已證 Copyable int 欄位及具 Checker 簽章的方法",
             ));
         }
         let field = &definition.fields[0];
@@ -810,6 +813,53 @@ impl PreparedPrivateSelfMethod {
         let field_value = crate::syntax_shared::integer_i64(raw).map_err(|_|
             PrivateSelfMethodPrepareError::Unsupported("欄位 i64 常值無法安全表示"),
         )?;
+        // B4：其餘欄位仍由唯一原 Checker 與原 Lexer 證明
+        // 每一個真宣告、型別和預設；此有界子集只允許無資源
+        // 純 int，不接通對額外欄位的讀寫或新的自借權限。
+        let mut additional_int_fields = Vec::<(String, i64, bool)>::new();
+        for extra in definition.fields.iter().skip(1) {
+            let evidence = VerifiedTypedMember::checked_private(
+                text, NodeRole::Field, extra.declaration_span,
+                &extra.name, extra.name_span,
+                &extra.ty, extra.type_span, !extra.immutable,
+            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                "額外欄位缺少原 Parser／Lexer 真宣告身分",
+            ))?;
+            if extra.ty != "int"
+                || verified.plan.members.get(&evidence.identity) != Some(&evidence)
+                || additional_int_fields.iter().any(|(name, _, _)| name == &extra.name)
+                || extra.name == field.name {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "額外欄位只能是原 Checker 唯一純 Copyable int 成員",
+                ));
+            }
+            let Some(default) = extra.default.as_ref() else {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "額外 int 欄位必須有原 Checker 已核准的預設值",
+                ));
+            };
+            let TermKind::Scalar(
+                crate::syntax_shared::ScalarLiteral::Integer(raw),
+            ) = &default.kind else {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "額外欄位不接通非原 Lexer int 常值預設",
+                ));
+            };
+            if !verified.tokens.iter().any(|token|
+                token.start == default.start && token.end == default.end
+                    && matches!(&token.kind, TokenKind::Integer(value) if value == raw)
+            ) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported(
+                    "額外 int 預設缺少原 Lexer 來源身分",
+                ));
+            }
+            let value = crate::syntax_shared::integer_i64(raw).map_err(|_|
+                PrivateSelfMethodPrepareError::Unsupported(
+                    "額外 int 預設超出 i64 可表示範圍",
+                ),
+            )?;
+            additional_int_fields.push((extra.name.clone(), value, extra.immutable));
+        }
         // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
         // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
         // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
@@ -2681,7 +2731,7 @@ impl PreparedPrivateSelfMethod {
         Ok(Self {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
-            write_value, write_parameter, write_checked_int,
+            additional_int_fields, write_value, write_parameter, write_checked_int,
             return_calculation, method_int_locals,
             method_helpers, method_branch, method_branch_else,
             method_branch_else_write, method_branch_else_field_return,
@@ -2712,6 +2762,7 @@ impl PreparedPrivateSelfMethod {
             && self.owner_mutable == fresh.owner_mutable
             && self.field == fresh.field && self.field_value == fresh.field_value
             && self.field_immutable == fresh.field_immutable
+            && self.additional_int_fields == fresh.additional_int_fields
             && self.write_value == fresh.write_value
             && self.write_parameter == fresh.write_parameter
             && self.write_checked_int == fresh.write_checked_int
@@ -2838,11 +2889,20 @@ impl PreparedPrivateSelfMethod {
             MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue, Observed,
         };
         let mut runtime = MixedStructRuntime::new();
-        let specs = [MixedFieldSpec {
+        // P16 在真 main 首句按原 Checker 欄位宣告順序建立
+        // 所有 int 欄位；其餘欄位不發 OwnedStr／假資源事件。
+        let mut specs = Vec::with_capacity(1 + self.additional_int_fields.len());
+        specs.push(MixedFieldSpec {
             name: &self.field, kind: ScalarKind::Int,
             default: Some(SeedValue::Int(self.field_value)),
             immutable: self.field_immutable,
-        }];
+        });
+        for (name, value, immutable) in &self.additional_int_fields {
+            specs.push(MixedFieldSpec {
+                name, kind: ScalarKind::Int,
+                default: Some(SeedValue::Int(*value)), immutable: *immutable,
+            });
+        }
         runtime.construct(&self.owner, &specs, &[], None)
             .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         let mut main_initialization_error = None;
