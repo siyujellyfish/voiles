@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／B4/M2：main owner真FieldWriteEvidence／MixedStructRuntime十三項Gate。"""
+"""G18／B4/M2：main owner真FieldWriteEvidence／MixedStructRuntime十八項Gate。"""
 from __future__ import annotations
 
 import argparse
@@ -23,7 +23,12 @@ CASES = (
     "b4_owner_write_與Grouped方法Return保持內葉唯一真借票",
     "b4_owner_write_來源清冊被改或步驟重播必先SourceChanged",
     "b4_owner_write_原Checker拒絕const持有者不存在欄位與錯型別",
-    "b4_owner_write_未接通的欄位讀取作RHS仍保守拒絕第二套ScalarHIR",
+    "b4_owner_write_原Checker欄位自讀加一在真P16持有者更新",
+    "b4_owner_write_前序兩次更新後Group自讀使用當下真正欄位值",
+    "b4_owner_write_欄位真讀作同步helper實參再原子寫入",
+    "b4_owner_write_具名int與同一持有者欄位自讀混合依序計算",
+    "b4_owner_write_自讀欄位溢位不得建立方法票或假成功",
+    "b4_owner_write_封存真欄位來源遭換名必於任何副作用前拒絕",
 )
 
 
@@ -44,7 +49,7 @@ def main() -> int:
             line.removesuffix(": test") for line in listed.stdout.splitlines()
             if line.startswith(PREFIX) and line.endswith(": test")
         }
-        if len(expected) != 13 or actual != expected:
+        if len(expected) != 18 or actual != expected:
             raise ValueError(
                 "owner欄位來源Gate缺失=" + str(sorted(expected - actual))
                 + "；多出=" + str(sorted(actual - expected))
@@ -59,10 +64,10 @@ def main() -> int:
                 r"test result: ok\.\s+1 passed;\s+0 failed;\s+0 ignored;", output
             ):
                 raise ValueError(
-                    f"owner真FieldWrite {index}/13 {name} 失敗\n" + output[-9000:]
+                    f"owner真FieldWrite {index}/18 {name} 失敗\n" + output[-9000:]
                 )
-            print(f"原Checker owner欄位 {index}/13：{name}（通過）")
-        print("十三項原Checker FieldWriteEvidence／SharedCallExit／HC14與P16真門檻；B4/M2仍Open。")
+            print(f"原Checker owner欄位 {index}/18：{name}（通過）")
+        print("十八項原Checker FieldWriteEvidence／SharedCallExit／HC14與P16真門檻；B4/M2仍Open。")
         return 0
     except (OSError, ValueError) as exc:
         print("G18 main持有者欄位寫入必要Gate失敗：" + str(exc), file=sys.stderr)

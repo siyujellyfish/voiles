@@ -183,12 +183,73 @@ return owner.read(false,true,5)
     }
 
     #[test]
-    fn b4_owner_write_未接通的欄位讀取作RHS仍保守拒絕第二套ScalarHIR() {
+    fn b4_owner_write_原Checker欄位自讀加一在真P16持有者更新() {
         let src=source("owner.n = owner.n+1\n","owner.read(false,true,5)");
-        verify_source_with_ability(
-            &src,crate::ownership_policy::approved_leaf_copy_permission,
-        ).expect("原Checker已核准持有者Copyable int欄位直接讀取");
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))));
+        run(&src,8,1,0,(Some(false),None));
+    }
+
+    #[test]
+    fn b4_owner_write_前序兩次更新後Group自讀使用當下真正欄位值() {
+        let src=source(
+            "owner.n = 11\nowner.n = ((owner.n-3))\n",
+            "owner.read(false,true,5)",
+        );
+        run(&src,8,2,0,(Some(false),None));
+    }
+
+    #[test]
+    fn b4_owner_write_欄位真讀作同步helper實參再原子寫入() {
+        let src=source("owner.n = helper(owner.n,2)\n",
+            "owner.read(false,true,5)");
+        let out=run(&src,5,1,1,(Some(false),None));
+        let helper_exit=out.exit_events.iter().position(|event| matches!(
+            event, PrivateSharedCallExitEvent::FunctionExited { returned: true }
+        )).unwrap();
+        let self_loan=out.exit_events.iter().position(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanAcquired(_)
+        )).unwrap();
+        assert!(helper_exit<self_loan,"helper必先退出才借入self");
+    }
+
+    #[test]
+    fn b4_owner_write_具名int與同一持有者欄位自讀混合依序計算() {
+        let src=source(
+            "const value:int = 4\nowner.n = owner.n+value\nowner.n = owner.n-2\n",
+            "owner.read(false,true,5)",
+        );
+        run(&src,9,2,0,(Some(false),None));
+    }
+
+    #[test]
+    fn b4_owner_write_自讀欄位溢位不得建立方法票或假成功() {
+        let src=source(
+            "owner.n = 9223372036854775807\nowner.n = owner.n+1\n",
+            "owner.read(false,true,5)",
+        );
+        let out=checked(&src).execute().expect("真溢位須受控退出");
+        assert_eq!(out.result,Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(!out.method_entered && !out.method_exited);
+        assert_eq!((out.ordinary_calls_entered,out.ordinary_calls_completed),(0,0));
+        assert!(out.events.is_empty());
+        assert!(!out.exit_events.iter().any(|event| matches!(
+            event, PrivateSharedCallExitEvent::LoanAcquired(_)
+        )));
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn b4_owner_write_封存真欄位來源遭換名必於任何副作用前拒絕() {
+        let src=source("owner.n = owner.n+1\n",
+            "owner.read(false,true,5)");
+        let mut plan=checked(&src);
+        let PrivateScalarReturnExpr::Addition(left, _) =
+            &mut plan.main_owner_field_assignments[0].1 else {
+            panic!("原Checker應是欄位加法工作圖");
+        };
+        let PrivateScalarReturnExpr::CopyStructIntField { field, .. } =
+            left.as_mut() else { panic!("必保留原Checker欄位身分"); };
+        *field="fake".to_owned();
+        assert!(matches!(plan.execute(),
+            Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
 }
