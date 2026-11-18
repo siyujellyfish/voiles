@@ -520,6 +520,9 @@ jobs:
       - name: G18 P18.4-B4／P18.6-M2 原Checker self.bool方法條件與V7十四項Gate
         run: python3 tools/核對G18-P18.4-B4-M2真self布林欄位條件.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.6-M2 原Checker self.bool唯一獨占票真原子寫入十四項Gate
+        run: python3 tools/核對G18-P18.6-M2真self布林獨占寫入.py --test-bin target/p02/p04_source_internal
+
       - name: G18 V7-A1 原Checker直接await async self方法十二項 Gate
         run: python3 tools/核對G18-V7-A1原Checker直接await非同步self方法.py --test-bin target/p02/p04_source_internal
 

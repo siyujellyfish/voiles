@@ -1590,6 +1590,9 @@ include!("struct_stage/g18_b4_m3_main_owner_bool_field_write_tests.rs");
 // G18／B4/M2：原Checker self.bool if／巢狀if真借票、P16及V7直接await。
 #[cfg(test)]
 include!("struct_stage/g18_b4_m2_self_bool_condition_tests.rs");
+// G18／B4/M2：原Checker兩語句self.bool真P16獨占原子寫入、錯誤與V7。
+#[cfg(test)]
+include!("struct_stage/g18_m2_self_bool_direct_write_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。

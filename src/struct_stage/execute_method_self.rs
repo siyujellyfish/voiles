@@ -52,6 +52,10 @@ struct PrivateSelfMethodOutcome {
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
+    /// M2：在真 P16 內、原 Checker ExclusiveWrite 借票下
+    /// 讀取 bool 欄位舊值、原子更新、再讀新值的可核查觀測，
+    /// 不用假 LocalAssigned 或 OwnedStr ResourceId 冒充寫入。
+    direct_bool_write_observed: Option<(String, bool, bool)>,
     /// 原方法執行結束前，從同一份已再驗的 Parser/Checker
     /// 計畫獨立產生；不得在佇列醒來後依工作 ID 重新填入。
     origin: PrivateSelfExecutionOrigin,
@@ -596,6 +600,16 @@ fn private_self_checked_owner_bool_field(
 /// self.bool FieldRead 能成為方法 if 條件；原 Parser 節點與 Lexer
 /// self／欄位 Name 精確座標必一致。僅使用 P16 已證 Copyable
 /// bool，沒有第二套方法語意、借用或可寫授權。
+/// M2：直接 self.bool 寫入 RHS 僅有原 Checker 核准的三種
+/// Copyable 純值來源；Name 保留方法正式形參 DeclId，
+/// SelfField 讀取時仍需**同一張**有效 ExclusiveWrite 票。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum PrivateSelfBoolWriteSource {
+    Literal(bool),
+    Parameter(DeclarationId),
+    SelfField(String),
+}
+
 fn private_self_checked_method_bool_field(
     leaf: &Term, verified: &VerifiedPrivateSource,
     fields: &[(String, PrivateSelfAdditionalCopyValue, bool)],
@@ -649,6 +663,9 @@ struct PreparedPrivateSelfMethod {
     /// 在取得唯一 ExclusiveWrite BorrowTicket 後才真正求值；
     /// 不在 prepare 偷算成預定常值。
     write_checked_int: Option<PrivateScalarReturnExpr>,
+    /// 兩語句方法真 FieldAssign 的唯一額外 Copyable bool 欄位，
+    /// 封存原 Checker 欄位名、RHS 來源及前序真值快照。
+    direct_method_bool_write: Option<(String, PrivateSelfBoolWriteSource, bool)>,
     return_calculation: PrivateSelfIntReturn,
     /// 原方法本體中已核准的 int 局部，按 Lexer/Parser 先後執行，
     /// 不支援未經證明的控制流程、搬移或借用別名再借用。
@@ -1805,6 +1822,8 @@ impl PreparedPrivateSelfMethod {
         let additional_argument_bindings = bindings.into_iter().skip(1).collect::<Vec<_>>();
         // 兩語句模式先寫真 Copyable int 欄位，再直接讀取回傳；
         // 唯一是否可寫及 self 自動借用模式來自原 Checker MethodSafety。
+        let mut direct_method_bool_write =
+            None::<(String, PrivateSelfBoolWriteSource, bool)>;
         let (write_value, write_parameter, write_checked_int) =
             if method.body.statements.len() == 2
                 && matches!(&method.body.statements[0].kind,
@@ -1818,11 +1837,83 @@ impl PreparedPrivateSelfMethod {
                     "獨占 self 子集首句必須是原 Checker 真欄位賦值",
                 ));
             };
-            if receiver != "self" || target != &field.name {
+            if receiver != "self" {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "self 欄位寫入目標不是原 Checker 所屬欄位",
+                    "方法第一筆寫入必須使用原 Checker self 接收者",
                 ));
             }
+            // 原 Checker method_writes 已先判准 FieldAssign 的
+            // 欄位型別、Copyable 與是否 var。額外 bool 寫入只接
+            // P16 已證成員，且要求真 Lexer self／欄位兩端來源。
+            if target != &field.name {
+                if !known_copy_fields.iter().any(|(name, seed, immutable)|
+                    name == target
+                        && matches!(seed, PrivateSelfAdditionalCopyValue::Bool(_))
+                        && !immutable)
+                    || !verified.tokens.iter().any(|token|
+                        token.start == first.start
+                            && matches!(&token.kind, TokenKind::Name(word)
+                                if word == "self")
+                    )
+                    || !verified.tokens.iter().any(|token|
+                        token.start > first.start && token.end <= value.start
+                            && matches!(&token.kind, TokenKind::Name(name)
+                                if name == target)
+                    ) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法 bool 寫入缺少原 Checker 可變欄位與 Lexer 真身分",
+                    ));
+                }
+                let leaf = private_self_checked_ungrouped_return(&verified, value)?;
+                let (source, planned) = match &leaf.kind {
+                    TermKind::Scalar(
+                        crate::syntax_shared::ScalarLiteral::Boolean(bool_value),
+                    ) if verified.tokens.iter().any(|token|
+                        token.start == leaf.start && token.end == leaf.end
+                            && matches!(&token.kind, TokenKind::Keyword(word)
+                                if word == if *bool_value { "true" } else { "false" })
+                    ) => (PrivateSelfBoolWriteSource::Literal(*bool_value), *bool_value),
+                    TermKind::Name(name) => {
+                        let param = method.params.iter().find(|param|
+                            param.name == *name && param.ty == "bool"
+                        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 bool 寫入 RHS 非原 Checker Copyable bool 形參",
+                        ))?;
+                        let id = DeclarationId(param.declaration_start);
+                        let bool_value = method_bool_arguments.iter()
+                            .find_map(|(candidate, value)|
+                                (*candidate == id).then_some(*value)
+                            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                                "方法 bool 形參缺少已綁定原 Checker DeclId",
+                            ))?;
+                        if !verified.tokens.iter().any(|token|
+                            token.start == leaf.start && token.end == leaf.end
+                                && matches!(&token.kind, TokenKind::Name(found)
+                                    if found == name)
+                        ) {
+                            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                "方法 bool 形參 RHS 缺少原 Lexer Name 身分",
+                            ));
+                        }
+                        (PrivateSelfBoolWriteSource::Parameter(id), bool_value)
+                    }
+                    TermKind::FieldRead(_, _) => {
+                        let (bool_value, name) = private_self_checked_method_bool_field(
+                            leaf, &verified, &known_copy_fields,
+                        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "方法 bool RHS self 欄位缺少原 Checker／Lexer 身分",
+                        ))?;
+                        (PrivateSelfBoolWriteSource::SelfField(name), bool_value)
+                    }
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "方法直接 bool 寫入只允許原 Checker bool 常值、形參或 self.bool",
+                    )),
+                };
+                direct_method_bool_write = Some((
+                    target.clone(), source, planned,
+                ));
+                (None, None, None)
+            } else {
             // 保留原 Checker Group AST 的完整 HIR 外殼，
             // 僅由原 Lexer 真葉驗證常值／形參精確位置。
             let leaf = private_self_checked_ungrouped_return(&verified, value)?;
@@ -1910,6 +2001,7 @@ impl PreparedPrivateSelfMethod {
                 _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
                     "self 欄位直接寫入僅接通原 Checker int 常值、形參或純值加減",
                 )),
+            }
             }
         } else { (None, None, None) };
         // M2 第二批：保留原已驗證 bool 字面條件，再接通同一
@@ -2567,7 +2659,9 @@ impl PreparedPrivateSelfMethod {
             // 的前置語句，否則會把原 Checker 可寫 self
             // 的合法 FieldAssign 錯判成「未核准局部」。
             if (write_value.is_some() || write_parameter.is_some()
-                || write_checked_int.is_some() || method_branch.is_some())
+                || write_checked_int.is_some()
+                || direct_method_bool_write.is_some()
+                || method_branch.is_some())
                 && index == 0 {
                 continue;
             }
@@ -2868,7 +2962,8 @@ impl PreparedPrivateSelfMethod {
         // 寫入推導；形參動態值寫入與 Lexer 常值寫入一樣
         // 必須持唯一 ExclusiveWrite，不可誤判成 SharedRead。
         let required_kind = if write_value.is_some() || write_parameter.is_some()
-            || write_checked_int.is_some() || method_branch_write.is_some() || method_branch_else_write.is_some()
+            || write_checked_int.is_some() || direct_method_bool_write.is_some()
+            || method_branch_write.is_some() || method_branch_else_write.is_some()
             || method_nested_true_write.is_some() || method_nested_else_write.is_some() {
             BorrowKind::ExclusiveWrite
         } else { BorrowKind::SharedRead };
@@ -2985,13 +3080,18 @@ impl PreparedPrivateSelfMethod {
                 "本次方法呼叫缺少正式 Checker call_borrows 自動 self 事實",
             ))?;
         let loan = BorrowFact::new(owner_id, required_kind);
-        if (write_value.is_some() || write_parameter.is_some()
-            || write_checked_int.is_some() || method_branch_write.is_some()
+        let writes_first_int = write_value.is_some()
+            || write_parameter.is_some()
+            || write_checked_int.is_some()
+            || method_branch_write.is_some()
             || method_branch_else_write.is_some()
-            || method_nested_true_write.is_some() || method_nested_else_write.is_some())
-            && (!owner.mutable || field.immutable) {
+            || method_nested_true_write.is_some()
+            || method_nested_else_write.is_some();
+        if (writes_first_int && field.immutable)
+            || ((writes_first_int || direct_method_bool_write.is_some())
+                && !owner.mutable) {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "獨占 self 僅能修改 var 接收者及 var int 欄位",
+                "獨占 self 只可修改原 Checker 已授權的 var 接收者及目標欄位",
             ));
         }
         if facts != [loan] {
@@ -3011,7 +3111,7 @@ impl PreparedPrivateSelfMethod {
             verified, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             additional_copy_fields, write_value, write_parameter, write_checked_int,
-            return_calculation, method_int_locals,
+            direct_method_bool_write, return_calculation, method_int_locals,
             method_helpers, method_branch, method_branch_else,
             method_branch_else_write, method_branch_else_field_return,
             method_branch_else_calculation, method_branch_write, method_branch_return,
@@ -3046,6 +3146,7 @@ impl PreparedPrivateSelfMethod {
             && self.write_value == fresh.write_value
             && self.write_parameter == fresh.write_parameter
             && self.write_checked_int == fresh.write_checked_int
+            && self.direct_method_bool_write == fresh.direct_method_bool_write
             && self.return_calculation == fresh.return_calculation
             && self.method_int_locals == fresh.method_int_locals
             && self.method_helpers == fresh.method_helpers
@@ -3472,6 +3573,7 @@ impl PreparedPrivateSelfMethod {
         let mut facts = Vec::new();
         let mut method_entered = false;
         let mut method_exited = false;
+        let mut direct_bool_write_observed = None::<(String, bool, bool)>;
         let mut await_start_loan_index = None;
         let mut method_local_events = Vec::<PrivateSelfMethodLocalEvent>::new();
         let mut initialized_method_locals = Vec::<DeclarationId>::new();
@@ -3816,6 +3918,48 @@ impl PreparedPrivateSelfMethod {
                     nested_else_write_applied = true;
                 }
             }
+            // M2：原兩語句方法第一筆是真 self.bool FieldAssign。
+            // 在同一 Checked self 方法框架／原唯一 ExclusiveWrite
+            // BorrowTicket 內先完整求 RHS，再 P16 原子提交，
+            // 立即讀回核對真值；不得預寫於 main 或方法進入前，
+            // 不可產生假 int LocalAssigned／OwnedStr ResourceId。
+            if let Some((field, source, planned)) = &self.direct_method_bool_write {
+                if selected_write.is_some()
+                    || tracker.check_ticket_access(ticket, BorrowKind::ExclusiveWrite)
+                        .map_err(PrivateSelfMethodRuntimeError::Ticket)? != self.owner_id {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                let before = match runtime.field(&self.owner, field) {
+                    Ok(Observed::Bool(value)) => value,
+                    _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                };
+                let actual = match source {
+                    PrivateSelfBoolWriteSource::Literal(value) => *value,
+                    PrivateSelfBoolWriteSource::Parameter(id) =>
+                        *bool_parameter_frame.get(id).ok_or(
+                            PrivateSelfMethodRuntimeError::WrongReceiver,
+                        )?,
+                    PrivateSelfBoolWriteSource::SelfField(name) =>
+                        match runtime.field(&self.owner, name) {
+                            Ok(Observed::Bool(value)) => value,
+                            _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                        },
+                };
+                if actual != *planned {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                runtime.write_bool_field(
+                    &self.owner, field, actual, self.owner_mutable,
+                ).map_err(PrivateSelfMethodRuntimeError::Resource)?;
+                let after = match runtime.field(&self.owner, field) {
+                    Ok(Observed::Bool(value)) => value,
+                    _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                };
+                if after != actual {
+                    return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                }
+                direct_bool_write_observed = Some((field.clone(), before, after));
+            }
             // 真方法 self 欄位讀取須以存活 BorrowTicket 授權，不可
             // 僅因原 AST 名稱看似 self 而直接取用所有者。
             let authorized = tracker.check_ticket_access(ticket, BorrowKind::SharedRead)
@@ -4015,6 +4159,7 @@ impl PreparedPrivateSelfMethod {
             .sum();
         let outcome = PrivateSelfMethodOutcome {
             result, events, method_entered, method_exited, ticket_returned,
+            direct_bool_write_observed,
             origin: PrivateSelfExecutionOrigin::from_plan(self),
             awaited_method: self.awaited_method, await_start_loan_index,
             ordinary_calls_completed, ordinary_calls_entered,
