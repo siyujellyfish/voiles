@@ -2750,8 +2750,8 @@ impl PreparedPrivateSelfMethod {
         // R05／B4：任何真函式事件之前，先只讀驗證原 Parser
         // 步驟清冊恰好涵蓋每筆宣告與賦值，且同類索引依序遞增。
         // 來源篡改不得靠跳過某個 bool 宣告或重播 int helper 偷換帳。
-        let (mut next_bool, mut next_int, mut next_assign, mut next_int_assign) =
-            (0, 0, 0, 0);
+        let (mut next_bool, mut next_int, mut next_assign, mut next_int_assign,
+            mut next_owner_field) = (0, 0, 0, 0, 0);
         for step in &self.main_scalar_steps {
             match step {
                 PrivateSelfMainScalarStep::BoolDeclare(index)
@@ -2764,15 +2764,33 @@ impl PreparedPrivateSelfMethod {
                     next_assign += 1,
                 PrivateSelfMainScalarStep::IntAssign(index)
                     if *index == next_int_assign => next_int_assign += 1,
+                PrivateSelfMainScalarStep::OwnerIntFieldAssign(index)
+                    if *index == next_owner_field => next_owner_field += 1,
                 _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
             }
         }
         if next_bool != self.main_bool_locals.len()
             || next_int != self.main_int_locals.len()
             || next_assign != self.main_bool_assignments.len()
-            || next_int_assign != self.main_int_assignments.len() {
+            || next_int_assign != self.main_int_assignments.len()
+            || next_owner_field != self.main_owner_field_assignments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
+        // 原 main 第一筆是真 owner 構造：在任何可能溢位的
+        // Copyable 主函式局部／helper 之前真建立同一執行期結構。
+        // FieldAssign 只透過這個已構造 owner 真提交，不把最後
+        // 欄位值當成 constructor 預設值或在方法借票後補寫。
+        use crate::mixed_struct_runtime::{
+            MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue, Observed,
+        };
+        let mut runtime = MixedStructRuntime::new();
+        let specs = [MixedFieldSpec {
+            name: &self.field, kind: ScalarKind::Int,
+            default: Some(SeedValue::Int(self.field_value)),
+            immutable: self.field_immutable,
+        }];
+        runtime.construct(&self.owner, &specs, &[], None)
+            .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         let mut main_initialization_error = None;
         // 與一般函式共用真 Caller 動態進退帳。純 bool 宣告與
         // 重賦不產生資源事件，int helper 在真正原語句位置才 Enter；
@@ -2794,6 +2812,42 @@ impl PreparedPrivateSelfMethod {
         let mut pending_int = std::collections::BTreeSet::<DeclarationId>::new();
         for step in &self.main_scalar_steps {
             match *step {
+                PrivateSelfMainScalarStep::OwnerIntFieldAssign(index) => {
+                    let (planned, expression) = &self.main_owner_field_assignments[index];
+                    let mut calls = Vec::new();
+                    expression.collect_calls(&mut calls);
+                    let executed = if !calls.is_empty()
+                        && private_self_approved_int_call_arithmetic(
+                            expression, &self.method_helpers,
+                        ) {
+                        private_self_execute_arithmetic_call(
+                            expression, &main_values, &self.method_helpers,
+                            &mut exit_events, &mut ordinary_calls_entered,
+                            &mut ordinary_calls_completed,
+                        )
+                    } else {
+                        expression.evaluate(&main_values)
+                    };
+                    let actual = match executed {
+                        Ok(value) => value,
+                        Err(PrivateScalarCallRuntimeError::IntegerOverflow) => {
+                            main_initialization_error =
+                                Some(PrivateSelfMethodRuntimeError::IntegerOverflow);
+                            break;
+                        }
+                        Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                    };
+                    if actual != *planned {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    if let Err(problem) = runtime.write_int_field(
+                        &self.owner, &self.field, actual, self.owner_mutable,
+                    ) {
+                        main_initialization_error =
+                            Some(PrivateSelfMethodRuntimeError::Resource(problem));
+                        break;
+                    }
+                }
                 PrivateSelfMainScalarStep::BoolDeclareEmpty(index) => {
                     let (_, id, _) = &self.main_bool_locals[index];
                     if self.main_bool_sources[index].is_some()
@@ -2920,17 +2974,6 @@ impl PreparedPrivateSelfMethod {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         use crate::borrow_safety::BorrowSafety;
-        use crate::mixed_struct_runtime::{
-            MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue, Observed,
-        };
-        let mut runtime = MixedStructRuntime::new();
-        let specs = [MixedFieldSpec {
-            name: &self.field, kind: ScalarKind::Int,
-            default: Some(SeedValue::Int(self.field_value)),
-            immutable: self.field_immutable,
-        }];
-        runtime.construct(&self.owner, &specs, &[], None)
-            .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         let mut tracker = BorrowSafety::new();
         let mut tickets = Vec::new();
         let mut facts = Vec::new();
@@ -3426,6 +3469,7 @@ impl PreparedPrivateSelfMethod {
         main_bool_values.clear();
         let expected_pre_method_calls = self.main_init_plans.iter()
             .chain(self.main_int_assignments.iter().map(|(_, _, plan)| plan))
+            .chain(self.main_owner_field_assignments.iter().map(|(_, plan)| plan))
             .chain(self.argument_plans.iter())
             .map(|expression| {
                 let mut calls = Vec::new();
