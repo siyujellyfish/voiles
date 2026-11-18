@@ -77,16 +77,15 @@ return owner.read(true,true,owner.n)
     }
 
     #[test]
-    fn b4_owner_method_arg_欄位真值進內helper後再進方法helper() {
+    fn b4_owner_method_arg_原P13禁止巢狀欄位helper作方法引數須靜態拒絕() {
         let src=source("","owner.read(true,true,helper(owner.n,2))");
-        let out=success(&src,6,2);
-        let loan=out.exit_events.iter().position(|event|matches!(
-            event,PrivateSharedCallExitEvent::LoanAcquired(_)
-        )).unwrap();
-        let first_helper_exit=out.exit_events.iter().position(|event|matches!(
-            event,PrivateSharedCallExitEvent::FunctionExited{returned:true}
-        )).unwrap();
-        assert!(first_helper_exit<loan,"真正的引數helper先結束才能借入self");
+        // 原 P13 方法引數不接受此巢狀 Call：不能為讓私有
+        // executor 測試成功而新增未核准的表達式語意。
+        assert!(verify_source_with_ability(&src,
+            crate::ownership_policy::approved_leaf_copy_permission,
+        ).is_err(),"原Checker不得接受未核准的巢狀方法引數");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
     #[test]
