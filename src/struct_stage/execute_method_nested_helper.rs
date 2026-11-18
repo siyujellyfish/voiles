@@ -2,6 +2,65 @@
 // 有限層原 Checker 純 int helper；不重解析、不開放
 // helper 本體遞迴、str 資源或跨 self 借用副作用。
 
+/// B4／M2：原 Checker ScalarHIR 已核准的 main 持有者 int 欄位，
+/// 在**真正到達的語句**位置由 P16 MixedStructRuntime 讀出值，
+/// 再只對同一原已驗證的運算式工作圖進行值槽投影。
+/// 這不是第二份 Lexer/Parser/Checker，也不給任意結構或欄位授權；
+/// 不容許 bool／str／Move／Borrow 或未經核准的 async 函式混入。
+fn private_self_bind_owner_int_read(
+    expr: &PrivateScalarReturnExpr,
+    owner_id: DeclarationId,
+    owner: &str,
+    field: &str,
+    observed: i64,
+) -> Option<PrivateScalarReturnExpr> {
+    match expr {
+        PrivateScalarReturnExpr::CopyStructIntField {
+            declaration, owner: read_owner, field: read_field,
+        } if *declaration == owner_id
+            && read_owner == owner && read_field == field =>
+            Some(PrivateScalarReturnExpr::Constant(observed)),
+        PrivateScalarReturnExpr::Constant(_)
+        | PrivateScalarReturnExpr::Parameter(_) => Some(expr.clone()),
+        PrivateScalarReturnExpr::Addition(left, right) =>
+            Some(PrivateScalarReturnExpr::Addition(
+                Box::new(private_self_bind_owner_int_read(
+                    left, owner_id, owner, field, observed,
+                )?),
+                Box::new(private_self_bind_owner_int_read(
+                    right, owner_id, owner, field, observed,
+                )?),
+            )),
+        PrivateScalarReturnExpr::Subtraction(left, right) =>
+            Some(PrivateScalarReturnExpr::Subtraction(
+                Box::new(private_self_bind_owner_int_read(
+                    left, owner_id, owner, field, observed,
+                )?),
+                Box::new(private_self_bind_owner_int_read(
+                    right, owner_id, owner, field, observed,
+                )?),
+            )),
+        PrivateScalarReturnExpr::Call {
+            name, arguments, awaited: false,
+        } => {
+            let bound = arguments.iter().map(|argument| {
+                let PrivateScalarCallArgument::Int(value) = argument else {
+                    return None;
+                };
+                Some(PrivateScalarCallArgument::Int(
+                    private_self_bind_owner_int_read(
+                        value, owner_id, owner, field, observed,
+                    )?,
+                ))
+            }).collect::<Option<Vec<_>>>()?;
+            Some(PrivateScalarReturnExpr::Call {
+                name: name.clone(), arguments: bound, awaited: false,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// 與原 PrivateSelfApprovedHelper 身分同一來源；僅允許
 /// 任意有限 AST 層數的純 int 直接函式實參。
 fn private_self_resolve_nested_argument_call<'a>(
