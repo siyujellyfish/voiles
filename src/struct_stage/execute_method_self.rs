@@ -592,6 +592,39 @@ fn private_self_checked_owner_bool_field(
     }))
 }
 
+/// B4／M2：只有原 Checker method_bool_condition 已驗證的
+/// self.bool FieldRead 能成為方法 if 條件；原 Parser 節點與 Lexer
+/// self／欄位 Name 精確座標必一致。僅使用 P16 已證 Copyable
+/// bool，沒有第二套方法語意、借用或可寫授權。
+fn private_self_checked_method_bool_field(
+    leaf: &Term, verified: &VerifiedPrivateSource,
+    fields: &[(String, PrivateSelfAdditionalCopyValue, bool)],
+) -> Option<(bool, String)> {
+    let TermKind::FieldRead(receiver, field) = &leaf.kind else {
+        return None;
+    };
+    if receiver != "self"
+        || !verified.tokens.iter().any(|token|
+            token.start == leaf.start
+                && matches!(&token.kind, TokenKind::Name(found) if found == "self")
+        )
+        || !verified.tokens.iter().any(|token|
+            token.end == leaf.end
+                && matches!(&token.kind, TokenKind::Name(found) if found == field)
+        ) {
+        return None;
+    }
+    fields.iter().find_map(|(name, seed, _)|
+        if name == field {
+            match seed {
+                PrivateSelfAdditionalCopyValue::Bool(value) =>
+                    Some((*value, name.clone())),
+                _ => None,
+            }
+        } else { None }
+    )
+}
+
 struct PreparedPrivateSelfMethod {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -644,6 +677,8 @@ struct PreparedPrivateSelfMethod {
     /// M2：內層 if(Name) 的原 Checker bool 形參宣告身分；
     /// 無此值時嚴格使用 Lexer 真 bool 字面，不能把 int 轉為 bool。
     method_nested_branch_parameter: Option<DeclarationId>,
+    /// B4／M2：內層條件也能讀原 Checker self.bool，必由真借票授權。
+    method_nested_self_bool_field: Option<String>,
     /// M2：原 Checker 巢狀 else 返回 int 常值、self.int 或其加減。
     method_nested_else_calculation: Option<PrivateSelfIntReturn>,
     /// 原 Checker 內層各葉可有一筆獨占 self.int 寫入，僅選中葉執行。
@@ -654,6 +689,8 @@ struct PreparedPrivateSelfMethod {
     method_branch_int_plans: BTreeMap<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>,
     /// M2：只有原 Checker 真 bool 形式參數能成為方法 if 條件來源。
     method_branch_parameter: Option<DeclarationId>,
+    /// B4／M2：外層 if 的原 Checker self.bool 欄位身份。
+    method_branch_self_bool_field: Option<String>,
     /// 原 Parser 方法中合法的 var int 重賦值群，必在全部局部宣告之後。
     method_int_assignments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     method: String,
@@ -1883,6 +1920,10 @@ impl PreparedPrivateSelfMethod {
         ).collect::<BTreeMap<_, _>>();
         let mut method_branch_int_plans =
             BTreeMap::<crate::common_ir::NodeSpan, PrivateScalarReturnExpr>::new();
+        // 只保存 Checker 已判准的欄位名；不增加方法參數，也不改
+        // 原 Parser 分支/Return 工作圖的任何控制點或退出責任。
+        let mut method_branch_self_bool_field = None::<String>;
+        let mut method_nested_self_bool_field = None::<String>;
         let (method_branch, method_branch_parameter,
             method_branch_else, method_branch_else_write,
             method_branch_else_field_return, method_branch_else_calculation,
@@ -1938,6 +1979,15 @@ impl PreparedPrivateSelfMethod {
                                     ));
                                 }
                                 (value, Some(id))
+                            }
+                            TermKind::FieldRead(_, _) => {
+                                let (value, name) = private_self_checked_method_bool_field(
+                                    condition_leaf, &verified, &known_copy_fields,
+                                ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                                    "M2 方法 self.bool 條件缺少原 Checker 真欄位與 Lexer 身分",
+                                ))?;
+                                method_branch_self_bool_field = Some(name);
+                                (value, None)
                             }
                             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
                                 "M2 if 條件尚未有原 Lexer／Checker 證據",
@@ -2023,6 +2073,19 @@ impl PreparedPrivateSelfMethod {
                                                 ));
                                             }
                                             (value, Some(id))
+                                        }
+                                        TermKind::FieldRead(_, _) => {
+                                            let (value, name) =
+                                                private_self_checked_method_bool_field(
+                                                    condition_leaf, &verified,
+                                                    &known_copy_fields,
+                                                ).ok_or(
+                                                    PrivateSelfMethodPrepareError::Unsupported(
+                                                        "M2 內層 self.bool 缺少原 Checker/Token 證據",
+                                                    ),
+                                                )?;
+                                            method_nested_self_bool_field = Some(name);
+                                            (value, None)
                                         }
                                         _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
                                             "M2 內層 if 條件尚無原 Checker 可執行 bool 證據",
@@ -2832,8 +2895,14 @@ impl PreparedPrivateSelfMethod {
                 && method_nested_branch.is_none())
             || (method_nested_branch_parameter.is_some()
                 && (method_nested_branch.is_none() || method_bool_arguments.is_empty()))
+            || (method_nested_self_bool_field.is_some() && method_nested_branch.is_none())
+            || (method_nested_branch_parameter.is_some()
+                && method_nested_self_bool_field.is_some())
             || (method_branch_else.is_some() && method_branch.is_none())
             || (method_branch_parameter.is_some() && method_bool_arguments.is_empty())
+            || (method_branch_self_bool_field.is_some() && method_branch.is_none())
+            || (method_branch_parameter.is_some()
+                && method_branch_self_bool_field.is_some())
             || method_fact.span != method_span
             || method_fact.self_borrow != required_kind
             || !method_fact.checked_returns.contains(&last.node_span()) {
@@ -2947,9 +3016,10 @@ impl PreparedPrivateSelfMethod {
             method_branch_else_write, method_branch_else_field_return,
             method_branch_else_calculation, method_branch_write, method_branch_return,
             method_nested_branch, method_nested_branch_parameter,
-            method_nested_else_calculation, method_nested_true_write,
+            method_nested_self_bool_field, method_nested_else_calculation, method_nested_true_write,
             method_nested_else_write, method_branch_int_plans,
-            method_branch_parameter, method_int_assignments,
+            method_branch_parameter, method_branch_self_bool_field,
+            method_int_assignments,
             method: method_name, awaited_method, method_span, call_span, loan,
             argument_binding, additional_argument_bindings,
             method_bool_arguments, method_bool_sources, main_bool_locals,
@@ -2988,11 +3058,13 @@ impl PreparedPrivateSelfMethod {
             && self.method_branch_return == fresh.method_branch_return
             && self.method_nested_branch == fresh.method_nested_branch
             && self.method_nested_branch_parameter == fresh.method_nested_branch_parameter
+            && self.method_nested_self_bool_field == fresh.method_nested_self_bool_field
             && self.method_nested_else_calculation == fresh.method_nested_else_calculation
             && self.method_nested_true_write == fresh.method_nested_true_write
             && self.method_nested_else_write == fresh.method_nested_else_write
             && self.method_branch_int_plans == fresh.method_branch_int_plans
             && self.method_branch_parameter == fresh.method_branch_parameter
+            && self.method_branch_self_bool_field == fresh.method_branch_self_bool_field
             && self.method_int_assignments == fresh.method_int_assignments
             && self.method == fresh.method
             && self.awaited_method == fresh.awaited_method
@@ -3583,7 +3655,19 @@ impl PreparedPrivateSelfMethod {
             // 條件只於真 self 框架進入後，從原 Checker bool 參數
             // 獨立框架或 Lexer 常值取得；支線有寫入時不能先寫後選。
             let selected_branch = if let Some((condition, _)) = self.method_branch {
-                let observed = if let Some(id) = self.method_branch_parameter {
+                // 與一般函式 BoolValue 走同一原 Checker bool 節點；
+                // self 的欄位讀取必用**當前有效 BorrowTicket**，不能
+                // 用 prepare 的初始欄位快照冒稱真控制流程。
+                let observed = if let Some(field) = &self.method_branch_self_bool_field {
+                    if tracker.check_ticket_access(ticket, BorrowKind::SharedRead)
+                        .map_err(PrivateSelfMethodRuntimeError::Ticket)? != self.owner_id {
+                        return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                    }
+                    match runtime.field(&self.owner, field) {
+                        Ok(Observed::Bool(value)) => value,
+                        _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                    }
+                } else if let Some(id) = self.method_branch_parameter {
                     *bool_parameter_frame.get(&id).ok_or(
                         PrivateSelfMethodRuntimeError::WrongReceiver,
                     )?
@@ -3598,7 +3682,16 @@ impl PreparedPrivateSelfMethod {
             // 並在寫入 self 前確定唯一被選中的巢狀葉。
             if selected_branch == Some(true) {
                 if let Some((condition, _)) = self.method_nested_branch {
-                    let observed = if let Some(id) = self.method_nested_branch_parameter {
+                    let observed = if let Some(field) = &self.method_nested_self_bool_field {
+                        if tracker.check_ticket_access(ticket, BorrowKind::SharedRead)
+                            .map_err(PrivateSelfMethodRuntimeError::Ticket)? != self.owner_id {
+                            return Err(PrivateSelfMethodRuntimeError::WrongReceiver);
+                        }
+                        match runtime.field(&self.owner, field) {
+                            Ok(Observed::Bool(value)) => value,
+                            _ => return Err(PrivateSelfMethodRuntimeError::WrongReceiver),
+                        }
+                    } else if let Some(id) = self.method_nested_branch_parameter {
                         *bool_parameter_frame.get(&id).ok_or(
                             PrivateSelfMethodRuntimeError::WrongReceiver,
                         )?
