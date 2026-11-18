@@ -2820,6 +2820,7 @@ impl PreparedPrivateSelfMethod {
                     if *index == next_bool => next_bool += 1,
                 PrivateSelfMainScalarStep::IntDeclare(index)
                 | PrivateSelfMainScalarStep::IntDeclareEmpty(index)
+                | PrivateSelfMainScalarStep::IntDeclareOwnerField(index)
                     if *index == next_int => next_int += 1,
                 PrivateSelfMainScalarStep::BoolAssign(index) if *index == next_assign =>
                     next_assign += 1,
@@ -2834,7 +2835,11 @@ impl PreparedPrivateSelfMethod {
             || next_int != self.main_int_locals.len()
             || next_assign != self.main_bool_assignments.len()
             || next_int_assign != self.main_int_assignments.len()
-            || next_owner_field != self.main_owner_field_assignments.len() {
+            || next_owner_field != self.main_owner_field_assignments.len()
+            || self.main_owner_field_read_sources.len() != self.main_scalar_steps.iter()
+                .filter(|step| matches!(
+                    step, PrivateSelfMainScalarStep::IntDeclareOwnerField(_),
+                )).count() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         // 原 main 第一筆是真 owner 構造：在任何可能溢位的
@@ -2873,6 +2878,32 @@ impl PreparedPrivateSelfMethod {
         let mut pending_int = std::collections::BTreeSet::<DeclarationId>::new();
         for step in &self.main_scalar_steps {
             match *step {
+                PrivateSelfMainScalarStep::IntDeclareOwnerField(index) => {
+                    let (_, id, planned, _) = &self.main_int_locals[index];
+                    if !self.main_owner_field_read_sources.contains_key(id)
+                        || !matches!(
+                            &self.main_init_plans[index],
+                            PrivateScalarReturnExpr::Constant(value) if value == planned,
+                        ) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    // 真讀取與所有 main owner.int 寫入共用同一
+                    // MixedStructRuntime 實例，不能拿宣告快照
+                    // 冒充此時可見的 Copyable 欄位值。
+                    let actual = match runtime.field(&self.owner, &self.field) {
+                        Ok(Observed::Int(value)) => value,
+                        Ok(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                        Err(problem) => {
+                            main_initialization_error =
+                                Some(PrivateSelfMethodRuntimeError::Resource(problem));
+                            break;
+                        }
+                    };
+                    if actual != *planned || !declared_int.insert(*id)
+                        || main_values.insert(*id, actual).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
                 PrivateSelfMainScalarStep::OwnerIntFieldAssign(index) => {
                     let (planned, expression) = &self.main_owner_field_assignments[index];
                     let mut calls = Vec::new();
