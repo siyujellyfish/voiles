@@ -14,7 +14,7 @@ CASES = (
     "b4_owner_method_arg_預設真int欄位直接作step並於自借前求值",
     "b4_owner_method_arg_先寫入十一後以同一真持有者欄位做實參",
     "b4_owner_method_arg_原Lexer雙層Group與欄位算術作實參",
-    "b4_owner_method_arg_欄位真值進內helper後再進方法helper",
+    "b4_owner_method_arg_原P13禁止巢狀欄位helper作方法引數須靜態拒絕",
     "b4_owner_method_arg_前序helper寫入後欄位值再計算方法step",
     "b4_owner_method_arg_實參欄位加法溢位不可進方法或簽self票",
     "b4_owner_method_arg_封存Checker欄位引數遭改綁必拒絕副作用前",
