@@ -539,6 +539,8 @@ enum PrivateSelfMainScalarStep {
     IntDeclareEmpty(usize),
     BoolAssign(usize),
     IntAssign(usize),
+    /// 原 Checker 對 main 持有者欄位簽出唯一 FieldWriteEvidence。
+    OwnerIntFieldAssign(usize),
 }
 
 struct PreparedPrivateSelfMethod {
@@ -632,6 +634,9 @@ struct PreparedPrivateSelfMethod {
     /// main var int 的原 Parser 真賦值目標與 Checker ScalarHIR，
     /// 保存準備階段的期望值但執行時必重新求真 RHS。
     main_int_assignments: Vec<(DeclarationId, i64, PrivateScalarReturnExpr)>,
+    /// main 原 Checker 證明的唯一持有者 var int 欄位直接寫入；
+    /// 每筆 RHS 保留原 ScalarHIR，由真 Caller 求值後原子提交。
+    main_owner_field_assignments: Vec<(i64, PrivateScalarReturnExpr)>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -919,6 +924,27 @@ impl PreparedPrivateSelfMethod {
         let mut main_scalar_steps = Vec::<PrivateSelfMainScalarStep>::new();
         let mut main_int_assignments =
             Vec::<(DeclarationId, i64, PrivateScalarReturnExpr)>::new();
+        let mut main_owner_field_assignments =
+            Vec::<(i64, PrivateScalarReturnExpr)>::new();
+        // 本期仍維持首句由原 Checker 核准的唯一 struct owner。
+        // 只提早固定已解析的詞彙身分以核對主函式真欄位寫入，
+        // 後段完整構造來源及 call_borrows 核證一項也不略過。
+        let main_owner_stmt = &main.body.statements[0];
+        let StmtKind::Declare(main_owner) = &main_owner_stmt.kind else {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main 首句缺少原 Checker 唯一結構持有者",
+            ));
+        };
+        let main_owner_id = DeclarationId(main_owner_stmt.start);
+        if main_owner.ty != definition_name(&verified)?
+            || !verified.plan.declarations.matches(
+                main_owner_id, &main_owner.ty, main_owner.mutable,
+            ) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main owner 缺少原 Checker 結構宣告身分",
+            ));
+        }
+        let main_owner_name = main_owner.name.clone();
         let mut known_int_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
@@ -927,6 +953,58 @@ impl PreparedPrivateSelfMethod {
         let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
         for statement in main.body.statements.iter().skip(1)
             .take(main.body.statements.len() - 2) {
+            // 只有原 Checker 對唯一 main owner／真正欄位／
+            // 原語句座標簽發的 FieldWriteEvidence 才可寫入。
+            // 仍限已驗證獨立 Copyable int，與真 int/bool 局部
+            // 共用原 Parser 的逐語句工作圖，不假造額外借票。
+            if let StmtKind::FieldAssign { receiver, field: target_field, value } =
+                &statement.kind {
+                if receiver != &main_owner_name || target_field != &field.name
+                    || field.immutable
+                    || verified.plan.declarations.verified_field_write(
+                        main_owner_id, statement.start, &main_owner.ty, target_field,
+                    ).is_none() {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main int 欄位寫入缺少原 Checker 唯一持有者／可寫欄位證據",
+                    ));
+                }
+                let plan = PrivateScalarReturnExpr::from_checked_bindings(
+                    value, &known_int_bindings, &verified,
+                ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                    "main int 欄位 RHS 缺少同源 Checker ScalarHIR",
+                ))?;
+                let mut calls = Vec::new();
+                plan.collect_calls(&mut calls);
+                let checked_calls = !calls.is_empty()
+                    && private_self_approved_int_call_arithmetic(
+                        &plan, &method_helpers,
+                    );
+                if (!calls.is_empty() && !checked_calls)
+                    || matches!(plan, PrivateScalarReturnExpr::Unreachable) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main int 欄位僅接通已證純整數與同步純helper RHS",
+                    ));
+                }
+                let expected = if checked_calls {
+                    private_self_arithmetic_call_snapshot(
+                        &plan, &known_int_values, &method_helpers,
+                    )
+                } else {
+                    plan.evaluate(&known_int_values)
+                };
+                let planned = match expected {
+                    Ok(v) => v,
+                    Err(PrivateScalarCallRuntimeError::IntegerOverflow) => 0,
+                    Err(_) => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main 欄位寫入缺少已初始化 RHS 來源",
+                    )),
+                };
+                main_owner_field_assignments.push((planned, plan));
+                main_scalar_steps.push(PrivateSelfMainScalarStep::OwnerIntFieldAssign(
+                    main_owner_field_assignments.len() - 1,
+                ));
+                continue;
+            }
             // 保留原 Parser／Checker 具名賦值 AST 的實際位置：
             // 每個 Copyable int helper／bool 更新按相同直線圖執行，
             // 不能將 bool 副作用（即使純值）前移跨越 helper 出錯點。
@@ -2562,7 +2640,8 @@ impl PreparedPrivateSelfMethod {
             argument_binding, additional_argument_bindings,
             method_bool_arguments, method_bool_sources, main_bool_locals,
             main_bool_sources, main_bool_assignments, main_scalar_steps,
-            main_int_assignments, main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_int_assignments, main_owner_field_assignments,
+            main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2613,6 +2692,7 @@ impl PreparedPrivateSelfMethod {
             && self.main_bool_assignments == fresh.main_bool_assignments
             && self.main_scalar_steps == fresh.main_scalar_steps
             && self.main_int_assignments == fresh.main_int_assignments
+            && self.main_owner_field_assignments == fresh.main_owner_field_assignments
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
