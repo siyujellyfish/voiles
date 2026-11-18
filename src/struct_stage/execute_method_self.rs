@@ -2659,7 +2659,9 @@ impl PreparedPrivateSelfMethod {
             // 的前置語句，否則會把原 Checker 可寫 self
             // 的合法 FieldAssign 錯判成「未核准局部」。
             if (write_value.is_some() || write_parameter.is_some()
-                || write_checked_int.is_some() || method_branch.is_some())
+                || write_checked_int.is_some()
+                || direct_method_bool_write.is_some()
+                || method_branch.is_some())
                 && index == 0 {
                 continue;
             }
