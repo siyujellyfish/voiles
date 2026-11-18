@@ -541,6 +541,8 @@ enum PrivateSelfMainScalarStep {
     IntAssign(usize),
     /// 原 Checker 對 main 持有者欄位簽出唯一 FieldWriteEvidence。
     OwnerIntFieldAssign(usize),
+    /// 原 Checker 簽發 main owner 的 bool FieldWriteEvidence；非方法新借票。
+    OwnerBoolFieldAssign(usize),
 }
 
 /// B4：只保存原 Checker 個別已核准的獨立 Copyable int／bool
@@ -688,6 +690,10 @@ struct PreparedPrivateSelfMethod {
     /// main 原 Checker 證明的唯一持有者 var int 欄位直接寫入；
     /// 每筆 RHS 保留原 ScalarHIR，由真 Caller 求值後原子提交。
     main_owner_field_assignments: Vec<(i64, PrivateScalarReturnExpr)>,
+    /// 每筆原 Parser main owner.bool 寫入保存唯一 FieldWrite 身分、
+    /// Copyable RHS 來源與前序準備值；真提交時由 P16 再讀。
+    main_owner_bool_field_assignments:
+        Vec<(String, bool, Option<PrivateSelfBoolArgumentSource>)>,
     /// main 真已核准 int 宣告；最後一個欄位是已驗證 Copyable
     /// 來源身分（None 表示原 Lexer 整數常值），只依宣告次序求值。
     main_int_locals: Vec<(String, DeclarationId, i64, Option<DeclarationId>)>,
@@ -1049,6 +1055,8 @@ impl PreparedPrivateSelfMethod {
             Vec::<(DeclarationId, i64, PrivateScalarReturnExpr)>::new();
         let mut main_owner_field_assignments =
             Vec::<(i64, PrivateScalarReturnExpr)>::new();
+        let mut main_owner_bool_field_assignments =
+            Vec::<(String, bool, Option<PrivateSelfBoolArgumentSource>)>::new();
         // 本期仍維持首句由原 Checker 核准的唯一 struct owner。
         // 只提早固定已解析的詞彙身分以核對主函式真欄位寫入，
         // 後段完整構造來源及 call_borrows 核證一項也不略過。
@@ -1077,6 +1085,9 @@ impl PreparedPrivateSelfMethod {
         // 原 main 第一個 owner 的 int 欄位在構造後由真 P16 保存；
         // 此值只供 prepare 同源快照，execute 必重新讀取目前持有者。
         let mut known_owner_field_value = field_value;
+        // 只供 prepare 的原語句一致性快照；真正欄位由同一
+        // MixedStructRuntime 在每一步重新讀取，絕不預寫物件。
+        let mut known_copy_fields = additional_copy_fields.clone();
         for statement in main.body.statements.iter().skip(1)
             .take(main.body.statements.len() - 2) {
             // 只有原 Checker 對唯一 main owner／真正欄位／
@@ -1085,13 +1096,84 @@ impl PreparedPrivateSelfMethod {
             // 共用原 Parser 的逐語句工作圖，不假造額外借票。
             if let StmtKind::FieldAssign { receiver, field: target_field, value } =
                 &statement.kind {
-                if receiver != &main_owner_name || target_field != &field.name
-                    || field.immutable
+                if receiver != &main_owner_name || !main_owner.mutable
                     || verified.plan.declarations.verified_field_write(
                         main_owner_id, statement.start, &main_owner.ty, target_field,
                     ).is_none() {
                     return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main int 欄位寫入缺少原 Checker 唯一持有者／可寫欄位證據",
+                        "main 欄位寫入缺少原 Checker 唯一可寫 owner／FieldWriteEvidence",
+                    ));
+                }
+                // bool 附加欄位必須由原 Checker 確認唯一 var 身分，
+                // RHS 僅接受原 typed bool HIR 的常值／main 名稱／同 owner 欄位。
+                if known_copy_fields.iter().any(|(name, seed, immutable)|
+                    name == target_field
+                        && matches!(seed, PrivateSelfAdditionalCopyValue::Bool(_))
+                        && !immutable
+                ) {
+                    let mut bindings = known_bool_bindings.clone();
+                    if bindings.insert(main_owner_name.clone(), main_owner_id).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main bool FieldWrite owner 不得與 bool 局部混名",
+                        ));
+                    }
+                    let checked = PrivateScalarBoolExpr::from_checked(
+                        value, &bindings, &verified,
+                    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+                        "main bool FieldWrite RHS 缺少原 Checker bool ScalarHIR",
+                    ))?;
+                    let (planned, source) = match checked {
+                        PrivateScalarBoolExpr::Constant(value) => (value, None),
+                        PrivateScalarBoolExpr::Bound(id) => {
+                            let value = *known_bool_values.get(&id).ok_or(
+                                PrivateSelfMethodPrepareError::Unsupported(
+                                    "main bool FieldWrite 名稱尚未初始化",
+                                ),
+                            )?;
+                            (value, Some(PrivateSelfBoolArgumentSource::MainLocal(id)))
+                        }
+                        PrivateScalarBoolExpr::CopyStructBoolField {
+                            declaration, owner, field: read_field,
+                        } if declaration == main_owner_id && owner == main_owner_name => {
+                            let value = known_copy_fields.iter().find_map(|(name, seed, _)|
+                                if name == &read_field {
+                                    match seed {
+                                        PrivateSelfAdditionalCopyValue::Bool(value) =>
+                                            Some(*value),
+                                        _ => None,
+                                    }
+                                } else { None }
+                            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                                "main bool FieldWrite RHS 非同源已證 bool 欄位",
+                            ))?;
+                            (value, Some(PrivateSelfBoolArgumentSource::OwnerField {
+                                declaration, field: read_field,
+                            }))
+                        }
+                        _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main bool FieldWrite 只接已證 Copyable bool 純值 RHS",
+                        )),
+                    };
+                    let Some((_, PrivateSelfAdditionalCopyValue::Bool(current), _)) =
+                        known_copy_fields.iter_mut().find(|(name, _, _)|
+                            name == target_field
+                        ) else {
+                        return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "main bool FieldWrite 找不到原 Checker 目標欄位",
+                        ));
+                    };
+                    *current = planned;
+                    main_owner_bool_field_assignments.push((
+                        target_field.clone(), planned, source,
+                    ));
+                    main_scalar_steps.push(PrivateSelfMainScalarStep::OwnerBoolFieldAssign(
+                        main_owner_bool_field_assignments.len() - 1,
+                    ));
+                    continue;
+                }
+                if target_field != &field.name || field.immutable {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main 欄位寫入不允許未接通或不可寫的欄位",
                     ));
                 }
                 // 不靠名稱推測持有者：先以真正 main 宣告 DeclarationId
@@ -1266,7 +1348,7 @@ impl PreparedPrivateSelfMethod {
                     TermKind::FieldRead(_, _) => {
                         let (value, source) = private_self_checked_owner_bool_field(
                             leaf, &verified, main_owner_id, &main_owner_name,
-                            &additional_copy_fields,
+                            &known_copy_fields,
                         ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
                             "main bool 重賦值的 owner 欄位缺少原 Checker 同源 bool 證據",
                         ))?;
@@ -1365,7 +1447,7 @@ impl PreparedPrivateSelfMethod {
                     TermKind::FieldRead(_, _) => {
                         let (value, source) = private_self_checked_owner_bool_field(
                             leaf, &verified, main_owner_id, &main_owner_name,
-                            &additional_copy_fields,
+                            &known_copy_fields,
                         ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
                             "main bool 初始化的 owner 欄位缺少原 Checker 同源 bool 證據",
                         ))?;
@@ -2873,7 +2955,7 @@ impl PreparedPrivateSelfMethod {
             method_bool_arguments, method_bool_sources, main_bool_locals,
             main_bool_sources, main_bool_assignments, main_scalar_steps,
             main_int_assignments, main_owner_field_assignments,
-            main_int_locals, main_init_plans, argument_sources, argument_plans,
+            main_owner_bool_field_assignments, main_int_locals, main_init_plans, argument_sources, argument_plans,
         })
     }
 
@@ -2926,6 +3008,8 @@ impl PreparedPrivateSelfMethod {
             && self.main_scalar_steps == fresh.main_scalar_steps
             && self.main_int_assignments == fresh.main_int_assignments
             && self.main_owner_field_assignments == fresh.main_owner_field_assignments
+            && self.main_owner_bool_field_assignments
+                == fresh.main_owner_bool_field_assignments
             && self.main_int_locals == fresh.main_int_locals
             && self.main_init_plans == fresh.main_init_plans
             && self.argument_sources == fresh.argument_sources
@@ -2984,7 +3068,7 @@ impl PreparedPrivateSelfMethod {
         // 步驟清冊恰好涵蓋每筆宣告與賦值，且同類索引依序遞增。
         // 來源篡改不得靠跳過某個 bool 宣告或重播 int helper 偷換帳。
         let (mut next_bool, mut next_int, mut next_assign, mut next_int_assign,
-            mut next_owner_field) = (0, 0, 0, 0, 0);
+            mut next_owner_field, mut next_owner_bool_field) = (0, 0, 0, 0, 0, 0);
         for step in &self.main_scalar_steps {
             match step {
                 PrivateSelfMainScalarStep::BoolDeclare(index)
@@ -2999,6 +3083,8 @@ impl PreparedPrivateSelfMethod {
                     if *index == next_int_assign => next_int_assign += 1,
                 PrivateSelfMainScalarStep::OwnerIntFieldAssign(index)
                     if *index == next_owner_field => next_owner_field += 1,
+                PrivateSelfMainScalarStep::OwnerBoolFieldAssign(index)
+                    if *index == next_owner_bool_field => next_owner_bool_field += 1,
                 _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
             }
         }
@@ -3006,7 +3092,8 @@ impl PreparedPrivateSelfMethod {
             || next_int != self.main_int_locals.len()
             || next_assign != self.main_bool_assignments.len()
             || next_int_assign != self.main_int_assignments.len()
-            || next_owner_field != self.main_owner_field_assignments.len() {
+            || next_owner_field != self.main_owner_field_assignments.len()
+            || next_owner_bool_field != self.main_owner_bool_field_assignments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         // 原 main 第一筆是真 owner 構造：在任何可能溢位的
@@ -3059,6 +3146,37 @@ impl PreparedPrivateSelfMethod {
         let mut pending_int = std::collections::BTreeSet::<DeclarationId>::new();
         for step in &self.main_scalar_steps {
             match *step {
+                PrivateSelfMainScalarStep::OwnerBoolFieldAssign(index) => {
+                    let (field, planned, source) =
+                        &self.main_owner_bool_field_assignments[index];
+                    let actual = match source {
+                        Some(PrivateSelfBoolArgumentSource::MainLocal(id)) =>
+                            *main_bool_values.get(id).ok_or(
+                                PrivateSelfMethodPrepareError::SourceChanged,
+                            )?,
+                        Some(PrivateSelfBoolArgumentSource::OwnerField {
+                            declaration, field: rhs_field,
+                        }) if *declaration == self.owner_id =>
+                            match runtime.field(&self.owner, rhs_field) {
+                                Ok(Observed::Bool(value)) => value,
+                                _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                            },
+                        Some(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                        None => *planned,
+                    };
+                    // 先求完整 RHS，再由真 P16 做唯一原子欄位更新；
+                    // 不得在 prepare 寫值或提前建立方法 BorrowTicket。
+                    if actual != *planned {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    if let Err(problem) = runtime.write_bool_field(
+                        &self.owner, field, actual, self.owner_mutable,
+                    ) {
+                        main_initialization_error =
+                            Some(PrivateSelfMethodRuntimeError::Resource(problem));
+                        break;
+                    }
+                }
                 PrivateSelfMainScalarStep::OwnerIntFieldAssign(index) => {
                     let (planned, expression) = &self.main_owner_field_assignments[index];
                     // 真 P16 讀取目前已構造／可能已被前序寫入的
