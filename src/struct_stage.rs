@@ -1566,6 +1566,9 @@ include!("struct_stage/g18_b4_m3_main_uninitialized_scalar_tests.rs");
 include!("struct_stage/g18_b4_m3_grouped_main_method_return_tests.rs");
 // G18／B4/M2：原Checker main owner var int欄位寫入與self方法真同物件。
 include!("struct_stage/g18_b4_m2_main_owner_int_field_write_tests.rs");
+// G18 B4/M3：原 Checker 的 main owner.int 真欄位值作同步方法實參。
+#[cfg(test)]
+include!("struct_stage/g18_b4_m3_main_owner_method_argument_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。
