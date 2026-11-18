@@ -532,7 +532,11 @@ enum PrivateSelfMethodLocalEvent {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateSelfMainScalarStep {
     BoolDeclare(usize),
+    /// 原 Checker 允許的 var bool 尚未初始化宣告：只記語意身分，不產生值。
+    BoolDeclareEmpty(usize),
     IntDeclare(usize),
+    /// 原 Checker 允許的 var int 尚未初始化宣告：只記語意身分，不產生值。
+    IntDeclareEmpty(usize),
     BoolAssign(usize),
     IntAssign(usize),
 }
@@ -966,11 +970,9 @@ impl PreparedPrivateSelfMethod {
                             "main var int RHS 缺少已初始化原 Checker 名稱",
                         )),
                     };
-                    if known_int_values.insert(target, value).is_none() {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "main var int 目標原值不存在",
-                        ));
-                    }
+                    // 可寫目標或已初始化或由原 Checker 核准尚未初始化；
+                    // 但原宣告必定存在且 mutable，不能要求舊值一定存在。
+                    known_int_values.insert(target, value);
                     main_int_assignments.push((target, value, plan));
                     main_scalar_steps.push(PrivateSelfMainScalarStep::IntAssign(
                         main_int_assignments.len() - 1,
@@ -1023,11 +1025,9 @@ impl PreparedPrivateSelfMethod {
                         "main bool 重賦值只接通原 Checker 純 bool 常值或已初始化名稱",
                     )),
                 };
-                if known_bool_values.insert(target, value).is_none() {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main bool 重賦值沒有真正舊值",
-                    ));
-                }
+                // 首次綁定未初始化 var bool 與一般重賦共用同一
+                // 原 Checker Assignment 證明，不以 false 當預設真值。
+                known_bool_values.insert(target, value);
                 main_bool_assignments.push((target, value, source));
                 main_scalar_steps.push(PrivateSelfMainScalarStep::BoolAssign(
                     main_bool_assignments.len() - 1,
@@ -1040,16 +1040,47 @@ impl PreparedPrivateSelfMethod {
                 ));
             };
             let id = DeclarationId(statement.start);
-            let initializer = local.initializer.as_ref().ok_or(
-                PrivateSelfMethodPrepareError::Unsupported(
-                    "main int 局部須由原 Checker 證明已初始化",
-                ),
-            )?;
             if !verified.plan.declarations.matches(id, &local.ty, local.mutable) {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
                     "main 局部缺少原 Checker 宣告與型別身分",
                 ));
             }
+            if local.initializer.is_none() {
+                // 原 Checker 對尚未初始化 var int/bool 允許之後首次
+                // 賦值；不得以 0/false 假造已初始化值或允許提前讀取。
+                // 此處只封存已核准宣告身分，執行時 Empty 步驟不建值槽。
+                if !local.mutable || known_bool_bindings.contains_key(&local.name)
+                    || known_int_bindings.contains_key(&local.name) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main 尚未初始化宣告只接受唯一 var Copyable scalar",
+                    ));
+                }
+                if local.ty == "bool" {
+                    known_bool_bindings.insert(local.name.clone(), id);
+                    known_bool_mutability.insert(id, true);
+                    main_bool_locals.push((local.name.clone(), id, false));
+                    main_bool_sources.push(None);
+                    main_scalar_steps.push(PrivateSelfMainScalarStep::BoolDeclareEmpty(
+                        main_bool_locals.len() - 1,
+                    ));
+                } else if local.ty == "int" {
+                    known_int_bindings.insert(local.name.clone(), id);
+                    known_int_mutability.insert(id, true);
+                    main_int_locals.push((local.name.clone(), id, 0, None));
+                    main_init_plans.push(PrivateScalarReturnExpr::Unreachable);
+                    main_scalar_steps.push(PrivateSelfMainScalarStep::IntDeclareEmpty(
+                        main_int_locals.len() - 1,
+                    ));
+                } else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "main 未初始化變數僅限原 Checker 核准的 var int／bool",
+                    ));
+                }
+                continue;
+            }
+            let initializer = local.initializer.as_ref().ok_or(
+                PrivateSelfMethodPrepareError::SourceChanged,
+            )?;
             if local.ty == "bool" {
                 // 只接受原 Checker 已核准的 true/false 或先前
                 // 同一詞彙作用域的 Copyable bool Name；Group 由原
@@ -2630,10 +2661,12 @@ impl PreparedPrivateSelfMethod {
             (0, 0, 0, 0);
         for step in &self.main_scalar_steps {
             match step {
-                PrivateSelfMainScalarStep::BoolDeclare(index) if *index == next_bool =>
-                    next_bool += 1,
-                PrivateSelfMainScalarStep::IntDeclare(index) if *index == next_int =>
-                    next_int += 1,
+                PrivateSelfMainScalarStep::BoolDeclare(index)
+                | PrivateSelfMainScalarStep::BoolDeclareEmpty(index)
+                    if *index == next_bool => next_bool += 1,
+                PrivateSelfMainScalarStep::IntDeclare(index)
+                | PrivateSelfMainScalarStep::IntDeclareEmpty(index)
+                    if *index == next_int => next_int += 1,
                 PrivateSelfMainScalarStep::BoolAssign(index) if *index == next_assign =>
                     next_assign += 1,
                 PrivateSelfMainScalarStep::IntAssign(index)
@@ -2660,8 +2693,31 @@ impl PreparedPrivateSelfMethod {
         let mut branch_else_write_applied = false;
         let mut nested_write_applied = false;
         let mut nested_else_write_applied = false;
+        // 已宣告、已初始化是不同狀態：Empty 宣告不可偷建
+        // false/0 值槽；唯一原 Checker Assignment 首次提交才可使用。
+        let mut declared_bool = std::collections::BTreeSet::<DeclarationId>::new();
+        let mut declared_int = std::collections::BTreeSet::<DeclarationId>::new();
+        let mut pending_bool = std::collections::BTreeSet::<DeclarationId>::new();
+        let mut pending_int = std::collections::BTreeSet::<DeclarationId>::new();
         for step in &self.main_scalar_steps {
             match *step {
+                PrivateSelfMainScalarStep::BoolDeclareEmpty(index) => {
+                    let (_, id, _) = &self.main_bool_locals[index];
+                    if self.main_bool_sources[index].is_some()
+                        || !declared_bool.insert(*id) || !pending_bool.insert(*id)
+                        || main_bool_values.contains_key(id) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
+                PrivateSelfMainScalarStep::IntDeclareEmpty(index) => {
+                    let (_, id, _, _) = &self.main_int_locals[index];
+                    if !matches!(&self.main_init_plans[index],
+                        PrivateScalarReturnExpr::Unreachable)
+                        || !declared_int.insert(*id) || !pending_int.insert(*id)
+                        || main_values.contains_key(id) {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
                 PrivateSelfMainScalarStep::BoolDeclare(index) => {
                     let (_, id, planned) = &self.main_bool_locals[index];
                     let actual = match self.main_bool_sources[index] {
@@ -2669,14 +2725,14 @@ impl PreparedPrivateSelfMethod {
                             .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
                         None => *planned,
                     };
-                    if actual != *planned
+                    if actual != *planned || !declared_bool.insert(*id)
                         || main_bool_values.insert(*id, actual).is_some() {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                 }
                 PrivateSelfMainScalarStep::BoolAssign(index) => {
                     let (target, planned, source) = self.main_bool_assignments[index];
-                    if !main_bool_values.contains_key(&target) {
+                    if !declared_bool.contains(&target) {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                     let actual = match source {
@@ -2684,15 +2740,19 @@ impl PreparedPrivateSelfMethod {
                             .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
                         None => planned,
                     };
-                    if actual != planned
-                        || main_bool_values.insert(target, actual).is_none() {
+                    if actual != planned {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    let had_value = main_bool_values.insert(target, actual).is_some();
+                    let was_pending = pending_bool.remove(&target);
+                    if had_value == was_pending {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                 }
                 PrivateSelfMainScalarStep::IntAssign(index) => {
                     let (target, planned, initializer) =
                         &self.main_int_assignments[index];
-                    if !main_values.contains_key(target) {
+                    if !declared_int.contains(target) {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                     let mut source_calls = Vec::new();
@@ -2718,8 +2778,12 @@ impl PreparedPrivateSelfMethod {
                         }
                         Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
                     };
-                    if actual != *planned
-                        || main_values.insert(*target, actual).is_none() {
+                    if actual != *planned {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                    let had_value = main_values.insert(*target, actual).is_some();
+                    let was_pending = pending_int.remove(target);
+                    if had_value == was_pending {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                 }
@@ -2749,7 +2813,8 @@ impl PreparedPrivateSelfMethod {
                         }
                         Err(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
                     };
-                    if actual != *planned || main_values.insert(*id, actual).is_some() {
+                    if actual != *planned || !declared_int.insert(*id)
+                        || main_values.insert(*id, actual).is_some() {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
                 }
@@ -3258,7 +3323,8 @@ impl PreparedPrivateSelfMethod {
         for (_, id, _, _) in self.main_int_locals.iter().rev() {
             // 若前一個初始化溢位，後面的宣告尚未真正走到，
             // 不能假造其作用域或要求釋放從未配置的純值槽。
-            if main_values.remove(id).is_none() && main_locals_complete {
+            if main_values.remove(id).is_none() && main_locals_complete
+                && !pending_int.contains(id) {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
         }
