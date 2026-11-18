@@ -95,7 +95,7 @@ return owner.read(true,true,5)
             "owner.read(gate,true,5)",
         );
         let plan=checked(&src);
-        assert_eq!(plan.main_bool_assignments[0].2,Some(plan.main_bool_locals[0].1));
+        assert_eq!(plan.main_bool_assignments[0].2,Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[0].1)));
         run(&src,6,1,(Some(true),Some(true)));
     }
 

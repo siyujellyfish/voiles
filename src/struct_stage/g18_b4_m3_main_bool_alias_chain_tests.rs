@@ -58,7 +58,7 @@ return owner.read(true,true,5)
         let src=source("const a:bool = true\nconst gate:bool = a\n",
             "owner.read(gate,true,5)");
         let plan=PreparedPrivateSelfMethod::prepare(&src).unwrap();
-        assert_eq!(plan.main_bool_sources,vec![None,Some(plan.main_bool_locals[0].1)]);
+        assert_eq!(plan.main_bool_sources,vec![None,Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[0].1))]);
         run(&src,2,6,(Some(true),Some(true)),1);
     }
 
@@ -87,7 +87,7 @@ return owner.read(true,true,5)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(ids.len(),3);
         assert_eq!(plan.main_bool_sources,vec![
-            None,Some(plan.main_bool_locals[0].1),Some(plan.main_bool_locals[1].1),
+            None,Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[0].1)),Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[1].1)),
         ]);
         run(&src,3,2,(Some(true),Some(false)),1);
     }
@@ -162,7 +162,7 @@ return owner.read(true,true,5)
         );
         let mut plan=PreparedPrivateSelfMethod::prepare(&src).unwrap();
         let wrong=plan.main_bool_locals[1].1;
-        plan.main_bool_sources[2]=Some(wrong);
+        plan.main_bool_sources[2]=Some(PrivateSelfBoolArgumentSource::MainLocal(wrong));
         assert!(matches!(plan.execute(),
             Err(PrivateSelfMethodPrepareError::SourceChanged)));
         run(&src,3,2,(Some(true),Some(false)),1);

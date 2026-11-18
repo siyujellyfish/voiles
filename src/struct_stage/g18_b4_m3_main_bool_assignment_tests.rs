@@ -75,7 +75,7 @@ return owner.read(true,true,5)
             "owner.read(((gate)),true,5)",
         );
         let plan=PreparedPrivateSelfMethod::prepare(&src).unwrap();
-        assert_eq!(plan.main_bool_assignments[0].2,Some(plan.main_bool_locals[1].1));
+        assert_eq!(plan.main_bool_assignments[0].2,Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[1].1)));
         run(&src,2,1,7,(Some(false),None),0);
     }
 
@@ -93,7 +93,7 @@ return owner.read(true,true,5)
         let src=source("var gate:bool = true\ngate = ((gate))\n",
             "owner.read(gate,true,5)");
         let plan=PreparedPrivateSelfMethod::prepare(&src).unwrap();
-        assert_eq!(plan.main_bool_assignments[0].2,Some(plan.main_bool_locals[0].1));
+        assert_eq!(plan.main_bool_assignments[0].2,Some(PrivateSelfBoolArgumentSource::MainLocal(plan.main_bool_locals[0].1)));
         run(&src,1,1,6,(Some(true),Some(true)),1);
     }
 

@@ -559,6 +559,37 @@ enum PrivateSelfBoolArgumentSource {
     OwnerField { declaration: DeclarationId, field: String },
 }
 
+/// B4/M3：只接受原 Checker ScalarHIR 已型別驗證、Lexer
+/// owner/field Name 精確一致的真 bool 欄位值葉。共用於
+/// main bool 局部與方法 bool 實參，絕不自行解析來源文字。
+fn private_self_checked_owner_bool_field(
+    leaf: &Term,
+    verified: &VerifiedPrivateSource,
+    owner_id: DeclarationId,
+    owner: &str,
+    fields: &[(String, PrivateSelfAdditionalCopyValue, bool)],
+) -> Option<(bool, PrivateSelfBoolArgumentSource)> {
+    let only_owner = BTreeMap::from([(owner.to_owned(), owner_id)]);
+    let PrivateScalarBoolExpr::CopyStructBoolField {
+        declaration, owner: read_owner, field,
+    } = PrivateScalarBoolExpr::from_checked(leaf, &only_owner, verified).ok()?
+    else { return None; };
+    if declaration != owner_id || read_owner != owner {
+        return None;
+    }
+    let value = fields.iter().find_map(|(name, seed, _)|
+        if name == &field {
+            match seed {
+                PrivateSelfAdditionalCopyValue::Bool(value) => Some(*value),
+                _ => None,
+            }
+        } else { None }
+    )?;
+    Some((value, PrivateSelfBoolArgumentSource::OwnerField {
+        declaration, field,
+    }))
+}
+
 struct PreparedPrivateSelfMethod {
     verified: VerifiedPrivateSource,
     original: Box<[u8]>,
@@ -642,12 +673,13 @@ struct PreparedPrivateSelfMethod {
     /// main 只允許已經原 Checker 型別驗證的 Copyable bool
     /// 常值／合法 Group 初始化，按原宣告身分保留唯一值槽。
     main_bool_locals: Vec<(String, DeclarationId, bool)>,
-    /// Bool 局部初始化若來源是先前已驗證 Copyable bool 宣告，
-    /// 記錄原 Checker DeclarationId；字面／Group 常值為 None。
-    main_bool_sources: Vec<Option<DeclarationId>>,
+    /// main bool 局部來源與方法實參使用同一來源型別；
+    /// None 為 Lexer 真字面值，MainLocal／OwnerField 保留 Checker 身分。
+    main_bool_sources: Vec<Option<PrivateSelfBoolArgumentSource>>,
     /// 僅接通全部 main Copyable bool 宣告後的原 Parser 直線
     /// var bool 更新；每筆保留目標、準備值及真 RHS DeclId。
-    main_bool_assignments: Vec<(DeclarationId, bool, Option<DeclarationId>)>,
+    main_bool_assignments:
+        Vec<(DeclarationId, bool, Option<PrivateSelfBoolArgumentSource>)>,
     /// 以原 Parser 逐語句記錄跨型別真執行次序。
     main_scalar_steps: Vec<PrivateSelfMainScalarStep>,
     /// main var int 的原 Parser 真賦值目標與 Checker ScalarHIR，
@@ -1008,9 +1040,10 @@ impl PreparedPrivateSelfMethod {
         )>::new();
         let mut main_init_plans = Vec::<PrivateScalarReturnExpr>::new();
         let mut main_bool_locals = Vec::<(String, DeclarationId, bool)>::new();
-        let mut main_bool_sources = Vec::<Option<DeclarationId>>::new();
+        let mut main_bool_sources =
+            Vec::<Option<PrivateSelfBoolArgumentSource>>::new();
         let mut main_bool_assignments =
-            Vec::<(DeclarationId, bool, Option<DeclarationId>)>::new();
+            Vec::<(DeclarationId, bool, Option<PrivateSelfBoolArgumentSource>)>::new();
         let mut main_scalar_steps = Vec::<PrivateSelfMainScalarStep>::new();
         let mut main_int_assignments =
             Vec::<(DeclarationId, i64, PrivateScalarReturnExpr)>::new();
@@ -1228,10 +1261,19 @@ impl PreparedPrivateSelfMethod {
                                 "main bool 賦值 RHS 尚未初始化",
                             ),
                         )?;
+                        (value, Some(PrivateSelfBoolArgumentSource::MainLocal(source)))
+                    }
+                    TermKind::FieldRead(_, _) => {
+                        let (value, source) = private_self_checked_owner_bool_field(
+                            leaf, &verified, main_owner_id, &main_owner_name,
+                            &additional_copy_fields,
+                        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "main bool 重賦值的 owner 欄位缺少原 Checker 同源 bool 證據",
+                        ))?;
                         (value, Some(source))
                     }
                     _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main bool 重賦值只接通原 Checker 純 bool 常值或已初始化名稱",
+                        "main bool 重賦值只接通原 Checker 純 bool 常值、名稱或 owner.bool",
                     )),
                 };
                 // 首次綁定未初始化 var bool 與一般重賦共用同一
@@ -1318,10 +1360,19 @@ impl PreparedPrivateSelfMethod {
                                 "main bool 別名沒有前序已初始化真值槽",
                             ),
                         )?;
+                        (value, Some(PrivateSelfBoolArgumentSource::MainLocal(source)))
+                    }
+                    TermKind::FieldRead(_, _) => {
+                        let (value, source) = private_self_checked_owner_bool_field(
+                            leaf, &verified, main_owner_id, &main_owner_name,
+                            &additional_copy_fields,
+                        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                            "main bool 初始化的 owner 欄位缺少原 Checker 同源 bool 證據",
+                        ))?;
                         (value, Some(source))
                     }
                     _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "main bool 僅接受原 Checker 字面值或已初始化具名 Copyable bool",
+                        "main bool 僅接受原 Checker bool 字面、已初始化名稱或 owner.bool",
                     )),
                 };
                 if known_int_bindings.contains_key(&local.name)
@@ -3075,9 +3126,20 @@ impl PreparedPrivateSelfMethod {
                 }
                 PrivateSelfMainScalarStep::BoolDeclare(index) => {
                     let (_, id, planned) = &self.main_bool_locals[index];
-                    let actual = match self.main_bool_sources[index] {
-                        Some(source) => *main_bool_values.get(&source)
-                            .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                    // 原 Parser 真 BoolDeclare 到達時，才能取 P16
+                    // 已建構 owner.bool 的當下值；不能僅取 prepare 快照。
+                    let actual = match &self.main_bool_sources[index] {
+                        Some(PrivateSelfBoolArgumentSource::MainLocal(source)) =>
+                            *main_bool_values.get(source)
+                                .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                        Some(PrivateSelfBoolArgumentSource::OwnerField {
+                            declaration, field,
+                        }) if *declaration == self.owner_id =>
+                            match runtime.field(&self.owner, field) {
+                                Ok(Observed::Bool(value)) => value,
+                                _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                            },
+                        Some(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
                         None => *planned,
                     };
                     if actual != *planned || !declared_bool.insert(*id)
@@ -3086,20 +3148,31 @@ impl PreparedPrivateSelfMethod {
                     }
                 }
                 PrivateSelfMainScalarStep::BoolAssign(index) => {
-                    let (target, planned, source) = self.main_bool_assignments[index];
-                    if !declared_bool.contains(&target) {
+                    let (target, planned, source) = &self.main_bool_assignments[index];
+                    if !declared_bool.contains(target) {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    // 原 Parser 真 BoolAssign 逐筆動態求值並原子提交，
+                    // 未初始化 bool 只有真正抵達本次賦值才有值槽。
                     let actual = match source {
-                        Some(source) => *main_bool_values.get(&source)
-                            .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
-                        None => planned,
+                        Some(PrivateSelfBoolArgumentSource::MainLocal(id)) =>
+                            *main_bool_values.get(id)
+                                .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+                        Some(PrivateSelfBoolArgumentSource::OwnerField {
+                            declaration, field,
+                        }) if *declaration == self.owner_id =>
+                            match runtime.field(&self.owner, field) {
+                                Ok(Observed::Bool(value)) => value,
+                                _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                            },
+                        Some(_) => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                        None => *planned,
                     };
-                    if actual != planned {
+                    if actual != *planned {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
-                    let had_value = main_bool_values.insert(target, actual).is_some();
-                    let was_pending = pending_bool.remove(&target);
+                    let had_value = main_bool_values.insert(*target, actual).is_some();
+                    let was_pending = pending_bool.remove(target);
                     if had_value == was_pending {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }

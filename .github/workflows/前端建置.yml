@@ -511,6 +511,9 @@ jobs:
       - name: G18 P18.4-B4／P18.6-M3 原Checker owner bool欄位真方法實參十項Gate
         run: python3 tools/核對G18-P18.4-B4-M3真owner布林欄位方法實參.py --test-bin target/p02/p04_source_internal
 
+      - name: G18 P18.4-B4／P18.6-M3 main bool局部從原Checker owner欄位真讀十二項Gate
+        run: python3 tools/核對G18-P18.4-B4-M3主函式布林局部真欄位.py --test-bin target/p02/p04_source_internal
+
       - name: G18 V7-A1 原Checker直接await async self方法十二項 Gate
         run: python3 tools/核對G18-V7-A1原Checker直接await非同步self方法.py --test-bin target/p02/p04_source_internal
 
