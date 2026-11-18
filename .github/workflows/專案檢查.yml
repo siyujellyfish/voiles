@@ -32,3 +32,5 @@ jobs:
         run: python3 tools/檢查測試素材.py
       - name: 核對 P01 驗收矩陣與測試素材對應
         run: python3 tools/檢查P01契約.py
+      - name: G18 S0 原二十六項義務與R07六Phase狀態同源一致性
+        run: python3 tools/核對G18-P18原義務同源狀態.py --check
