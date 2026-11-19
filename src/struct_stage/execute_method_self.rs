@@ -890,12 +890,29 @@ impl PreparedPrivateSelfMethod {
         let verified = verify_source_with_ability(
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateSelfMethodPrepareError::Check)?;
-        if verified.structs.len() != 1 || verified.functions.is_empty() {
+        let main = verified.functions.iter().find(|fun| fun.name == "main")
+            .ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                "原 Checker 來源缺少唯一 main",
+            ))?;
+        let main_owner_stmt = main.body.statements.first().ok_or(
+            PrivateSelfMethodPrepareError::Unsupported("main 缺少結構持有者宣告"),
+        )?;
+        let StmtKind::Declare(main_owner) = &main_owner_stmt.kind else {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "僅支援一個原 Checker 結構、main 與同源純 int helper",
+                "main 首句缺少原 Checker 唯一結構持有者",
+            ));
+        };
+        let main_owner_id = DeclarationId(main_owner_stmt.start);
+        if !verified.plan.declarations.matches(
+                main_owner_id, &main_owner.ty, main_owner.mutable,
+            ) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "main owner 缺少原 Checker 結構宣告身分",
             ));
         }
-        let definition = verified.structs.values().next().expect("已驗證只有一結構");
+        let definition = verified.structs.get(&main_owner.ty).ok_or(
+            PrivateSelfMethodPrepareError::Unsupported("找不到持有者宣告型別的結構定義"),
+        )?;
         if definition.fields.is_empty() || definition.methods.is_empty() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "需要至少一個已證 Copyable int 欄位及具 Checker 簽章的方法",
@@ -999,10 +1016,6 @@ impl PreparedPrivateSelfMethod {
         // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
         // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
         // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
-        let main = verified.functions.iter().find(|fun| fun.name == "main")
-            .ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                "原 Checker 來源缺少唯一 main",
-            ))?;
         // B4：只接原 Checker 已核准的 int 形參簽章、單筆 Return，
         // 每個形參須有自身 Lexer／Parser／VerifiedTypedMember 真身分。
         // 不接受重複名稱、資源、Borrow 或任意再呼叫。
@@ -1118,21 +1131,6 @@ impl PreparedPrivateSelfMethod {
         // 本期仍維持首句由原 Checker 核准的唯一 struct owner。
         // 只提早固定已解析的詞彙身分以核對主函式真欄位寫入，
         // 後段完整構造來源及 call_borrows 核證一項也不略過。
-        let main_owner_stmt = &main.body.statements[0];
-        let StmtKind::Declare(main_owner) = &main_owner_stmt.kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main 首句缺少原 Checker 唯一結構持有者",
-            ));
-        };
-        let main_owner_id = DeclarationId(main_owner_stmt.start);
-        if main_owner.ty != definition_name(&verified)?
-            || !verified.plan.declarations.matches(
-                main_owner_id, &main_owner.ty, main_owner.mutable,
-            ) {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main owner 缺少原 Checker 結構宣告身分",
-            ));
-        }
         let main_owner_name = main_owner.name.clone();
         let mut known_int_mutability = BTreeMap::<DeclarationId, bool>::new();
         let mut known_bool_mutability = BTreeMap::<DeclarationId, bool>::new();
@@ -3053,18 +3051,8 @@ impl PreparedPrivateSelfMethod {
                 "主函式限先建立真正結構再直接返回方法呼叫",
             ));
         }
-        let StmtKind::Declare(owner) = &main.body.statements[0].kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "主函式首句必須是唯一持有者宣告",
-            ));
-        };
-        let owner_id = DeclarationId(main.body.statements[0].start);
-        if owner.ty != definition_name(&verified)?
-            || !verified.plan.declarations.matches(owner_id, &owner.ty, owner.mutable) {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "接收者缺少原 Checker 結構型別與真正 DeclarationId",
-            ));
-        }
+        let owner = main_owner;
+        let owner_id = main_owner_id;
         let constructor = owner.initializer.as_ref().ok_or(
             PrivateSelfMethodPrepareError::Unsupported("結構需真建立式"),
         )?;
@@ -4296,13 +4284,6 @@ fn private_self_method_parameter_reference(
         token.start == term.start && token.end == term.end
             && matches!(&token.kind, TokenKind::Name(actual) if actual == name)
     ).then_some(id)
-}
-
-fn definition_name(verified: &VerifiedPrivateSource)
-    -> Result<String, PrivateSelfMethodPrepareError> {
-    let (name, _) = verified.structs.iter().next()
-        .ok_or(PrivateSelfMethodPrepareError::Unsupported("缺少原正式結構宣告"))?;
-    Ok(name.clone())
 }
 
 #[cfg(test)]
