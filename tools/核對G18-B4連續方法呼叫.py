@@ -25,9 +25,17 @@ def run(*args):
 
 
 if __name__ == "__main__":
-    expected = sorted(PREFIX + case for case in CASES)
+    cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
+    cfg_cases = (
+        "同一實參序列中普通字串借票與方法票獨立歸還",
+        "方法來源收據與重播票據分別拒絕",
+        "普通函式的迴圈與提前返回依動態次序借票",
+        "步數耗盡仍清理持有者且不重播方法",
+    )
+    groups = {PREFIX: CASES, cfg_prefix: cfg_cases}
+    expected = sorted(prefix + case for prefix, cases in groups.items() for case in cases)
     found = sorted(line.removesuffix(": test") for line in run("--list").splitlines()
-                   if line.startswith(PREFIX))
+                   if line.startswith(tuple(groups)))
     if found != expected:
         sys.exit(f"連續方法測試清單與預期不同 {found}")
     for name in expected:
