@@ -31,9 +31,64 @@ return owner.change(false)
         let plan = PreparedPrivateSelfMethod::prepare(source).unwrap();
         let out = plan.execute().unwrap();
         for call in out.preceding_calls.iter().chain(std::iter::once(&out)) {
-            assert!(call.ticket_returned && call.has_balanced_self_borrow_trace());
+            assert!(call.ticket_returned && call.has_balanced_method_frame());
         }
         out
+    }
+
+    #[test]
+    fn 另一持有者溢位時已還票且其後的持有者不再執行() {
+        let src = SOURCE.replace("const first:int = owner.change(true)", concat!(
+            "var other:Counter = Counter()\nconst a:int = owner.bump(20)\n",
+            "const b:int = other.bump(9223372036854775807)"));
+        let out = run(&src);
+        assert_eq!(out.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert_eq!(out.preceding_calls.len(), 1);
+        assert_eq!(out.preceding_calls[0].result, Ok(21));
+        assert_ne!(out.origin.owner, out.preceding_calls[0].origin.owner);
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert!(out.has_balanced_self_borrow_trace());
+        let invalid = src.replace("var other:Counter", "const other:Counter");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&invalid),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn 交替持有者共用工作圖但保有各自欄位與借票() {
+        let src = SOURCE.replace("const first:int = owner.change(true)", concat!(
+            "var other:Counter = Counter()\n",
+            "const a:int = owner.bump(20)\nconst b:int = other.read()\n",
+            "const c:int = other.bump(a + b)"))
+            .replace("return owner.change(false)", "return owner.read()");
+        let out = run(&src);
+        let calls = &out.preceding_calls;
+        assert_eq!(calls.iter().map(|c| c.result.clone()).collect::<Vec<_>>(),
+            [Ok(21), Ok(7), Ok(29)]);
+        assert_eq!(out.result, Ok(21));
+        assert_eq!(calls[0].origin.owner, out.origin.owner);
+        assert_ne!(calls[0].origin.owner, calls[1].origin.owner);
+        assert_eq!(calls[1].origin.owner, calls[2].origin.owner);
+        assert_eq!(calls[1].checked_loan.kind, BorrowKind::SharedRead);
+        assert_eq!(calls[2].checked_loan.kind, BorrowKind::ExclusiveWrite);
+        assert!(out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
+    fn 呼叫之間保留初始化與空槽並只執行一次陳述式() {
+        let src = SOURCE.replace("const first:int = owner.change(true)", concat!(
+            "var x:int = 1\nvar delayed:int\nvar gate:bool = true\n",
+            "const first:int = owner.bump(x)\n",
+            "delayed = first + x\nowner.n = owner.n + 10\n",
+            "const second:int = owner.bump(delayed + owner.n)\n",
+            "x = second + x\ngate = false\n",
+            "const third:int = owner.change(gate)"))
+            .replace("return owner.change(false)", "return owner.bump(third + x)");
+        let out = run(&src);
+        assert_eq!(out.preceding_calls.iter().map(|c| c.result.clone()).collect::<Vec<_>>(),
+            [Ok(2), Ok(16), Ok(16)]);
+        assert_eq!(out.result, Ok(34));
+        assert_eq!(out.main_local_slots_after_exit, 0);
+        assert!(out.has_balanced_self_borrow_trace());
     }
 
     #[test]
