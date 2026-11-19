@@ -27,6 +27,7 @@ def run(*args):
 if __name__ == "__main__":
     cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
     cfg_cases = (
+        "建構具名實參的方法讀取依序還票且溢位不提交",
         "同一實參序列中普通字串借票與方法票獨立歸還",
         "方法來源收據與重播票據分別拒絕",
         "普通函式的迴圈與提前返回依動態次序借票",

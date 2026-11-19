@@ -1351,6 +1351,15 @@ impl PrivateScalarReturnExpr {
         }
     }
 
+    fn needs_call_stack(&self) -> bool {
+        match self {
+            Self::SelfRead(_) | Self::Call { .. } | Self::StrCall { .. } => true,
+            Self::Addition(left, right) | Self::Subtraction(left, right) =>
+                left.needs_call_stack() || right.needs_call_stack(),
+            _ => false,
+        }
+    }
+
     fn evaluate(&self, frame: &BTreeMap<DeclarationId, i64>)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         match self {
@@ -2822,17 +2831,15 @@ impl PreparedPrivateScalarCall {
                 // TypedHIR。含 Call 只能經同一動態函式堆疊實際執行，
                 // 不能再在 P16 建構器中另行求值或繞過資源退出。
                 TermKind::BinaryInt(_) | TermKind::Group(_)
-                    | TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)
+                    | TermKind::Call(_) | TermKind::MethodCall(..) | TermKind::UnresolvedZeroArgs(_)
                     if *kind == ScalarKind::Int => {
                     let expression = PrivateScalarReturnExpr::from_checked_bindings(
                         term, bindings, verified,
                     )?;
-                    let mut calls = Vec::new();
-                    expression.collect_calls(&mut calls);
-                    if calls.is_empty() {
-                        PrivateScalarCopyStructSeed::IntArithmetic(Box::new(expression))
-                    } else {
+                    if expression.needs_call_stack() {
                         PrivateScalarCopyStructSeed::IntCall(Box::new(expression))
+                    } else {
+                        PrivateScalarCopyStructSeed::IntArithmetic(Box::new(expression))
                     }
                 }
                 _ => PrivateScalarCopyStructSeed::Static(
