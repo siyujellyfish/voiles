@@ -20,7 +20,7 @@ CASES = (
     "b4_mixed_copy_改寫封存bool值必在任何真借票前SourceChanged",
     "b4_mixed_copy_把bool封存型別偽裝int不可建構",
     "b4_mixed_copy_修改封存const可寫性必SourceChanged",
-    "b4_mixed_copy_真正str資源欄位仍不開放此Copyable方法子集",
+    "b4_mixed_copy_真正str在故障歸票後釋放且不可傳入整數形參",
     "b4_mixed_copy_沒有預設值的附加欄位保守拒絕",
 )
 

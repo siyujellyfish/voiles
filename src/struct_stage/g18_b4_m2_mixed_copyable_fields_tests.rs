@@ -133,11 +133,15 @@ return owner.set(9)
     }
 
     #[test]
-    fn b4_mixed_copy_真正str資源欄位仍不開放此Copyable方法子集() {
+    fn b4_mixed_copy_真正str在故障歸票後釋放且不可傳入整數形參() {
         let src=source("var memo:str = \"繁體中文🪼\"\n","");
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))
-                | Err(PrivateSelfMethodPrepareError::Check(_))));
+        let out=checked(&src).execute_with_fault(true).unwrap();
+        assert_eq!(out.result,Err(PrivateSelfMethodRuntimeError::InjectedFailure));
+        assert_eq!(out.owned_fields.len(),1);
+        assert!(out.ticket_returned && out.has_balanced_self_borrow_trace());
+        let bad=src.replace("owner.set(9)", "owner.set(owner.memo)");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&bad),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
     #[test]

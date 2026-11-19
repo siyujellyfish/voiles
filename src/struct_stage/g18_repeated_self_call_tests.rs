@@ -37,6 +37,28 @@ return owner.change(false)
     }
 
     #[test]
+    fn 普通函式持有雙實例字串時成功及溢位皆逆序清理() {
+        let src = SOURCE.replace("var ready:bool = true", concat!(
+            "var ready:bool = true\nvar first:str = \"甲\"\nconst last:str = \"乙\""))
+            .replace("const first:int = owner.change(true)", concat!(
+                "var other:Counter = Counter()\nconst first:int = other.change(true)"))
+            .replace("fn main()", "fn checked()") + "fn main()->int{ return checked() }\n";
+        for (program, expected) in [
+            (src.clone(), Ok(7)),
+            (src.replace("owner.change(false)", "owner.bump(9223372036854775807)"),
+                Err(PrivateSelfMethodRuntimeError::IntegerOverflow)),
+        ] {
+            let mut out = run(&program);
+            assert_eq!(out.result, expected);
+            assert_eq!(out.owned_fields.len(), 4);
+            assert_eq!(out.events.len(), 8);
+            assert!(out.has_balanced_self_borrow_trace());
+            out.events.swap(6,7);
+            assert!(!out.has_balanced_self_borrow_trace());
+        }
+    }
+
+    #[test]
     fn 普通函式轉交具名整數形參且同名槽分屬不同框架() {
         let src = SOURCE.replace("fn main()", "fn compute(x:int,y:int)")
             .replace("owner.change(true)", "owner.bump(x)")

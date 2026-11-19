@@ -107,11 +107,18 @@ return owner.set(9)
     }
 
     #[test]
-    fn b4_multi_fields_未開放額外str資源欄位不得偽裝Copyable_int() {
+    fn b4_multi_fields_額外str保有真資源且不當作Copyable_int() {
         let src=extra("var memo:str = \"測試\"\n");
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))
-                | Err(PrivateSelfMethodPrepareError::Check(_))));
+        let plan=plan(&src);
+        assert!(plan.additional_copy_fields.is_empty());
+        let out=plan.execute().unwrap();
+        assert_eq!(out.result,Ok(9));
+        assert_eq!(out.owned_fields.len(),1);
+        assert_eq!(out.owned_fields[0].1,"memo");
+        assert!(out.has_balanced_self_borrow_trace());
+        let illegal=src.replace("return self.count", "return self.memo");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&illegal),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
     }
 
     #[test]
