@@ -97,6 +97,9 @@ struct PrivateSelfMethodOutcome {
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
     main_local_slots_after_exit: usize,
     caller_exited: bool,
+    caller_events: Vec<PrivateSharedCallExitEvent>,
+    entry_frames: Vec<PrivateSelfCallerFrame>,
+    exited_callers: Vec<(PrivateSelfCallerFrame, Result<i64, PrivateSelfMethodRuntimeError>)>,
     method_local_slots_after_exit: usize,
     method_local_events: Vec<PrivateSelfMethodLocalEvent>,
     /// 原 Checker/Parser 封存的方法真 int 局部 DeclarationId
@@ -117,7 +120,18 @@ impl PrivateSelfMethodOutcome {
     /// 只涵蓋目前 Checker 核准的 int 欄位同步 self 方法。
     /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
     fn has_balanced_self_borrow_trace(&self) -> bool {
+        use PrivateSharedCallExitEvent as E;
+        let issued = |event: &E| if let E::LoanAcquired(ticket) = event { Some(*ticket) } else { None };
         self.caller_exited && self.has_balanced_method_frame()
+            && self.entry_frames.iter().rev().copied().eq(self.exited_callers.iter().map(|(frame, _)| *frame))
+            && self.exited_callers.iter().all(|(_, result)| *result == self.result)
+            && self.caller_events.iter().filter(|event| !matches!(event, E::LocalInitialized(_))).take(self.entry_frames.len() + 1)
+                .all(|event| *event == E::FunctionEntered)
+            && private_shared_call_exit_balanced(&self.caller_events, self.result.is_ok())
+            && self.caller_events.iter().filter_map(issued).eq(
+                self.preceding_calls.iter().chain(std::iter::once(self))
+                    .flat_map(|call| call.exit_events.iter().filter_map(issued))
+            )
     }
 
     fn has_balanced_method_frame(&self) -> bool {
@@ -682,6 +696,8 @@ struct PrivateSelfCallBinding {
 
 #[derive(Default)]
 struct PrivateSelfCallerSlots {
+    events: Vec<PrivateSharedCallExitEvent>,
+    declarations: Vec<DeclarationId>,
     integers: BTreeMap<DeclarationId, i64>,
     booleans: BTreeMap<DeclarationId, bool>,
     declared_integers: std::collections::BTreeSet<DeclarationId>,
@@ -695,7 +711,40 @@ struct PrivateSelfConstructor {
     fields: Vec<(String, PrivateSelfAdditionalCopyValue, bool)>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PrivateSelfCallerFrame {
+    caller_start: usize,
+    call: crate::common_ir::NodeSpan,
+    callee_start: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum PrivateSelfEntryValue {
+    Integer(i64),
+    Parameter(DeclarationId),
+}
+
+fn private_self_bind_entry_values(
+    bindings: &[(DeclarationId, PrivateSelfEntryValue)],
+    caller: &BTreeMap<DeclarationId, i64>,
+) -> Result<BTreeMap<DeclarationId, i64>, PrivateSelfMethodPrepareError> {
+    let mut values = BTreeMap::new();
+    for (id, source) in bindings {
+        let value = match source {
+            PrivateSelfEntryValue::Integer(value) => *value,
+            PrivateSelfEntryValue::Parameter(source) =>
+                *caller.get(source).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?,
+        };
+        if values.insert(*id, value).is_some() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
+    }
+    Ok(values)
+}
+
 struct PrivateSelfMethodSite {
+    entry_bindings: Vec<Vec<(DeclarationId, PrivateSelfEntryValue)>>,
+    entry_frames: Vec<PrivateSelfCallerFrame>,
     constructors: Vec<PrivateSelfConstructor>,
     preceding_sites: Vec<PrivateSelfCallBinding>,
     original: Box<[u8]>,
@@ -1074,10 +1123,64 @@ impl PrivateSelfMethodSite {
         caller: &PrivateSelfCallerSlots,
     ) -> Result<Self, PrivateSelfMethodPrepareError> {
         use crate::common_ir::{NodeRole, NodeSpan, ScalarType, VerifiedTypedMember};
-        let main = verified.functions.iter().find(|fun| fun.name == "main")
-            .ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                "原 Checker 來源缺少唯一 main",
-            ))?;
+        let mut main = verified.functions.iter().find(|fun| fun.name == "main")
+            .ok_or(PrivateSelfMethodPrepareError::Unsupported("來源缺少 main"))?;
+        if !main.params.is_empty() {
+            return Err(PrivateSelfMethodPrepareError::Unsupported("main 入口必須無參數"));
+        }
+        let mut entry_frames = Vec::new();
+        let mut entry_bindings = Vec::new();
+        let mut entry_values = BTreeMap::new();
+        let mut callers = std::collections::BTreeSet::from([main.start]);
+        while let [statement] = main.body.statements.as_slice() {
+            let StmtKind::Return(returned) = &statement.kind else { break; };
+            let leaf = private_self_checked_ungrouped_return(verified, &returned.expression)?;
+            let name = match &leaf.kind {
+                TermKind::UnresolvedZeroArgs(name) => name,
+                TermKind::Call(call) if !call.awaited => &call.name,
+                _ => break,
+            };
+            let parameters = main.params.iter().map(|param|
+                (param.name.clone(), DeclarationId(param.declaration_start))).collect();
+            let checked = PrivateScalarReturnExpr::from_checked_bindings(leaf, &parameters, verified)
+                .map_err(|_| PrivateSelfMethodPrepareError::Unsupported("普通函式呼叫缺少已核准的整數 HIR"))?;
+            let PrivateScalarReturnExpr::Call { name: checked, arguments, awaited: false } = checked else {
+                return Err(PrivateSelfMethodPrepareError::Unsupported("普通函式需要同步整數呼叫"));
+            };
+            if checked != *name || main.is_async || main.result_ty != "int"
+                || !verified.plan.control_edges.get(&statement.start).is_some_and(|edge|
+                    edge.span == statement.node_span() && edge.flow == FlowState::Returned) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported("同步轉交缺少原呼叫與返回控制邊"));
+            }
+            let target = verified.functions.iter().find(|fun| fun.name == *name)
+                .ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
+            if target.is_async || target.params.len() != arguments.len() || target.result_ty != "int"
+                || !callers.insert(target.start) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported("同步入口需有可抵達方法的有限普通函式路徑"));
+            }
+            let mut bindings = Vec::new();
+            for (argument, param) in arguments.iter().zip(&target.params) {
+                let id = DeclarationId(param.declaration_start);
+                let PrivateScalarCallArgument::Int(expr) = argument else {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported("普通函式轉交限 Copyable int"));
+                };
+                if param.ty != "int" || !verified.plan.declarations.matches(id, "int", false) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported("轉交形參缺少 Checker 宣告身分"));
+                }
+                let source = match expr {
+                    PrivateScalarReturnExpr::Constant(value) => PrivateSelfEntryValue::Integer(*value),
+                    PrivateScalarReturnExpr::Parameter(id) => PrivateSelfEntryValue::Parameter(*id),
+                    _ => return Err(PrivateSelfMethodPrepareError::Unsupported("普通函式轉交限整數常值或具名形參")),
+                };
+                bindings.push((id, source));
+            }
+            entry_values = private_self_bind_entry_values(&bindings, &entry_values)?;
+            entry_bindings.push(bindings);
+            entry_frames.push(PrivateSelfCallerFrame {
+                caller_start: main.start, call: leaf.node_span(), callee_start: target.start,
+            });
+            main = target;
+        }
         let statements = &main.body.statements;
         let position = site.unwrap_or(statements.len().saturating_sub(1));
         let call_expression = match statements.get(position).map(|stmt| &stmt.kind) {
@@ -1121,7 +1224,7 @@ impl PrivateSelfMethodSite {
             let fields = private_self_constructor_fields(text, verified, definition)?;
             constructors.push(PrivateSelfConstructor { id, name: owner.name.clone(), fields });
         }
-        if awaited_method && constructors.len() != 1 {
+        if awaited_method && (constructors.len() != 1 || !entry_frames.is_empty()) {
             return Err(PrivateSelfMethodPrepareError::Unsupported("直接 await 子集僅接單一持有者"));
         }
         let owner_index = constructors.iter().position(|owner| owner.name == receiver_name)
@@ -1143,7 +1246,7 @@ impl PrivateSelfMethodSite {
         // 每個形參須有自身 Lexer／Parser／VerifiedTypedMember 真身分。
         // 不接受重複名稱、資源、Borrow 或任意再呼叫。
         let method_helpers = verified.functions.iter()
-            .filter(|fun| fun.name != "main")
+            .filter(|fun| !callers.contains(&fun.start))
             .map(|helper| {
                 // 原 Checker 簽章與 Lexer／TypedMember 是唯一參數數量權威，
                 // 不另造「最多兩個」的執行器限制；每個純 int 引數
@@ -1202,7 +1305,7 @@ impl PrivateSelfMethodSite {
                     name: helper.name.clone(), parameters, returned: plan,
                 }))
             }).collect::<Result<BTreeMap<_, _>, PrivateSelfMethodPrepareError>>()?;
-        if method_helpers.len() + 1 != verified.functions.len() {
+        if method_helpers.len() + callers.len() != verified.functions.len() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "同名普通函式不能覆蓋原 Checker 唯一純值工作計畫",
             ));
@@ -1232,7 +1335,12 @@ impl PrivateSelfMethodSite {
         let mut known_bool_bindings = BTreeMap::<String, DeclarationId>::new();
         let mut known_bool_values = BTreeMap::<DeclarationId, bool>::new();
         let mut known_int_bindings = BTreeMap::<String, DeclarationId>::new();
-        let mut known_int_values = BTreeMap::<DeclarationId, i64>::new();
+        let mut known_int_values = entry_values;
+        for param in &main.params {
+            let id = DeclarationId(param.declaration_start);
+            known_int_bindings.insert(param.name.clone(), id);
+            known_int_mutability.insert(id, false);
+        }
         // 原 main 第一個 owner 的 int 欄位在構造後由真 P16 保存；
         // 此值只供 prepare 同源快照，execute 必重新讀取目前持有者。
         let mut known_owner_field_value = field_value;
@@ -3214,8 +3322,8 @@ impl PrivateSelfMethodSite {
                 "返回位置、self 共享模式與原 Checker 真方法證據不一致",
             ));
         }
-        if main.name != "main" || main.result_ty != "int"
-            || !main.params.is_empty() || main.body.statements.len() < 2 {
+        if main.result_ty != "int"
+            || main.body.statements.len() < 2 {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "主函式限先建立真正結構再直接返回方法呼叫",
             ));
@@ -3286,7 +3394,7 @@ impl PrivateSelfMethodSite {
         let method_name = method.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            constructors, preceding_sites, original, struct_name, owner: owner_name,
+            entry_bindings, entry_frames, constructors, preceding_sites, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             additional_copy_fields, write_value, write_parameter, write_checked_int,
             direct_method_bool_write, return_calculation, method_int_locals,
@@ -3313,7 +3421,9 @@ impl PrivateSelfMethodSite {
 impl PreparedPrivateSelfMethod {
     fn matches_source(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false; };
-        self.constructors == fresh.constructors
+        self.entry_bindings == fresh.entry_bindings
+            && self.entry_frames == fresh.entry_frames
+            && self.constructors == fresh.constructors
             && self.preceding_sites == fresh.preceding_sites
             && self.original == fresh.original
             // T3：此入口已用唯一原 Lexer／Parser／Checker 建立 fresh；
@@ -3416,6 +3526,21 @@ impl PreparedPrivateSelfMethod {
         use crate::mixed_struct_runtime::{
             MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue,
         };
+        let mut slots = PrivateSelfCallerSlots::default();
+        slots.events.push(PrivateSharedCallExitEvent::FunctionEntered);
+        let mut waiting = Vec::new();
+        for (frame, bindings) in self.entry_frames.iter().zip(&self.entry_bindings) {
+            let values = private_self_bind_entry_values(bindings, &slots.integers)?;
+            waiting.push((*frame, std::mem::replace(&mut slots.integers, values),
+                std::mem::take(&mut slots.declarations)));
+            slots.events.push(PrivateSharedCallExitEvent::FunctionEntered);
+            slots.declared_integers.clear();
+            for (id, _) in bindings {
+                slots.declarations.push(*id);
+                slots.declared_integers.insert(*id);
+                slots.events.push(PrivateSharedCallExitEvent::LocalInitialized(*id));
+            }
+        }
         let mut runtime = MixedStructRuntime::new();
         // P16 在真 main 首句按原 Checker 宣告順序建立全部
         // Copyable int／bool 欄位，沒有新增 OwnedStr 或資源事件。
@@ -3439,7 +3564,6 @@ impl PreparedPrivateSelfMethod {
         let text = std::str::from_utf8(&self.original)
             .map_err(|_| PrivateSelfMethodPrepareError::SourceChanged)?;
         let mut preceding_calls = Vec::new();
-        let mut slots = PrivateSelfCallerSlots::default();
         let mut completed = None;
         for binding in &self.preceding_sites {
             let site = PrivateSelfMethodSite::prepare_site(
@@ -3455,6 +3579,8 @@ impl PreparedPrivateSelfMethod {
                         || slots.integers.insert(binding.declaration, value).is_some() {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    slots.declarations.push(binding.declaration);
+                    slots.events.push(PrivateSharedCallExitEvent::LocalInitialized(binding.declaration));
                 }
                 Err(_) => { completed = Some(outcome); break; }
             }
@@ -3474,8 +3600,30 @@ impl PreparedPrivateSelfMethod {
         outcome.expected_preceding_spans = self.preceding_sites.iter().take(preceding_calls.len())
             .map(|binding| (binding.receiver, binding.call_span)).collect();
         outcome.preceding_calls = preceding_calls;
-        slots.integers.clear();
-        slots.booleans.clear();
+        use PrivateSharedCallExitEvent as E;
+        if outcome.result.is_ok() {
+            slots.events.push(E::Returned);
+        } else if !slots.events.contains(&E::UnwindStarted) {
+            slots.events.push(E::UnwindStarted);
+        }
+        for id in slots.declarations.into_iter().rev() {
+            let initialized = slots.integers.remove(&id).is_some() || slots.booleans.remove(&id).is_some();
+            slots.events.push(if initialized { E::LocalScopeEnded(id) } else { E::LocalScopeEndedEmpty(id) });
+        }
+        slots.events.push(E::FunctionExited { returned: outcome.result.is_ok() });
+        outcome.entry_frames = self.entry_frames.clone();
+        while let Some((frame, mut values, declarations)) = waiting.pop() {
+            if outcome.result.is_ok() {
+                slots.events.push(E::Returned);
+            }
+            for id in declarations.into_iter().rev() {
+                values.remove(&id).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?;
+                slots.events.push(E::LocalScopeEnded(id));
+            }
+            slots.events.push(E::FunctionExited { returned: outcome.result.is_ok() });
+            outcome.exited_callers.push((frame, outcome.result.clone()));
+        }
+        outcome.caller_events = slots.events;
         outcome.caller_exited = true;
         outcome.main_local_slots_after_exit = slots.integers.len() + slots.booleans.len();
         outcome.events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
@@ -3562,7 +3710,10 @@ impl PrivateSelfMethodSite {
             !main_bool_values.contains_key(id)).collect::<std::collections::BTreeSet<_>>();
         let mut pending_int = declared_int.iter().copied().filter(|id|
             !main_values.contains_key(id)).collect::<std::collections::BTreeSet<_>>();
+        let mut copied_events = 0;
         for step in &self.main_scalar_steps {
+            use PrivateSharedCallExitEvent as E;
+            let mut local_event = None;
             match *step {
                 PrivateSelfMainScalarStep::OwnerBoolFieldAssign(index) => {
                     let (field, planned, source) =
@@ -3650,6 +3801,8 @@ impl PrivateSelfMethodSite {
                         || main_bool_values.contains_key(id) {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    caller.declarations.push(*id);
+                    local_event = Some(E::LocalDeclaredEmpty(*id));
                 }
                 PrivateSelfMainScalarStep::IntDeclareEmpty(index) => {
                     let (_, id, _, _) = &self.main_int_locals[index];
@@ -3659,6 +3812,8 @@ impl PrivateSelfMethodSite {
                         || main_values.contains_key(id) {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    caller.declarations.push(*id);
+                    local_event = Some(E::LocalDeclaredEmpty(*id));
                 }
                 PrivateSelfMainScalarStep::BoolDeclare(index) => {
                     let (_, id, planned) = &self.main_bool_locals[index];
@@ -3682,6 +3837,8 @@ impl PrivateSelfMethodSite {
                         || main_bool_values.insert(*id, actual).is_some() {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    caller.declarations.push(*id);
+                    local_event = Some(E::LocalInitialized(*id));
                 }
                 PrivateSelfMainScalarStep::BoolAssign(index) => {
                     let (target, planned, source) = &self.main_bool_assignments[index];
@@ -3712,6 +3869,7 @@ impl PrivateSelfMethodSite {
                     if had_value == was_pending {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    local_event = Some(if was_pending { E::LocalInitialized(*target) } else { E::LocalAssigned(*target) });
                 }
                 PrivateSelfMainScalarStep::IntAssign(index) => {
                     let (target, planned, initializer) =
@@ -3761,6 +3919,7 @@ impl PrivateSelfMethodSite {
                     if had_value == was_pending {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    local_event = Some(if was_pending { E::LocalInitialized(*target) } else { E::LocalAssigned(*target) });
                 }
                 PrivateSelfMainScalarStep::IntDeclare(index) => {
                     let (_, id, planned, _) = &self.main_int_locals[index];
@@ -3803,8 +3962,13 @@ impl PrivateSelfMethodSite {
                         || main_values.insert(*id, actual).is_some() {
                         return Err(PrivateSelfMethodPrepareError::SourceChanged);
                     }
+                    caller.declarations.push(*id);
+                    local_event = Some(E::LocalInitialized(*id));
                 }
             }
+            caller.events.extend_from_slice(&exit_events[copied_events..]);
+            copied_events = exit_events.len();
+            caller.events.extend(local_event);
         }
         if self.argument_sources.len()
             != usize::from(self.argument_binding.is_some())
@@ -4401,6 +4565,7 @@ impl PrivateSelfMethodSite {
                 calls.len()
             })
             .sum();
+        caller.events.extend_from_slice(&exit_events[copied_events..]);
         let outcome = PrivateSelfMethodOutcome {
             result, events: Vec::new(), preceding_calls: Vec::new(), expected_preceding_spans: Vec::new(), method_entered, method_exited, ticket_returned,
             direct_bool_write_observed, branch_bool_write_observed,
@@ -4419,7 +4584,7 @@ impl PrivateSelfMethodSite {
                 || self.method_branch_bool_write.is_some(),
             expected_branch_else_write: self.method_branch_else_write.is_some(),
             expected_branch: self.method_branch.map(|(condition, _)| condition),
-            caller_exited: false,
+            caller_exited: false, caller_events: Vec::new(), entry_frames: Vec::new(), exited_callers: Vec::new(),
             main_local_slots_after_exit: main_values.len() + main_bool_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
             method_local_events,

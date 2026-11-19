@@ -37,6 +37,49 @@ return owner.change(false)
     }
 
     #[test]
+    fn 普通函式轉交具名整數形參且同名槽分屬不同框架() {
+        let src = SOURCE.replace("fn main()", "fn compute(x:int,y:int)")
+            .replace("owner.change(true)", "owner.bump(x)")
+            .replace("owner.change(false)", "owner.bump(first + y)")
+            + "fn relay(x:int,y:int)->int{ return compute(y,x) }\nfn main()->int{ return relay(3,9) }\n";
+        let out = run(&src);
+        assert_eq!(out.result, Ok(14));
+        assert_eq!(out.preceding_calls[0].result, Ok(10));
+        assert_eq!(out.entry_frames.len(), 2);
+        assert!(out.has_balanced_self_borrow_trace());
+        let invalid = src.replace("relay(3,9)", "relay(true,9)");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&invalid),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
+    fn 普通函式逐框架返回方法值且溢位逐框架清理() {
+        let src = SOURCE.replace("fn main()", "fn compute()")
+            + "fn relay()->int{ return compute() }\nfn main()->int{ return relay() }\n";
+        let out = run(&src);
+        assert_eq!(out.result, Ok(7));
+        assert_eq!(out.entry_frames.len(), 2);
+        assert_eq!(out.exited_callers.len(), 2);
+        assert!(out.has_balanced_self_borrow_trace());
+        let overflow = src.replace("return owner.change(false)", "return owner.bump(9223372036854775807)");
+        let failed = run(&overflow);
+        assert_eq!(failed.result, Err(PrivateSelfMethodRuntimeError::IntegerOverflow));
+        assert!(failed.has_balanced_self_borrow_trace());
+        assert_eq!(failed.caller_events.iter().filter(|event|
+            **event == PrivateSharedCallExitEvent::UnwindStarted).count(), 1);
+        assert_eq!(failed.exited_callers.len(), 2);
+    }
+
+    #[test]
+    fn 逐次借票收據與整段工作圖必須一致() {
+        let src = SOURCE.replace("return owner.change(false)", "return owner.change(true)");
+        let mut out = run(&src);
+        assert!(out.has_balanced_self_borrow_trace());
+        out.preceding_calls[0].exit_events = out.exit_events.clone();
+        assert!(!out.has_balanced_self_borrow_trace());
+    }
+
+    #[test]
     fn 另一持有者溢位時已還票且其後的持有者不再執行() {
         let src = SOURCE.replace("const first:int = owner.change(true)", concat!(
             "var other:Counter = Counter()\nconst a:int = owner.bump(20)\n",
