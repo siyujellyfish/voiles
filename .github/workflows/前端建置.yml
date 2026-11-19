@@ -525,6 +525,8 @@ jobs:
 
       - name: G18 P18.6-M2-M3 原Checker真true葉self.bool寫入十三項Gate
         run: python3 tools/核對G18-P18.6-M2-M3原Checker真選葉bool欄位寫入.py --test-bin target/p02/p04_source_internal
+      - name: G18 B4 連續方法呼叫與持有者生命期
+        run: python3 tools/核對G18-B4連續方法呼叫.py target/p02/p04_source_internal
 
       - name: G18 V7-A1 原Checker直接await async self方法十二項 Gate
         run: python3 tools/核對G18-V7-A1原Checker直接await非同步self方法.py --test-bin target/p02/p04_source_internal
