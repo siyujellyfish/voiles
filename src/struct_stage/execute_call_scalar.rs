@@ -82,7 +82,7 @@ enum PrivateScalarCallEvent {
     SelfRead {
         site: PrivateScalarSelfRead,
         ticket: crate::borrow_safety::BorrowTicket,
-        value: i64,
+        result: Result<i64, PrivateScalarCallRuntimeError>,
         trace: Vec<PrivateSharedCallExitEvent>,
     },
     LoanAcquired(crate::borrow_safety::BorrowTicket),
@@ -564,7 +564,9 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
-                PrivateScalarCallEvent::SelfRead { site, ticket, trace, .. } => {
+                PrivateScalarCallEvent::SelfRead { site, ticket, trace, result } => {
+                    if result.is_err() && (*result != self.result || !matches!(self.events.get(index + 1),
+                        Some(PrivateScalarCallEvent::UnwindStarted))) { return false; }
                     let Some(frame) = frames.last() else { return false; };
                     if unwinding || frame.returned || ticket.fact() != site.loan
                         || !frame.locals.iter().any(|slot| matches!(slot,
@@ -572,9 +574,9 @@ impl PrivateScalarCallOutcome {
                         || trace.as_slice() != [
                             PrivateSharedCallExitEvent::LoanAcquired(*ticket),
                             PrivateSharedCallExitEvent::FunctionEntered,
-                            PrivateSharedCallExitEvent::Returned,
+                            if result.is_ok() { PrivateSharedCallExitEvent::Returned } else { PrivateSharedCallExitEvent::UnwindStarted },
                             PrivateSharedCallExitEvent::LoanReturned(*ticket),
-                            PrivateSharedCallExitEvent::FunctionExited { returned: true },
+                            PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() },
                         ] {
                         return false;
                     }
@@ -806,7 +808,12 @@ impl PrivateScalarCallOutcome {
         // 全細帳，再將**同一真事件序列**投影至與同步 self 共享的
         // 進退、唯一回滾及真 BorrowTicket 單次歸還責任表。
         let mut shared_exit_events = Vec::new();
-        for event in &self.events {
+        for (index, event) in self.events.iter().enumerate() {
+            // 內層方法已記錄同一次錯誤；外層接續清理。
+            if matches!(event, PrivateScalarCallEvent::UnwindStarted) && index > 0
+                && matches!(self.events[index - 1], PrivateScalarCallEvent::SelfRead { result: Err(_), .. }) {
+                continue;
+            }
             if let PrivateScalarCallEvent::SelfRead { trace, .. } = event {
                 shared_exit_events.extend_from_slice(trace);
                 continue;
@@ -876,8 +883,8 @@ impl PrivateScalarCallOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarSelfRead {
-    write: Option<(String, PrivateSelfEntryValue)>,
-    arguments: Vec<(DeclarationId, PrivateSelfEntryValue)>,
+    write: Option<(String, Box<PrivateScalarReturnExpr>)>,
+    arguments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     name: String,
     owner: String,
     field: String,
@@ -892,29 +899,26 @@ impl PrivateScalarSelfRead {
     ) -> Option<Self> {
         let declaration = verified.plan.declarations.typed_declaration(id)?;
         let definition = verified.structs.get(declaration.ty)?;
-        let mut tokens = verified.tokens.iter().filter(|token|
-            token.start >= span.start && token.end <= span.end);
-        let (first, dot, method_name, open) =
-            (tokens.next()?, tokens.next()?, tokens.next()?, tokens.next()?);
-        let mut actuals = Vec::new();
-        let mut close = tokens.next()?;
-        if !matches!(close.kind, TokenKind::Symbol(')')) {
-            loop {
-                let value = match &close.kind {
-                    TokenKind::Integer(raw) => PrivateSelfEntryValue::Integer(crate::syntax_shared::integer_i64(raw).ok()?),
-                    TokenKind::Name(_) => {
-                        let at = crate::common_ir::NodeSpan { start: close.start, end: close.end };
-                        let fact = verified.plan.scalar_hir.reference(at)?;
-                        if fact.resolved.ty != crate::common_ir::ScalarType::Int { return None; }
-                        PrivateSelfEntryValue::Parameter(fact.resolved.declaration)
-                    }
-                    _ => return None,
-                };
-                actuals.push(value);
-                close = tokens.next()?;
-                if !matches!(close.kind, TokenKind::Symbol(',')) { break; }
-                close = tokens.next()?;
+        let cursor = verified.tokens.binary_search_by_key(&span.start, |token| token.start).ok()?;
+        let mut parser = Parser { source: &verified.source, tokens: &verified.tokens, cursor };
+        let call = parser.atom().ok()?;
+        if call.node_span() != span { return None; }
+        let TermKind::MethodCall(receiver, called, terms) = call.kind else { return None; };
+        if receiver != owner || called != name { return None; }
+        let mut actuals = Vec::with_capacity(terms.len());
+        for term in terms {
+            let mut bindings = BTreeMap::new();
+            for token in &verified.tokens[cursor..parser.cursor] {
+                if token.start < term.start || token.end > term.end { continue; }
+                if let TokenKind::Name(name) = &token.kind {
+                    let at = crate::common_ir::NodeSpan { start: token.start, end: token.end };
+                    let fact = verified.plan.scalar_hir.reference(at)?;
+                    bindings.insert(name.clone(), fact.resolved.declaration);
+                }
             }
+            let expr = PrivateScalarReturnExpr::from_checked_bindings(&term, &bindings, verified).ok()?;
+            if !private_self_approved_int_call_arithmetic(&expr, &BTreeMap::new()) { return None; }
+            actuals.push(expr);
         }
         let mut candidates = definition.methods_named(name).filter(|method|
             method.params.len() == actuals.len() && method.params.iter().all(|p| p.ty == "int"));
@@ -931,12 +935,19 @@ impl PrivateScalarSelfRead {
                 let leaf = private_self_checked_ungrouped_return(verified, value).ok()?;
                 let source = match &leaf.kind {
                     TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =>
-                        PrivateSelfEntryValue::Integer(crate::syntax_shared::integer_i64(raw).ok()?),
-                    TermKind::Name(name) => PrivateSelfEntryValue::Parameter(DeclarationId(
+                        PrivateScalarReturnExpr::Constant(crate::syntax_shared::integer_i64(raw).ok()?),
+                    TermKind::Name(name) => PrivateScalarReturnExpr::Parameter(DeclarationId(
                         method.params.iter().find(|param| &param.name == name)?.declaration_start)),
+                    TermKind::BinaryInt(_) => {
+                        let bindings = method.params.iter().map(|p|
+                            (p.name.clone(), DeclarationId(p.declaration_start))).collect();
+                        let expr = PrivateScalarReturnExpr::from_checked_bindings(value, &bindings, verified).ok()?;
+                        if !private_self_approved_int_call_arithmetic(&expr, &BTreeMap::new()) { return None; }
+                        expr
+                    }
                     _ => return None,
                 };
-                Some((field.clone(), source))
+                Some((field.clone(), Box::new(source)))
             }
             _ => return None,
         };
@@ -949,11 +960,7 @@ impl PrivateScalarSelfRead {
         if receiver != "self" || definition.field(field)?.ty != "int"
             || safety.self_borrow != loan.kind || !safety.checked_returns.contains(&statement.node_span())
             || verified.plan.declarations.call_borrows_at(span)? != [loan]
-            || first.start != span.start || close.end != span.end || tokens.next().is_some()
-            || !matches!(&first.kind, TokenKind::Name(actual) if actual == owner)
-            || !matches!(&method_name.kind, TokenKind::Name(actual) if actual == name)
-            || !matches!(dot.kind, TokenKind::Symbol('.')) || !matches!(open.kind, TokenKind::Symbol('('))
-            || !matches!(close.kind, TokenKind::Symbol(')')) {
+ {
             return None;
         }
         Some(Self { name: name.to_owned(), owner: owner.to_owned(), field: field.clone(),
@@ -4100,8 +4107,10 @@ impl PreparedPrivateScalarCall {
                                 .any(|(id, name)| *id == site.loan.source && name == &site.owner) {
                                 return Err(PrivateScalarCallRuntimeError::StateMismatch);
                             }
-                            let parameters = private_self_bind_entry_values(&site.arguments, &frame.values)
-                                .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
+                            let mut parameters = BTreeMap::new();
+                            for (parameter, expr) in &site.arguments {
+                                parameters.insert(*parameter, expr.evaluate(&frame.values)?);
+                            }
                             let tracker = &mut frame.borrow_tracker;
                             let ticket = tracker.acquire(site.loan.source, site.loan.kind)
                                 .map_err(PrivateScalarCallRuntimeError::Borrow)?;
@@ -4112,11 +4121,7 @@ impl PreparedPrivateScalarCall {
                                 .and_then(|owner| {
                                     if owner != site.loan.source { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
                                     if let Some((field, value)) = &site.write {
-                                        let value = match value {
-                                            PrivateSelfEntryValue::Integer(value) => *value,
-                                            PrivateSelfEntryValue::Parameter(id) => *parameters.get(id)
-                                                .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?,
-                                        };
+                                        let value = value.evaluate(&parameters)?;
                                         copy_structs.write_int_field(&site.owner, field, value, true)
                                             .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
                                     }
@@ -4126,14 +4131,13 @@ impl PreparedPrivateScalarCall {
                                     Ok(crate::mixed_struct_runtime::Observed::Int(value)) => Ok(value),
                                     _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
                                 });
-                            if read.is_ok() { trace.push(PrivateSharedCallExitEvent::Returned); }
+                            trace.push(if read.is_ok() { PrivateSharedCallExitEvent::Returned } else { PrivateSharedCallExitEvent::UnwindStarted });
                             tracker.release(ticket)
                                 .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                             trace.push(PrivateSharedCallExitEvent::LoanReturned(ticket));
-                            let value = read?;
-                            trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: true });
-                            events.push(PrivateScalarCallEvent::SelfRead { site: site.clone(), ticket, value, trace });
-                            values.push(value);
+                            trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: read.is_ok() });
+                            events.push(PrivateScalarCallEvent::SelfRead { site: site.clone(), ticket, result: read, trace });
+                            values.push(read?);
                         }
                         PrivateScalarReturnExpr::CopyStructIntField {
                             declaration, owner, field,

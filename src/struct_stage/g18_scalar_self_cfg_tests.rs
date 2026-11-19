@@ -21,6 +21,23 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 方法內算術溢位先還獨占票再清理呼叫者() {
+        let src = SOURCE.replace("fn read()", "fn add(a:int,b:int)->int{\nself.n = a+b\nreturn self.n\n}\nfn read()")
+            .replace("var n:int = 3", "var n:int = 3\nvar label:str = \"甲\"")
+            .replace("total = total + owner.read()", "total = owner.add(9223372036854775807,i)");
+        let mut out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(out.resource_events.len(), 2);
+        assert!(out.has_balanced_frame_trace());
+        let trace = out.events.iter_mut().find_map(|e| match e {
+            PrivateScalarCallEvent::SelfRead { result: Err(_), trace, .. } => Some(trace),
+            _ => None,
+        }).unwrap();
+        trace.swap(2,3);
+        assert!(!out.has_balanced_frame_trace());
+    }
+
+    #[test]
     fn 迴圈實參以當下值綁入方法形參() {
         let src = SOURCE.replace("fn read()", "fn set(first:int,last:int)->int{\nself.n = last\nreturn self.n\n}\nfn read()")
             .replace("total = total + owner.read()", "total = total + owner.set(9,i)");
@@ -28,10 +45,18 @@ fn main()->int{ return run(true) }
         assert_eq!(out.result, Ok(5));
         assert!(out.has_balanced_frame_trace());
         let reads: Vec<_> = out.events.iter().filter_map(|event| match event {
-            PrivateScalarCallEvent::SelfRead { value, .. } => Some(*value),
+            PrivateScalarCallEvent::SelfRead { result: Ok(value), .. } => Some(*value),
             _ => None,
         }).collect();
         assert_eq!(reads, [0, 1, 2, 2]);
+
+        let grouped = src.replace("owner.set(9,i)", "owner.set(9,(i+2)-1)");
+        let values = PreparedPrivateScalarCall::prepare(&grouped).unwrap().execute().unwrap();
+        assert_eq!(values.result, Ok(9));
+        let before_loan = src.replace("owner.set(9,i)", "owner.set(9,9223372036854775807+1)");
+        let failed = PreparedPrivateScalarCall::prepare(&before_loan).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(!failed.events.iter().any(|event| matches!(event, PrivateScalarCallEvent::SelfRead { .. })));
 
         let wrong_type = src.replace("owner.set(9,i)", "owner.set(true,i)");
         assert!(matches!(PreparedPrivateScalarCall::prepare(&wrong_type),
@@ -123,7 +148,7 @@ fn main()->int{ return run(true) }
             let out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
             assert_eq!(out.result, Ok(expected));
             assert_eq!(out.events.iter().filter(|event| matches!(event,
-                PrivateScalarCallEvent::SelfRead { value: 3, .. })).count(), calls);
+                PrivateScalarCallEvent::SelfRead { result: Ok(3), .. })).count(), calls);
             assert!(out.has_balanced_frame_trace());
         }
     }
