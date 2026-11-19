@@ -17,7 +17,7 @@ CASES = (
     "b4_multi_fields_main真欄位更新後方法獨占寫入仍只更新指定count",
     "b4_multi_fields_方法入口故障仍唯一還self票並逐作用域離開",
     "b4_multi_fields_額外真Checker欄位封存預設遭改寫須先SourceChanged",
-    "b4_multi_fields_未開放額外str資源欄位不得偽裝Copyable_int",
+    "b4_multi_fields_額外str保有真資源且不當作Copyable_int",
     "b4_multi_fields_額外bool已由原Checker核准時必真建構且不當作int",
 )
 

@@ -51,6 +51,8 @@ struct PrivateSelfMethodOutcome {
     result: Result<i64, PrivateSelfMethodRuntimeError>,
     /// true MixedStructRuntime 的 ResourceEvent，沒有 str 就不得假造 Created。
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
+    owned_fields: Vec<(DeclarationId, String, u64)>,
+    expected_owned_fields: Vec<(DeclarationId, String)>,
     method_entered: bool,
     method_exited: bool,
     ticket_returned: bool,
@@ -356,7 +358,12 @@ impl PrivateSelfMethodOutcome {
             && local_stack.is_empty()
             && self.method_local_slots_after_exit == 0
             && (!self.caller_exited || self.main_local_slots_after_exit == 0)
-            && self.events.is_empty()
+            && self.expected_owned_fields.iter().map(|(owner, field)| (owner, field))
+                .eq(self.owned_fields.iter().map(|(owner, field, _)| (owner, field)))
+            && self.events.iter().cloned().eq(
+                self.owned_fields.iter().map(|(_, _, id)| crate::owned_str_runtime::ResourceEvent::Created(*id))
+                    .chain(self.owned_fields.iter().rev().map(|(_, _, id)| crate::owned_str_runtime::ResourceEvent::Released(*id)))
+            )
             && crate::owned_str_runtime::event_trace_balanced(&self.events)
             && private_shared_call_exit_balanced(
                 &self.exit_events, self.result.is_ok(),
@@ -708,7 +715,7 @@ struct PrivateSelfCallerSlots {
 struct PrivateSelfConstructor {
     id: DeclarationId,
     name: String,
-    fields: Vec<(String, PrivateSelfAdditionalCopyValue, bool)>,
+    fields: Vec<(String, ApprovedSeed, bool)>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1006,7 +1013,7 @@ impl PreparedPrivateSelfMethod {
 
 fn private_self_constructor_fields(
     text: &str, verified: &VerifiedPrivateSource, definition: &StructDecl,
-) -> Result<Vec<(String, PrivateSelfAdditionalCopyValue, bool)>, PrivateSelfMethodPrepareError> {
+) -> Result<Vec<(String, ApprovedSeed, bool)>, PrivateSelfMethodPrepareError> {
     use crate::common_ir::{NodeRole, VerifiedTypedMember};
     if definition.fields.is_empty() || definition.methods.is_empty() {
         return Err(PrivateSelfMethodPrepareError::Unsupported(
@@ -1042,7 +1049,7 @@ fn private_self_constructor_fields(
     // 限無資源的直接常值，str、借用、Move 與表達式預設
     // 均保持拒絕；額外欄位未得到新方法存取權限。
     let mut additional_copy_fields =
-        Vec::<(String, PrivateSelfAdditionalCopyValue, bool)>::new();
+        Vec::<(String, ApprovedSeed, bool)>::new();
     for extra in definition.fields.iter().skip(1) {
         let evidence = VerifiedTypedMember::checked_private(
             text, NodeRole::Field, extra.declaration_span,
@@ -1051,7 +1058,7 @@ fn private_self_constructor_fields(
         ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
             "額外欄位缺少原 Parser／Lexer 真宣告身分",
         ))?;
-        if !matches!(extra.ty.as_str(), "int" | "bool")
+        if !matches!(extra.ty.as_str(), "int" | "bool" | "str")
             || verified.plan.members.get(&evidence.identity) != Some(&evidence)
             || additional_copy_fields.iter().any(|(name, _, _)| name == &extra.name)
             || extra.name == field.name {
@@ -1077,7 +1084,7 @@ fn private_self_constructor_fields(
                         "額外 int 預設缺少原 Lexer 整數常值 Token",
                     ));
                 }
-                PrivateSelfAdditionalCopyValue::Int(
+                ApprovedSeed::Int(
                     crate::syntax_shared::integer_i64(raw).map_err(|_|
                         PrivateSelfMethodPrepareError::Unsupported(
                             "額外 int 預設超出 i64 界限",
@@ -1098,8 +1105,10 @@ fn private_self_constructor_fields(
                         "額外 bool 預設缺少原 Lexer 真布林常值 Token",
                     ));
                 }
-                PrivateSelfAdditionalCopyValue::Bool(*value)
+                ApprovedSeed::Bool(*value)
             }
+            ("str", TermKind::Literal("str")) => approved_seed(default, verified)
+                .map_err(|_| PrivateSelfMethodPrepareError::Unsupported("str 預設缺少原 Lexer 字面值"))?,
             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
                 "額外欄位僅接原 Checker 已核准的獨立 int／bool 常值",
             )),
@@ -1109,7 +1118,7 @@ fn private_self_constructor_fields(
         ));
     }
     additional_copy_fields.insert(0, (
-        field.name.clone(), PrivateSelfAdditionalCopyValue::Int(field_value), field.immutable,
+        field.name.clone(), ApprovedSeed::Int(field_value), field.immutable,
     ));
     Ok(additional_copy_fields)
 }
@@ -1235,10 +1244,22 @@ impl PrivateSelfMethodSite {
         let main_owner_id = constructors[owner_index].id;
         let definition = &verified.structs[&main_owner.ty];
         let field = &definition.fields[0];
-        let PrivateSelfAdditionalCopyValue::Int(field_value) = constructors[owner_index].fields[0].1 else {
+        let ApprovedSeed::Int(field_value) = constructors[owner_index].fields[0].1 else {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         };
-        let additional_copy_fields = constructors[owner_index].fields[1..].to_vec();
+        let additional_copy_fields: Vec<_> = constructors[owner_index].fields[1..].iter()
+            .filter_map(|(name, seed, immutable)| {
+                let value = match seed {
+                    ApprovedSeed::Int(value) => PrivateSelfAdditionalCopyValue::Int(*value),
+                    ApprovedSeed::Bool(value) => PrivateSelfAdditionalCopyValue::Bool(*value),
+                    _ => return None,
+                };
+                Some((name.clone(), value, *immutable))
+            }).collect();
+        if awaited_method && constructors.iter().flat_map(|owner| &owner.fields)
+            .any(|(_, seed, _)| matches!(seed, ApprovedSeed::Str(_))) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported("帶字串資源的接收者限同步方法"));
+        }
         // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
         // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
         // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
@@ -3524,7 +3545,7 @@ impl PreparedPrivateSelfMethod {
         // FieldAssign 只透過這個已構造 owner 真提交，不把最後
         // 欄位值當成 constructor 預設值或在方法借票後補寫。
         use crate::mixed_struct_runtime::{
-            MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue,
+            MixedStructRuntime, MixedFieldSpec,
         };
         let mut slots = PrivateSelfCallerSlots::default();
         slots.events.push(PrivateSharedCallExitEvent::FunctionEntered);
@@ -3544,21 +3565,20 @@ impl PreparedPrivateSelfMethod {
         let mut runtime = MixedStructRuntime::new();
         // P16 在真 main 首句按原 Checker 宣告順序建立全部
         // Copyable int／bool 欄位，沒有新增 OwnedStr 或資源事件。
+        let mut owned_fields = Vec::new();
         for constructor in &self.constructors {
             let mut specs = Vec::with_capacity(constructor.fields.len());
-            for (name, value, immutable) in &constructor.fields {
-                let (kind, default) = match value {
-                    PrivateSelfAdditionalCopyValue::Int(value) =>
-                        (ScalarKind::Int, SeedValue::Int(*value)),
-                    PrivateSelfAdditionalCopyValue::Bool(value) =>
-                        (ScalarKind::Bool, SeedValue::Bool(*value)),
-                };
+            for (name, seed, immutable) in &constructor.fields {
                 specs.push(MixedFieldSpec {
-                    name, kind, default: Some(default), immutable: *immutable,
+                    name, kind: seed.kind(), default: Some(seed.runtime()), immutable: *immutable,
                 });
             }
             runtime.construct(&constructor.name, &specs, &[], None)
                 .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+            for (name, id) in runtime.field_resource_ids(&constructor.name)
+                .map_err(PrivateSelfMethodPrepareError::Cleanup)? {
+                owned_fields.push((constructor.id, name, id));
+            }
         }
         let mut tracker = crate::borrow_safety::BorrowSafety::new();
         let text = std::str::from_utf8(&self.original)
@@ -3610,6 +3630,22 @@ impl PreparedPrivateSelfMethod {
             let initialized = slots.integers.remove(&id).is_some() || slots.booleans.remove(&id).is_some();
             slots.events.push(if initialized { E::LocalScopeEnded(id) } else { E::LocalScopeEndedEmpty(id) });
         }
+        // 結構仍在建立它的普通函式內；所有 self 票據已歸還，再逆序釋放欄位。
+        for constructor in &self.constructors {
+            let current = runtime.field_resource_ids(&constructor.name)
+                .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+            if !current.iter().map(|(name, id)| (name, id)).eq(
+                owned_fields.iter().filter(|(owner, _, _)| *owner == constructor.id)
+                    .map(|(_, name, id)| (name, id))) {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+        }
+        outcome.expected_owned_fields = self.constructors.iter().flat_map(|owner|
+            owner.fields.iter().filter_map(move |(name, seed, _)|
+                matches!(seed, ApprovedSeed::Str(_)).then(|| (owner.id, name.clone())))
+        ).collect();
+        outcome.owned_fields = owned_fields;
+        outcome.events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         slots.events.push(E::FunctionExited { returned: outcome.result.is_ok() });
         outcome.entry_frames = self.entry_frames.clone();
         while let Some((frame, mut values, declarations)) = waiting.pop() {
@@ -3626,7 +3662,7 @@ impl PreparedPrivateSelfMethod {
         outcome.caller_events = slots.events;
         outcome.caller_exited = true;
         outcome.main_local_slots_after_exit = slots.integers.len() + slots.booleans.len();
-        outcome.events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
@@ -4567,7 +4603,7 @@ impl PrivateSelfMethodSite {
             .sum();
         caller.events.extend_from_slice(&exit_events[copied_events..]);
         let outcome = PrivateSelfMethodOutcome {
-            result, events: Vec::new(), preceding_calls: Vec::new(), expected_preceding_spans: Vec::new(), method_entered, method_exited, ticket_returned,
+            result, events: Vec::new(), owned_fields: Vec::new(), expected_owned_fields: Vec::new(), preceding_calls: Vec::new(), expected_preceding_spans: Vec::new(), method_entered, method_exited, ticket_returned,
             direct_bool_write_observed, branch_bool_write_observed,
             origin: PrivateSelfExecutionOrigin::from_plan(self),
             awaited_method: self.awaited_method, await_start_loan_index,

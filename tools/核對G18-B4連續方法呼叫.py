@@ -5,6 +5,7 @@ import sys
 
 PREFIX = "struct_stage::g18_repeated_self_call_tests::"
 CASES = (
+    "普通函式持有雙實例字串時成功及溢位皆逆序清理",
     "普通函式逐框架返回方法值且溢位逐框架清理",
     "逐次借票收據與整段工作圖必須一致",
     "普通函式轉交具名整數形參且同名槽分屬不同框架",
