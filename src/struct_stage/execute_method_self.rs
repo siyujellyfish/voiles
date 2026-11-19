@@ -33,7 +33,7 @@ struct PrivateSelfExecutionOrigin {
 }
 
 impl PrivateSelfExecutionOrigin {
-    fn from_plan(plan: &PreparedPrivateSelfMethod) -> Self {
+    fn from_plan(plan: &PrivateSelfMethodSite) -> Self {
         Self {
             source: plan.original.clone(),
             owner: plan.owner_id,
@@ -46,6 +46,8 @@ impl PrivateSelfExecutionOrigin {
 
 #[derive(Debug)]
 struct PrivateSelfMethodOutcome {
+    preceding_calls: Vec<PrivateSelfMethodOutcome>,
+    expected_preceding_spans: Vec<crate::common_ir::NodeSpan>,
     result: Result<i64, PrivateSelfMethodRuntimeError>,
     /// true MixedStructRuntime 的 ResourceEvent，沒有 str 就不得假造 Created。
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
@@ -114,6 +116,15 @@ impl PrivateSelfMethodOutcome {
     /// 只涵蓋目前 Checker 核准的 int 欄位同步 self 方法。
     /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
     fn has_balanced_self_borrow_trace(&self) -> bool {
+        if self.preceding_calls.len() != self.expected_preceding_spans.len()
+            || !self.preceding_calls.iter().zip(&self.expected_preceding_spans).all(|(call, span)|
+                call.preceding_calls.is_empty() && call.expected_preceding_spans.is_empty()
+                    && call.origin.source == self.origin.source && call.origin.owner == self.origin.owner
+                    && call.origin.call_span == *span && call.result.is_ok()
+                    && call.has_balanced_self_borrow_trace()
+            ) {
+            return false;
+        }
         let entered = self.exit_events.iter().filter(|event|
             matches!(event, PrivateSharedCallExitEvent::FunctionEntered)
         ).count();
@@ -643,6 +654,28 @@ fn private_self_checked_method_bool_field(
 
 struct PreparedPrivateSelfMethod {
     verified: VerifiedPrivateSource,
+    site: PrivateSelfMethodSite,
+}
+
+impl std::ops::Deref for PreparedPrivateSelfMethod {
+    type Target = PrivateSelfMethodSite;
+    fn deref(&self) -> &Self::Target { &self.site }
+}
+
+#[cfg(test)]
+impl std::ops::DerefMut for PreparedPrivateSelfMethod {
+    fn deref_mut(&mut self) -> &mut Self::Target { &mut self.site }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct PrivateSelfCallBinding {
+    statement_index: usize,
+    declaration: DeclarationId,
+    call_span: crate::common_ir::NodeSpan,
+}
+
+struct PrivateSelfMethodSite {
+    preceding_sites: Vec<PrivateSelfCallBinding>,
     original: Box<[u8]>,
     struct_name: String,
     owner: String,
@@ -886,10 +919,29 @@ fn private_self_helper_argument_frame(
 
 impl PreparedPrivateSelfMethod {
     fn prepare(text: &str) -> Result<Self, PrivateSelfMethodPrepareError> {
-        use crate::common_ir::{NodeRole, NodeSpan, ScalarType, VerifiedTypedMember};
         let verified = verify_source_with_ability(
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateSelfMethodPrepareError::Check)?;
+        let site = PrivateSelfMethodSite::prepare_site(
+            text, &verified, None, None, &BTreeMap::new(),
+        )?;
+        // 整條路徑先通過來源與借用驗證，之後才建構持有者。
+        for binding in &site.preceding_sites {
+            PrivateSelfMethodSite::prepare_site(text, &verified, Some(binding.statement_index), None, &BTreeMap::new())?;
+        }
+        Ok(Self { verified, site })
+    }
+}
+
+impl PrivateSelfMethodSite {
+    fn prepare_site(
+        text: &str,
+        verified: &VerifiedPrivateSource,
+        site: Option<usize>,
+        runtime: Option<&crate::mixed_struct_runtime::MixedStructRuntime>,
+        results: &BTreeMap<DeclarationId, i64>,
+    ) -> Result<Self, PrivateSelfMethodPrepareError> {
+        use crate::common_ir::{NodeRole, NodeSpan, ScalarType, VerifiedTypedMember};
         let main = verified.functions.iter().find(|fun| fun.name == "main")
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "原 Checker 來源缺少唯一 main",
@@ -1084,34 +1136,25 @@ impl PreparedPrivateSelfMethod {
                 "同名普通函式不能覆蓋原 Checker 唯一純值工作計畫",
             ));
         }
-        let last_main_statement = main.body.statements.last().ok_or(
-            PrivateSelfMethodPrepareError::Unsupported("main 缺少真同步方法返回"),
-        )?;
-        let (called_method, call_arguments, awaited_method) = match &last_main_statement.kind {
-            // 原 Checker evaluate(Group) 對內層 MethodCall 的真正
-            // 借用與方法簽章仍在葉節點；括號只經原 Lexer 真 token
-            // 核對，不得由私有層文字掃描重新推導。
-            StmtKind::Return(returned) => match
-                &private_self_checked_ungrouped_return(
-                    &verified, &returned.expression,
-                )?.kind {
-                TermKind::MethodCall(_, name, args) =>
-                    (name.as_str(), args.as_slice(), false),
-                TermKind::AwaitMethodCall(_, name, args) =>
-                    (name.as_str(), args.as_slice(), true),
-                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "main 最後 return 只接通原 Checker 同步方法或 async 直接 await",
-                )),
-            },
+        let statements = &main.body.statements;
+        let position = site.unwrap_or(statements.len() - 1);
+        let call_expression = match statements.get(position).map(|stmt| &stmt.kind) {
+            Some(StmtKind::Return(returned)) if site.is_none() => &returned.expression,
+            Some(StmtKind::Declare(local)) if site.is_some() && local.ty == "int" =>
+                local.initializer.as_ref().ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法返回值宣告缺少初始化運算式",
+                ))?,
             _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main 最後語句須 return 真同步方法",
+                "方法呼叫位置須為 int 宣告或末尾返回",
             )),
         };
-        if main.body.statements.len() < 2 {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main 需要先建立接收者再 return 真方法",
-            ));
-        }
+        let checked_call_leaf = private_self_checked_ungrouped_return(&verified, call_expression)?;
+        let (called_method, call_arguments, awaited_method) = match &checked_call_leaf.kind {
+            TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice(), false),
+            TermKind::AwaitMethodCall(_, name, args) if site.is_none() =>
+                (name.as_str(), args.as_slice(), true),
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported("須有已驗證的方法呼叫")),
+        };
         let mut main_int_locals = Vec::<(
             String, DeclarationId, i64, Option<DeclarationId>,
         )>::new();
@@ -1144,8 +1187,49 @@ impl PreparedPrivateSelfMethod {
         // 只供 prepare 的原語句一致性快照；真正欄位由同一
         // MixedStructRuntime 在每一步重新讀取，絕不預寫物件。
         let mut known_copy_fields = additional_copy_fields.clone();
-        for statement in main.body.statements.iter().skip(1)
-            .take(main.body.statements.len() - 2) {
+        if let Some(runtime) = runtime {
+            use crate::mixed_struct_runtime::Observed;
+            let Ok(Observed::Int(current)) = runtime.field(&main_owner_name, &field.name) else {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            };
+            known_owner_field_value = current;
+            for (name, seed, _) in &mut known_copy_fields {
+                *seed = match (runtime.field(&main_owner_name, name), &*seed) {
+                    (Ok(Observed::Int(v)), PrivateSelfAdditionalCopyValue::Int(_)) =>
+                        PrivateSelfAdditionalCopyValue::Int(v),
+                    (Ok(Observed::Bool(v)), PrivateSelfAdditionalCopyValue::Bool(_)) =>
+                        PrivateSelfAdditionalCopyValue::Bool(v),
+                    _ => return Err(PrivateSelfMethodPrepareError::SourceChanged),
+                };
+            }
+        }
+        let mut preceding_sites = Vec::new();
+        for (index, statement) in statements.iter().enumerate().take(position).skip(1) {
+            if let StmtKind::Declare(local) = &statement.kind {
+                if let Some(initializer) = &local.initializer {
+                    let leaf = private_self_checked_ungrouped_return(&verified, initializer)?;
+                    if matches!(leaf.kind, TermKind::MethodCall(..)) {
+                        let id = DeclarationId(statement.start);
+                        if index != preceding_sites.len() + 1 || awaited_method
+                            || local.ty != "int"
+                            || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
+                            || known_int_bindings.insert(local.name.clone(), id).is_some() {
+                            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                                "連續同步方法需有同一作用域的已驗證 int 宣告",
+                            ));
+                        }
+                        let value = if runtime.is_some() {
+                            *results.get(&id).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?
+                        } else { 0 }; // 僅用於執行前型別與來源預檢，實參執行時讀取真回傳槽。
+                        known_int_values.insert(id, value);
+                        known_int_mutability.insert(id, local.mutable);
+                        preceding_sites.push(PrivateSelfCallBinding {
+                            statement_index: index, declaration: id, call_span: leaf.node_span(),
+                        });
+                        continue;
+                    }
+                }
+            }
             // 只有原 Checker 對唯一 main owner／真正欄位／
             // 原語句座標簽發的 FieldWriteEvidence 才可寫入。
             // 仍限已驗證獨立 Copyable int，與真 int/bool 局部
@@ -1599,9 +1683,7 @@ impl PreparedPrivateSelfMethod {
         }
         // 同步方法實參與普通函式共用原 Checker→TypedHIR 的
         // Copyable int 表達式編譯；不另造方法專屬的名稱／運算子解析。
-        let mut main_bindings = main_int_locals.iter()
-            .map(|(name, id, _, _)| (name.clone(), *id))
-            .collect::<BTreeMap<_, _>>();
+        let mut main_bindings = known_int_bindings.clone();
         // 方法 int 實參可以在原 Checker 核准下讀取同一
         // main 結構持有者欄位；唯一 DeclId 不可與局部混名。
         if main_bindings.insert(
@@ -3066,14 +3148,6 @@ impl PreparedPrivateSelfMethod {
                 "不得用隱含結構複製或未驗證的其它來源當接收者",
             ));
         }
-        let StmtKind::Return(call_return) = &last_main_statement.kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "主函式必須直接 return 真方法呼叫",
-            ));
-        };
-        let checked_call_leaf = private_self_checked_ungrouped_return(
-            &verified, &call_return.expression,
-        )?;
         let (receiver, called, args) = match &checked_call_leaf.kind {
             TermKind::MethodCall(owner, method, arguments)
                 if !awaited_method => (owner, method, arguments),
@@ -3138,7 +3212,7 @@ impl PreparedPrivateSelfMethod {
         let method_name = method.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            verified, original, struct_name, owner: owner_name,
+            preceding_sites, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             additional_copy_fields, write_value, write_parameter, write_checked_int,
             direct_method_bool_write, return_calculation, method_int_locals,
@@ -3160,9 +3234,13 @@ impl PreparedPrivateSelfMethod {
         })
     }
 
+}
+
+impl PreparedPrivateSelfMethod {
     fn matches_source(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false; };
-        self.original == fresh.original
+        self.preceding_sites == fresh.preceding_sites
+            && self.original == fresh.original
             // T3：此入口已用唯一原 Lexer／Parser／Checker 建立 fresh；
             // 必須逐筆核對**完整** Token，不只查已使用的 Name/Type
             // 角色。否則 method bool Group 原括號可能在 prepare 後
@@ -3256,13 +3334,93 @@ impl PreparedPrivateSelfMethod {
         if !self.checked_source_still_intact() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
+        // 原 main 第一筆是真 owner 構造：在任何可能溢位的
+        // Copyable 主函式局部／helper 之前真建立同一執行期結構。
+        // FieldAssign 只透過這個已構造 owner 真提交，不把最後
+        // 欄位值當成 constructor 預設值或在方法借票後補寫。
+        use crate::mixed_struct_runtime::{
+            MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue,
+        };
+        let mut runtime = MixedStructRuntime::new();
+        // P16 在真 main 首句按原 Checker 宣告順序建立全部
+        // Copyable int／bool 欄位，沒有新增 OwnedStr 或資源事件。
+        let mut specs = Vec::with_capacity(1 + self.additional_copy_fields.len());
+        specs.push(MixedFieldSpec {
+            name: &self.field, kind: ScalarKind::Int,
+            default: Some(SeedValue::Int(self.field_value)),
+            immutable: self.field_immutable,
+        });
+        for (name, value, immutable) in &self.additional_copy_fields {
+            let (kind, default) = match value {
+                PrivateSelfAdditionalCopyValue::Int(value) =>
+                    (ScalarKind::Int, SeedValue::Int(*value)),
+                PrivateSelfAdditionalCopyValue::Bool(value) =>
+                    (ScalarKind::Bool, SeedValue::Bool(*value)),
+            };
+            specs.push(MixedFieldSpec {
+                name, kind, default: Some(default), immutable: *immutable,
+            });
+        }
+        runtime.construct(&self.owner, &specs, &[], None)
+            .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+        let mut tracker = crate::borrow_safety::BorrowSafety::new();
+        let text = std::str::from_utf8(&self.original)
+            .map_err(|_| PrivateSelfMethodPrepareError::SourceChanged)?;
+        let mut preceding_calls = Vec::new();
+        let mut slots = BTreeMap::new();
+        let mut completed = None;
+        for binding in &self.preceding_sites {
+            let site = PrivateSelfMethodSite::prepare_site(
+                text, &self.verified, Some(binding.statement_index), Some(&runtime), &slots,
+            )?;
+            let outcome = site.execute_site(&mut runtime, &mut tracker, &slots, fail_inside_method)?;
+            if outcome.origin.call_span != binding.call_span {
+                return Err(PrivateSelfMethodPrepareError::SourceChanged);
+            }
+            match outcome.result {
+                Ok(value) => { slots.insert(binding.declaration, value); }
+                Err(_) => { completed = Some(outcome); break; }
+            }
+            preceding_calls.push(outcome);
+        }
+        let mut outcome = match completed {
+            Some(failed) => failed,
+            None if slots.is_empty() =>
+                self.site.execute_site(&mut runtime, &mut tracker, &slots, fail_inside_method)?,
+            None => {
+                let site = PrivateSelfMethodSite::prepare_site(
+                    text, &self.verified, None, Some(&runtime), &slots,
+                )?;
+                site.execute_site(&mut runtime, &mut tracker, &slots, fail_inside_method)?
+            }
+        };
+        outcome.expected_preceding_spans = self.preceding_sites.iter().take(preceding_calls.len())
+            .map(|binding| binding.call_span).collect();
+        outcome.preceding_calls = preceding_calls;
+        outcome.events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+        if !outcome.has_balanced_self_borrow_trace() {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        }
+        Ok(outcome)
+    }
+}
+
+impl PrivateSelfMethodSite {
+    fn execute_site(
+        &self,
+        runtime: &mut crate::mixed_struct_runtime::MixedStructRuntime,
+        tracker: &mut crate::borrow_safety::BorrowSafety,
+        results: &BTreeMap<DeclarationId, i64>,
+        fail_inside_method: bool,
+    ) -> Result<PrivateSelfMethodOutcome, PrivateSelfMethodPrepareError> {
+        use crate::mixed_struct_runtime::Observed;
         // 在建立任何 method self BorrowTicket 之前，以 main 真宣告順序
         // 將 Copyable int 局部求值寫入自己的執行期框架。具名複製
         // 必須實際讀取先前槽位，不把 prepare 中的常值當成唯一動態證據。
         if self.main_int_locals.len() != self.main_init_plans.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        let mut main_values = BTreeMap::<DeclarationId, i64>::new();
+        let mut main_values = results.clone();
         let mut main_bool_values = BTreeMap::<DeclarationId, bool>::new();
         if self.main_bool_sources.len() != self.main_bool_locals.len()
             || self.main_int_locals.len() != self.main_init_plans.len()
@@ -3301,35 +3459,6 @@ impl PreparedPrivateSelfMethod {
             || next_owner_bool_field != self.main_owner_bool_field_assignments.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        // 原 main 第一筆是真 owner 構造：在任何可能溢位的
-        // Copyable 主函式局部／helper 之前真建立同一執行期結構。
-        // FieldAssign 只透過這個已構造 owner 真提交，不把最後
-        // 欄位值當成 constructor 預設值或在方法借票後補寫。
-        use crate::mixed_struct_runtime::{
-            MixedStructRuntime, MixedFieldSpec, ScalarKind, SeedValue, Observed,
-        };
-        let mut runtime = MixedStructRuntime::new();
-        // P16 在真 main 首句按原 Checker 宣告順序建立全部
-        // Copyable int／bool 欄位，沒有新增 OwnedStr 或資源事件。
-        let mut specs = Vec::with_capacity(1 + self.additional_copy_fields.len());
-        specs.push(MixedFieldSpec {
-            name: &self.field, kind: ScalarKind::Int,
-            default: Some(SeedValue::Int(self.field_value)),
-            immutable: self.field_immutable,
-        });
-        for (name, value, immutable) in &self.additional_copy_fields {
-            let (kind, default) = match value {
-                PrivateSelfAdditionalCopyValue::Int(value) =>
-                    (ScalarKind::Int, SeedValue::Int(*value)),
-                PrivateSelfAdditionalCopyValue::Bool(value) =>
-                    (ScalarKind::Bool, SeedValue::Bool(*value)),
-            };
-            specs.push(MixedFieldSpec {
-                name, kind, default: Some(default), immutable: *immutable,
-            });
-        }
-        runtime.construct(&self.owner, &specs, &[], None)
-            .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         let mut main_initialization_error = None;
         // 與一般函式共用真 Caller 動態進退帳。純 bool 宣告與
         // 重賦不產生資源事件，int helper 在真正原語句位置才 Enter；
@@ -3347,7 +3476,7 @@ impl PreparedPrivateSelfMethod {
         // 已宣告、已初始化是不同狀態：Empty 宣告不可偷建
         // false/0 值槽；唯一原 Checker Assignment 首次提交才可使用。
         let mut declared_bool = std::collections::BTreeSet::<DeclarationId>::new();
-        let mut declared_int = std::collections::BTreeSet::<DeclarationId>::new();
+        let mut declared_int = results.keys().copied().collect::<std::collections::BTreeSet<_>>();
         let mut pending_bool = std::collections::BTreeSet::<DeclarationId>::new();
         let mut pending_int = std::collections::BTreeSet::<DeclarationId>::new();
         for step in &self.main_scalar_steps {
@@ -3600,8 +3729,7 @@ impl PreparedPrivateSelfMethod {
             || self.argument_plans.len() != self.argument_sources.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        use crate::borrow_safety::BorrowSafety;
-        let mut tracker = BorrowSafety::new();
+
         let mut tickets = Vec::new();
         let mut facts = Vec::new();
         let mut method_entered = false;
@@ -4176,7 +4304,7 @@ impl PreparedPrivateSelfMethod {
                 .map_err(PrivateSelfMethodRuntimeError::Ticket).map(|()| value),
         };
         let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
-        let events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
+        for id in results.keys() { main_values.remove(id); }
         // 與一般函式的 LocalScopeEnded 契約相同：在 main 返回時
         // 刪除全部 Copyable int 局部，且不能殘留到重複執行。
         for (_, id, _, _) in self.main_int_locals.iter().rev() {
@@ -4201,7 +4329,7 @@ impl PreparedPrivateSelfMethod {
             })
             .sum();
         let outcome = PrivateSelfMethodOutcome {
-            result, events, method_entered, method_exited, ticket_returned,
+            result, events: Vec::new(), preceding_calls: Vec::new(), expected_preceding_spans: Vec::new(), method_entered, method_exited, ticket_returned,
             direct_bool_write_observed, branch_bool_write_observed,
             origin: PrivateSelfExecutionOrigin::from_plan(self),
             awaited_method: self.awaited_method, await_start_loan_index,
