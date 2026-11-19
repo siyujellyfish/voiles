@@ -22,7 +22,7 @@ CASES = (
     "m2_branch_bool_故障在方法入口之前不曾真選葉或寫欄位",
     "m2_branch_bool_封存欄位身分或bool值竄改必在任何借票前拒絕",
     "m2_branch_bool_原Checker拒絕const欄位與型別錯誤及未知欄位",
-    "m2_branch_bool_非獨立bool常值RHS需守住目前有界子集",
+    "m2_branch_bool_選葉讀取真形參與最新欄位",
     "m2_branch_bool_V7無前置作用直接await_真wake後始寫入",
 )
 

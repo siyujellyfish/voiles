@@ -133,10 +133,10 @@ return owner.change(true)
     #[test]
     fn m2_branch_bool_封存欄位身分或bool值竄改必在任何借票前拒絕() {
         let mut p=checked(SOURCE);
-        p.method_branch_bool_literal_write.as_mut().unwrap().0="forged".to_owned();
+        p.method_branch_bool_write.as_mut().unwrap().0="forged".to_owned();
         assert!(matches!(p.execute(),Err(PrivateSelfMethodPrepareError::SourceChanged)));
         let mut p=checked(SOURCE);
-        p.method_branch_bool_literal_write.as_mut().unwrap().1=true;
+        p.method_branch_bool_write.as_mut().unwrap().1=PrivateSelfBoolWriteSource::Literal(true);
         assert!(matches!(p.execute(),Err(PrivateSelfMethodPrepareError::SourceChanged)));
     }
 
@@ -159,15 +159,15 @@ return owner.change(true)
     }
 
     #[test]
-    fn m2_branch_bool_非獨立bool常值RHS需守住目前有界子集() {
-        let src=source("var n:int = 7\nvar ready:bool = true\n",
-            "gate","self.ready = gate","","owner.change(true)");
-        assert!(verify_source_with_ability(
-            &src,crate::ownership_policy::approved_leaf_copy_permission,
-        ).is_ok(),"原Checker可以核准bool形參寫入");
-        assert!(matches!(PreparedPrivateSelfMethod::prepare(&src),
-            Err(PrivateSelfMethodPrepareError::Unsupported(_))),
-            "目前子集仍未開放分支RHS動態來源，不得自行猜測");
+    fn m2_branch_bool_選葉讀取真形參與最新欄位() {
+        let fields = "var n:int = 7\nvar ready:bool = true\nvar backup:bool = true\n";
+        for rhs in ["(((gate)))", "self.backup"] {
+            let src = source(fields, "self.ready", &format!("self.ready = {rhs}"),
+                "owner.backup = false\n", "owner.change(false)");
+            run(&src, Some(("ready".to_owned(), true, false)), true);
+            let skipped = src.replace("if(self.ready)", "if(gate)");
+            run(&skipped, None, false);
+        }
     }
 
     #[test]
