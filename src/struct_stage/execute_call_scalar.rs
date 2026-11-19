@@ -883,12 +883,10 @@ impl PrivateScalarCallOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarSelfRead {
-    early_return: Option<(DeclarationId, String)>,
-    write: Option<(String, Box<PrivateScalarReturnExpr>)>,
+    body: Vec<PrivateScalarMethodStep>,
     arguments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
     name: String,
     owner: String,
-    field: String,
     call_span: crate::common_ir::NodeSpan,
     method_start: usize,
     loan: BorrowFact,
@@ -932,60 +930,14 @@ impl PrivateScalarSelfRead {
         let method = candidates.next()?;
         if candidates.next().is_some() || method.is_async || method.result_ty != "int" { return None; }
         let arguments = method.params.iter().map(|p| DeclarationId(p.declaration_start)).zip(actuals).collect();
-        let (statement, prefix) = method.body.statements.split_last()?;
         let safety = verified.plan.method_safety.get(&method.start)?;
-        let mut early_return = None;
-        let write = match prefix {
-            [conditional] if matches!(&conditional.kind, StmtKind::If { .. }) => {
-                let StmtKind::If { branch, no: None } = &conditional.kind else { return None; };
-                let cond = private_self_checked_ungrouped_return(verified, &branch.condition).ok()?;
-                let TermKind::Name(name) = &cond.kind else { return None; };
-                let parameter = method.params.iter().find(|p| p.name == *name && p.ty == "bool")?;
-                let [ret] = branch.body.statements.as_slice() else { return None; };
-                if !safety.checked_returns.contains(&ret.node_span()) { return None; }
-                let StmtKind::Return(returned) = &ret.kind else { return None; };
-                let leaf = private_self_checked_ungrouped_return(verified, &returned.expression).ok()?;
-                let TermKind::FieldRead(receiver, field) = &leaf.kind else { return None; };
-                if receiver != "self" || definition.field(field)?.ty != "int" { return None; }
-                early_return = Some((DeclarationId(parameter.declaration_start), field.clone()));
-                None
-            }
-            [] => None,
-            [assignment] => {
-                let StmtKind::FieldAssign { receiver, field, value } = &assignment.kind else { return None; };
-                let target = definition.field(field)?;
-                if !declaration.mutable || receiver != "self" || target.immutable || target.ty != "int" { return None; }
-                let leaf = private_self_checked_ungrouped_return(verified, value).ok()?;
-                let source = match &leaf.kind {
-                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =>
-                        PrivateScalarReturnExpr::Constant(crate::syntax_shared::integer_i64(raw).ok()?),
-                    TermKind::Name(name) => PrivateScalarReturnExpr::Parameter(DeclarationId(
-                        method.params.iter().find(|param| &param.name == name)?.declaration_start)),
-                    TermKind::BinaryInt(_) => {
-                        let bindings = method.params.iter().map(|p|
-                            (p.name.clone(), DeclarationId(p.declaration_start))).collect();
-                        let expr = PrivateScalarReturnExpr::from_checked_bindings(value, &bindings, verified).ok()?;
-                        if !private_self_approved_int_call_arithmetic(&expr, &BTreeMap::new()) { return None; }
-                        expr
-                    }
-                    _ => return None,
-                };
-                Some((field.clone(), Box::new(source)))
-            }
-            _ => return None,
-        };
-        let StmtKind::Return(returned) = &statement.kind else { return None; };
-        let field_term = private_self_checked_ungrouped_return(verified, &returned.expression).ok()?;
-        let TermKind::FieldRead(receiver, field) = &field_term.kind else { return None; };
-        let kind = if write.is_some() { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
-        let loan = BorrowFact::new(id, kind);
-        if receiver != "self" || definition.field(field)?.ty != "int"
-            || safety.self_borrow != loan.kind || !safety.checked_returns.contains(&statement.node_span())
-            || verified.plan.declarations.call_borrows_at(span)? != [loan] {
-            return None;
-        }
-        Some(Self { name: name.to_owned(), owner: owner.to_owned(), field: field.clone(),
-            call_span: span, method_start: method.start, loan, write, arguments, early_return })
+        let compiler = PrivateScalarMethodCompiler { verified, method, definition, safety };
+        let body = compiler.block(&method.body.statements)?;
+        let loan = BorrowFact::new(id, safety.self_borrow);
+        if (loan.kind == BorrowKind::ExclusiveWrite && !declaration.mutable)
+            || verified.plan.declarations.call_borrows_at(span)? != [loan] { return None; }
+        Some(Self { name: name.to_owned(), owner: owner.to_owned(), body,
+            call_span: span, method_start: method.start, loan, arguments })
     }
 }
 
@@ -4088,14 +4040,6 @@ impl PreparedPrivateScalarCall {
                             let value = values.pop().ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
                             parameters.insert(*parameter, value);
                         }
-                        let field = match &site.early_return {
-                            Some((id, field)) => match parameters.get(id) {
-                                Some(1) => field,
-                                Some(0) => &site.field,
-                                _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
-                            },
-                            None => &site.field,
-                        };
                         let tracker = &mut frame.borrow_tracker;
                         let ticket = tracker.acquire(site.loan.source, site.loan.kind)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
@@ -4105,16 +4049,7 @@ impl PreparedPrivateScalarCall {
                             .map_err(PrivateScalarCallRuntimeError::Borrow)
                             .and_then(|owner| {
                                 if owner != site.loan.source { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
-                                if let Some((field, value)) = &site.write {
-                                    let value = value.evaluate(&parameters)?;
-                                    copy_structs.write_int_field(&site.owner, field, value, true)
-                                        .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
-                                }
-                                Ok(())
-                            })
-                            .and_then(|()| match copy_structs.field(&site.owner, field) {
-                                Ok(crate::mixed_struct_runtime::Observed::Int(value)) => Ok(value),
-                                _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                site.run_body(&parameters, &mut copy_structs, &mut steps, budget.max_steps)
                             });
                         trace.push(if read.is_ok() { PrivateSharedCallExitEvent::Returned } else { PrivateSharedCallExitEvent::UnwindStarted });
                         tracker.release(ticket)
