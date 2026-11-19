@@ -47,7 +47,7 @@ impl PrivateSelfExecutionOrigin {
 #[derive(Debug)]
 struct PrivateSelfMethodOutcome {
     preceding_calls: Vec<PrivateSelfMethodOutcome>,
-    expected_preceding_spans: Vec<crate::common_ir::NodeSpan>,
+    expected_preceding_spans: Vec<(DeclarationId, crate::common_ir::NodeSpan)>,
     result: Result<i64, PrivateSelfMethodRuntimeError>,
     /// true MixedStructRuntime 的 ResourceEvent，沒有 str 就不得假造 Created。
     events: Vec<crate::owned_str_runtime::ResourceEvent>,
@@ -96,6 +96,7 @@ struct PrivateSelfMethodOutcome {
     expected_branch: Option<bool>,
     /// R02／R05：main 已執行 int 局部不得逃逸到方法返回之後。
     main_local_slots_after_exit: usize,
+    caller_exited: bool,
     method_local_slots_after_exit: usize,
     method_local_events: Vec<PrivateSelfMethodLocalEvent>,
     /// 原 Checker/Parser 封存的方法真 int 局部 DeclarationId
@@ -116,12 +117,16 @@ impl PrivateSelfMethodOutcome {
     /// 只涵蓋目前 Checker 核准的 int 欄位同步 self 方法。
     /// 此子集沒有 OwnedStr，任何資源 Created／Released 皆屬偽造。
     fn has_balanced_self_borrow_trace(&self) -> bool {
+        self.caller_exited && self.has_balanced_method_frame()
+    }
+
+    fn has_balanced_method_frame(&self) -> bool {
         if self.preceding_calls.len() != self.expected_preceding_spans.len()
-            || !self.preceding_calls.iter().zip(&self.expected_preceding_spans).all(|(call, span)|
+            || !self.preceding_calls.iter().zip(&self.expected_preceding_spans).all(|(call, (owner, span))|
                 call.preceding_calls.is_empty() && call.expected_preceding_spans.is_empty()
-                    && call.origin.source == self.origin.source && call.origin.owner == self.origin.owner
+                    && call.origin.source == self.origin.source && call.origin.owner == *owner
                     && call.origin.call_span == *span && call.result.is_ok()
-                    && call.has_balanced_self_borrow_trace()
+                    && !call.caller_exited && call.has_balanced_method_frame()
             ) {
             return false;
         }
@@ -336,7 +341,7 @@ impl PrivateSelfMethodOutcome {
             && failure_unwind_precedes_cleanup
             && local_stack.is_empty()
             && self.method_local_slots_after_exit == 0
-            && self.main_local_slots_after_exit == 0
+            && (!self.caller_exited || self.main_local_slots_after_exit == 0)
             && self.events.is_empty()
             && crate::owned_str_runtime::event_trace_balanced(&self.events)
             && private_shared_call_exit_balanced(
@@ -671,10 +676,27 @@ impl std::ops::DerefMut for PreparedPrivateSelfMethod {
 struct PrivateSelfCallBinding {
     statement_index: usize,
     declaration: DeclarationId,
+    receiver: DeclarationId,
     call_span: crate::common_ir::NodeSpan,
 }
 
+#[derive(Default)]
+struct PrivateSelfCallerSlots {
+    integers: BTreeMap<DeclarationId, i64>,
+    booleans: BTreeMap<DeclarationId, bool>,
+    declared_integers: std::collections::BTreeSet<DeclarationId>,
+    declared_booleans: std::collections::BTreeSet<DeclarationId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateSelfConstructor {
+    id: DeclarationId,
+    name: String,
+    fields: Vec<(String, PrivateSelfAdditionalCopyValue, bool)>,
+}
+
 struct PrivateSelfMethodSite {
+    constructors: Vec<PrivateSelfConstructor>,
     preceding_sites: Vec<PrivateSelfCallBinding>,
     original: Box<[u8]>,
     struct_name: String,
@@ -923,14 +945,124 @@ impl PreparedPrivateSelfMethod {
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateSelfMethodPrepareError::Check)?;
         let site = PrivateSelfMethodSite::prepare_site(
-            text, &verified, None, None, &BTreeMap::new(),
+            text, &verified, None, None, &PrivateSelfCallerSlots::default(),
         )?;
         // 整條路徑先通過來源與借用驗證，之後才建構持有者。
         for binding in &site.preceding_sites {
-            PrivateSelfMethodSite::prepare_site(text, &verified, Some(binding.statement_index), None, &BTreeMap::new())?;
+            PrivateSelfMethodSite::prepare_site(text, &verified, Some(binding.statement_index), None, &PrivateSelfCallerSlots::default())?;
         }
         Ok(Self { verified, site })
     }
+}
+
+fn private_self_constructor_fields(
+    text: &str, verified: &VerifiedPrivateSource, definition: &StructDecl,
+) -> Result<Vec<(String, PrivateSelfAdditionalCopyValue, bool)>, PrivateSelfMethodPrepareError> {
+    use crate::common_ir::{NodeRole, VerifiedTypedMember};
+    if definition.fields.is_empty() || definition.methods.is_empty() {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "需要至少一個已證 Copyable int 欄位及具 Checker 簽章的方法",
+        ));
+    }
+    let field = &definition.fields[0];
+    let member = VerifiedTypedMember::checked_private(
+        text, NodeRole::Field, field.declaration_span,
+        &field.name, field.name_span,
+        &field.ty, field.type_span, !field.immutable,
+    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+        "欄位缺少原 Parser 真 Name／Type 來源身分",
+    ))?;
+    if field.ty != "int" || verified.plan.members.get(&member.identity) != Some(&member) {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "欄位缺少原 Checker int 成員型別證據",
+        ));
+    }
+    let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
+        &field.default.as_ref().ok_or(PrivateSelfMethodPrepareError::Unsupported(
+            "此私有子集需要真正已驗證的 int 預設欄位",
+        ))?.kind else {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "本期只執行已核准單一獨立 int 欄位預設常值",
+        ));
+    };
+    let field_value = crate::syntax_shared::integer_i64(raw).map_err(|_|
+        PrivateSelfMethodPrepareError::Unsupported("欄位 i64 常值無法安全表示"),
+    )?;
+    // 原 Checker／Lexer 唯一權威：額外 Copyable int／bool
+    // 依原欄位宣告順序逐項比對 TypedMember 與真正預設 Token。
+    // 限無資源的直接常值，str、借用、Move 與表達式預設
+    // 均保持拒絕；額外欄位未得到新方法存取權限。
+    let mut additional_copy_fields =
+        Vec::<(String, PrivateSelfAdditionalCopyValue, bool)>::new();
+    for extra in definition.fields.iter().skip(1) {
+        let evidence = VerifiedTypedMember::checked_private(
+            text, NodeRole::Field, extra.declaration_span,
+            &extra.name, extra.name_span,
+            &extra.ty, extra.type_span, !extra.immutable,
+        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+            "額外欄位缺少原 Parser／Lexer 真宣告身分",
+        ))?;
+        if !matches!(extra.ty.as_str(), "int" | "bool")
+            || verified.plan.members.get(&evidence.identity) != Some(&evidence)
+            || additional_copy_fields.iter().any(|(name, _, _)| name == &extra.name)
+            || extra.name == field.name {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "額外欄位僅接原 Checker 唯一 Copyable int／bool 成員",
+            ));
+        }
+        let default = extra.default.as_ref().ok_or(
+            PrivateSelfMethodPrepareError::Unsupported(
+                "額外 Copyable 欄位必須有原 Checker 獨立預設值",
+            ),
+        )?;
+        let seed = match (&extra.ty[..], &default.kind) {
+            ("int", TermKind::Scalar(
+                crate::syntax_shared::ScalarLiteral::Integer(raw),
+            )) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == default.start && token.end == default.end
+                        && matches!(&token.kind,
+                            TokenKind::Integer(value) if value == raw)
+                ) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "額外 int 預設缺少原 Lexer 整數常值 Token",
+                    ));
+                }
+                PrivateSelfAdditionalCopyValue::Int(
+                    crate::syntax_shared::integer_i64(raw).map_err(|_|
+                        PrivateSelfMethodPrepareError::Unsupported(
+                            "額外 int 預設超出 i64 界限",
+                        ),
+                    )?
+                )
+            }
+            ("bool", TermKind::Scalar(
+                crate::syntax_shared::ScalarLiteral::Boolean(value),
+            )) => {
+                if !verified.tokens.iter().any(|token|
+                    token.start == default.start && token.end == default.end
+                        && matches!(&token.kind,
+                            TokenKind::Keyword(word) if
+                                word == if *value { "true" } else { "false" })
+                ) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "額外 bool 預設缺少原 Lexer 真布林常值 Token",
+                    ));
+                }
+                PrivateSelfAdditionalCopyValue::Bool(*value)
+            }
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "額外欄位僅接原 Checker 已核准的獨立 int／bool 常值",
+            )),
+        };
+        additional_copy_fields.push((
+            extra.name.clone(), seed, extra.immutable,
+        ));
+    }
+    additional_copy_fields.insert(0, (
+        field.name.clone(), PrivateSelfAdditionalCopyValue::Int(field_value), field.immutable,
+    ));
+    Ok(additional_copy_fields)
 }
 
 impl PrivateSelfMethodSite {
@@ -939,132 +1071,71 @@ impl PrivateSelfMethodSite {
         verified: &VerifiedPrivateSource,
         site: Option<usize>,
         runtime: Option<&crate::mixed_struct_runtime::MixedStructRuntime>,
-        results: &BTreeMap<DeclarationId, i64>,
+        caller: &PrivateSelfCallerSlots,
     ) -> Result<Self, PrivateSelfMethodPrepareError> {
         use crate::common_ir::{NodeRole, NodeSpan, ScalarType, VerifiedTypedMember};
         let main = verified.functions.iter().find(|fun| fun.name == "main")
             .ok_or(PrivateSelfMethodPrepareError::Unsupported(
                 "原 Checker 來源缺少唯一 main",
             ))?;
-        let main_owner_stmt = main.body.statements.first().ok_or(
-            PrivateSelfMethodPrepareError::Unsupported("main 缺少結構持有者宣告"),
-        )?;
-        let StmtKind::Declare(main_owner) = &main_owner_stmt.kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main 首句缺少原 Checker 唯一結構持有者",
-            ));
+        let statements = &main.body.statements;
+        let position = site.unwrap_or(statements.len().saturating_sub(1));
+        let call_expression = match statements.get(position).map(|stmt| &stmt.kind) {
+            Some(StmtKind::Return(returned)) if site.is_none() => &returned.expression,
+            Some(StmtKind::Declare(local)) if site.is_some() && local.ty == "int" =>
+                local.initializer.as_ref().ok_or(PrivateSelfMethodPrepareError::Unsupported(
+                    "方法返回值宣告缺少初始化運算式",
+                ))?,
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "方法呼叫位置須為 int 宣告或末尾返回",
+            )),
         };
-        let main_owner_id = DeclarationId(main_owner_stmt.start);
-        if !verified.plan.declarations.matches(
-                main_owner_id, &main_owner.ty, main_owner.mutable,
-            ) {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "main owner 缺少原 Checker 結構宣告身分",
-            ));
-        }
-        let definition = verified.structs.get(&main_owner.ty).ok_or(
-            PrivateSelfMethodPrepareError::Unsupported("找不到持有者宣告型別的結構定義"),
-        )?;
-        if definition.fields.is_empty() || definition.methods.is_empty() {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "需要至少一個已證 Copyable int 欄位及具 Checker 簽章的方法",
-            ));
-        }
-        let field = &definition.fields[0];
-        let member = VerifiedTypedMember::checked_private(
-            text, NodeRole::Field, field.declaration_span,
-            &field.name, field.name_span,
-            &field.ty, field.type_span, !field.immutable,
-        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-            "欄位缺少原 Parser 真 Name／Type 來源身分",
-        ))?;
-        if field.ty != "int" || verified.plan.members.get(&member.identity) != Some(&member) {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "欄位缺少原 Checker int 成員型別證據",
-            ));
-        }
-        let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
-            &field.default.as_ref().ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                "此私有子集需要真正已驗證的 int 預設欄位",
-            ))?.kind else {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "本期只執行已核准單一獨立 int 欄位預設常值",
-            ));
+        let checked_call_leaf = private_self_checked_ungrouped_return(&verified, call_expression)?;
+        let (receiver_name, called_method, call_arguments, awaited_method) = match &checked_call_leaf.kind {
+            TermKind::MethodCall(receiver, name, args) => (receiver.as_str(), name.as_str(), args.as_slice(), false),
+            TermKind::AwaitMethodCall(receiver, name, args) if site.is_none() =>
+                (receiver.as_str(), name.as_str(), args.as_slice(), true),
+            _ => return Err(PrivateSelfMethodPrepareError::Unsupported("須有已驗證的方法呼叫")),
         };
-        let field_value = crate::syntax_shared::integer_i64(raw).map_err(|_|
-            PrivateSelfMethodPrepareError::Unsupported("欄位 i64 常值無法安全表示"),
-        )?;
-        // 原 Checker／Lexer 唯一權威：額外 Copyable int／bool
-        // 依原欄位宣告順序逐項比對 TypedMember 與真正預設 Token。
-        // 限無資源的直接常值，str、借用、Move 與表達式預設
-        // 均保持拒絕；額外欄位未得到新方法存取權限。
-        let mut additional_copy_fields =
-            Vec::<(String, PrivateSelfAdditionalCopyValue, bool)>::new();
-        for extra in definition.fields.iter().skip(1) {
-            let evidence = VerifiedTypedMember::checked_private(
-                text, NodeRole::Field, extra.declaration_span,
-                &extra.name, extra.name_span,
-                &extra.ty, extra.type_span, !extra.immutable,
-            ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                "額外欄位缺少原 Parser／Lexer 真宣告身分",
-            ))?;
-            if !matches!(extra.ty.as_str(), "int" | "bool")
-                || verified.plan.members.get(&evidence.identity) != Some(&evidence)
-                || additional_copy_fields.iter().any(|(name, _, _)| name == &extra.name)
-                || extra.name == field.name {
+        let mut constructors = Vec::new();
+        for statement in statements.iter().take(position) {
+            let StmtKind::Declare(owner) = &statement.kind else { break; };
+            let Some(definition) = verified.structs.get(&owner.ty) else { break; };
+            let id = DeclarationId(statement.start);
+            if !verified.plan.declarations.matches(id, &owner.ty, owner.mutable) {
+                return Err(PrivateSelfMethodPrepareError::Unsupported("持有者宣告與 Checker 不符"));
+            }
+            let constructor = owner.initializer.as_ref().ok_or(
+                PrivateSelfMethodPrepareError::Unsupported("結構需真建立式"),
+            )?;
+            let is_ctor = match &constructor.kind {
+                TermKind::UnresolvedZeroArgs(name) => name == &owner.ty,
+                TermKind::Construct(name, args) => name == &owner.ty && args.is_empty(),
+                _ => false,
+            };
+            if !is_ctor {
                 return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "額外欄位僅接原 Checker 唯一 Copyable int／bool 成員",
+                    "不得用隱含結構複製或未驗證的其它來源當接收者",
                 ));
             }
-            let default = extra.default.as_ref().ok_or(
-                PrivateSelfMethodPrepareError::Unsupported(
-                    "額外 Copyable 欄位必須有原 Checker 獨立預設值",
-                ),
-            )?;
-            let seed = match (&extra.ty[..], &default.kind) {
-                ("int", TermKind::Scalar(
-                    crate::syntax_shared::ScalarLiteral::Integer(raw),
-                )) => {
-                    if !verified.tokens.iter().any(|token|
-                        token.start == default.start && token.end == default.end
-                            && matches!(&token.kind,
-                                TokenKind::Integer(value) if value == raw)
-                    ) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "額外 int 預設缺少原 Lexer 整數常值 Token",
-                        ));
-                    }
-                    PrivateSelfAdditionalCopyValue::Int(
-                        crate::syntax_shared::integer_i64(raw).map_err(|_|
-                            PrivateSelfMethodPrepareError::Unsupported(
-                                "額外 int 預設超出 i64 界限",
-                            ),
-                        )?
-                    )
-                }
-                ("bool", TermKind::Scalar(
-                    crate::syntax_shared::ScalarLiteral::Boolean(value),
-                )) => {
-                    if !verified.tokens.iter().any(|token|
-                        token.start == default.start && token.end == default.end
-                            && matches!(&token.kind,
-                                TokenKind::Keyword(word) if
-                                    word == if *value { "true" } else { "false" })
-                    ) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "額外 bool 預設缺少原 Lexer 真布林常值 Token",
-                        ));
-                    }
-                    PrivateSelfAdditionalCopyValue::Bool(*value)
-                }
-                _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                    "額外欄位僅接原 Checker 已核准的獨立 int／bool 常值",
-                )),
-            };
-            additional_copy_fields.push((
-                extra.name.clone(), seed, extra.immutable,
-            ));
+            let fields = private_self_constructor_fields(text, verified, definition)?;
+            constructors.push(PrivateSelfConstructor { id, name: owner.name.clone(), fields });
         }
+        if awaited_method && constructors.len() != 1 {
+            return Err(PrivateSelfMethodPrepareError::Unsupported("直接 await 子集僅接單一持有者"));
+        }
+        let owner_index = constructors.iter().position(|owner| owner.name == receiver_name)
+            .ok_or(PrivateSelfMethodPrepareError::Unsupported("接收者需要已建構的持有者"))?;
+        let StmtKind::Declare(main_owner) = &statements[owner_index].kind else {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        };
+        let main_owner_id = constructors[owner_index].id;
+        let definition = &verified.structs[&main_owner.ty];
+        let field = &definition.fields[0];
+        let PrivateSelfAdditionalCopyValue::Int(field_value) = constructors[owner_index].fields[0].1 else {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
+        };
+        let additional_copy_fields = constructors[owner_index].fields[1..].to_vec();
         // R02／R04：main 以原 Parser 順序建立唯一 struct 接收者，
         // 可再宣告已核准 Copyable int 局部，最後才 return 真方法呼叫。
         // 不能藉此接受尚未接通的賦值、控制流程或任意初始化。
@@ -1136,25 +1207,6 @@ impl PrivateSelfMethodSite {
                 "同名普通函式不能覆蓋原 Checker 唯一純值工作計畫",
             ));
         }
-        let statements = &main.body.statements;
-        let position = site.unwrap_or(statements.len() - 1);
-        let call_expression = match statements.get(position).map(|stmt| &stmt.kind) {
-            Some(StmtKind::Return(returned)) if site.is_none() => &returned.expression,
-            Some(StmtKind::Declare(local)) if site.is_some() && local.ty == "int" =>
-                local.initializer.as_ref().ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                    "方法返回值宣告缺少初始化運算式",
-                ))?,
-            _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "方法呼叫位置須為 int 宣告或末尾返回",
-            )),
-        };
-        let checked_call_leaf = private_self_checked_ungrouped_return(&verified, call_expression)?;
-        let (called_method, call_arguments, awaited_method) = match &checked_call_leaf.kind {
-            TermKind::MethodCall(_, name, args) => (name.as_str(), args.as_slice(), false),
-            TermKind::AwaitMethodCall(_, name, args) if site.is_none() =>
-                (name.as_str(), args.as_slice(), true),
-            _ => return Err(PrivateSelfMethodPrepareError::Unsupported("須有已驗證的方法呼叫")),
-        };
         let mut main_int_locals = Vec::<(
             String, DeclarationId, i64, Option<DeclarationId>,
         )>::new();
@@ -1204,32 +1256,67 @@ impl PrivateSelfMethodSite {
             }
         }
         let mut preceding_sites = Vec::new();
-        for (index, statement) in statements.iter().enumerate().take(position).skip(1) {
-            if let StmtKind::Declare(local) = &statement.kind {
-                if let Some(initializer) = &local.initializer {
-                    let leaf = private_self_checked_ungrouped_return(&verified, initializer)?;
-                    if matches!(leaf.kind, TermKind::MethodCall(..)) {
-                        let id = DeclarationId(statement.start);
-                        if index != preceding_sites.len() + 1 || awaited_method
-                            || local.ty != "int"
-                            || !verified.plan.declarations.matches(id, &local.ty, local.mutable)
-                            || known_int_bindings.insert(local.name.clone(), id).is_some() {
-                            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                                "連續同步方法需有同一作用域的已驗證 int 宣告",
-                            ));
+        for (index, statement) in statements.iter().enumerate().take(position).skip(constructors.len()) {
+            let StmtKind::Declare(local) = &statement.kind else { continue; };
+            let Some(initializer) = &local.initializer else { continue; };
+            let leaf = private_self_checked_ungrouped_return(verified, initializer)?;
+            if let TermKind::MethodCall(receiver, _, _) = &leaf.kind {
+                let declaration = DeclarationId(statement.start);
+                if awaited_method || local.ty != "int"
+                    || !verified.plan.declarations.matches(declaration, &local.ty, local.mutable) {
+                    return Err(PrivateSelfMethodPrepareError::Unsupported(
+                        "同步方法回傳值需有同一作用域的已驗證 int 宣告",
+                    ));
+                }
+                preceding_sites.push(PrivateSelfCallBinding {
+                    statement_index: index, declaration, call_span: leaf.node_span(),
+                    receiver: constructors.iter().find(|owner| owner.name == *receiver)
+                        .ok_or(PrivateSelfMethodPrepareError::Unsupported("找不到已建構的方法持有者"))?.id,
+                });
+            }
+        }
+        let segment_start = preceding_sites.last().map_or(constructors.len(), |site| site.statement_index + 1);
+        // 前段已執行的語句只取詞彙身分，禁止再次呼叫、覆寫或初始化。
+        for statement in &statements[constructors.len()..segment_start] {
+            match &statement.kind {
+                StmtKind::Declare(local) => {
+                    let id = DeclarationId(statement.start);
+                    match local.ty.as_str() {
+                        "int" => {
+                            known_int_bindings.insert(local.name.clone(), id);
+                            known_int_mutability.insert(id, local.mutable);
+                            if let Some(value) = caller.integers.get(&id) {
+                                known_int_values.insert(id, *value);
+                            } else if runtime.is_none() && local.initializer.is_some() {
+                                known_int_values.insert(id, 0);
+                            }
                         }
-                        let value = if runtime.is_some() {
-                            *results.get(&id).ok_or(PrivateSelfMethodPrepareError::SourceChanged)?
-                        } else { 0 }; // 僅用於執行前型別與來源預檢，實參執行時讀取真回傳槽。
-                        known_int_values.insert(id, value);
-                        known_int_mutability.insert(id, local.mutable);
-                        preceding_sites.push(PrivateSelfCallBinding {
-                            statement_index: index, declaration: id, call_span: leaf.node_span(),
-                        });
-                        continue;
+                        "bool" => {
+                            known_bool_bindings.insert(local.name.clone(), id);
+                            known_bool_mutability.insert(id, local.mutable);
+                            if let Some(value) = caller.booleans.get(&id) {
+                                known_bool_values.insert(id, *value);
+                            } else if runtime.is_none() && local.initializer.is_some() {
+                                known_bool_values.insert(id, false);
+                            }
+                        }
+                        _ => return Err(PrivateSelfMethodPrepareError::Unsupported(
+                            "跨方法的主函式局部只接已驗證的整數與布林",
+                        )),
                     }
                 }
+                StmtKind::Assign(assignment) if runtime.is_none() => {
+                    // 靜態預檢只需已初始化的型別槽。正式綁定從 caller 讀回真值。
+                    if let Some(id) = known_int_bindings.get(&assignment.name) {
+                        known_int_values.entry(*id).or_insert(0);
+                    } else if let Some(id) = known_bool_bindings.get(&assignment.name) {
+                        known_bool_values.entry(*id).or_insert(false);
+                    }
+                }
+                _ => {}
             }
+        }
+        for statement in &statements[segment_start..position] {
             // 只有原 Checker 對唯一 main owner／真正欄位／
             // 原語句座標簽發的 FieldWriteEvidence 才可寫入。
             // 仍限已驗證獨立 Copyable int，與真 int/bool 局部
@@ -3135,19 +3222,6 @@ impl PrivateSelfMethodSite {
         }
         let owner = main_owner;
         let owner_id = main_owner_id;
-        let constructor = owner.initializer.as_ref().ok_or(
-            PrivateSelfMethodPrepareError::Unsupported("結構需真建立式"),
-        )?;
-        let is_ctor = match &constructor.kind {
-            TermKind::UnresolvedZeroArgs(name) => name == &owner.ty,
-            TermKind::Construct(name, args) => name == &owner.ty && args.is_empty(),
-            _ => false,
-        };
-        if !is_ctor {
-            return Err(PrivateSelfMethodPrepareError::Unsupported(
-                "不得用隱含結構複製或未驗證的其它來源當接收者",
-            ));
-        }
         let (receiver, called, args) = match &checked_call_leaf.kind {
             TermKind::MethodCall(owner, method, arguments)
                 if !awaited_method => (owner, method, arguments),
@@ -3212,7 +3286,7 @@ impl PrivateSelfMethodSite {
         let method_name = method.name.clone();
         let original = verified.source.bytes.clone().into_boxed_slice();
         Ok(Self {
-            preceding_sites, original, struct_name, owner: owner_name,
+            constructors, preceding_sites, original, struct_name, owner: owner_name,
             owner_id, owner_mutable, field: field_name, field_value, field_immutable,
             additional_copy_fields, write_value, write_parameter, write_checked_int,
             direct_method_bool_write, return_calculation, method_int_locals,
@@ -3239,7 +3313,8 @@ impl PrivateSelfMethodSite {
 impl PreparedPrivateSelfMethod {
     fn matches_source(&self, text: &str) -> bool {
         let Ok(fresh) = Self::prepare(text) else { return false; };
-        self.preceding_sites == fresh.preceding_sites
+        self.constructors == fresh.constructors
+            && self.preceding_sites == fresh.preceding_sites
             && self.original == fresh.original
             // T3：此入口已用唯一原 Lexer／Parser／Checker 建立 fresh；
             // 必須逐筆核對**完整** Token，不只查已使用的 Name/Type
@@ -3344,59 +3419,65 @@ impl PreparedPrivateSelfMethod {
         let mut runtime = MixedStructRuntime::new();
         // P16 在真 main 首句按原 Checker 宣告順序建立全部
         // Copyable int／bool 欄位，沒有新增 OwnedStr 或資源事件。
-        let mut specs = Vec::with_capacity(1 + self.additional_copy_fields.len());
-        specs.push(MixedFieldSpec {
-            name: &self.field, kind: ScalarKind::Int,
-            default: Some(SeedValue::Int(self.field_value)),
-            immutable: self.field_immutable,
-        });
-        for (name, value, immutable) in &self.additional_copy_fields {
-            let (kind, default) = match value {
-                PrivateSelfAdditionalCopyValue::Int(value) =>
-                    (ScalarKind::Int, SeedValue::Int(*value)),
-                PrivateSelfAdditionalCopyValue::Bool(value) =>
-                    (ScalarKind::Bool, SeedValue::Bool(*value)),
-            };
-            specs.push(MixedFieldSpec {
-                name, kind, default: Some(default), immutable: *immutable,
-            });
+        for constructor in &self.constructors {
+            let mut specs = Vec::with_capacity(constructor.fields.len());
+            for (name, value, immutable) in &constructor.fields {
+                let (kind, default) = match value {
+                    PrivateSelfAdditionalCopyValue::Int(value) =>
+                        (ScalarKind::Int, SeedValue::Int(*value)),
+                    PrivateSelfAdditionalCopyValue::Bool(value) =>
+                        (ScalarKind::Bool, SeedValue::Bool(*value)),
+                };
+                specs.push(MixedFieldSpec {
+                    name, kind, default: Some(default), immutable: *immutable,
+                });
+            }
+            runtime.construct(&constructor.name, &specs, &[], None)
+                .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         }
-        runtime.construct(&self.owner, &specs, &[], None)
-            .map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         let mut tracker = crate::borrow_safety::BorrowSafety::new();
         let text = std::str::from_utf8(&self.original)
             .map_err(|_| PrivateSelfMethodPrepareError::SourceChanged)?;
         let mut preceding_calls = Vec::new();
-        let mut slots = BTreeMap::new();
+        let mut slots = PrivateSelfCallerSlots::default();
         let mut completed = None;
         for binding in &self.preceding_sites {
             let site = PrivateSelfMethodSite::prepare_site(
                 text, &self.verified, Some(binding.statement_index), Some(&runtime), &slots,
             )?;
-            let outcome = site.execute_site(&mut runtime, &mut tracker, &slots, fail_inside_method)?;
-            if outcome.origin.call_span != binding.call_span {
+            let outcome = site.execute_site(&mut runtime, &mut tracker, &mut slots, fail_inside_method)?;
+            if outcome.origin.call_span != binding.call_span || outcome.origin.owner != binding.receiver {
                 return Err(PrivateSelfMethodPrepareError::SourceChanged);
             }
             match outcome.result {
-                Ok(value) => { slots.insert(binding.declaration, value); }
+                Ok(value) => {
+                    if !slots.declared_integers.insert(binding.declaration)
+                        || slots.integers.insert(binding.declaration, value).is_some() {
+                        return Err(PrivateSelfMethodPrepareError::SourceChanged);
+                    }
+                }
                 Err(_) => { completed = Some(outcome); break; }
             }
             preceding_calls.push(outcome);
         }
         let mut outcome = match completed {
             Some(failed) => failed,
-            None if slots.is_empty() =>
-                self.site.execute_site(&mut runtime, &mut tracker, &slots, fail_inside_method)?,
+            None if preceding_calls.is_empty() =>
+                self.site.execute_site(&mut runtime, &mut tracker, &mut slots, fail_inside_method)?,
             None => {
                 let site = PrivateSelfMethodSite::prepare_site(
                     text, &self.verified, None, Some(&runtime), &slots,
                 )?;
-                site.execute_site(&mut runtime, &mut tracker, &slots, fail_inside_method)?
+                site.execute_site(&mut runtime, &mut tracker, &mut slots, fail_inside_method)?
             }
         };
         outcome.expected_preceding_spans = self.preceding_sites.iter().take(preceding_calls.len())
-            .map(|binding| binding.call_span).collect();
+            .map(|binding| (binding.receiver, binding.call_span)).collect();
         outcome.preceding_calls = preceding_calls;
+        slots.integers.clear();
+        slots.booleans.clear();
+        outcome.caller_exited = true;
+        outcome.main_local_slots_after_exit = slots.integers.len() + slots.booleans.len();
         outcome.events = runtime.finish().map_err(PrivateSelfMethodPrepareError::Cleanup)?;
         if !outcome.has_balanced_self_borrow_trace() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
@@ -3410,7 +3491,7 @@ impl PrivateSelfMethodSite {
         &self,
         runtime: &mut crate::mixed_struct_runtime::MixedStructRuntime,
         tracker: &mut crate::borrow_safety::BorrowSafety,
-        results: &BTreeMap<DeclarationId, i64>,
+        caller: &mut PrivateSelfCallerSlots,
         fail_inside_method: bool,
     ) -> Result<PrivateSelfMethodOutcome, PrivateSelfMethodPrepareError> {
         use crate::mixed_struct_runtime::Observed;
@@ -3420,8 +3501,8 @@ impl PrivateSelfMethodSite {
         if self.main_int_locals.len() != self.main_init_plans.len() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        let mut main_values = results.clone();
-        let mut main_bool_values = BTreeMap::<DeclarationId, bool>::new();
+        let main_values = &mut caller.integers;
+        let main_bool_values = &mut caller.booleans;
         if self.main_bool_sources.len() != self.main_bool_locals.len()
             || self.main_int_locals.len() != self.main_init_plans.len()
             || self.method_bool_sources.len() != self.method_bool_arguments.len() {
@@ -3475,10 +3556,12 @@ impl PrivateSelfMethodSite {
         let mut nested_else_write_applied = false;
         // 已宣告、已初始化是不同狀態：Empty 宣告不可偷建
         // false/0 值槽；唯一原 Checker Assignment 首次提交才可使用。
-        let mut declared_bool = std::collections::BTreeSet::<DeclarationId>::new();
-        let mut declared_int = results.keys().copied().collect::<std::collections::BTreeSet<_>>();
-        let mut pending_bool = std::collections::BTreeSet::<DeclarationId>::new();
-        let mut pending_int = std::collections::BTreeSet::<DeclarationId>::new();
+        let declared_bool = &mut caller.declared_booleans;
+        let declared_int = &mut caller.declared_integers;
+        let mut pending_bool = declared_bool.iter().copied().filter(|id|
+            !main_bool_values.contains_key(id)).collect::<std::collections::BTreeSet<_>>();
+        let mut pending_int = declared_int.iter().copied().filter(|id|
+            !main_values.contains_key(id)).collect::<std::collections::BTreeSet<_>>();
         for step in &self.main_scalar_steps {
             match *step {
                 PrivateSelfMainScalarStep::OwnerBoolFieldAssign(index) => {
@@ -4304,20 +4387,10 @@ impl PrivateSelfMethodSite {
                 .map_err(PrivateSelfMethodRuntimeError::Ticket).map(|()| value),
         };
         let ticket_returned = tracker.check_direct_access(self.owner_id).is_ok();
-        for id in results.keys() { main_values.remove(id); }
-        // 與一般函式的 LocalScopeEnded 契約相同：在 main 返回時
-        // 刪除全部 Copyable int 局部，且不能殘留到重複執行。
-        for (_, id, _, _) in self.main_int_locals.iter().rev() {
-            // 若前一個初始化溢位，後面的宣告尚未真正走到，
-            // 不能假造其作用域或要求釋放從未配置的純值槽。
-            if main_values.remove(id).is_none() && main_locals_complete
-                && !pending_int.contains(id) {
-                return Err(PrivateSelfMethodPrepareError::SourceChanged);
-            }
+        if main_locals_complete && self.main_int_locals.iter().any(|(_, id, _, _)|
+            !main_values.contains_key(id) && !pending_int.contains(id)) {
+            return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
-        // main Copyable bool 的真局部生命期止於 main 返回，
-        // 不可留在下一份方法呼叫的執行環境中。
-        main_bool_values.clear();
         let expected_pre_method_calls = self.main_init_plans.iter()
             .chain(self.main_int_assignments.iter().map(|(_, _, plan)| plan))
             .chain(self.main_owner_field_assignments.iter().map(|(_, plan)| plan))
@@ -4346,7 +4419,8 @@ impl PrivateSelfMethodSite {
                 || self.method_branch_bool_write.is_some(),
             expected_branch_else_write: self.method_branch_else_write.is_some(),
             expected_branch: self.method_branch.map(|(condition, _)| condition),
-            main_local_slots_after_exit: main_values.len(),
+            caller_exited: false,
+            main_local_slots_after_exit: main_values.len() + main_bool_values.len(),
             method_local_slots_after_exit: initialized_method_locals.len(),
             method_local_events,
             expected_method_local_ids: self.method_int_locals.iter().map(
@@ -4358,7 +4432,7 @@ impl PrivateSelfMethodSite {
             expected_pre_method_calls,
             checked_loan: self.loan, exit_events,
         };
-        if !outcome.has_balanced_self_borrow_trace() {
+        if !outcome.has_balanced_method_frame() {
             return Err(PrivateSelfMethodPrepareError::SourceChanged);
         }
         Ok(outcome)
