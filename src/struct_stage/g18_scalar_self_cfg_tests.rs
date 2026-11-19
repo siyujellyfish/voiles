@@ -21,6 +21,26 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 建構具名實參的方法讀取依序還票且溢位不提交() {
+        for (expr, expected, built) in [
+            ("owner.read()", Ok(3), 2),
+            ("(owner.read()+owner.read())", Ok(6), 2),
+            ("owner.read()+9223372036854775807", Err(PrivateScalarCallRuntimeError::IntegerOverflow), 1),
+        ] {
+            let src = SOURCE.split("fn run").next().unwrap().to_owned()
+                + &format!("fn run()->int{{\nvar owner:Counter = Counter()\nvar second:Counter = Counter(n={expr})\nreturn second.n\n}}\n")
+                + "fn main()->int{ return run() }\n";
+            let out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
+            assert_eq!(out.result, expected);
+            assert_eq!(out.events.iter().filter(|e| matches!(e,
+                PrivateScalarCallEvent::CopyStructConstructed(_))).count(), built);
+            assert_eq!(out.events.iter().filter(|e| matches!(e,
+                PrivateScalarCallEvent::SelfRead { .. })).count(), expr.matches("owner.read()").count());
+            assert!(out.has_balanced_frame_trace());
+        }
+    }
+
+    #[test]
     fn 方法來源收據與重播票據分別拒絕() {
         let plan = PreparedPrivateScalarCall::prepare(SOURCE).unwrap();
         let mut out = plan.execute().unwrap();
