@@ -21,6 +21,23 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 迴圈內獨占方法寫入在歸票後仍可共享讀取() {
+        let src = SOURCE.replace("fn read()", "fn set()->int{\nself.n = 8\nreturn self.n\n}\nfn read()")
+            .replace("total = total + owner.read()", "total = total + owner.set()");
+        let out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(32));
+        let loans: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::SelfRead { ticket, .. } => Some(ticket.fact().kind),
+            _ => None,
+        }).collect();
+        assert_eq!(loans, [BorrowKind::ExclusiveWrite, BorrowKind::ExclusiveWrite,
+            BorrowKind::ExclusiveWrite, BorrowKind::SharedRead]);
+        assert!(out.has_balanced_frame_trace());
+        let invalid = src.replace("var n:int", "const n:int");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&invalid), Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
     fn 建構具名實參的方法讀取依序還票且溢位不提交() {
         for (expr, expected, built) in [
             ("owner.read()", Ok(3), 2),

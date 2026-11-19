@@ -876,6 +876,7 @@ impl PrivateScalarCallOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarSelfRead {
+    write: Option<(String, i64)>,
     name: String,
     owner: String,
     field: String,
@@ -888,17 +889,30 @@ impl PrivateScalarSelfRead {
     fn checked(
         span: crate::common_ir::NodeSpan, owner: &str, name: &str, id: DeclarationId, verified: &VerifiedPrivateSource,
     ) -> Option<Self> {
-        let ty = verified.plan.declarations.typed_declaration(id)?.ty;
-        let definition = verified.structs.get(ty)?;
+        let declaration = verified.plan.declarations.typed_declaration(id)?;
+        let definition = verified.structs.get(declaration.ty)?;
         let mut candidates = definition.methods_named(name).filter(|method| method.params.is_empty());
         let method = candidates.next()?;
         if candidates.next().is_some() || method.is_async || method.result_ty != "int" { return None; }
-        let [statement] = method.body.statements.as_slice() else { return None; };
+        let (statement, prefix) = method.body.statements.split_last()?;
+        let write = match prefix {
+            [] => None,
+            [assignment] => {
+                let StmtKind::FieldAssign { receiver, field, value } = &assignment.kind else { return None; };
+                let target = definition.field(field)?;
+                if !declaration.mutable || receiver != "self" || target.immutable || target.ty != "int" { return None; }
+                let leaf = private_self_checked_ungrouped_return(verified, value).ok()?;
+                let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) = &leaf.kind else { return None; };
+                Some((field.clone(), crate::syntax_shared::integer_i64(raw).ok()?))
+            }
+            _ => return None,
+        };
         let StmtKind::Return(returned) = &statement.kind else { return None; };
         let field_term = private_self_checked_ungrouped_return(verified, &returned.expression).ok()?;
         let TermKind::FieldRead(receiver, field) = &field_term.kind else { return None; };
         let safety = verified.plan.method_safety.get(&method.start)?;
-        let loan = BorrowFact::new(id, BorrowKind::SharedRead);
+        let kind = if write.is_some() { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
+        let loan = BorrowFact::new(id, kind);
         let mut tokens = verified.tokens.iter().filter(|token|
             token.start >= span.start && token.end <= span.end);
         let (first, dot, method_name, open, close) = (
@@ -914,7 +928,7 @@ impl PrivateScalarSelfRead {
             return None;
         }
         Some(Self { name: name.to_owned(), owner: owner.to_owned(), field: field.clone(),
-            call_span: span, method_start: method.start, loan })
+            call_span: span, method_start: method.start, loan, write })
     }
 }
 
@@ -4062,10 +4076,18 @@ impl PreparedPrivateScalarCall {
                                 .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                             let mut trace = vec![PrivateSharedCallExitEvent::LoanAcquired(ticket),
                                 PrivateSharedCallExitEvent::FunctionEntered];
-                            let read = tracker.check_ticket_access(ticket, BorrowKind::SharedRead)
+                            let read = tracker.check_ticket_access(ticket, site.loan.kind)
                                 .map_err(PrivateScalarCallRuntimeError::Borrow)
-                                .and_then(|owner| match copy_structs.field(&site.owner, &site.field) {
-                                    Ok(crate::mixed_struct_runtime::Observed::Int(value)) if owner == site.loan.source => Ok(value),
+                                .and_then(|owner| {
+                                    if owner != site.loan.source { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
+                                    if let Some((field, value)) = &site.write {
+                                        copy_structs.write_int_field(&site.owner, field, *value, true)
+                                            .map_err(|_| PrivateScalarCallRuntimeError::StateMismatch)?;
+                                    }
+                                    Ok(())
+                                })
+                                .and_then(|()| match copy_structs.field(&site.owner, &site.field) {
+                                    Ok(crate::mixed_struct_runtime::Observed::Int(value)) => Ok(value),
                                     _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
                                 });
                             if read.is_ok() { trace.push(PrivateSharedCallExitEvent::Returned); }
