@@ -21,6 +21,33 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 迴圈實參以當下值綁入方法形參() {
+        let src = SOURCE.replace("fn read()", "fn set(first:int,last:int)->int{\nself.n = last\nreturn self.n\n}\nfn read()")
+            .replace("total = total + owner.read()", "total = total + owner.set(9,i)");
+        let out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(5));
+        assert!(out.has_balanced_frame_trace());
+        let reads: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::SelfRead { value, .. } => Some(*value),
+            _ => None,
+        }).collect();
+        assert_eq!(reads, [0, 1, 2, 2]);
+
+        let wrong_type = src.replace("owner.set(9,i)", "owner.set(true,i)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&wrong_type),
+            Err(PrivateScalarCallPrepareError::Check(_))));
+
+        let overflow = src.replace("var n:int = 3", "var n:int = 3\nvar label:str = \"甲\"")
+            .replace("total + owner.set(9,i)", "owner.set(9,i) + 9223372036854775807");
+        let failed = PreparedPrivateScalarCall::prepare(&overflow).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(failed.events.iter().filter(|event| matches!(event,
+            PrivateScalarCallEvent::SelfRead { .. })).count(), 2);
+        assert_eq!(failed.resource_events.len(), 2);
+        assert!(failed.has_balanced_frame_trace());
+    }
+
+    #[test]
     fn 迴圈內獨占方法寫入在歸票後仍可共享讀取() {
         let src = SOURCE.replace("fn read()", "fn set()->int{\nself.n = 8\nreturn self.n\n}\nfn read()")
             .replace("total = total + owner.read()", "total = total + owner.set()");
