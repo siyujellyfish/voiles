@@ -21,6 +21,18 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 布林實參在方法內決定提前返回的欄位() {
+        let src = SOURCE.replace("fn read()", "var other:int = 10\nfn pick(flag:bool)->int{\nif(flag){ return self.other }\nreturn self.n\n}\nfn read()")
+            .replace("total = total + owner.read()", "total = total + owner.pick(flag)");
+        for (flag, expected) in [("true", 33), ("false", 9)] {
+            let case = src.replace("run(true)", &format!("run({flag})"));
+            let out = PreparedPrivateScalarCall::prepare(&case).unwrap().execute().unwrap();
+            assert_eq!(out.result, Ok(expected));
+            assert!(out.has_balanced_frame_trace());
+        }
+    }
+
+    #[test]
     fn 方法內算術溢位先還獨占票再清理呼叫者() {
         let src = SOURCE.replace("fn read()", "fn add(a:int,b:int)->int{\nself.n = a+b\nreturn self.n\n}\nfn read()")
             .replace("var n:int = 3", "var n:int = 3\nvar label:str = \"甲\"")
@@ -50,6 +62,12 @@ fn main()->int{ return run(true) }
         }).collect();
         assert_eq!(reads, [0, 1, 2, 2]);
 
+        let helper = src.replace("fn run(", "fn plus(x:int)->int{ return x+1 }\nfn run(")
+            .replace("owner.set(9,i)", "owner.set(9,plus(i))");
+        let out = PreparedPrivateScalarCall::prepare(&helper).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert_eq!(out.events.iter().filter(|e| matches!(e, PrivateScalarCallEvent::FunctionEntered(name)
+            if name == "plus")).count(), 3);
         let grouped = src.replace("owner.set(9,i)", "owner.set(9,(i+2)-1)");
         let values = PreparedPrivateScalarCall::prepare(&grouped).unwrap().execute().unwrap();
         assert_eq!(values.result, Ok(9));
