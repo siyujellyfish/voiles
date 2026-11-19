@@ -27,6 +27,7 @@ def run(*args):
 if __name__ == "__main__":
     cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
     cfg_cases = (
+        "方法內算術溢位先還獨占票再清理呼叫者",
         "迴圈實參以當下值綁入方法形參",
         "迴圈內獨占方法寫入在歸票後仍可共享讀取",
         "建構具名實參的方法讀取依序還票且溢位不提交",
