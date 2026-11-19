@@ -61,6 +61,22 @@ return owner.change(true)
     }
 
     #[test]
+    fn m2_branch_bool_同名方法只可使用持有者型別() {
+        let other = SOURCE.split("fn main").next().unwrap()
+            .replace("Counter", "Another").replace("= 7", "= 91");
+        let src = format!("{other}{SOURCE}");
+        run(&src, Some(("ready".to_owned(), true, false)), true);
+        let switched = src.replace("owner:Counter = Counter()", "owner:Another = Another()");
+        let out = checked(&switched).execute().unwrap();
+        assert_eq!(out.result, Ok(91));
+        assert!(out.ticket_returned && out.has_balanced_self_borrow_trace());
+        assert_eq!(out.branch_bool_write_observed, Some(("ready".to_owned(), true, false)));
+        let invalid = src.replace("owner:Counter = Counter()", "owner:Counter = Another()");
+        assert!(matches!(PreparedPrivateSelfMethod::prepare(&invalid),
+            Err(PrivateSelfMethodPrepareError::Check(_))));
+    }
+
+    #[test]
     fn m2_branch_bool_原Checker_true真選中才原子寫false() {
         run(SOURCE,Some(("ready".to_owned(),true,false)),true);
     }

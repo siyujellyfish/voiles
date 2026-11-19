@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""G18／M2/M3：唯一原Checker true葉 CFG 真self.bool P16獨占寫入十三項Gate。"""
+"""G18／M2/M3：唯一原Checker true葉 CFG 真self.bool P16獨占寫入十四項Gate。"""
 from __future__ import annotations
 
 import argparse
@@ -11,6 +11,7 @@ import sys
 
 PREFIX = "struct_stage::g18_m2_branch_bool_field_write_tests::"
 CASES = (
+    "m2_branch_bool_同名方法只可使用持有者型別",
     "m2_branch_bool_原Checker_true真選中才原子寫false",
     "m2_branch_bool_原Checker_false分支不寫即使靜態必須獨占票",
     "m2_branch_bool_寫true至原false欄位必反映真P16前後值",
@@ -44,7 +45,7 @@ def main() -> int:
             line.removesuffix(": test") for line in listing.stdout.splitlines()
             if line.startswith(PREFIX) and line.endswith(": test")
         }
-        if len(required) != 13 or found != required:
+        if len(required) != 14 or found != required:
             raise ValueError(
                 "真self.bool選葉Gate缺失=" + str(sorted(required - found))
                 + "；異常多出=" + str(sorted(found - required))
@@ -58,9 +59,9 @@ def main() -> int:
             if run.returncode or not re.search(
                 r"test result: ok\.\s+1 passed;\s+0 failed;\s+0 ignored;", result
             ):
-                raise ValueError(f"真Checker bool選葉 {i}/13 {name}失敗\n" + result[-9000:])
-            print(f"G18 M2/M3 真true葉 bool欄位 {i}/13：{name} 通過")
-        print("十三項原Checker真選葉P16/HC14/V7獨立Gate成功；B4/M2/M3維持OpenEngineering。")
+                raise ValueError(f"真Checker bool選葉 {i}/14 {name}失敗\n" + result[-9000:])
+            print(f"G18 M2/M3 真true葉 bool欄位 {i}/14：{name} 通過")
+        print("十四項原Checker真選葉P16/HC14/V7獨立Gate成功；B4/M2/M3維持OpenEngineering。")
         return 0
     except (OSError, ValueError) as error:
         print("G18 bool true葉Gate失敗：" + str(error), file=sys.stderr)
