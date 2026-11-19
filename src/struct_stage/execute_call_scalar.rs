@@ -79,6 +79,12 @@ enum PrivateScalarCallEvent {
     /// 本詞彙框架真配置的字串常值，尚未傳入子函式且無具名持有者。
     StrLiteralTemporaryCreated(u64),
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
+    SelfRead {
+        site: PrivateScalarSelfRead,
+        ticket: crate::borrow_safety::BorrowTicket,
+        value: i64,
+        trace: Vec<PrivateSharedCallExitEvent>,
+    },
     LoanAcquired(crate::borrow_safety::BorrowTicket),
     /// R05：真取得票據時同步記錄其 UTF-8 資源身分，防止先釋放後歸還。
     LoanResourceLinked(crate::borrow_safety::BorrowTicket, u64),
@@ -558,6 +564,21 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
+                PrivateScalarCallEvent::SelfRead { site, ticket, trace, .. } => {
+                    let Some(frame) = frames.last() else { return false; };
+                    if unwinding || frame.returned || ticket.fact() != site.loan
+                        || !frame.locals.iter().any(|slot| matches!(slot,
+                            PrivateScalarLocalBinding::CopyStruct(id) if *id == site.loan.source))
+                        || trace.as_slice() != [
+                            PrivateSharedCallExitEvent::LoanAcquired(*ticket),
+                            PrivateSharedCallExitEvent::FunctionEntered,
+                            PrivateSharedCallExitEvent::Returned,
+                            PrivateSharedCallExitEvent::LoanReturned(*ticket),
+                            PrivateSharedCallExitEvent::FunctionExited { returned: true },
+                        ] {
+                        return false;
+                    }
+                }
                 PrivateScalarCallEvent::LoanAcquired(ticket) => {
                     let duplicate = frames.iter().any(|frame| frame.loans.contains(ticket));
                     let Some(frame) = frames.last_mut() else { return false; };
@@ -784,7 +805,13 @@ impl PrivateScalarCallOutcome {
         // R05 共用守門：普通函式保留原 ResourceId／局部／所有權
         // 全細帳，再將**同一真事件序列**投影至與同步 self 共享的
         // 進退、唯一回滾及真 BorrowTicket 單次歸還責任表。
-        let shared_exit_events = self.events.iter().filter_map(|event| match event {
+        let mut shared_exit_events = Vec::new();
+        for event in &self.events {
+            if let PrivateScalarCallEvent::SelfRead { trace, .. } = event {
+                shared_exit_events.extend_from_slice(trace);
+                continue;
+            }
+            shared_exit_events.extend(match event {
             PrivateScalarCallEvent::LoanAcquired(ticket) =>
                 Some(PrivateSharedCallExitEvent::LoanAcquired(*ticket)),
             PrivateScalarCallEvent::FunctionEntered(_) =>
@@ -822,7 +849,8 @@ impl PrivateScalarCallOutcome {
                     returned: *returned,
                 }),
             _ => None,
-        }).collect::<Vec<_>>();
+            });
+        }
         frames.len() == 1 && awaited_entry.is_none()
             && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
@@ -847,7 +875,52 @@ impl PrivateScalarCallOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+struct PrivateScalarSelfRead {
+    name: String,
+    owner: String,
+    field: String,
+    call_span: crate::common_ir::NodeSpan,
+    method_start: usize,
+    loan: BorrowFact,
+}
+
+impl PrivateScalarSelfRead {
+    fn checked(
+        span: crate::common_ir::NodeSpan, owner: &str, name: &str, id: DeclarationId, verified: &VerifiedPrivateSource,
+    ) -> Option<Self> {
+        let ty = verified.plan.declarations.typed_declaration(id)?.ty;
+        let definition = verified.structs.get(ty)?;
+        let mut candidates = definition.methods_named(name).filter(|method| method.params.is_empty());
+        let method = candidates.next()?;
+        if candidates.next().is_some() || method.is_async || method.result_ty != "int" { return None; }
+        let [statement] = method.body.statements.as_slice() else { return None; };
+        let StmtKind::Return(returned) = &statement.kind else { return None; };
+        let field_term = private_self_checked_ungrouped_return(verified, &returned.expression).ok()?;
+        let TermKind::FieldRead(receiver, field) = &field_term.kind else { return None; };
+        let safety = verified.plan.method_safety.get(&method.start)?;
+        let loan = BorrowFact::new(id, BorrowKind::SharedRead);
+        let mut tokens = verified.tokens.iter().filter(|token|
+            token.start >= span.start && token.end <= span.end);
+        let (first, dot, method_name, open, close) = (
+            tokens.next()?, tokens.next()?, tokens.next()?, tokens.next()?, tokens.next()?);
+        if receiver != "self" || definition.field(field)?.ty != "int"
+            || safety.self_borrow != loan.kind || !safety.checked_returns.contains(&statement.node_span())
+            || verified.plan.declarations.call_borrows_at(span)? != [loan]
+            || first.start != span.start || close.end != span.end || tokens.next().is_some()
+            || !matches!(&first.kind, TokenKind::Name(actual) if actual == owner)
+            || !matches!(&method_name.kind, TokenKind::Name(actual) if actual == name)
+            || !matches!(dot.kind, TokenKind::Symbol('.')) || !matches!(open.kind, TokenKind::Symbol('('))
+            || !matches!(close.kind, TokenKind::Symbol(')')) {
+            return None;
+        }
+        Some(Self { name: name.to_owned(), owner: owner.to_owned(), field: field.clone(),
+            call_span: span, method_start: method.start, loan })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarReturnExpr {
+    SelfRead(PrivateScalarSelfRead),
     /// 原 Checker 已證明所有前置 if 分支均真正 Return 的後方
     /// 不可達 expression。只有遭執行到才回報狀態錯誤，絕不造假 int。
     Unreachable,
@@ -899,6 +972,13 @@ impl PrivateScalarReturnExpr {
             ));
         }
         match &term.kind {
+            TermKind::MethodCall(owner, name, args) if args.is_empty() => {
+                bindings.get(owner).and_then(|id|
+                    PrivateScalarSelfRead::checked(span, owner, name, *id, verified)
+                ).map(Self::SelfRead).ok_or(PrivateScalarCallPrepareError::Unsupported(
+                    "同步方法讀取缺少已驗證的接收者、方法或共享借用事實",
+                ))
+            }
             TermKind::Name(name) => {
                 let id = *bindings.get(name).ok_or(
                     PrivateScalarCallPrepareError::Unsupported(
@@ -1284,7 +1364,7 @@ impl PrivateScalarReturnExpr {
                 .checked_sub(right.evaluate(frame)?)
                 .ok_or(PrivateScalarCallRuntimeError::IntegerOverflow),
             // 不准從只有 int slot 的舊純值捷徑假造結構欄位常數。
-            Self::CopyStructIntField { .. } | Self::Call { .. }
+            Self::SelfRead(_) | Self::CopyStructIntField { .. } | Self::Call { .. }
             | Self::BoolValue(..) | Self::StrValue(..)
             | Self::StrCall { .. } | Self::Unreachable =>
                 Err(PrivateScalarCallRuntimeError::StateMismatch),
@@ -1307,7 +1387,7 @@ impl PrivateScalarReturnExpr {
                 calls.push(name);
                 for argument in arguments { argument.collect_calls(calls); }
             },
-            Self::Parameter(_) | Self::CopyStructIntField { .. }
+            Self::SelfRead(_) | Self::Parameter(_) | Self::CopyStructIntField { .. }
                 | Self::Constant(_) | Self::Unreachable => {}
         }
     }
@@ -1932,7 +2012,7 @@ impl PrivateScalarCopyStructSeed {
                         }
                         // 僅原 Checker int 欄位種子可進此純整數工作棧；
                         // 不讓已核准 bool 返回以 0/1 偽裝 int 欄位值。
-                        Work::Read(PrivateScalarReturnExpr::Call { .. }
+                        Work::Read(PrivateScalarReturnExpr::SelfRead(_) | PrivateScalarReturnExpr::Call { .. }
                             | PrivateScalarReturnExpr::BoolValue(..)
                             | PrivateScalarReturnExpr::StrValue(..)
                             | PrivateScalarReturnExpr::StrCall { .. }
@@ -3956,6 +4036,39 @@ impl PreparedPrivateScalarCall {
                             )?.pending_owned_returns.push(id);
                             pending_str_returns.push(owned);
                             Self::record_owned_resources(&resources, &mut resource_cursor, events);
+                        }
+                        PrivateScalarReturnExpr::SelfRead(site) => {
+                            if frames.len() >= budget.max_call_frames {
+                                return Err(PrivateScalarCallRuntimeError::CallBudget);
+                            }
+                            if steps >= budget.max_steps {
+                                return Err(PrivateScalarCallRuntimeError::StepBudget);
+                            }
+                            steps += 1;
+                            let frame = frames.last_mut().ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                            if !frame.copy_struct_scopes.iter().rev().flatten()
+                                .any(|(id, name)| *id == site.loan.source && name == &site.owner) {
+                                return Err(PrivateScalarCallRuntimeError::StateMismatch);
+                            }
+                            let tracker = &mut frame.borrow_tracker;
+                            let ticket = tracker.acquire(site.loan.source, site.loan.kind)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                            let mut trace = vec![PrivateSharedCallExitEvent::LoanAcquired(ticket),
+                                PrivateSharedCallExitEvent::FunctionEntered];
+                            let read = tracker.check_ticket_access(ticket, BorrowKind::SharedRead)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)
+                                .and_then(|owner| match copy_structs.field(&site.owner, &site.field) {
+                                    Ok(crate::mixed_struct_runtime::Observed::Int(value)) if owner == site.loan.source => Ok(value),
+                                    _ => Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                });
+                            if read.is_ok() { trace.push(PrivateSharedCallExitEvent::Returned); }
+                            tracker.release(ticket)
+                                .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                            trace.push(PrivateSharedCallExitEvent::LoanReturned(ticket));
+                            let value = read?;
+                            trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: true });
+                            events.push(PrivateScalarCallEvent::SelfRead { site: site.clone(), ticket, value, trace });
+                            values.push(value);
                         }
                         PrivateScalarReturnExpr::CopyStructIntField {
                             declaration, owner, field,
@@ -6320,9 +6433,21 @@ impl PreparedPrivateScalarCall {
         // V7：把真正動態安全點與同一個原 Checker 函式簽章
         // 交叉核對；任何 async Enter 沒有等待點、普通同步 Enter
         // 冒出等待點，或等待點與下一函式身分不相符都拒絕。
+        let mut checked_method_sites = BTreeMap::new();
         let mut pending_await: Option<&str> = None;
         for event in &outcome.events {
             match event {
+                PrivateScalarCallEvent::SelfRead { site, .. } => {
+                    if pending_await.is_some() {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                    let checked = checked_method_sites.entry(site.call_span).or_insert_with(||
+                        PrivateScalarSelfRead::checked(site.call_span, &site.owner, &site.name,
+                            site.loan.source, &self.verified));
+                    if checked.as_ref() != Some(site) {
+                        return Err(PrivateScalarCallPrepareError::RuntimeTraceMismatch);
+                    }
+                }
                 PrivateScalarCallEvent::AwaitSafePoint(name) => {
                     if pending_await.is_some()
                         || !self.verified.functions.iter()

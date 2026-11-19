@@ -1597,6 +1597,7 @@ include!("struct_stage/g18_m2_self_bool_direct_write_tests.rs");
 #[cfg(test)]
 include!("struct_stage/g18_m2_branch_bool_field_write_tests.rs");
 include!("struct_stage/g18_repeated_self_call_tests.rs");
+include!("struct_stage/g18_scalar_self_cfg_tests.rs");
 
 // G18／P18.4-B4／M3：原 Checker main 純 helper 作直接
 // 同步 self 方法 int 實參，必須先完成子函式再借票。
