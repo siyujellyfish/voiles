@@ -21,6 +21,47 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 巢狀方法分支依每輪欄位真值寫入與提前返回() {
+        let src = SOURCE.replace("fn read()", r#"var ready:bool = true
+fn choose(flag:bool,x:int)->int{
+if(flag){
+if(self.ready){
+self.ready = false
+self.n = x
+return self.n
+}else{
+self.n = 8
+}
+}else{
+self.n = 12
+}
+return self.n
+}
+fn read()"#).replace("total = total + owner.read()", "total = total + owner.choose(flag,i)");
+        let owned = src.replace("var n:int = 3", "var n:int = 3\nvar text:str = \"甲\"");
+        let plan = PreparedPrivateScalarCall::prepare(&owned).unwrap();
+        let mut failed_in_method = false;
+        for max_steps in 1..80 {
+            let out = plan.execute_with_budget(PrivateScalarExecutionBudget { max_call_frames: 8, max_steps }).unwrap();
+            if out.events.iter().any(|e| matches!(e, PrivateScalarCallEvent::SelfRead {
+                result: Err(PrivateScalarCallRuntimeError::StepBudget), .. })) {
+                assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+                assert_eq!(out.resource_events.len(), 2);
+                assert!(out.has_balanced_frame_trace());
+                failed_in_method = true;
+                break;
+            }
+        }
+        assert!(failed_in_method);
+        for (flag, expected) in [("true",24), ("false",36)] {
+            let case = src.replace("run(true)", &format!("run({flag})"));
+            let out = PreparedPrivateScalarCall::prepare(&case).unwrap().execute().unwrap();
+            assert_eq!(out.result, Ok(expected));
+            assert!(out.has_balanced_frame_trace());
+        }
+    }
+
+    #[test]
     fn 布林實參在方法內決定提前返回的欄位() {
         let src = SOURCE.replace("fn read()", "var other:int = 10\nfn pick(flag:bool)->int{\nif(flag){ return self.other }\nreturn self.n\n}\nfn read()")
             .replace("total = total + owner.read()", "total = total + owner.pick(flag)");
@@ -133,7 +174,7 @@ fn main()->int{ return run(true) }
         let mut out = plan.execute().unwrap();
         for event in &mut out.events {
             if let PrivateScalarCallEvent::SelfRead { site, .. } = event {
-                site.field = "forged".to_owned();
+                site.body.clear();
                 break;
             }
         }
