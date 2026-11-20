@@ -87,7 +87,7 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"{項目} 正式狀態格式不正確")
         if 清冊["current_status"][項目] != 現狀[0]:
             raise ValueError(f"{項目} 現行正式狀態未與核准語意及機讀義務同步")
-        if 項目 not in {"P18.1", "P18.2", "P18.3", "P18.6"} and 清冊["original_status"][項目] != 現狀[0]:
+        if 項目 not in {"P18.1", "P18.2", "P18.3", "P18.4", "P18.6"} and 清冊["original_status"][項目] != 現狀[0]:
             raise ValueError(f"{項目} 非本次核准範圍卻變更了原始驗收狀態")
         if 項目 == "P18.1" and 現狀[0] != "Passed":
             raise ValueError("P18.1 必須與 F1～F4 正式四義務同步為 Passed")
@@ -247,6 +247,17 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                     raise ValueError(f"P18.4 {名稱} 沒有原來源及 {數量} 筆獨立 Gate 閉合證明")
                 if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
                     raise ValueError(f"P18.4 {名稱} 真來源／Gate／報告不存在")
+            elif 名稱 == "B4":
+                必要證明 = {
+                    "contract": "B4-01..B4-07",
+                    "tests": "src/struct_stage/g18_b4_obligation_tests.rs",
+                    "gate": "tools/核對G18-P18.4-B4同步方法借票責任.py",
+                    "report": "AI-build/G18-P18.4-B4同步方法與原五義務驗收.md"
+                }
+                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                    raise ValueError("B4 缺同步方法獨立驗收證明")
+                if any(not (根目錄 / 必要證明[k]).is_file() for k in ("tests", "gate", "report")):
+                    raise ValueError("B4 原始證據檔案缺失")
             elif 名稱 == "B5":
                 # 原 P14/P15 Checker 與真 BorrowSafety 依 B5 七組 42 筆獨立
                 # Rust --exact Gate 證明；不因此解除 VB14 的無證再借限制。
@@ -311,8 +322,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 17 or 統計["OpenEngineering"] != 9 or 統計["BlockedDecision"] != 0:
-        raise ValueError("F1～F4、C1～C4、R1～R4、B1～B3、B5 閉合；B4、T1～T4、M2/M3、A1/A2 共 9 條 OpenEngineering；不得提前 P18.4 Passed")
+    if 統計["Closed"] != 18 or 統計["OpenEngineering"] != 8 or 統計["BlockedDecision"] != 0:
+        raise ValueError("P18.1～P18.4 及 M1 共 18 義務閉合，另外八項仍待驗收")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -417,7 +428,7 @@ def main() -> int:
         f"26 條義務／{報告['closed']} 條已閉合／"
         f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
         f"25 筆獨立真 Rust 測試均已實跑；"
-        "P18 原六項 P18.1～P18.3 Passed（3/6）；B1～B3/B5 主線已閉合，M1 獨立閉合候選，P18.4～P18.6 仍未 Passed。"
+        "P18.1～P18.4 Passed（4/6），P18.5 與 P18.6 仍待驗收。"
     )
     print("V0 完成只代表來源／義務清冊可信；R07 正式 --check 未完成仍必須非零。")
     return 0

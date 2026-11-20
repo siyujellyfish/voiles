@@ -147,6 +147,9 @@ jobs:
       - name: G18 P18.3-R4 原始遞迴錯誤與資源獨立 Gate
         run: python3 tools/核對G18-P18.3-R4失敗回滾.py --test-bin target/p02/p04_source_internal --check
 
+      - name: G18 P18.4 五原義務 122 筆正式驗收
+        run: python3 tools/核對G18-P18.4原始五義務正式驗收.py --test-bin target/p02/p04_source_internal --check
+
       - name: G18 P18.3 四原義務 62 筆正式閉合總 Gate
         run: python3 tools/核對G18-P18.3原始四義務正式驗收.py --test-bin target/p02/p04_source_internal --check
 

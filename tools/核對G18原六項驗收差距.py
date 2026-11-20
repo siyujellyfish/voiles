@@ -756,6 +756,13 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_b4_obligation_tests::b4_01_兩輪獨占寫入及跨持有者共享讀取",
+        "struct_stage::g18_b4_obligation_tests::b4_02_方法參數借票與逐輪移交使用實際資源",
+        "struct_stage::g18_b4_obligation_tests::b4_03_同一來源借後移動與不可寫接收者均在靜態拒絕",
+        "struct_stage::g18_b4_obligation_tests::b4_04_第二輪子框架溢位截斷後繼共享呼叫",
+        "struct_stage::g18_b4_obligation_tests::b4_05_共用預算在借票前與持票後均安全退出",
+        "struct_stage::g18_b4_obligation_tests::b4_06_方法與參數還票次序交換須拒絕",
+        "struct_stage::g18_b4_obligation_tests::b4_07_原始來源及不同接收者呼叫位置不可互換",
         "struct_stage::g18_scalar_self_cfg_tests::持票子函式迴圈反向邊與故障還票",
         "struct_stage::g18_scalar_self_cfg_tests::持票子函式多語句選葉與局部清理",
         "struct_stage::g18_scalar_self_cfg_tests::原方法可轉交普通函式的新字串",
@@ -1552,12 +1559,13 @@ from pathlib import Path
     "P18.1": ("Passed", "已核對原 Lexer／Parser／Checker／TypedHIR 唯一函式圖及 F1～F4 的七項、十五等價類三十項、十五等價類三十項、十三等價類二十六項獨立真正反 Gate；僅 P18.1 正式完成，其餘五個原 Phase 仍不得提前驗收"),
     "P18.2": ("Passed", "C1～C4 各有獨立原 Lexer／Parser／Checker 真動態來源 Gate：if／else-if／else、for／while、巢狀控制轉移、int/bool/str 逐作用域離域，共 44 筆互不重複正反 Rust 案例；僅 P18.2 正式完成，不擴張尚未核准語意"),
     "P18.3": ("Passed", "R1～R4 各有原 Checker 合法直接／互相遞迴停止及真呼叫圖、單次可配置 StepBudget／CallBudget、同名 DeclarationId 與真 ResourceId／BorrowTicket、正常／溢位／耗盡／注入故障及事件偽造拒絕共 62 筆不重複 Rust 真來源，未擴張非同步或公開執行入口"),
-    "P18.4": ("SubsetVerified", "原 Checker 多 str BorrowTicket、明確 str.move 跨函式雙 ResourceId、同一 Call move＋借用已有真執行；同步 self 的多 int 與欄位加減另有真動態子集，但 self 尚未完全接入一般函式 CFG／所有已核准方法控制邊；B5 借用有效期與無證再借已由獨立 Gate Closed，B4 同一呼叫圖及安全退出矩陣仍未完整驗收"),
+    "P18.4": ("Passed", "B1～B5 原五義務以 122 個獨立正反案例驗收。"),
     "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
     "P18.6": ("Incomplete", "D18-02-E1～E4=A、E5 維持 VB15-01-A 已正式核准；同步共享／獨占 self、多載及方法欄位真讀寫已有受限正反；原 Parser/Checker 直接 await async 普通函式 int／str.move 已真執行，真 BorrowTicket 安全點與 P16 ResourceId／錯誤回滾均有子集證據；仍缺完整協作式 suspend/resume/wakeup、取消後續真任務框架、async self 方法與同步方法混合 CFG 的原六項完整正反驗收；不得標 Passed"),
 }
 
 真執行群組 = (
+    "struct_stage::g18_b4_obligation_tests::",
     "struct_stage::g18_scalar_self_cfg_tests::",
     "struct_stage::g18_repeated_self_call_tests::",
     "execution::tests::p18_",

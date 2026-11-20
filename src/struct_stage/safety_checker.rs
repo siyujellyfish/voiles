@@ -695,6 +695,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if actual != parameter.ty {
                         return Err(self.error("方法內函式引數型別不一致", value));
                     }
+                    if actual == "int" {
+                        self.record_method_pure_int_hir(owner, method, value);
+                    }
                 }
                 Ok(function.result_ty.clone())
             }
