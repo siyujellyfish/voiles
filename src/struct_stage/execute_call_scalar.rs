@@ -6121,8 +6121,10 @@ impl PreparedPrivateScalarCall {
         let callee = match main_names.first() {
             Some(name) => verified.functions.iter().find(|fun| fun.name == *name && fun.name != "main")
                 .ok_or(PrivateScalarCallPrepareError::Unsupported("main 呼叫缺少原 Checker 具名函式宣告"))?,
-            // main 直接返回已驗證的方法時，本身就是真實根框架。
-            None if matches!(main_graph_return, PrivateScalarReturnExpr::SelfRead(_)) => main,
+            // 方法結果可直接返回，也可先綁入 main 的局部槽或參與算式。
+            // 根框架依原 Checker 的呼叫種類與來源範圍選擇。
+            None if verified.plan.declarations.call_borrows.range(main.start..main.end)
+                .any(|(_, call)| call.is_method) => main,
             None => return Err(PrivateScalarCallPrepareError::Unsupported(
                 "main 已編譯可達工作計畫缺少真具名函式或方法呼叫")),
         };

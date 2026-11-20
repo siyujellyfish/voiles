@@ -75,7 +75,7 @@ return take(source,n)
     }
     #[test]
     fn t1_m_獨占方法動態退出四欄() {
-        four(r#"struct Counter{
+        let direct = r#"struct Counter{
 var v:int = 1
 fn put(x:int)->int{
 self.v = self.v+x
@@ -88,7 +88,11 @@ var h:Counter = Counter()
 var n:int = 2
 return h.put(n)
 }
-"#,3,("var h:Counter","const h:Counter"),&[Created(1),Released(1)]);
+"#;
+        for src in [direct.to_owned(), direct.replace("return h.put(n)",
+            "var result:int = h.put(n)\nreturn result+0")] {
+            four(&src,3,("var h:Counter","const h:Counter"),&[Created(1),Released(1)]);
+        }
     }
     #[test]
     fn t1_a_直接等待方法與普通框架四欄() {
