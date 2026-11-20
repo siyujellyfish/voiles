@@ -62,6 +62,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn record_call_arguments(&self, term: &Term, facts: &[BorrowFact],
         method_moves: BTreeMap<crate::common_ir::NodeSpan, DeclarationId>, method_bindings: BTreeMap<String, DeclarationId>) {
         let plan = VerifiedCallBorrowPlan { method_moves, method_bindings,
+            is_method: matches!(term.kind, TermKind::MethodCall(..) | TermKind::AwaitMethodCall(..)),
             span: term.node_span(), facts: facts.to_vec(),
         };
         let mut recorded = self.recorded_call_borrows.borrow_mut();

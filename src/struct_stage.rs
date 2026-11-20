@@ -614,6 +614,7 @@ enum VerifiedMoveError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct VerifiedCallBorrowPlan {
+    is_method: bool,
     method_bindings: BTreeMap<String, DeclarationId>,
     method_moves: BTreeMap<crate::common_ir::NodeSpan, DeclarationId>,
     span: crate::common_ir::NodeSpan,
