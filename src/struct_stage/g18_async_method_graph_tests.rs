@@ -3,7 +3,7 @@ mod g18_async_method_graph_tests {
     use super::*;
     use crate::owned_str_runtime::ResourceEvent::{Created, Moved, Released};
 
-    const SOURCE: &str = r#"struct Counter{
+    pub(super) const SOURCE: &str = r#"struct Counter{
 var n:int = 2
 async fn add(x:int)->int{
 self.n = self.n+x

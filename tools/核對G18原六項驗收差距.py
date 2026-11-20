@@ -1,10 +1,8 @@
 #!/usr/bin/env python3
 """G18 P18.1～P18.6 原始六項真來源稽核：--audit 核實子集，--check 嚴格正式驗收。
 
---audit 不等於 G18 Passed。D18-01 已核准；D18-02-E1～E4=A、
-E5 維持 VB15-01-A 亦已於 2026-11-08 正式核准。
-P18.6 現存阻塞是 async／同步方法的真正工程與驗收缺口，而非等待
-重新核准語意。已通過的私有直接 await 子集不等於完整 P18.6 Passed。
+--audit 核對真實執行與來源追溯。--check 同時要求六階段 Passed
+及全部 26 個原始義務的獨立閉合證據。D18-01 與 D18-02 沿用核准決策。
 """
 
 from __future__ import annotations
@@ -1100,6 +1098,8 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_t3_matrix_tests::t3_較早工作事件污染整批退出必須零副作用",
+        "struct_stage::g18_t3_matrix_tests::t3_合法但不同來源計畫不能冒領等待點",
         "struct_stage::g18_t1_matrix_tests::t1_f_普通呼叫四欄",
         "struct_stage::g18_t1_matrix_tests::t1_c_選中迴圈路徑四欄",
         "struct_stage::g18_t1_matrix_tests::t1_r_遞迴內層溢位與逐層資源四欄",
@@ -1578,11 +1578,12 @@ from pathlib import Path
     "P18.2": ("Passed", "C1～C4 各有獨立原 Lexer／Parser／Checker 真動態來源 Gate：if／else-if／else、for／while、巢狀控制轉移、int/bool/str 逐作用域離域，共 44 筆互不重複正反 Rust 案例；僅 P18.2 正式完成，不擴張尚未核准語意"),
     "P18.3": ("Passed", "R1～R4 各有原 Checker 合法直接／互相遞迴停止及真呼叫圖、單次可配置 StepBudget／CallBudget、同名 DeclarationId 與真 ResourceId／BorrowTicket、正常／溢位／耗盡／注入故障及事件偽造拒絕共 62 筆不重複 Rust 真來源，未擴張非同步或公開執行入口"),
     "P18.4": ("Passed", "B1～B5 原五義務以 122 個獨立正反案例驗收。"),
-    "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
+    "P18.5": ("Passed", "T1 四欄、T2 六組交叉、T3 來源與事件防偽及 T4 同版本完整回歸已驗證。"),
     "P18.6": ("Passed", "M1～M3、A1～A2 已逐項驗證一般方法、直接 await、FIFO 續行、取消與真資源退出。"),
 }
 
 真執行群組 = (
+    "struct_stage::g18_t3_matrix_tests::",
     "struct_stage::g18_t1_matrix_tests::",
     "struct_stage::g18_async_method_graph_tests::",
     "struct_stage::g18_m2_m3_obligation_tests::",
@@ -1688,6 +1689,13 @@ def main() -> int:
         elif state != "Passed":
             subsets.append(item)
     complete = not blocked and not subsets and all(證據.values())
+    if args.check and complete:
+        # 正式 --check 同時驗證 26 項原責任與其唯一證據路徑。
+        registry_gate = Path(__file__).resolve().with_name("核對G18-P18原義務同源狀態.py")
+        evidence = run([sys.executable, str(registry_gate), "--check"])
+        if evidence.returncode or "26/26 Closed" not in evidence.stdout:
+            print("G18 六階段標記與原始義務的閉合證據不一致", file=sys.stderr)
+            return 1
     result = "Passed" if complete else "BlockedByDecision" if blocked else "Incomplete"
     print(
         f"G18 正式驗收狀態＝{result}；原項全 Passed {6-len(blocked)-len(subsets)}/6；"
