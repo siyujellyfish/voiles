@@ -80,6 +80,7 @@ enum PrivateScalarCallEvent {
     StrLiteralTemporaryCreated(u64),
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     SelfRead {
+        argument_tickets: Vec<crate::borrow_safety::BorrowTicket>,
         site: PrivateScalarSelfRead,
         ticket: crate::borrow_safety::BorrowTicket,
         result: Result<i64, PrivateScalarCallRuntimeError>,
@@ -564,20 +565,35 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
-                PrivateScalarCallEvent::SelfRead { site, ticket, trace, result } => {
-                    if result.is_err() && (*result != self.result || !matches!(self.events.get(index + 1),
+                PrivateScalarCallEvent::SelfRead { site, ticket, trace, result, argument_tickets } => {
+                    if result.is_err() && (*result != self.result || !matches!(self.events.get(index + 1 + argument_tickets.len()),
                         Some(PrivateScalarCallEvent::UnwindStarted))) { return false; }
                     let Some(frame) = frames.last() else { return false; };
+                    let expected: Vec<_> = site.arguments.iter().filter_map(|(_, arg)| match arg {
+                        PrivateScalarCallArgument::BorrowStr { fact, .. } => Some(*fact), _ => None,
+                    }).collect();
+                    if !frame.loans.ends_with(argument_tickets)
+                        || argument_tickets.iter().map(|ticket| ticket.fact()).ne(expected) { return false; }
+                    {
+                        for (offset, arg) in argument_tickets.iter().rev().enumerate() {
+                            if !matches!(self.events.get(index + 1 + offset),
+                                Some(PrivateScalarCallEvent::LoanReturned(actual)) if actual == arg) { return false; }
+                        }
+                        returned_imported_loans.extend(argument_tickets.iter().copied());
+                    }
                     if unwinding || frame.returned || ticket.fact() != site.loan
                         || !frame.locals.iter().any(|slot| matches!(slot,
                             PrivateScalarLocalBinding::CopyStruct(id) if *id == site.loan.source))
-                        || trace.as_slice() != [
+                        || trace.len() != 5 + argument_tickets.len()
+                        || trace[..4] != [
                             PrivateSharedCallExitEvent::LoanAcquired(*ticket),
                             PrivateSharedCallExitEvent::FunctionEntered,
                             if result.is_ok() { PrivateSharedCallExitEvent::Returned } else { PrivateSharedCallExitEvent::UnwindStarted },
                             PrivateSharedCallExitEvent::LoanReturned(*ticket),
-                            PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() },
-                        ] {
+                        ]
+                        || !trace[4..trace.len()-1].iter().zip(argument_tickets.iter().rev()).all(|(event, arg)|
+                            *event == PrivateSharedCallExitEvent::LoanReturned(*arg))
+                        || trace.last() != Some(&PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() }) {
                         return false;
                     }
                 }
@@ -808,13 +824,12 @@ impl PrivateScalarCallOutcome {
         // 全細帳，再將**同一真事件序列**投影至與同步 self 共享的
         // 進退、唯一回滾及真 BorrowTicket 單次歸還責任表。
         let mut shared_exit_events = Vec::new();
+        let mut recorded_until = 0;
         for (index, event) in self.events.iter().enumerate() {
-            // 內層方法已記錄同一次錯誤；外層接續清理。
-            if matches!(event, PrivateScalarCallEvent::UnwindStarted) && index > 0
-                && matches!(self.events[index - 1], PrivateScalarCallEvent::SelfRead { result: Err(_), .. }) {
-                continue;
-            }
-            if let PrivateScalarCallEvent::SelfRead { trace, .. } = event {
+            if index < recorded_until { continue; }
+            if let PrivateScalarCallEvent::SelfRead { trace, result, argument_tickets, .. } = event {
+                // 外層逐票／回滾明細已於上方對應到方法內同一份事件。
+                recorded_until = index + 1 + argument_tickets.len() + usize::from(result.is_err());
                 shared_exit_events.extend_from_slice(trace);
                 continue;
             }
@@ -884,7 +899,7 @@ impl PrivateScalarCallOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarSelfRead {
     body: Vec<PrivateScalarMethodStep>,
-    arguments: Vec<(DeclarationId, PrivateScalarReturnExpr)>,
+    arguments: Vec<(DeclarationId, PrivateScalarCallArgument)>,
     name: String,
     owner: String,
     call_span: crate::common_ir::NodeSpan,
@@ -904,6 +919,8 @@ impl PrivateScalarSelfRead {
         if call.node_span() != span { return None; }
         let TermKind::MethodCall(receiver, called, terms) = call.kind else { return None; };
         if receiver != owner || called != name { return None; }
+        let (receiver_fact, argument_facts) = verified.plan.declarations.call_borrows_at(span)?.split_last()?;
+        let mut facts = argument_facts.iter();
         let mut actuals = Vec::with_capacity(terms.len());
         for term in terms {
             let mut bindings = BTreeMap::new();
@@ -916,17 +933,32 @@ impl PrivateScalarSelfRead {
                     }
                 }
             }
-            let expr = match verified.plan.scalar_hir.expression(term.node_span())?.ty {
-                crate::common_ir::ScalarType::Int => PrivateScalarReturnExpr::from_checked_bindings(&term, &bindings, verified).ok()?,
-                crate::common_ir::ScalarType::Bool => PrivateScalarReturnExpr::BoolValue(Box::new(
-                    PrivateScalarBoolExpr::from_checked(&term, &bindings, verified).ok()?)),
-                _ => return None,
+            let arg = match verified.plan.scalar_hir.expression(term.node_span()).map(|f| f.ty) {
+                Some(crate::common_ir::ScalarType::Int) => PrivateScalarCallArgument::Int(
+                    PrivateScalarReturnExpr::from_checked_bindings(&term, &bindings, verified).ok()?),
+                Some(crate::common_ir::ScalarType::Bool) => PrivateScalarCallArgument::Bool(
+                    PrivateScalarBoolExpr::from_checked(&term, &bindings, verified).ok()?),
+                _ => {
+                    let TermKind::Name(owner) = &term.kind else { return None; };
+                    let fact = *facts.next()?;
+                    let ty = verified.plan.declarations.typed_declaration(fact.source)?;
+                    // 字串使用原 Checker 依實參次序簽發的借用事實；執行時再對照存活的名稱與身分。
+                    let kind = if ty.mutable { BorrowKind::ExclusiveWrite } else { BorrowKind::SharedRead };
+                    if ty.ty != "str" || kind != fact.kind || fact.source == id { return None; }
+                    PrivateScalarCallArgument::BorrowStr { owner: owner.clone(), fact }
+                }
             };
-            actuals.push(expr);
+            actuals.push(arg);
         }
+        if facts.next().is_some() { return None; }
         let mut candidates = definition.methods_named(name).filter(|method|
             method.params.len() == actuals.len() && method.params.iter().zip(&actuals).all(|(p, arg)|
-                p.ty == if matches!(arg, PrivateScalarReturnExpr::BoolValue(_)) { "bool" } else { "int" }));
+                p.ty == match arg {
+                    PrivateScalarCallArgument::Int(_) => "int",
+                    PrivateScalarCallArgument::Bool(_) => "bool",
+                    PrivateScalarCallArgument::BorrowStr { .. } => "str",
+                    _ => return false,
+                }));
         let method = candidates.next()?;
         if candidates.next().is_some() || method.is_async || method.result_ty != "int" { return None; }
         let arguments = method.params.iter().map(|p| DeclarationId(p.declaration_start)).zip(actuals).collect();
@@ -935,7 +967,7 @@ impl PrivateScalarSelfRead {
         let body = compiler.block(&method.body.statements)?;
         let loan = BorrowFact::new(id, safety.self_borrow);
         if (loan.kind == BorrowKind::ExclusiveWrite && !declaration.mutable)
-            || verified.plan.declarations.call_borrows_at(span)? != [loan] { return None; }
+            || *receiver_fact != loan { return None; }
         Some(Self { name: name.to_owned(), owner: owner.to_owned(), body,
             call_span: span, method_start: method.start, loan, arguments })
     }
@@ -4036,10 +4068,23 @@ impl PreparedPrivateScalarCall {
                             return Err(PrivateScalarCallRuntimeError::StateMismatch);
                         }
                         let mut parameters = BTreeMap::new();
-                        for (parameter, _) in site.arguments.iter().rev() {
-                            let value = values.pop().ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                            parameters.insert(*parameter, value);
+                        let mut argument_tickets = Vec::new();
+                        for (parameter, arg) in site.arguments.iter().rev() {
+                            if let PrivateScalarCallArgument::BorrowStr { fact, .. } = arg {
+                                let index = completed_arguments.len().checked_sub(argument_tickets.len() + 1)
+                                    .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                let PrivateScalarEvaluatedArgument::Borrow { ticket, fact: actual } = completed_arguments[index]
+                                    else { return Err(PrivateScalarCallRuntimeError::StateMismatch); };
+                                if actual != *fact { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
+                                frame.borrow_tracker.check_ticket_access(ticket, fact.kind)
+                                    .map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                                argument_tickets.push(ticket);
+                            } else {
+                                let value = values.pop().ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                parameters.insert(*parameter, value);
+                            }
                         }
+                        argument_tickets.reverse();
                         let tracker = &mut frame.borrow_tracker;
                         let ticket = tracker.acquire(site.loan.source, site.loan.kind)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
@@ -4055,8 +4100,15 @@ impl PreparedPrivateScalarCall {
                         tracker.release(ticket)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         trace.push(PrivateSharedCallExitEvent::LoanReturned(ticket));
+                        for arg in argument_tickets.iter().rev() {
+                            tracker.release(*arg).map_err(PrivateScalarCallRuntimeError::Borrow)?;
+                            completed_arguments.pop();
+                            trace.push(PrivateSharedCallExitEvent::LoanReturned(*arg));
+                        }
                         trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: read.is_ok() });
-                        events.push(PrivateScalarCallEvent::SelfRead { site: site.clone(), ticket, result: read, trace });
+                        events.push(PrivateScalarCallEvent::SelfRead { site: site.clone(), ticket, result: read, trace,
+                            argument_tickets: argument_tickets.clone() });
+                        events.extend(argument_tickets.into_iter().rev().map(PrivateScalarCallEvent::LoanReturned));
                         values.push(read?);
                     }
                     PrivateScalarTask::Evaluate(term, is_root_expression) => match term {
@@ -4110,8 +4162,14 @@ impl PreparedPrivateScalarCall {
                         }
                         PrivateScalarReturnExpr::SelfRead(site) => {
                             tasks.push(PrivateScalarTask::InvokeSelf(site));
-                            for (_, expr) in site.arguments.iter().rev() {
-                                tasks.push(PrivateScalarTask::Evaluate(expr, false));
+                            for (_, arg) in site.arguments.iter().rev() {
+                                tasks.push(match arg {
+                                    PrivateScalarCallArgument::Int(expr) => PrivateScalarTask::Evaluate(expr, false),
+                                    PrivateScalarCallArgument::Bool(expr) => PrivateScalarTask::EvaluateBoolArgument(expr),
+                                    PrivateScalarCallArgument::BorrowStr { owner, fact } =>
+                                        PrivateScalarTask::BorrowArgument(owner, *fact),
+                                    _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                                });
                             }
                         }
                         PrivateScalarReturnExpr::CopyStructIntField {

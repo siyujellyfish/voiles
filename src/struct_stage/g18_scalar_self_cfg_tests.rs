@@ -21,6 +21,46 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 方法混合字串借用與整數寫入於正常及溢位皆歸票() {
+        let src = SOURCE.replace("fn read()", "fn put(label:str,x:int)->int{\nself.n = x+1\nreturn self.n\n}\nfn read()")
+            .replace("var total:int = 0", "const s:str = \"甲\"\nvar total:int = 0")
+            .replace("total = total + owner.read()", "total = total + owner.put(s,i)");
+        let mixed = src.replace("label:str,x:int", "first:str,last:str,x:int")
+            .replace("var total:int = 0", "var t:str = \"乙\"\nvar total:int = 0")
+            .replace("owner.put(s,i)", "owner.put(s,t,i)");
+        let both = PreparedPrivateScalarCall::prepare(&mixed).unwrap().execute().unwrap();
+        let tickets = both.events.iter().find_map(|event| match event {
+            PrivateScalarCallEvent::SelfRead { argument_tickets, .. } if !argument_tickets.is_empty() => Some(argument_tickets),
+            _ => None,
+        }).unwrap();
+        assert_eq!(tickets.iter().map(|t| t.fact().kind).collect::<Vec<_>>(),
+            [BorrowKind::SharedRead, BorrowKind::ExclusiveWrite]);
+        assert_eq!(both.resource_events.len(), 4);
+        assert_eq!(both.result, Ok(9));
+        let conflict = mixed.replace("owner.put(s,t,i)", "owner.put(t,t,i)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&conflict), Err(PrivateScalarCallPrepareError::Check(_))));
+        let before_self = src.replace("owner.put(s,i)", "owner.put(s,9223372036854775807+1)");
+        let failed = PreparedPrivateScalarCall::prepare(&before_self).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(failed.has_balanced_frame_trace());
+        assert!(!failed.events.iter().any(|e| matches!(e, PrivateScalarCallEvent::SelfRead { .. })));
+        for (case, expected) in [(src.clone(), Ok(9)),
+            (src.replace("owner.put(s,i)", "owner.put(s,9223372036854775807)"), Err(PrivateScalarCallRuntimeError::IntegerOverflow))] {
+            let plan = PreparedPrivateScalarCall::prepare(&case).unwrap();
+            let mut out = plan.execute().unwrap();
+            assert_eq!(out.result, expected);
+            assert!(out.has_balanced_frame_trace());
+            assert_eq!(out.resource_events.len(), 2);
+            let tickets = out.events.iter_mut().find_map(|e| match e {
+                PrivateScalarCallEvent::SelfRead { argument_tickets, .. } if !argument_tickets.is_empty() => Some(argument_tickets),
+                _ => None,
+            }).unwrap();
+            tickets.clear();
+            assert!(!out.has_balanced_frame_trace());
+        }
+    }
+
+    #[test]
     fn 巢狀方法分支依每輪欄位真值寫入與提前返回() {
         let src = SOURCE.replace("fn read()", r#"var ready:bool = true
 fn choose(flag:bool,x:int)->int{
