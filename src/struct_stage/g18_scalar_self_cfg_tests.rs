@@ -21,6 +21,58 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 原方法可轉交普通函式的新字串() {
+        let src = r#"fn fresh(code:int)->str{ return "獨立資源" }
+struct Holder{
+var count:int = 1
+fn acquire(increment:int)->str{ return fresh(self.count + increment) }
+}
+fn relay()->str{
+const holder:Holder = Holder()
+return holder.acquire(3)
+}
+fn inspect(s:str)->int{ return 1 }
+fn main()->int{ return inspect(relay()) }
+"#;
+        assert!(verify_source_with_ability(src, crate::ownership_policy::approved_leaf_copy_permission).is_ok());
+        use crate::owned_str_runtime::ResourceEvent::{Created, Released, Returned};
+        let plan = PreparedPrivateScalarCall::prepare(src).unwrap();
+        let mut out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.resource_events.starts_with(&[Created(1), Returned(1), Returned(1), Returned(1)]));
+        assert_eq!(out.resource_events.last(), Some(&Released(1)));
+        let receipt = out.events.iter_mut().find_map(|event| match event {
+            PrivateScalarCallEvent::SelfRead { helpers, .. } => helpers.last_mut(),
+            _ => None,
+        }).unwrap();
+        assert_eq!(receipt.locals.values().copied().collect::<Vec<_>>(), [4]);
+        assert_eq!(receipt.result, Ok(PrivateMethodValue::Str(1)));
+        receipt.result = Ok(PrivateMethodValue::Str(2));
+        assert!(!out.has_balanced_frame_trace());
+        let direct = src.split("fn relay").next().unwrap().to_owned()
+            + "fn main()->int{\nconst holder:Holder = Holder()\nvar result:str = holder.acquire(3)\nreturn 0\n}\n";
+        let out = PreparedPrivateScalarCall::prepare(&direct).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(0));
+        assert!(out.has_balanced_frame_trace());
+        assert!(out.resource_events.starts_with(&[Created(1), Returned(1), Returned(1)]));
+        assert_eq!(out.resource_events.last(), Some(&Released(1)));
+        let overflow = src.replace("holder.acquire(3)", "holder.acquire(9223372036854775807)");
+        let failed = PreparedPrivateScalarCall::prepare(&overflow).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(failed.resource_events.is_empty() && failed.has_balanced_frame_trace());
+        let mut saw_fault = false;
+        for max_steps in 1..100 {
+            let out = plan.execute_with_budget(PrivateScalarExecutionBudget { max_call_frames: 8, max_steps }).unwrap();
+            if out.events.iter().any(|event| matches!(event, PrivateScalarCallEvent::SelfRead { helpers, .. }
+                if helpers.last().is_some_and(|r| r.result == Err(PrivateScalarCallRuntimeError::StepBudget)))) {
+                assert!(out.resource_events.is_empty() && out.has_balanced_frame_trace());
+                saw_fault = true;
+                break;
+            }
+        }
+        assert!(saw_fault);
+    }
+    #[test]
     fn 主函式最後直接返回方法或欄位並退出持有者() {
         let source = r#"struct Counter{
 var n:int = 1

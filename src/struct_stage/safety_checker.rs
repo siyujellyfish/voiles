@@ -999,6 +999,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         if actual != parameter.ty {
                             return Err(self.error("方法資源回傳呼叫引數型別不符", arg));
                         }
+                        if actual == "int" {
+                            self.record_method_pure_int_hir(owner, method, arg);
+                        }
                     }
                     return Ok("str".to_string());
                 }
