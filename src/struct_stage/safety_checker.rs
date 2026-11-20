@@ -751,13 +751,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 以與普通函式相同的 TypedHIR／DeclarationId 交付執行器。
     /// 方法安全 Checker 原先只給出型別而不產生 HIR，因此
     /// 即使靜態認證成功也無法由共通 int 編譯器真正執行。
-    /// 此處只在已核准 RHS 的所有葉均屬原 int 形參／Lexer
+    /// 此處只在已核准來源的所有葉均屬 self 整數欄位、int 形參或 Lexer
     /// 整數時記錄完整證據；其他原合法形狀不產生假 HIR。
-    fn record_method_pure_int_hir(&self, method: &Function, term: &Term) {
+    fn record_method_pure_int_hir(&self, owner: &str, method: &Function, term: &Term) {
         use crate::common_ir::{ResolvedUse, ScalarType, TypedUse, VerifiedScalarArithmetic};
-        fn supported(method: &Function, term: &Term) -> bool {
+        fn supported(definition: &StructDecl, method: &Function, term: &Term) -> bool {
             match &term.kind {
-                TermKind::Group(inner) => supported(method, inner),
+                TermKind::FieldRead(receiver, name) => receiver == "self"
+                    && definition.field(name).is_some_and(|field| field.ty == "int"),
+                TermKind::Group(inner) => supported(definition, method, inner),
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(_),
                 ) => true,
@@ -766,12 +768,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 ),
                 TermKind::BinaryInt(binary) =>
                     matches!(binary.operator, '+' | '-')
-                        && supported(method, &binary.left)
-                        && supported(method, &binary.right),
+                        && supported(definition, method, &binary.left)
+                        && supported(definition, method, &binary.right),
                 _ => false,
             }
         }
-        if !supported(method, term) {
+        let Some(definition) = self.structs.get(owner) else { return; };
+        if !supported(definition, method, term) {
             return;
         }
         fn record<C: Fn(&str) -> CopyPermission>(
@@ -803,7 +806,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 TermKind::Scalar(
                     crate::syntax_shared::ScalarLiteral::Integer(_),
-                ) => {}
+                ) | TermKind::FieldRead(_, _) => {}
                 _ => unreachable!("前方已由 Checker 確認每個純 int 葉"),
             }
             checker.recorded_scalar_hir.borrow_mut()
@@ -1170,7 +1173,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     // 權限與 BorrowSafety 全部由原 Checker 判准後，
                     // 才可交付給同一 P10/P18 ScalarHIR 編譯器。
                     if target.ty == "int" {
-                        self.record_method_pure_int_hir(method, value);
+                        self.record_method_pure_int_hir(owner, method, value);
                         self.record_method_checked_helper_write_hir(method, value)?;
                     }
                     writes = true;
@@ -1184,6 +1187,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     // 僅在已核准提前 Return 葉的純 literal-int helper
                     // 產生原 Checker ScalarHIR；未選執行葉仍不在此求值。
+                    if actual == "int" {
+                        self.record_method_pure_int_hir(owner, method, &value.expression);
+                    }
                     self.method_branch_checked_pure_helper_return(method, &value.expression)?;
                     // 真正核對返回類型與自借用責任後才認領此靜態
                     // 控制點；後續同一路徑不可達，不會憑 AST 假補。
@@ -1477,6 +1483,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         // B4／M3：沒有 Copyable int 局部的最後直接 Return，
         // 與提前返回葉一樣只在原 Checker 已核准的純
         // literal-int helper 上生成原 ScalarHIR，不另設型別器。
+        if actual == "int" {
+            self.record_method_pure_int_hir(owner, method, &return_value.expression);
+        }
         self.method_branch_checked_pure_helper_return(method, &return_value.expression)?;
         checked_returns.insert(method.body.last()
             .expect("已驗證方法最後必有 return").node_span());

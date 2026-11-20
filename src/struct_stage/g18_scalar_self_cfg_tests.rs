@@ -21,6 +21,38 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 持票方法複合加減逐次讀取當下欄位且溢位歸票() {
+        let src = r#"struct Counter{
+var n:int = 3
+var delta:int = 2
+fn tick(x:int, watch:str)->int{
+self.n = (self.n + x) - self.delta
+return self.n + self.delta
+}
+}
+fn run()->int{
+var owner:Counter = Counter()
+const s:str = "追蹤"
+var total:int = 0
+for i in 0..3{
+total = total + owner.tick(5,s)
+}
+return total
+}
+fn main()->int{ return run() }
+"#;
+        let out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(33));
+        assert!(out.has_balanced_frame_trace());
+        let overflow = src.replace("tick(5,s)", "tick(9223372036854775807,s)");
+        let out = PreparedPrivateScalarCall::prepare(&overflow).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let bad = src.replace("var delta:int = 2", "var delta:bool = false");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&bad), Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
     fn 方法整筆移動來源與形參交叉同名仍逐筆清理() {
         use crate::owned_str_runtime::ResourceEvent::*;
         let src = r#"struct Counter{

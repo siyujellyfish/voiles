@@ -27,6 +27,7 @@ def run(*args):
 if __name__ == "__main__":
     cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
     cfg_cases = (
+        "持票方法複合加減逐次讀取當下欄位且溢位歸票",
         "方法整筆移動來源與形參交叉同名仍逐筆清理",
         "方法混合字串借用與整數寫入於正常及溢位皆歸票",
         "巢狀方法分支依每輪欄位真值寫入與提前返回",
