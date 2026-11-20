@@ -177,13 +177,19 @@ impl PrivateMethodExecution<'_> {
 }
 
 impl PrivateMethodInteger {
-    fn find_helper(&self, span: crate::common_ir::NodeSpan) -> Option<&PrivateSelfApprovedHelper> {
+    fn collect_helpers<'a>(&'a self, order: &mut Vec<(crate::common_ir::NodeSpan, &'a PrivateSelfApprovedHelper)>) {
         match self {
-            Self::Helper(at, helper, _) if *at == span => Some(helper),
-            Self::Helper(_, _, args) => args.iter().find_map(|arg| arg.find_helper(span)),
-            Self::Addition(left, right) | Self::Subtraction(left, right) =>
-                left.find_helper(span).or_else(|| right.find_helper(span)),
-            _ => None,
+            Self::Helper(span, helper, arguments) => {
+                for argument in arguments {
+                    argument.collect_helpers(order);
+                }
+                order.push((*span, helper));
+            }
+            Self::Addition(left, right) | Self::Subtraction(left, right) => {
+                left.collect_helpers(order);
+                right.collect_helpers(order);
+            }
+            Self::Field(_) | Self::Expression(_) => {}
         }
     }
 
@@ -220,13 +226,20 @@ impl PrivateMethodInteger {
 }
 
 impl PrivateScalarSelfRead {
-    fn helper_in_block(body: &[PrivateScalarMethodStep], span: crate::common_ir::NodeSpan) -> Option<&PrivateSelfApprovedHelper> {
+    fn collect_block_helpers<'a>(body: &'a [PrivateScalarMethodStep],
+        order: &mut Vec<(crate::common_ir::NodeSpan, &'a PrivateSelfApprovedHelper)>) {
         use PrivateScalarMethodStep as Step;
-        body.iter().find_map(|op| match op {
-            Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr) | Step::WriteInt(_, expr) => expr.find_helper(span),
-            Step::If(_, yes, no) => Self::helper_in_block(yes, span).or_else(|| Self::helper_in_block(no, span)),
-            _ => None,
-        })
+        for step in body {
+            match step {
+                Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr) | Step::WriteInt(_, expr) =>
+                    expr.collect_helpers(order),
+                Step::If(_, yes, no) => {
+                    Self::collect_block_helpers(yes, order);
+                    Self::collect_block_helpers(no, order);
+                }
+                _ => {}
+            }
+        }
     }
 
     fn matches_exit_trace(&self, trace: &[PrivateSharedCallExitEvent],
@@ -235,7 +248,9 @@ impl PrivateScalarSelfRead {
         if !trace.starts_with(&[LoanAcquired(*ticket), FunctionEntered]) { return false; }
         let mut inside = &trace[2..];
         let mut unwound = false;
-        let mut seen = BTreeSet::new();
+        let mut order = Vec::new();
+        Self::collect_block_helpers(&self.body, &mut order);
+        let mut remaining = order.into_iter();
         let mut receipts = helpers.iter();
         let mut locals = Vec::new();
         let mut local_plan = self.body.iter().filter_map(|op| match op {
@@ -252,9 +267,9 @@ impl PrivateScalarSelfRead {
             }
             if !matches!(event, FunctionEntered) { break; }
             let Some(receipt) = receipts.next() else { return false; };
-            let Some(target) = Self::helper_in_block(&self.body, receipt.span) else { return false; };
+            let Some((_, target)) = remaining.find(|(span, _)| *span == receipt.span) else { return false; };
             let [FunctionEntered, outcome, FunctionExited { returned }, rest @ ..] = inside else { return false; };
-            if !seen.insert(receipt.span) || unwound || *returned != receipt.result.is_ok()
+            if unwound || *returned != receipt.result.is_ok()
                 || receipt.locals.len() != target.parameters.len()
                 || !target.parameters.iter().all(|id| receipt.locals.contains_key(id))
                 || receipt.result != Err(PrivateScalarCallRuntimeError::StepBudget)
