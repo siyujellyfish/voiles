@@ -286,6 +286,21 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                     raise ValueError("M1 原 Checker Rust 來源／真 Gate／AI-build 不存在")
                 if not (根目錄 / "src/struct_stage/execute_method_self.rs").is_file():
                     raise ValueError("M1 真同步方法 Runtime 原始測試來源不存在")
+            elif 名稱 in {"M2", "M3"}:
+                gate = {
+                    "M2": "tools/核對G18-P18.6-M2同步方法借用與欄位.py",
+                    "M3": "tools/核對G18-P18.6-M3函式方法同一控制圖.py",
+                }[名稱]
+                expected = {
+                    "contract": f"{名稱}-01..{名稱}-08",
+                    "tests": "src/struct_stage/g18_m2_m3_obligation_tests.rs",
+                    "gate": gate,
+                    "report": "AI-build/G18-P18.6-M2-M3同步方法原始義務驗收.md",
+                }
+                if 狀態 != "Closed" or 義務.get("closure_proof") != expected:
+                    raise ValueError(f"{名稱} 缺少獨立同步方法正反驗收")
+                if any(not (根目錄 / expected[key]).is_file() for key in ("tests", "gate", "report")):
+                    raise ValueError(f"{名稱} 同步方法驗收來源缺失")
             elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
                 raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
             if 種類 in {"DecisionBlocked", "EngineeringPending"}:
@@ -322,8 +337,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 18 or 統計["OpenEngineering"] != 8 or 統計["BlockedDecision"] != 0:
-        raise ValueError("P18.1～P18.4 及 M1 共 18 義務閉合，另外八項仍待驗收")
+    if 統計["Closed"] != 20 or 統計["OpenEngineering"] != 6 or 統計["BlockedDecision"] != 0:
+        raise ValueError("P18.1～P18.4 及 M1～M3 共 20 義務閉合，另外六項仍待驗收")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
