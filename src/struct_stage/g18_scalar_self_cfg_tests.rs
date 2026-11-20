@@ -21,6 +21,70 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 普通函式迴圈內方法持票執行輔助函式並保留故障框架() {
+        let src = r#"struct Counter{
+var n:int = 1
+fn tick(x:int, label:str)->int{
+self.n = plus(x)
+return plus(self.n)
+}
+}
+fn plus(x:int)->int{ return x+1 }
+fn run()->int{
+var owner:Counter = Counter()
+const s:str = "外層"
+var total:int = 0
+for i in 0..3{
+total = total + owner.tick(i,s)
+}
+return total
+}
+fn main()->int{ return run() }
+"#;
+        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        let receipts: Vec<_> = out.events.iter_mut().filter_map(|e| match e {
+            PrivateScalarCallEvent::SelfRead { helpers, .. } => Some(helpers),
+            _ => None,
+        }).collect();
+        assert_eq!(receipts.len(), 3);
+        for helpers in receipts {
+            assert_eq!(helpers.len(), 2);
+            helpers.pop();
+        }
+        assert!(!out.has_balanced_frame_trace());
+        let field_arg = src.replace("var total:int = 0", "var other:Counter = Counter()\nvar total:int = 0")
+            .replace("total = total + owner.tick(i,s)", "other.n = i\ntotal = total + owner.tick(other.n,s)");
+        let out = PreparedPrivateScalarCall::prepare(&field_arg).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        let with_locals = src.replace("x:int, label:str", "x:int").replace("owner.tick(i,s)", "owner.tick(i)")
+            .replace("self.n = plus(x)\nreturn plus(self.n)", "var first:int = plus(x)\nvar last:int = first\nlast = plus(first)\nreturn last");
+        let plan = PreparedPrivateScalarCall::prepare(&with_locals).unwrap();
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        let mut fault = false;
+        for max_steps in 1..100 {
+            let out = plan.execute_with_budget(PrivateScalarExecutionBudget { max_call_frames: 8, max_steps }).unwrap();
+            if out.result == Err(PrivateScalarCallRuntimeError::StepBudget) && out.events.iter().any(|event|
+                matches!(event, PrivateScalarCallEvent::SelfRead { helpers, trace, .. } if helpers.iter().any(|h|
+                    h.result == Err(PrivateScalarCallRuntimeError::StepBudget)) && trace.iter().any(|e|
+                    matches!(e, PrivateSharedCallExitEvent::LocalScopeEnded(_))))) {
+                assert!(out.has_balanced_frame_trace());
+                fault = true;
+                break;
+            }
+        }
+        assert!(fault);
+        let overflow = src.replace("owner.tick(i,s)", "owner.tick(9223372036854775807,s)");
+        let failed = PreparedPrivateScalarCall::prepare(&overflow).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(failed.has_balanced_frame_trace());
+    }
+
+    #[test]
     fn 布林方法結果可在普通函式分支及實參中使用() {
         let src = r#"struct Flag{
 var enabled:bool = false

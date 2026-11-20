@@ -56,12 +56,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 相同 AST 在分支或迴圈重訪時只能提出相同身分及權限；不覆寫
     /// 已存在的首次證據，衝突狀態不可由後續路徑自動恢復。
     fn record_verified_call_borrows(&self, term: &Term, facts: &[BorrowFact]) {
-        self.record_call_arguments(term, facts, BTreeMap::new());
+        self.record_call_arguments(term, facts, BTreeMap::new(), BTreeMap::new());
     }
 
     fn record_call_arguments(&self, term: &Term, facts: &[BorrowFact],
-        method_moves: BTreeMap<crate::common_ir::NodeSpan, DeclarationId>) {
-        let plan = VerifiedCallBorrowPlan { method_moves,
+        method_moves: BTreeMap<crate::common_ir::NodeSpan, DeclarationId>, method_bindings: BTreeMap<String, DeclarationId>) {
+        let plan = VerifiedCallBorrowPlan { method_moves, method_bindings,
             span: term.node_span(), facts: facts.to_vec(),
         };
         let mut recorded = self.recorded_call_borrows.borrow_mut();
@@ -1954,7 +1954,13 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     argument_loans.check_direct_access(bound.declaration_start)
                         .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
-                self.record_call_arguments(term, &argument_facts, method_moves);
+                let visible = Self::visible_future_sources(vars, vars.len() - 1);
+                let mut used = BTreeSet::new();
+                for arg in args {
+                    Self::scan_resolved_term_uses(arg, &visible, &mut used, ResolvedUseKind::All);
+                }
+                let bindings = visible.into_iter().filter(|(_, id)| used.contains(id)).collect();
+                self.record_call_arguments(term, &argument_facts, method_moves, bindings);
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
