@@ -10,6 +10,7 @@ enum PrivateMethodInteger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PrivateMethodValue<T> {
     Int(i64),
+    Bool(bool),
     Str(T),
 }
 
@@ -17,6 +18,7 @@ enum PrivateMethodValue<T> {
 enum PrivateScalarMethodStep {
     Return(PrivateMethodInteger),
     ReturnMoved(DeclarationId),
+    ReturnBool(PrivateSelfBoolWriteSource),
     WriteInt(String, PrivateMethodInteger),
     WriteBool(String, PrivateSelfBoolWriteSource),
     If(PrivateSelfBoolWriteSource, Vec<Self>, Vec<Self>),
@@ -81,6 +83,8 @@ impl PrivateScalarMethodCompiler<'_> {
                         let source = PreparedPrivateMoveCall::checked_move_name(leaf, self.verified).ok()?;
                         let param = self.method.params.iter().find(|p| p.name == source && p.ty == "str")?;
                         Step::ReturnMoved(DeclarationId(param.declaration_start))
+                    } else if self.method.result_ty == "bool" {
+                        Step::ReturnBool(self.boolean(&ret.expression)?)
                     } else {
                         Step::Return(self.integer(&ret.expression)?)
                     }
@@ -108,7 +112,7 @@ impl PrivateScalarMethodCompiler<'_> {
                 }
                 _ => return None,
             };
-            let returns = matches!(step, Step::Return(_) | Step::ReturnMoved(_));
+            let returns = matches!(step, Step::Return(_) | Step::ReturnMoved(_) | Step::ReturnBool(_));
             body.push(step);
             if returns { break; }
         }
@@ -159,6 +163,7 @@ impl PrivateScalarSelfRead {
             *steps += 1;
             match op {
                 PrivateScalarMethodStep::Return(expr) => return integer(expr, runtime).map(PrivateMethodValue::Int),
+                PrivateScalarMethodStep::ReturnBool(expr) => return boolean(expr, runtime).map(PrivateMethodValue::Bool),
                 PrivateScalarMethodStep::ReturnMoved(id) => return Ok(PrivateMethodValue::Str(*id)),
                 PrivateScalarMethodStep::WriteInt(field, expr) => {
                     let value = integer(expr, runtime)?;

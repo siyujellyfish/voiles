@@ -50,6 +50,12 @@ pub(crate) fn event_trace_balanced(events: &[ResourceEvent]) -> bool {
     created == released
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum StrArgumentSource<'a> {
+    Named(&'a str),
+    Temporary(u64),
+}
+
 #[derive(Debug)]
 pub(crate) struct OwnedUtf8 {
     id: u64,
@@ -203,24 +209,42 @@ impl OwnedStrRuntime {
     pub(crate) fn enter_scope(&mut self) { self.scopes.push(StrFrame::default()); }
 
     /// 所有來源先在呼叫者作用域定位，再一次移交給新框架，避免形參遮蔽後續來源。
-    pub(crate) fn enter_with_moved_arguments(&mut self, arguments: &[(&str, &str)])
-        -> Result<Vec<u64>, StrRuntimeError> {
+    pub(crate) fn enter_with_moved_arguments(&mut self, arguments: &[(StrArgumentSource<'_>, &str)],
+        temporaries: &mut Vec<OwnedUtf8>) -> Result<Vec<u64>, StrRuntimeError> {
         let mut slots = Vec::with_capacity(arguments.len());
         let mut sources = std::collections::HashSet::new();
         let mut targets = std::collections::HashSet::new();
+        let mut temporary_ids = Vec::new();
         for &(source, target) in arguments {
-            let slot = self.location(source)?;
-            if self.scopes[slot.0].names[slot.1].owned.is_none() || !sources.insert(slot) {
-                return Err(StrRuntimeError::MovedSource);
-            }
+            let slot = match source {
+                StrArgumentSource::Named(name) => {
+                    let slot = self.location(name)?;
+                    if self.scopes[slot.0].names[slot.1].owned.is_none() || !sources.insert(slot) {
+                        return Err(StrRuntimeError::MovedSource);
+                    }
+                    Some(slot)
+                }
+                StrArgumentSource::Temporary(id) => {
+                    temporary_ids.push(id);
+                    None
+                }
+            };
             if !targets.insert(target) { return Err(StrRuntimeError::DuplicateBinding); }
             slots.push(slot);
+        }
+        let start = temporaries.len().checked_sub(temporary_ids.len()).ok_or(StrRuntimeError::MissingOwner)?;
+        if temporaries[start..].iter().map(OwnedUtf8::resource_id).ne(temporary_ids) {
+            return Err(StrRuntimeError::MissingOwner);
         }
         let end = self.next_order.checked_add(arguments.len() as u64).ok_or(StrRuntimeError::ExhaustedIdentity)?;
         let mut frame = StrFrame::default();
         let mut ids = Vec::with_capacity(slots.len());
-        for (index, ((scope, slot), &(_, target))) in slots.into_iter().zip(arguments).enumerate() {
-            let value = self.scopes[scope].names[slot].owned.take().expect("來源已完整預檢");
+        let mut detached = temporaries.drain(start..);
+        for (index, (slot, &(_, target))) in slots.into_iter().zip(arguments).enumerate() {
+            let value = match slot {
+                Some((scope, slot)) => self.scopes[scope].names[slot].owned.take(),
+                None => detached.next(),
+            }.expect("所有來源已完整預檢");
             ids.push(value.id);
             self.events.push(ResourceEvent::Moved(value.id));
             frame.names.push(StrBinding { name: target.to_owned(), mutable: false,

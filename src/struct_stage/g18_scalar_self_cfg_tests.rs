@@ -21,6 +21,45 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 布林方法結果可在普通函式分支及實參中使用() {
+        let src = r#"struct Flag{
+var enabled:bool = false
+fn flip(value:bool)->bool{
+self.enabled = value
+return self.enabled
+}
+fn read()->bool{ return self.enabled }
+}
+fn take(flag:bool)->int{
+if(flag){ return 7 }
+return 2
+}
+fn work()->int{
+var owner:Flag = Flag()
+var first:bool = owner.flip(true)
+if(owner.read()){ return take(owner.flip(false)) }
+return 9
+}
+fn main()->int{ return work() }
+"#;
+        let plan = PreparedPrivateScalarCall::prepare(src).unwrap();
+        let out = plan.execute().unwrap();
+        assert_eq!(out.result, Ok(2));
+        assert!(out.has_balanced_frame_trace());
+        let actual: Vec<_> = out.events.iter().filter_map(|event| match event {
+            PrivateScalarCallEvent::SelfRead { result: Ok(PrivateMethodValue::Bool(b)), .. } => Some(*b),
+            _ => None,
+        }).collect();
+        assert_eq!(actual, [true,true,false]);
+        let field = src.replace("if(owner.read())", "owner.enabled = owner.flip(false)\nif(owner.read())");
+        let out = PreparedPrivateScalarCall::prepare(&field).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(9));
+        assert!(out.has_balanced_frame_trace());
+        let bad = src.replace("take(owner.flip(false))", "7 + owner.flip(false)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&bad), Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
     fn 方法由分支移出單一字串並逆序清理其餘形參() {
         use crate::owned_str_runtime::ResourceEvent::*;
         let src = r#"struct Holder{
@@ -60,6 +99,12 @@ fn main()->int{ return inspect(relay()) }
             }
             assert!(!outcome.has_balanced_frame_trace());
         }
+        let literals = src.replace("owner.pick(a.move(),b.move(),true)", "owner.pick((\"首\"),(b.move()),false)");
+        let out = PreparedPrivateScalarCall::prepare(&literals).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(4));
+        assert!(out.resource_events.starts_with(&[Created(1),Created(2),Created(3),Moved(3),Moved(2),
+            Returned(2),Released(3),Returned(2)]));
+        assert!(out.has_balanced_frame_trace());
         let borrowed = src.replace("pick(a.move(),b.move(),true)", "pick(a,b.move(),true)");
         assert!(matches!(PreparedPrivateScalarCall::prepare(&borrowed), Err(PrivateScalarCallPrepareError::Check(_))));
         let overflow = src.replace("if(flag){", "self.n = self.n + 9223372036854775807\nif(flag){");

@@ -80,7 +80,7 @@ enum PrivateScalarCallEvent {
     StrLiteralTemporaryCreated(u64),
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     SelfRead {
-        owned_arguments: Vec<(DeclarationId, DeclarationId, u64)>,
+        owned_arguments: Vec<(Option<DeclarationId>, DeclarationId, u64)>,
         ownership_events: Vec<crate::owned_str_runtime::ResourceEvent>,
         argument_tickets: Vec<crate::borrow_safety::BorrowTicket>,
         site: PrivateScalarSelfRead,
@@ -572,13 +572,15 @@ impl PrivateScalarCallOutcome {
                         Some(PrivateScalarCallEvent::UnwindStarted))) { return false; }
                     let Some(frame) = frames.last_mut() else { return false; };
                     let moves = site.arguments.iter().filter_map(|(param, arg)| match arg {
-                        PrivateScalarCallArgument::MoveStr { source, .. } => Some((*source, *param)), _ => None,
+                        PrivateScalarCallArgument::MoveStr { source, .. } => Some((Some(*source), *param)),
+                        PrivateScalarCallArgument::LiteralStr(_) => Some((None, *param)), _ => None,
                     });
                     if moves.ne(owned_arguments.iter().map(|(s,p,_)| (*s,*p))) { return false; }
                     use crate::owned_str_runtime::ResourceEvent;
                     let returned = match result {
-                        Ok(PrivateMethodValue::Str(id)) if site.returns_str && owned_arguments.iter().any(|(_,_,v)| v == id) => Some(*id),
-                        Ok(PrivateMethodValue::Int(_)) if !site.returns_str => None,
+                        Ok(PrivateMethodValue::Str(id)) if site.result_type == "str" && owned_arguments.iter().any(|(_,_,v)| v == id) => Some(*id),
+                        Ok(PrivateMethodValue::Int(_)) if site.result_type == "int" => None,
+                        Ok(PrivateMethodValue::Bool(_)) if site.result_type == "bool" => None,
                         Err(_) => None,
                         _ => return false,
                     };
@@ -587,8 +589,11 @@ impl PrivateScalarCallOutcome {
                         .chain(owned_arguments.iter().rev().filter(|(_,_,id)| Some(*id) != returned)
                             .map(|(_,_,id)| ResourceEvent::Released(*id)));
                     if order.ne(ownership_events.iter().cloned()) { return false; }
+                    let temps: Vec<_> = owned_arguments.iter().filter_map(|(s,_,id)| s.is_none().then_some(*id)).collect();
+                    if !frame.pending_str_results.ends_with(&temps) { return false; }
+                    frame.pending_str_results.truncate(frame.pending_str_results.len() - temps.len());
                     for (source, _, id) in owned_arguments {
-                        if frame.owner_resources.remove(source) != Some(*id) || !frame.resource_ids.contains(id)
+                        if source.is_some_and(|s| frame.owner_resources.remove(&s) != Some(*id)) || !frame.resource_ids.contains(id)
                             || (Some(*id) != returned && !frame.resource_ids.remove(id))
                             || frame.loan_resources.iter().any(|(_, linked)| linked == id) { return false; }
                     }
@@ -923,7 +928,7 @@ impl PrivateScalarCallOutcome {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarSelfRead {
-    returns_str: bool,
+    result_type: String,
     body: Vec<PrivateScalarMethodStep>,
     arguments: Vec<(DeclarationId, PrivateScalarCallArgument)>,
     name: String,
@@ -959,13 +964,15 @@ impl PrivateScalarSelfRead {
                     }
                 }
             }
+            let leaf = private_self_checked_ungrouped_return(verified, &term).ok()?;
             let arg = match verified.plan.scalar_hir.expression(term.node_span()).map(|f| f.ty) {
                 Some(crate::common_ir::ScalarType::Int) => PrivateScalarCallArgument::Int(
                     PrivateScalarReturnExpr::from_checked_bindings(&term, &bindings, verified).ok()?),
                 Some(crate::common_ir::ScalarType::Bool) => PrivateScalarCallArgument::Bool(
                     PrivateScalarBoolExpr::from_checked(&term, &bindings, verified).ok()?),
-                _ if matches!(&term.kind, TermKind::Move(_)) => {
-                    let owner = PreparedPrivateMoveCall::checked_move_name(&term, verified).ok()?;
+                _ if matches!(&leaf.kind, TermKind::Literal("str")) => PrivateScalarCallArgument::LiteralStr(private_str_literal(leaf, &verified.tokens).ok()?),
+                _ if matches!(&leaf.kind, TermKind::Move(_)) => {
+                    let owner = PreparedPrivateMoveCall::checked_move_name(leaf, verified).ok()?;
                     let source = *verified.plan.declarations.call_borrows.get(&span.start)?.method_moves.get(&term.node_span())?;
                     if verified.plan.declarations.typed_declaration(source)?.ty != "str" { return None; }
                     PrivateScalarCallArgument::MoveStr { owner: owner.to_owned(), source }
@@ -988,11 +995,11 @@ impl PrivateScalarSelfRead {
                 p.ty == match arg {
                     PrivateScalarCallArgument::Int(_) => "int",
                     PrivateScalarCallArgument::Bool(_) => "bool",
-                    PrivateScalarCallArgument::BorrowStr { .. } | PrivateScalarCallArgument::MoveStr { .. } => "str",
+                    PrivateScalarCallArgument::BorrowStr { .. } | PrivateScalarCallArgument::MoveStr { .. } | PrivateScalarCallArgument::LiteralStr(_) => "str",
                     _ => return false,
                 }));
         let method = candidates.next()?;
-        if candidates.next().is_some() || method.is_async || !matches!(method.result_ty.as_str(), "int" | "str") { return None; }
+        if candidates.next().is_some() || method.is_async || !matches!(method.result_ty.as_str(), "int" | "bool" | "str") { return None; }
         let arguments = method.params.iter().map(|p| DeclarationId(p.declaration_start)).zip(actuals).collect();
         let safety = verified.plan.method_safety.get(&method.start)?;
         let compiler = PrivateScalarMethodCompiler { verified, method, definition, safety };
@@ -1000,7 +1007,7 @@ impl PrivateScalarSelfRead {
         let loan = BorrowFact::new(id, safety.self_borrow);
         if (loan.kind == BorrowKind::ExclusiveWrite && !declaration.mutable)
             || *receiver_fact != loan { return None; }
-        Some(Self { returns_str: method.result_ty == "str", name: name.to_owned(), owner: owner.to_owned(), body,
+        Some(Self { result_type: method.result_ty.clone(), name: name.to_owned(), owner: owner.to_owned(), body,
             call_span: span, method_start: method.start, loan, arguments })
     }
 }
@@ -1537,6 +1544,7 @@ impl PrivateScalarCallArgument {
 /// 此執行計畫保留每一筆 Checker 核准的實際宣告與可寫更新。
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarBoolExpr {
+    Method(Box<PrivateScalarSelfRead>),
     Constant(bool),
     Bound(DeclarationId),
     /// 只有作為已核准 bool 實參才編譯此同步函式結果；
@@ -1561,6 +1569,11 @@ impl PrivateScalarBoolExpr {
             ));
         }
         match &term.kind {
+            TermKind::MethodCall(owner, name, _) => {
+                bindings.get(owner).and_then(|id| PrivateScalarSelfRead::checked(span, owner, name, *id, verified))
+                    .filter(|site| site.result_type == "bool").map(|site| Self::Method(Box::new(site)))
+                    .ok_or(PrivateScalarCallPrepareError::Unsupported("布林方法缺少原接收者、簽章或借票事實"))
+            }
             TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(value)) => {
                 let text = std::str::from_utf8(&verified.source.bytes).map_err(|_|
                     PrivateScalarCallPrepareError::SourceChanged,
@@ -1808,6 +1821,9 @@ impl PrivateScalarBoolExpr {
     }
 
     fn collect_calls<'a>(&'a self, output: &mut Vec<&'a str>) {
+        if let Self::Method(site) = self {
+            for (_, arg) in &site.arguments { arg.collect_calls(output); }
+        }
         if let Self::Call { name, arguments } = self {
             output.push(name);
             for argument in arguments { argument.collect_calls(output); }
@@ -1824,7 +1840,7 @@ impl PrivateScalarBoolExpr {
     ) -> Result<bool, PrivateScalarCallRuntimeError> {
         match self {
             Self::Constant(value) => Ok(*value),
-            Self::Call { .. } => Err(PrivateScalarCallRuntimeError::StateMismatch),
+            Self::Method(_) | Self::Call { .. } => Err(PrivateScalarCallRuntimeError::StateMismatch),
             Self::Bound(id) => frame.bool_values.get(id).copied()
                 .ok_or(PrivateScalarCallRuntimeError::StateMismatch),
             Self::CopyStructBoolField { declaration, owner, field } => {
@@ -2354,7 +2370,7 @@ enum PrivateScalarTask<'a> {
     DeclareEmptyBool(DeclarationId),
     AssignLocal(DeclarationId),
     WriteCopyStructInt(DeclarationId, &'a str, &'a str),
-    WriteCopyStructBool(DeclarationId, &'a str, &'a str, &'a PrivateScalarBoolExpr),
+    WriteCopyStructBool(DeclarationId, &'a str, &'a str, Option<&'a PrivateScalarBoolExpr>),
     WriteCopyStructStr(DeclarationId, &'a str, &'a str, &'a str),
     BindBool(DeclarationId, &'a PrivateScalarBoolExpr),
     /// F2：bool 動態呼叫真正返回後才可寫入局部；尚未返回不可提前初始化。
@@ -2670,7 +2686,7 @@ impl PreparedPrivateScalarCall {
         }
         if let TermKind::MethodCall(owner, name, _) = &call_term.kind {
             if let Some(site) = bindings.get(owner).and_then(|id|
-                PrivateScalarSelfRead::checked(call_term.node_span(), owner, name, *id, verified)).filter(|site| site.returns_str) {
+                PrivateScalarSelfRead::checked(call_term.node_span(), owner, name, *id, verified)).filter(|site| site.result_type == "str") {
                 return Ok(PrivateScalarStrInitializer::Method(site));
             }
         }
@@ -4021,7 +4037,7 @@ impl PreparedPrivateScalarCall {
                 PrivateScalarLocalStep::AssignCopyStructBool {
                     declaration, owner, field, value,
                 } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
-                    *declaration, owner, field, value,
+                    *declaration, owner, field, Some(value),
                 )),
                 PrivateScalarLocalStep::AssignCopyStructStr {
                     declaration, owner, field, value,
@@ -4108,6 +4124,7 @@ impl PreparedPrivateScalarCall {
                             tasks.push(match arg {
                                 PrivateScalarCallArgument::Int(expr) => PrivateScalarTask::Evaluate(expr, false),
                                 PrivateScalarCallArgument::Bool(expr) => PrivateScalarTask::EvaluateBoolArgument(expr),
+                                PrivateScalarCallArgument::LiteralStr(text) => PrivateScalarTask::CreateStrLiteralArgument(text),
                                 PrivateScalarCallArgument::MoveStr { owner, source } => PrivateScalarTask::MoveArgument(owner, *source),
                                 PrivateScalarCallArgument::BorrowStr { owner, fact } =>
                                     PrivateScalarTask::BorrowArgument(owner, *fact),
@@ -4144,7 +4161,13 @@ impl PreparedPrivateScalarCall {
                                     return Err(PrivateScalarCallRuntimeError::StateMismatch);
                                 }
                                 frame.borrow_tracker.check_direct_access(*source).map_err(PrivateScalarCallRuntimeError::Borrow)?;
-                                moves.push((owner.as_str(), *source, *parameter));
+                                moves.push((crate::owned_str_runtime::StrArgumentSource::Named(owner), Some(*source), *parameter));
+                            } else if matches!(arg, PrivateScalarCallArgument::LiteralStr(_)) {
+                                let index = completed_arguments.len().checked_sub(argument_tickets.len() + moves.len() + 1)
+                                    .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                let PrivateScalarEvaluatedArgument::TemporaryStr { resource_id } = completed_arguments[index]
+                                    else { return Err(PrivateScalarCallRuntimeError::StateMismatch); };
+                                moves.push((crate::owned_str_runtime::StrArgumentSource::Temporary(resource_id), None, *parameter));
                             } else {
                                 let value = values.pop().ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
                                 parameters.insert(*parameter, value);
@@ -4163,6 +4186,10 @@ impl PreparedPrivateScalarCall {
                             Ok((*owner, target.name.as_str()))
                         }).collect::<Result<_, PrivateScalarCallRuntimeError>>()?;
 
+                        let temps: Vec<_> = moves.iter().filter_map(|(s,_,_)| match s {
+                            crate::owned_str_runtime::StrArgumentSource::Temporary(id) => Some(*id), _ => None,
+                        }).collect();
+                        if !frame.pending_owned_returns.ends_with(&temps) { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
                         let tracker = &mut frame.borrow_tracker;
                         let ticket = tracker.acquire(site.loan.source, site.loan.kind)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
@@ -4175,12 +4202,16 @@ impl PreparedPrivateScalarCall {
                             .and_then(|owner| {
                                 if owner != site.loan.source { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
                                 let ids = if names.is_empty() { Vec::new() } else {
-                                    resources.enter_with_moved_arguments(&names).map_err(PrivateScalarCallRuntimeError::Resource)?
+                                    let ids = resources.enter_with_moved_arguments(&names, &mut pending_str_returns)
+                                        .map_err(PrivateScalarCallRuntimeError::Resource)?;
+                                    frame.pending_owned_returns.truncate(frame.pending_owned_returns.len() - temps.len());
+                                    ids
                                 };
                                 owned_arguments.extend(moves.iter().zip(ids).map(|((_, source, param), id)| (*source,*param,id)));
                                 let result = site.run_body(&parameters, &mut copy_structs, &mut steps, budget.max_steps);
                                 let result = result.and_then(|value| match value {
                                     PrivateMethodValue::Int(n) => Ok(PrivateMethodValue::Int(n)),
+                                    PrivateMethodValue::Bool(b) => Ok(PrivateMethodValue::Bool(b)),
                                     PrivateMethodValue::Str(id) => {
                                         let index = moves.iter().position(|(_,_,target)| *target == id)
                                             .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
@@ -4209,7 +4240,11 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::SelfRead { owned_arguments, ownership_events, site: site.clone(), ticket, result: read, trace,
                             argument_tickets: argument_tickets.clone() });
                         events.extend(argument_tickets.into_iter().rev().map(PrivateScalarCallEvent::LoanReturned));
-                        if let PrivateMethodValue::Int(n) = read? { values.push(n); }
+                        match read? {
+                            PrivateMethodValue::Int(n) => values.push(n),
+                            PrivateMethodValue::Bool(b) => values.push(i64::from(b)),
+                            PrivateMethodValue::Str(_) => {}
+                        }
                     }
                     PrivateScalarTask::Evaluate(term, is_root_expression) => match term {
                         PrivateScalarReturnExpr::Parameter(id) => {
@@ -4261,7 +4296,7 @@ impl PreparedPrivateScalarCall {
                             Self::record_owned_resources(&resources, &mut resource_cursor, events);
                         }
                         PrivateScalarReturnExpr::SelfRead(site) => {
-                            if site.returns_str { tasks.push(PrivateScalarTask::ForwardStrReturn); }
+                            if site.result_type == "str" { tasks.push(PrivateScalarTask::ForwardStrReturn); }
                             tasks.push(PrivateScalarTask::EvaluateMethod(site));
                         }
                         PrivateScalarReturnExpr::CopyStructIntField {
@@ -4315,7 +4350,9 @@ impl PreparedPrivateScalarCall {
                         completed_arguments.push(PrivateScalarEvaluatedArgument::Int(value));
                     }
                     PrivateScalarTask::EvaluateBoolArgument(expr) => {
-                        if let PrivateScalarBoolExpr::Call { name, arguments } = expr {
+                        if let PrivateScalarBoolExpr::Method(site) = expr {
+                            tasks.push(PrivateScalarTask::EvaluateMethod(site));
+                        } else if let PrivateScalarBoolExpr::Call { name, arguments } = expr {
                             // 真 bool 子呼叫使用同一 LIFO EnterCall／ExitCall，
                             // 不在 Rust 內遞迴求值或預先編碼假 int 結果。
                             tasks.push(PrivateScalarTask::EnterCall(
@@ -4505,6 +4542,11 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::LocalInitialized(id, value));
                     }
                     PrivateScalarTask::WriteCopyStructBool(id, owner, field, expr) => {
+                        if let Some(call @ PrivateScalarBoolExpr::Method(_)) = expr {
+                            tasks.push(PrivateScalarTask::WriteCopyStructBool(id, owner, field, None));
+                            tasks.push(PrivateScalarTask::EvaluateBoolArgument(call));
+                            continue;
+                        }
                         let frame = frames.last().ok_or(
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -4514,7 +4556,13 @@ impl PreparedPrivateScalarCall {
                         }
                         frame.borrow_tracker.check_direct_access(id)
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
-                        let value = expr.evaluate_runtime(frame, &copy_structs)?;
+                        let value = match expr {
+                            Some(expr) => expr.evaluate_runtime(frame, &copy_structs)?,
+                            None => match values.pop() {
+                                Some(0) => false, Some(1) => true,
+                                _ => return Err(PrivateScalarCallRuntimeError::StateMismatch),
+                            },
+                        };
                         copy_structs.write_bool_field(owner, field, value, true).map_err(|_|
                             PrivateScalarCallRuntimeError::StateMismatch,
                         )?;
@@ -4598,7 +4646,7 @@ impl PreparedPrivateScalarCall {
                         }
                     }
                     PrivateScalarTask::BindBool(id, expr) => {
-                        if matches!(expr, PrivateScalarBoolExpr::Call { .. }) {
+                        if matches!(expr, PrivateScalarBoolExpr::Call { .. } | PrivateScalarBoolExpr::Method(_)) {
                             // 先完整執行真 bool 子框架，返回前不可提前宣告。
                             tasks.push(PrivateScalarTask::BindBoolFromValue(id));
                             tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
@@ -4994,7 +5042,7 @@ impl PreparedPrivateScalarCall {
                         events.push(PrivateScalarCallEvent::ResourceOwnerBound(id, resource_id));
                     }
                     PrivateScalarTask::AssignBool(id, expr) => {
-                        if matches!(expr, PrivateScalarBoolExpr::Call { .. }) {
+                        if matches!(expr, PrivateScalarBoolExpr::Call { .. } | PrivateScalarBoolExpr::Method(_)) {
                             tasks.push(PrivateScalarTask::AssignBoolFromValue(id));
                             tasks.push(PrivateScalarTask::EvaluateBoolArgument(expr));
                         } else {
@@ -5052,7 +5100,7 @@ impl PreparedPrivateScalarCall {
                         let mut selected = None;
                         let mut current = branch;
                         loop {
-                            if matches!(&current.condition, PrivateScalarBoolExpr::Call { .. }) {
+                            if matches!(&current.condition, PrivateScalarBoolExpr::Call { .. } | PrivateScalarBoolExpr::Method(_)) {
                                 // 子函式必須先在相同的動態棧 Enter/Exit、簽真 BoolReturned，
                                 // 才能將該返回值用作分支判斷；不得預先決定控制邊。
                                 tasks.push(PrivateScalarTask::FinishEarlyCondition(current));
@@ -5327,7 +5375,7 @@ impl PreparedPrivateScalarCall {
                         PrivateScalarBranchAction::AssignCopyStructBool {
                             declaration, owner, field, value,
                         } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
-                            *declaration, owner, field, value,
+                            *declaration, owner, field, Some(value),
                         )),
                         PrivateScalarBranchAction::AssignCopyStructStr {
                             declaration, owner, field, value,
@@ -5626,7 +5674,7 @@ impl PreparedPrivateScalarCall {
                                 PrivateScalarLocalStep::AssignCopyStructBool {
                                     declaration, owner, field, value,
                                 } => tasks.push(PrivateScalarTask::WriteCopyStructBool(
-                                    *declaration, owner, field, value,
+                                    *declaration, owner, field, Some(value),
                                 )),
                                 PrivateScalarLocalStep::AssignCopyStructStr {
                                     declaration, owner, field, value,

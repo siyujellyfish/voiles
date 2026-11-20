@@ -27,6 +27,7 @@ def run(*args):
 if __name__ == "__main__":
     cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
     cfg_cases = (
+        "布林方法結果可在普通函式分支及實參中使用",
         "方法由分支移出單一字串並逆序清理其餘形參",
         "持票方法複合加減逐次讀取當下欄位且溢位歸票",
         "方法整筆移動來源與形參交叉同名仍逐筆清理",

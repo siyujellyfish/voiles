@@ -1906,9 +1906,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     // 非 Copyable 參數若確實被方法整筆 .move() 消耗，
                     // 普通名稱仍不得通過 evaluate() 偷成第二所有者。
-                    if let TermKind::Move(name) = &arg.kind {
+                    let mut leaf = arg;
+                    while let TermKind::Group(inner) = &leaf.kind { leaf = inner; }
+                    if let TermKind::Move(name) = &leaf.kind {
                         let binding = Self::lookup(vars, name).ok_or_else(|| self.error("找不到移動實參", arg))?;
-                        method_moves.insert(arg.node_span(), self.checked_binding_use(binding, arg)?.resolved.declaration);
+                        method_moves.insert(arg.node_span(), self.checked_binding_use(binding, leaf)?.resolved.declaration);
                     }
                     let (actual, ready) = self.evaluate(arg, vars)?;
                     if !ready || actual != parameter.ty {
