@@ -21,6 +21,55 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 方法由分支移出單一字串並逆序清理其餘形參() {
+        use crate::owned_str_runtime::ResourceEvent::*;
+        let src = r#"struct Holder{
+var n:int = 1
+fn pick(left:str,right:str,flag:bool)->str{
+if(flag){ return left.move() }
+return right.move()
+}
+}
+fn relay()->str{
+var owner:Holder = Holder()
+var a:str = "甲"
+var b:str = "乙"
+return owner.pick(a.move(),b.move(),true)
+}
+fn inspect(s:str)->int{ return 4 }
+fn main()->int{ return inspect(relay()) }
+"#;
+        for binding in ["var got:str = ", "var got:str\ngot = "] {
+            let program = src.replace("return owner.pick(a.move(),b.move(),true)",
+                &format!("{binding}owner.pick(a.move(),b.move(),true)\nreturn got.move()"));
+            let outcome = PreparedPrivateScalarCall::prepare(&program).unwrap().execute().unwrap();
+            assert_eq!(outcome.result, Ok(4));
+            assert!(outcome.has_balanced_frame_trace());
+        }
+        for (flag, kept, dropped) in [("true",1,2),("false",2,1)] {
+            let program = src.replace("b.move(),true)", &format!("b.move(),{flag})"));
+            let mut outcome = PreparedPrivateScalarCall::prepare(&program).unwrap().execute().unwrap();
+            assert_eq!(outcome.result, Ok(4));
+            assert!(outcome.has_balanced_frame_trace());
+            assert!(outcome.resource_events.starts_with(&[Created(1),Created(2),Moved(1),Moved(2),
+                Returned(kept),Released(dropped),Returned(kept)]));
+            for event in &mut outcome.events {
+                if let PrivateScalarCallEvent::SelfRead { result, .. } = event {
+                    *result = Ok(PrivateMethodValue::Str(dropped));
+                }
+            }
+            assert!(!outcome.has_balanced_frame_trace());
+        }
+        let borrowed = src.replace("pick(a.move(),b.move(),true)", "pick(a,b.move(),true)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&borrowed), Err(PrivateScalarCallPrepareError::Check(_))));
+        let overflow = src.replace("if(flag){", "self.n = self.n + 9223372036854775807\nif(flag){");
+        let failed = PreparedPrivateScalarCall::prepare(&overflow).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(failed.resource_events, [Created(1), Created(2), Moved(1), Moved(2), Released(2), Released(1)]);
+        assert!(failed.has_balanced_frame_trace());
+    }
+
+    #[test]
     fn 持票方法複合加減逐次讀取當下欄位且溢位歸票() {
         let src = r#"struct Counter{
 var n:int = 3
@@ -211,7 +260,7 @@ fn read()"#).replace("total = total + owner.read()", "total = total + owner.choo
         assert_eq!(out.result, Ok(5));
         assert!(out.has_balanced_frame_trace());
         let reads: Vec<_> = out.events.iter().filter_map(|event| match event {
-            PrivateScalarCallEvent::SelfRead { result: Ok(value), .. } => Some(*value),
+            PrivateScalarCallEvent::SelfRead { result: Ok(PrivateMethodValue::Int(value)), .. } => Some(*value),
             _ => None,
         }).collect();
         assert_eq!(reads, [0, 1, 2, 2]);
@@ -320,7 +369,7 @@ fn read()"#).replace("total = total + owner.read()", "total = total + owner.choo
             let out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
             assert_eq!(out.result, Ok(expected));
             assert_eq!(out.events.iter().filter(|event| matches!(event,
-                PrivateScalarCallEvent::SelfRead { result: Ok(3), .. })).count(), calls);
+                PrivateScalarCallEvent::SelfRead { result: Ok(PrivateMethodValue::Int(3)), .. })).count(), calls);
             assert!(out.has_balanced_frame_trace());
         }
     }

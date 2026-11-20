@@ -7,9 +7,16 @@ enum PrivateMethodInteger {
     Subtraction(Box<Self>, Box<Self>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PrivateMethodValue<T> {
+    Int(i64),
+    Str(T),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarMethodStep {
     Return(PrivateMethodInteger),
+    ReturnMoved(DeclarationId),
     WriteInt(String, PrivateMethodInteger),
     WriteBool(String, PrivateSelfBoolWriteSource),
     If(PrivateSelfBoolWriteSource, Vec<Self>, Vec<Self>),
@@ -69,7 +76,14 @@ impl PrivateScalarMethodCompiler<'_> {
             let step = match &statement.kind {
                 StmtKind::Return(ret) => {
                     if !self.safety.checked_returns.contains(&statement.node_span()) { return None; }
-                    Step::Return(self.integer(&ret.expression)?)
+                    if self.method.result_ty == "str" {
+                        let leaf = private_self_checked_ungrouped_return(self.verified, &ret.expression).ok()?;
+                        let source = PreparedPrivateMoveCall::checked_move_name(leaf, self.verified).ok()?;
+                        let param = self.method.params.iter().find(|p| p.name == source && p.ty == "str")?;
+                        Step::ReturnMoved(DeclarationId(param.declaration_start))
+                    } else {
+                        Step::Return(self.integer(&ret.expression)?)
+                    }
                 }
                 StmtKind::FieldAssign { receiver, field, value } => {
                     let target = self.definition.field(field)?;
@@ -94,7 +108,7 @@ impl PrivateScalarMethodCompiler<'_> {
                 }
                 _ => return None,
             };
-            let returns = matches!(step, Step::Return(_));
+            let returns = matches!(step, Step::Return(_) | Step::ReturnMoved(_));
             body.push(step);
             if returns { break; }
         }
@@ -123,7 +137,7 @@ impl PrivateMethodInteger {
 impl PrivateScalarSelfRead {
     fn run_body(&self, parameters: &BTreeMap<DeclarationId, i64>,
         runtime: &mut crate::mixed_struct_runtime::MixedStructRuntime, steps: &mut usize, limit: usize)
-        -> Result<i64, PrivateScalarCallRuntimeError> {
+        -> Result<PrivateMethodValue<DeclarationId>, PrivateScalarCallRuntimeError> {
         use crate::mixed_struct_runtime::{MixedStructRuntime, Observed};
         use PrivateScalarCallRuntimeError::StateMismatch;
         let integer = |expr: &PrivateMethodInteger, runtime: &MixedStructRuntime| {
@@ -144,7 +158,8 @@ impl PrivateScalarSelfRead {
             if *steps >= limit { return Err(PrivateScalarCallRuntimeError::StepBudget); }
             *steps += 1;
             match op {
-                PrivateScalarMethodStep::Return(expr) => return integer(expr, runtime),
+                PrivateScalarMethodStep::Return(expr) => return integer(expr, runtime).map(PrivateMethodValue::Int),
+                PrivateScalarMethodStep::ReturnMoved(id) => return Ok(PrivateMethodValue::Str(*id)),
                 PrivateScalarMethodStep::WriteInt(field, expr) => {
                     let value = integer(expr, runtime)?;
                     runtime.write_int_field(&self.owner, field, value, true).map_err(|_| StateMismatch)?;
