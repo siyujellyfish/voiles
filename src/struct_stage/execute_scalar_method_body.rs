@@ -3,6 +3,8 @@
 enum PrivateMethodInteger {
     Field(String),
     Expression(PrivateScalarReturnExpr),
+    Addition(Box<Self>, Box<Self>),
+    Subtraction(Box<Self>, Box<Self>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,12 +32,17 @@ impl PrivateScalarMethodCompiler<'_> {
                 PrivateScalarReturnExpr::Constant(crate::syntax_shared::integer_i64(raw).ok()?),
             TermKind::Name(name) => PrivateScalarReturnExpr::Parameter(DeclarationId(
                 self.method.params.iter().find(|p| p.name == *name && p.ty == "int")?.declaration_start)),
-            TermKind::BinaryInt(_) => {
-                let bindings = self.method.params.iter().filter(|p| p.ty == "int")
-                    .map(|p| (p.name.clone(), DeclarationId(p.declaration_start))).collect();
-                let expr = PrivateScalarReturnExpr::from_checked_bindings(term, &bindings, self.verified).ok()?;
-                if !private_self_approved_int_call_arithmetic(&expr, &BTreeMap::new()) { return None; }
-                expr
+            TermKind::BinaryInt(binary) => {
+                let fact = self.verified.plan.scalar_hir.arithmetic(leaf.node_span())?;
+                if fact.left != binary.left.node_span() || fact.right != binary.right.node_span()
+                    || fact.operator != binary.operator { return None; }
+                let left = Box::new(self.integer(&binary.left)?);
+                let right = Box::new(self.integer(&binary.right)?);
+                return match fact.operator {
+                    '+' => Some(PrivateMethodInteger::Addition(left, right)),
+                    '-' => Some(PrivateMethodInteger::Subtraction(left, right)),
+                    _ => None,
+                };
             }
             _ => return None,
         };
@@ -95,17 +102,32 @@ impl PrivateScalarMethodCompiler<'_> {
     }
 }
 
+impl PrivateMethodInteger {
+    fn evaluate(&self, owner: &str, parameters: &BTreeMap<DeclarationId, i64>,
+        runtime: &crate::mixed_struct_runtime::MixedStructRuntime) -> Result<i64, PrivateScalarCallRuntimeError> {
+        use crate::mixed_struct_runtime::Observed;
+        use PrivateScalarCallRuntimeError::{IntegerOverflow, StateMismatch};
+        match self {
+            Self::Expression(expr) => expr.evaluate(parameters),
+            Self::Field(field) => match runtime.field(owner, field) {
+                Ok(Observed::Int(n)) => Ok(n), _ => Err(StateMismatch),
+            },
+            Self::Addition(left, right) => left.evaluate(owner, parameters, runtime)?
+                .checked_add(right.evaluate(owner, parameters, runtime)?).ok_or(IntegerOverflow),
+            Self::Subtraction(left, right) => left.evaluate(owner, parameters, runtime)?
+                .checked_sub(right.evaluate(owner, parameters, runtime)?).ok_or(IntegerOverflow),
+        }
+    }
+}
+
 impl PrivateScalarSelfRead {
     fn run_body(&self, parameters: &BTreeMap<DeclarationId, i64>,
         runtime: &mut crate::mixed_struct_runtime::MixedStructRuntime, steps: &mut usize, limit: usize)
         -> Result<i64, PrivateScalarCallRuntimeError> {
         use crate::mixed_struct_runtime::{MixedStructRuntime, Observed};
         use PrivateScalarCallRuntimeError::StateMismatch;
-        let integer = |expr: &PrivateMethodInteger, runtime: &MixedStructRuntime| match expr {
-            PrivateMethodInteger::Expression(expr) => expr.evaluate(parameters),
-            PrivateMethodInteger::Field(name) => match runtime.field(&self.owner, name) {
-                Ok(Observed::Int(n)) => Ok(n), _ => Err(StateMismatch),
-            },
+        let integer = |expr: &PrivateMethodInteger, runtime: &MixedStructRuntime| {
+            expr.evaluate(&self.owner, parameters, runtime)
         };
         let boolean = |expr: &PrivateSelfBoolWriteSource, runtime: &MixedStructRuntime| match expr {
             PrivateSelfBoolWriteSource::Literal(b) => Ok(*b),
