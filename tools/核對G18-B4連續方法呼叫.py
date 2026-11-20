@@ -27,6 +27,7 @@ def run(*args):
 if __name__ == "__main__":
     cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
     cfg_cases = (
+        "主函式最後直接返回方法或欄位並退出持有者",
         "普通函式迴圈內方法持票執行輔助函式並保留故障框架",
         "布林方法結果可在普通函式分支及實參中使用",
         "方法由分支移出單一字串並逆序清理其餘形參",

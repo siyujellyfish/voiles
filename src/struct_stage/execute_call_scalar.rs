@@ -6384,7 +6384,7 @@ impl PreparedPrivateScalarCall {
                 // 沒有 Call 就捨棄前置呼叫、錯拒整個函式。
                 // 常值本身仍僅由 Checked TypedHIR 編譯，不在
                 // Prepare 階段執行或虛構任何返回事件。
-                TermKind::BinaryInt(_) | TermKind::Name(_)
+                TermKind::BinaryInt(_) | TermKind::Name(_) | TermKind::MethodCall(..) | TermKind::FieldRead(..)
                     | TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
                     if needs_main_local_runtime => (source_name, &[], false),
                 TermKind::BinaryInt(_) => (source_name, &[], false),
@@ -6407,7 +6407,7 @@ impl PreparedPrivateScalarCall {
         let trailing_hir_absent = verified.plan.scalar_hir.expression(call_span).is_none();
         if verified.plan.scalar_hir.expression(call_span)
             .is_some_and(|fact| fact.ty != ScalarType::Int)
-            || (!callee.params.iter().any(|param| param.ty == "str")
+            || (direct_call && !callee.params.iter().any(|param| param.ty == "str")
                 && verified.plan.declarations.call_borrows_at(call_span)
                     .is_some_and(|facts| !facts.is_empty())) {
             return Err(PrivateScalarCallPrepareError::Unsupported(

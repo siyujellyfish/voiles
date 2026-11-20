@@ -21,6 +21,41 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 主函式最後直接返回方法或欄位並退出持有者() {
+        let source = r#"struct Counter{
+var n:int = 1
+var label:str = "方法出口"
+fn add(x:int)->int{
+self.n = self.n+x
+return self.n
+}
+}
+fn seed()->int{ return 4 }
+fn main()->int{
+var owner:Counter = Counter()
+var delta:int = seed()
+owner.n = delta
+return ((owner.add(delta)))
+}
+"#;
+        for (expr, expected, calls) in [
+            ("((owner.add(delta)))", Ok(8), 1),
+            ("(owner.n)", Ok(4), 0),
+            ("owner.add(9223372036854775807)", Err(PrivateScalarCallRuntimeError::IntegerOverflow), 1),
+        ] {
+            let src = source.replace("((owner.add(delta)))", expr);
+            let out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
+            assert_eq!(out.result, expected);
+            assert_eq!(out.events.iter().filter(|event| matches!(event,
+                PrivateScalarCallEvent::SelfRead { .. })).count(), calls);
+            assert_eq!(out.resource_events.len(), 2);
+            assert!(out.has_balanced_frame_trace());
+        }
+        let invalid = source.replace("owner.add(delta)", "owner.add(false)");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&invalid), Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
     fn 普通函式迴圈內方法持票執行輔助函式並保留故障框架() {
         let src = r#"struct Counter{
 var n:int = 1
