@@ -21,6 +21,49 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 持票子函式迴圈反向邊與故障還票() {
+        let source = r#"fn total(flag:bool)->int{
+var n:int = 0
+for i in 0..3{
+var inner:int = i
+while(flag){
+n = n+inner
+break
+}
+if(flag){ continue }
+n = n+1
+}
+return n
+}
+struct Box{
+var n:int = 0
+fn read(flag:bool)->int{ return total(flag) }
+}
+fn main()->int{
+const owner:Box = Box()
+return owner.read(true)
+}
+"#;
+        for flag in ["true","false"] {
+            let src = source.replace("read(true)", &format!("read({flag})"));
+            let plan = PreparedPrivateScalarCall::prepare(&src).unwrap();
+            let mut out = plan.execute().unwrap();
+            assert_eq!(out.result, Ok(3));
+            let receipt = out.events.iter_mut().find_map(|event| match event {
+                PrivateScalarCallEvent::SelfRead { helpers, .. } => helpers.first_mut(), _ => None,
+            }).unwrap();
+            assert_eq!(receipt.loop_checks, [true,flag=="true",true,flag=="true",true,flag=="true",false]);
+            receipt.loop_checks.pop();
+            assert!(!out.has_balanced_frame_trace());
+        }
+        let infinite = source.replace("n = n+inner\nbreak", "n = n+inner\ncontinue");
+        let plan = PreparedPrivateScalarCall::prepare(&infinite).unwrap();
+        let out = plan.execute_with_budget(PrivateScalarExecutionBudget { max_call_frames: 8, max_steps: 55 }).unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::StepBudget));
+        assert!(out.has_balanced_frame_trace());
+    }
+
+    #[test]
     fn 持票子函式多語句選葉與局部清理() {
         use PrivateSharedCallExitEvent::{LocalInitialized, LocalScopeEnded};
         let source = r#"fn select(x:int, flag:bool)->int{
