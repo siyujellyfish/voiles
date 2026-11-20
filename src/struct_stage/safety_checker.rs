@@ -56,7 +56,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 相同 AST 在分支或迴圈重訪時只能提出相同身分及權限；不覆寫
     /// 已存在的首次證據，衝突狀態不可由後續路徑自動恢復。
     fn record_verified_call_borrows(&self, term: &Term, facts: &[BorrowFact]) {
-        let plan = VerifiedCallBorrowPlan {
+        self.record_call_arguments(term, facts, BTreeMap::new());
+    }
+
+    fn record_call_arguments(&self, term: &Term, facts: &[BorrowFact],
+        method_moves: BTreeMap<crate::common_ir::NodeSpan, DeclarationId>) {
+        let plan = VerifiedCallBorrowPlan { method_moves,
             span: term.node_span(), facts: facts.to_vec(),
         };
         let mut recorded = self.recorded_call_borrows.borrow_mut();
@@ -1837,6 +1842,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     .declaration_start;
                 // self 與預設借用參數在同一次方法呼叫必須共享
                 // 一個真實 tracker，靜態身分由 Checker 詞彙 HIR 產生。
+                let mut method_moves = BTreeMap::new();
                 let mut argument_loans = BorrowSafety::new();
                 let mut argument_tickets = Vec::new();
                 let mut argument_facts = Vec::new();
@@ -1891,6 +1897,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                     // 非 Copyable 參數若確實被方法整筆 .move() 消耗，
                     // 普通名稱仍不得通過 evaluate() 偷成第二所有者。
+                    if let TermKind::Move(name) = &arg.kind {
+                        let binding = Self::lookup(vars, name).ok_or_else(|| self.error("找不到移動實參", arg))?;
+                        method_moves.insert(arg.node_span(), self.checked_binding_use(binding, arg)?.resolved.declaration);
+                    }
                     let (actual, ready) = self.evaluate(arg, vars)?;
                     if !ready || actual != parameter.ty {
                         return Err(self.error("P13：方法引數型別錯誤或尚未初始化", arg));
@@ -1933,7 +1943,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     argument_loans.check_direct_access(bound.declaration_start)
                         .map_err(|_| self.error("方法後來源借用未解除", term))?;
                 }
-                self.record_verified_call_borrows(term, &argument_facts);
+                self.record_call_arguments(term, &argument_facts, method_moves);
                 Ok((method.result_ty.clone(), true))
             }
             TermKind::FieldMove(_owner, _field) => {
