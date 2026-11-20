@@ -42,6 +42,15 @@ return total
 fn main()->int{ return run() }
 "#;
         let plan = PreparedPrivateScalarCall::prepare(src).unwrap();
+        let mut omitted = plan.execute().unwrap();
+        for event in &mut omitted.events {
+            if let PrivateScalarCallEvent::SelfRead { helpers, trace, .. } = event {
+                helpers.remove(0);
+                trace.drain(2..5);
+                break;
+            }
+        }
+        assert!(!omitted.has_balanced_frame_trace());
         let mut swapped = plan.execute().unwrap();
         for event in &mut swapped.events {
             if let PrivateScalarCallEvent::SelfRead { helpers, .. } = event {
@@ -335,9 +344,20 @@ fn read()"#).replace("total = total + owner.read()", "total = total + owner.choo
         assert!(failed_in_method);
         for (flag, expected) in [("true",24), ("false",36)] {
             let case = src.replace("run(true)", &format!("run({flag})"));
-            let out = PreparedPrivateScalarCall::prepare(&case).unwrap().execute().unwrap();
+            let mut out = PreparedPrivateScalarCall::prepare(&case).unwrap().execute().unwrap();
             assert_eq!(out.result, Ok(expected));
             assert!(out.has_balanced_frame_trace());
+            let paths: Vec<_> = out.events.iter_mut().filter_map(|event| match event {
+                PrivateScalarCallEvent::SelfRead { site, branches, .. } if site.name == "choose" => Some(branches),
+                _ => None,
+            }).collect();
+            assert_eq!(paths.len(), 3);
+            for (index, path) in paths.into_iter().enumerate() {
+                let expected = if flag == "true" { vec![true, index == 0] } else { vec![false] };
+                assert_eq!(path.as_slice(), expected);
+                path.pop();
+            }
+            assert!(!out.has_balanced_frame_trace());
         }
     }
 

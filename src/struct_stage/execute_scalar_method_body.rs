@@ -165,6 +165,7 @@ struct PrivateMethodExecution<'a> {
     helper_frame_available: bool,
     trace: &'a mut Vec<PrivateSharedCallExitEvent>,
     helpers: &'a mut Vec<PrivateMethodHelperExit>,
+    branches: &'a mut Vec<bool>,
     locals: &'a mut Vec<DeclarationId>,
 }
 
@@ -226,34 +227,48 @@ impl PrivateMethodInteger {
 }
 
 impl PrivateScalarSelfRead {
-    fn collect_block_helpers<'a>(body: &'a [PrivateScalarMethodStep],
-        order: &mut Vec<(crate::common_ir::NodeSpan, &'a PrivateSelfApprovedHelper)>) {
+    fn selected_steps(&self, branches: &[bool], success: bool) -> Option<Vec<&PrivateScalarMethodStep>> {
         use PrivateScalarMethodStep as Step;
-        for step in body {
+        let mut choices = branches.iter();
+        let mut blocks = vec![self.body.iter()];
+        let mut steps = Vec::new();
+        while let Some(block) = blocks.last_mut() {
+            let Some(step) = block.next() else { blocks.pop(); continue; };
             match step {
-                Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr) | Step::WriteInt(_, expr) =>
-                    expr.collect_helpers(order),
                 Step::If(_, yes, no) => {
-                    Self::collect_block_helpers(yes, order);
-                    Self::collect_block_helpers(no, order);
+                    let Some(choice) = choices.next() else {
+                        return (!success).then_some(steps);
+                    };
+                    blocks.push(if *choice { yes.iter() } else { no.iter() });
                 }
-                _ => {}
+                Step::Return(_) | Step::ReturnMoved(_) | Step::ReturnBool(_) => {
+                    steps.push(step);
+                    break;
+                }
+                _ => steps.push(step),
             }
         }
+        choices.next().is_none().then_some(steps)
     }
 
     fn matches_exit_trace(&self, trace: &[PrivateSharedCallExitEvent],
-        ticket: &crate::borrow_safety::BorrowTicket, args: &[crate::borrow_safety::BorrowTicket], helpers: &[PrivateMethodHelperExit], success: bool) -> bool {
+        ticket: &crate::borrow_safety::BorrowTicket, args: &[crate::borrow_safety::BorrowTicket], helpers: &[PrivateMethodHelperExit], branches: &[bool], success: bool) -> bool {
         use PrivateSharedCallExitEvent::*;
         if !trace.starts_with(&[LoanAcquired(*ticket), FunctionEntered]) { return false; }
         let mut inside = &trace[2..];
         let mut unwound = false;
         let mut order = Vec::new();
-        Self::collect_block_helpers(&self.body, &mut order);
+        let Some(steps) = self.selected_steps(branches, success) else { return false; };
+        for step in &steps {
+            use PrivateScalarMethodStep as Step;
+            if let Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr) | Step::WriteInt(_, expr) = step {
+                expr.collect_helpers(&mut order);
+            }
+        }
         let mut remaining = order.into_iter();
         let mut receipts = helpers.iter();
         let mut locals = Vec::new();
-        let mut local_plan = self.body.iter().filter_map(|op| match op {
+        let mut local_plan = steps.into_iter().filter_map(|op| match op {
             PrivateScalarMethodStep::Declare(id, _) => Some(LocalInitialized(*id)),
             PrivateScalarMethodStep::Assign(id, _) => Some(LocalAssigned(*id)),
             _ => None,
@@ -267,7 +282,7 @@ impl PrivateScalarSelfRead {
             }
             if !matches!(event, FunctionEntered) { break; }
             let Some(receipt) = receipts.next() else { return false; };
-            let Some((_, target)) = remaining.find(|(span, _)| *span == receipt.span) else { return false; };
+            let Some((_, target)) = remaining.next().filter(|(span, _)| *span == receipt.span) else { return false; };
             let [FunctionEntered, outcome, FunctionExited { returned }, rest @ ..] = inside else { return false; };
             if unwound || *returned != receipt.result.is_ok()
                 || receipt.locals.len() != target.parameters.len()
@@ -278,7 +293,7 @@ impl PrivateScalarSelfRead {
             unwound = !*returned;
             inside = rest;
         }
-        if receipts.next().is_some() || success && (unwound || local_plan.next().is_some()) { return false; }
+        if receipts.next().is_some() || success && (unwound || remaining.next().is_some() || local_plan.next().is_some()) { return false; }
         if !unwound {
             let expected = if success { Returned } else { UnwindStarted };
             let Some((head, rest)) = inside.split_first() else { return false; };
@@ -333,7 +348,9 @@ impl PrivateScalarSelfRead {
                     runtime.write_bool_field(&self.owner, field, value, true).map_err(|_| StateMismatch)?;
                 }
                 PrivateScalarMethodStep::If(condition, yes, no) => {
-                    let next = if boolean(condition, runtime, &parameters)? { yes } else { no };
+                    let selected = boolean(condition, runtime, &parameters)?;
+                    work.branches.push(selected);
+                    let next = if selected { yes } else { no };
                     blocks.push(next.iter());
                 }
             }

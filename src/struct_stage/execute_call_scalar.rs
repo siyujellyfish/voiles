@@ -81,6 +81,7 @@ enum PrivateScalarCallEvent {
     /// 由真 BorrowSafety 追蹤器簽發與歸還的權限票據。
     SelfRead {
         helpers: Vec<PrivateMethodHelperExit>,
+        branches: Vec<bool>,
         owned_arguments: Vec<(Option<DeclarationId>, DeclarationId, u64)>,
         ownership_events: Vec<crate::owned_str_runtime::ResourceEvent>,
         argument_tickets: Vec<crate::borrow_safety::BorrowTicket>,
@@ -568,7 +569,7 @@ impl PrivateScalarCallOutcome {
                         return false;
                     }
                 }
-                PrivateScalarCallEvent::SelfRead { site, ticket, trace, result, argument_tickets, owned_arguments, ownership_events, helpers } => {
+                PrivateScalarCallEvent::SelfRead { site, ticket, trace, result, argument_tickets, owned_arguments, ownership_events, helpers, branches } => {
                     if result.is_err() && (result.as_ref().err() != self.result.as_ref().err() || !matches!(self.events.get(index + 1 + argument_tickets.len()),
                         Some(PrivateScalarCallEvent::UnwindStarted))) { return false; }
                     let Some(frame) = frames.last_mut() else { return false; };
@@ -616,7 +617,7 @@ impl PrivateScalarCallOutcome {
                         || !frame.locals.iter().any(|slot| matches!(slot,
                             PrivateScalarLocalBinding::CopyStruct(id) if *id == site.loan.source))
                         || helpers.last().is_some_and(|h| h.result.is_err() && h.result.as_ref().err() != result.as_ref().err())
-                        || !site.matches_exit_trace(trace, ticket, argument_tickets, helpers, result.is_ok())
+                        || !site.matches_exit_trace(trace, ticket, argument_tickets, helpers, branches, result.is_ok())
                         || trace.last() != Some(&PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() }) {
                         return false;
                     }
@@ -4182,6 +4183,7 @@ impl PreparedPrivateScalarCall {
                             .map_err(PrivateScalarCallRuntimeError::Borrow)?;
                         let mut owned_arguments = Vec::new();
                         let mut helpers = Vec::new();
+                        let mut branches = Vec::new();
                         let mut method_locals = Vec::new();
                         let base = resources.events().len();
                         let mut trace = vec![PrivateSharedCallExitEvent::LoanAcquired(ticket),
@@ -4198,7 +4200,7 @@ impl PreparedPrivateScalarCall {
                                 };
                                 owned_arguments.extend(moves.iter().zip(ids).map(|((_, source, param), id)| (*source,*param,id)));
                                 let result = site.run_body(parameters, &mut copy_structs, &mut PrivateMethodExecution {
-                                    steps: &mut steps, limit: budget.max_steps, helper_frame_available, trace: &mut trace, helpers: &mut helpers, locals: &mut method_locals,
+                                    steps: &mut steps, limit: budget.max_steps, helper_frame_available, trace: &mut trace, helpers: &mut helpers, branches: &mut branches, locals: &mut method_locals,
                                 });
                                 let result = result.and_then(|value| match value {
                                     PrivateMethodValue::Int(n) => Ok(PrivateMethodValue::Int(n)),
@@ -4232,7 +4234,7 @@ impl PreparedPrivateScalarCall {
                         completed_arguments.truncate(completed_arguments.len() - argument_tickets.len() - moves.len());
                         let ownership_events = resources.events()[base..].to_vec();
                         resource_cursor = resources.events().len();
-                        events.push(PrivateScalarCallEvent::SelfRead { helpers, owned_arguments, ownership_events, site: site.clone(), ticket, result: read, trace,
+                        events.push(PrivateScalarCallEvent::SelfRead { helpers, branches, owned_arguments, ownership_events, site: site.clone(), ticket, result: read, trace,
                             argument_tickets: argument_tickets.clone() });
                         events.extend(argument_tickets.into_iter().rev().map(PrivateScalarCallEvent::LoanReturned));
                         match read? {
