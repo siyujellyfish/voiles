@@ -6065,18 +6065,6 @@ impl PreparedPrivateScalarCall {
         let verified = verify_source_with_ability(
             text, crate::ownership_policy::approved_leaf_copy_permission,
         ).map_err(PrivateScalarCallPrepareError::Check)?;
-        // 此私有切片只限制已核准的純 int／單 return 執行形狀，
-        // 不再以固定函式數量或呼叫圖是否成環，拒絕合法 Checker 來源。
-        // R01：其他已經由原 Checker 完整核准、但未被 main 建構或
-        // 呼叫的 struct 宣告，不是本次純 int 呼叫圖的動態工作。
-        // 不能只因來源含結構定義就拒絕合法的普通函式。
-        // 結構建構、self 方法及資源欄位仍不在此 evaluator 的
-        // 工作計畫內；若真的由 main 使用，後續真 TypedHIR 會拒絕。
-        if verified.functions.len() < 2 {
-            return Err(PrivateScalarCallPrepareError::Unsupported(
-                "Copyable int 真執行須具備 main 及已核准的普通函式",
-            ));
-        }
         let main = verified.functions.iter().find(|fun| fun.name == "main")
             .ok_or(PrivateScalarCallPrepareError::Unsupported("缺少 main"))?;
         let last = main.body.statements.last().ok_or(
@@ -6130,16 +6118,15 @@ impl PreparedPrivateScalarCall {
         for step in &main_graph_steps {
             step.collect_calls(&mut main_names);
         }
-        let source_name = main_names.first().copied().ok_or(
-            PrivateScalarCallPrepareError::Unsupported(
-                "main 已編譯可達工作計畫缺少真具名函式呼叫",
-            ),
-        )?;
-        let callee = verified.functions.iter()
-            .find(|fun| fun.name == source_name && fun.name != "main")
-            .ok_or(PrivateScalarCallPrepareError::Unsupported(
-                "main 呼叫缺少原 Checker 具名函式宣告",
-            ))?;
+        let callee = match main_names.first() {
+            Some(name) => verified.functions.iter().find(|fun| fun.name == *name && fun.name != "main")
+                .ok_or(PrivateScalarCallPrepareError::Unsupported("main 呼叫缺少原 Checker 具名函式宣告"))?,
+            // main 直接返回已驗證的方法時，本身就是真實根框架。
+            None if matches!(main_graph_return, PrivateScalarReturnExpr::SelfRead(_)) => main,
+            None => return Err(PrivateScalarCallPrepareError::Unsupported(
+                "main 已編譯可達工作計畫缺少真具名函式或方法呼叫")),
+        };
+        let source_name = callee.name.as_str();
         if main.result_ty != "int" || !main.params.is_empty()
             || !matches!(callee.result_ty.as_str(), "int" | "bool" | "str")
             || callee.params.iter().any(|param|

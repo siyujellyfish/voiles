@@ -305,6 +305,26 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                 not (根目錄 / proof[key]).is_file() for key in ("tests","gate","report")
             ):
                 raise ValueError(f"{名稱} 非同步工作圖原始驗收證據不足")
+        elif 名稱 in {"T1", "T2"}:
+            proofs = {
+                "T1": {
+                    "contract": "T1-01..T1-06",
+                    "tests": "src/struct_stage/g18_t1_matrix_tests.rs",
+                    "gate": "tools/核對G18-P18.5-T1六類來源四欄.py",
+                    "report": "AI-build/G18-P18.5-T1-T2四欄與交叉矩陣.md"
+                },
+                "T2": {
+                    "contract": "T2-01..T2-12",
+                    "tests": "src/struct_stage/execute_call_scalar.rs",
+                    "gate": "tools/核對G18-P18.5-T2六組跨功能正反.py",
+                    "report": "AI-build/G18-P18.5-T1-T2四欄與交叉矩陣.md"
+                }
+            }
+            proof = proofs[名稱]
+            if 狀態 != "Closed" or 義務.get("closure_proof") != proof or any(
+                not (根目錄 / proof[key]).is_file() for key in ("tests","gate","report")
+            ):
+                raise ValueError(f"{名稱} 缺少原始正反矩陣")
         elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
             raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
         if 種類 in {"DecisionBlocked", "EngineeringPending"}:
@@ -341,8 +361,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 22 or 統計["OpenEngineering"] != 4 or 統計["BlockedDecision"] != 0:
-        raise ValueError("P18.1～P18.4 及 P18.6 共 22 義務閉合，另外四項仍待驗收")
+    if 統計["Closed"] != 24 or 統計["OpenEngineering"] != 2 or 統計["BlockedDecision"] != 0:
+        raise ValueError("P18.1～P18.4 、P18.6 及 T1、T2 共 24 義務閉合，另外兩項仍待驗收")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
