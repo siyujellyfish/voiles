@@ -9,7 +9,7 @@
     "P18.5": "SubsetVerified",
     "P18.6": "BlockedByDecision"
   },
-  "rule": "保留歷史 original_status；F1～F4、C1～C4、R1～R4、B1～B3、B5 已驗收。M1 27 真來源獨立 Gate 必須最新 PR HEAD 與 Squash merge 後新 main 同 SHA 三必要 CI completed/success 方能正式採計。B4、T1～T4、M2/M3、A1/A2 共九項 OpenEngineering；P18.1～P18.3 Passed 3/6，P18.4～P18.6 未 Passed，原 `--check` 應繼續失敗。",
+  "rule": "保留歷史 original_status。各義務以 closure_proof、最新 PR HEAD 與合併後 main 的必要 CI 為準。六階段全數通過才可正式驗收 P18。",
   "proven_gap": {
     "id": "F4",
     "category": "HistoricalCheckerAcceptedRuntimeUnsupported",
@@ -352,21 +352,33 @@
       "id": "M2",
       "phase": "P18.6",
       "batch": "V6",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
-      "primary_case": "struct_stage::g18_private_method_self_tests::g18_f_獨占_self_真寫入_var_int_並以同張票據返回更新後值",
-      "remaining": "共享／獨占 self 參數、欄位、分支、異常還票",
-      "work_file": "src/struct_stage/execute_method_self.rs"
+      "primary_case": "struct_stage::g18_m2_m3_obligation_tests::m2_交替持有者的寫入分支與參數資源",
+      "remaining": "同步方法借用與欄位以同一來源之成功、故障及收據變造逐項驗收。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "M2-01..M2-08",
+        "tests": "src/struct_stage/g18_m2_m3_obligation_tests.rs",
+        "gate": "tools/核對G18-P18.6-M2同步方法借用與欄位.py",
+        "report": "AI-build/G18-P18.6-M2-M3同步方法原始義務驗收.md"
+      }
     },
     {
       "id": "M3",
       "phase": "P18.6",
       "batch": "V6",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
-      "primary_case": "struct_stage::g18_private_method_self_tests::g18_r05_同步self真共享借用及成功返回逐筆由共用進退帳驗證",
-      "remaining": "同步方法與普通函式的同一控制工作圖和共通資源退出",
-      "work_file": "src/struct_stage/execute_method_self.rs"
+      "primary_case": "struct_stage::g18_m2_m3_obligation_tests::m3_求參與方法回傳共用迴圈中的真框架",
+      "remaining": "函式方法同一控制圖以同一來源之成功、故障及收據變造逐項驗收。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "M3-01..M3-08",
+        "tests": "src/struct_stage/g18_m2_m3_obligation_tests.rs",
+        "gate": "tools/核對G18-P18.6-M3函式方法同一控制圖.py",
+        "report": "AI-build/G18-P18.6-M2-M3同步方法原始義務驗收.md"
+      }
     },
     {
       "id": "A1",

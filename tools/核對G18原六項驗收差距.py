@@ -1452,6 +1452,10 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_m2_m3_obligation_tests::m2_交替持有者的寫入分支與參數資源",
+        "struct_stage::g18_m2_m3_obligation_tests::m2_故障退出與變造持有者",
+        "struct_stage::g18_m2_m3_obligation_tests::m3_求參與方法回傳共用迴圈中的真框架",
+        "struct_stage::g18_m2_m3_obligation_tests::m3_中途故障逆序離域及子呼叫來源重驗",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法var_int_局部可按原checker賦值後真返回",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法連續兩次_var_int_更新沿用最新動態值",
         "struct_stage::g18_private_method_self_tests::g18_r04_同步self方法第二個var局部可讀取第一個已更新值",
@@ -1565,6 +1569,7 @@ from pathlib import Path
 }
 
 真執行群組 = (
+    "struct_stage::g18_m2_m3_obligation_tests::",
     "struct_stage::g18_b4_obligation_tests::",
     "struct_stage::g18_scalar_self_cfg_tests::",
     "struct_stage::g18_repeated_self_call_tests::",

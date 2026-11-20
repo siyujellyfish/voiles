@@ -1539,6 +1539,27 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 _ => false,
             }
         }
+        // 在呼叫者借 self 前，這類 helper 僅能改寫自己的整數槽。
+        // 原普通函式 Checker 另行驗證宣告、可變性、型別與迴圈邊界。
+        fn pure_block<'s>(statements: &'s [Stmt], mut names: Vec<&'s str>) -> bool {
+            for stmt in statements {
+                match &stmt.kind {
+                    StmtKind::Declare(local) if local.ty == "int"
+                        && local.initializer.as_ref().is_some_and(|v| pure_helper_return(v, &names)) =>
+                        names.push(&local.name),
+                    StmtKind::Assign(local) if names.contains(&local.name.as_str())
+                        && pure_helper_return(&local.expression, &names) => {}
+                    StmtKind::ForRange { iterator, body, .. } => {
+                        let mut nested = names.clone();
+                        nested.push(iterator);
+                        if !pure_block(&body.statements, nested) { return false; }
+                    }
+                    StmtKind::Return(ret) if pure_helper_return(&ret.expression, &names) => {}
+                    _ => return false,
+                }
+            }
+            true
+        }
         let (name, arguments, awaited): (&str, &[Term], bool) = match &term.kind {
             TermKind::Call(call) =>
                 (call.name.as_str(), call.arguments.as_slice(), call.awaited),
@@ -1551,7 +1572,6 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         let Some(helper) = self.find_function(name) else { return false };
         if awaited || helper.is_async || helper.name == "main"
             || helper.result_ty != "int" || helper.params.len() != arguments.len()
-            || helper.body.statements.len() != 1
             || helper.params.iter().any(|p| p.ty != "int" || p.name == "self")
             || helper.params.iter().enumerate().any(|(i, p)|
                 helper.params[..i].iter().any(|old| old.name == p.name))
@@ -1565,12 +1585,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             ) {
             return false;
         }
-        let StmtKind::Return(returned) = &helper.body.statements[0].kind else {
-            return false;
-        };
-        let names = helper.params.iter().map(|p| p.name.as_str())
-            .collect::<Vec<_>>();
-        pure_helper_return(&returned.expression, &names)
+        let names = helper.params.iter().map(|p| p.name.as_str()).collect();
+        matches!(helper.body.last().map(|stmt| &stmt.kind), Some(StmtKind::Return(_)))
+            && pure_block(&helper.body.statements, names)
     }
 
     /// D18-02-A：只為「選擇多個同名方法候選」取得靜態型別，
