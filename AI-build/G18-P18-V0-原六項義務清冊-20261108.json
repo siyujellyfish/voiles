@@ -264,11 +264,17 @@
       "id": "B4",
       "phase": "P18.4",
       "batch": "V6",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
-      "primary_case": "struct_stage::g18_private_method_self_tests::g18_r05_真方法局部初始化_return_離域與還票須同一共用時間序",
-      "remaining": "同步 self 與普通函式同一 CFG 中的已核准參數及退出契約",
-      "work_file": "src/struct_stage/execute_method_self.rs"
+      "primary_case": "struct_stage::g18_b4_obligation_tests::b4_01_兩輪獨占寫入及跨持有者共享讀取",
+      "remaining": "同步方法持票期間的求參、欄位寫入、分支與迴圈、錯誤退出與來源重驗由 B4 專屬 Gate 核對。",
+      "work_file": "src/struct_stage/execute_method_self.rs",
+      "closure_proof": {
+        "contract": "B4-01..B4-07",
+        "tests": "src/struct_stage/g18_b4_obligation_tests.rs",
+        "gate": "tools/核對G18-P18.4-B4同步方法借票責任.py",
+        "report": "AI-build/G18-P18.4-B4同步方法與原五義務驗收.md"
+      }
     },
     {
       "id": "B5",
@@ -387,7 +393,7 @@
     "P18.1": "Passed",
     "P18.2": "Passed",
     "P18.3": "Passed",
-    "P18.4": "SubsetVerified",
+    "P18.4": "Passed",
     "P18.5": "SubsetVerified",
     "P18.6": "Incomplete"
   },
