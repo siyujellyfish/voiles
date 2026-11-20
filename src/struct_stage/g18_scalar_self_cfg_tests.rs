@@ -21,6 +21,58 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 持票子函式多語句選葉與局部清理() {
+        use PrivateSharedCallExitEvent::{LocalInitialized, LocalScopeEnded};
+        let source = r#"fn select(x:int, flag:bool)->int{
+var n:int = x
+if(flag){
+var inner:int = n+1
+return inner
+}
+n = n-1
+return n
+}
+struct Box{
+var value:int = 7
+fn read(flag:bool)->int{ return select(self.value,flag) }
+}
+fn main()->int{
+const holder:Box = Box()
+return holder.read(true)
+}
+"#;
+        for (flag, result, count) in [("true",8,2),("false",6,1)] {
+            let src = source.replace("holder.read(true)", &format!("holder.read({flag})"));
+            let mut out = PreparedPrivateScalarCall::prepare(&src).unwrap().execute().unwrap();
+            assert_eq!(out.result, Ok(result));
+            let trace = out.events.iter_mut().find_map(|event| match event {
+                PrivateScalarCallEvent::SelfRead { trace, .. } => Some(trace), _ => None,
+            }).unwrap();
+            let initialized: Vec<_> = trace.iter().filter_map(|e| match e { LocalInitialized(id) => Some(*id), _ => None }).collect();
+            assert_eq!(initialized.len(), count);
+            assert!(trace.iter().filter_map(|e| match e { LocalScopeEnded(id) => Some(*id), _ => None })
+                .eq(initialized.into_iter().rev()));
+            trace.remove(trace.iter().position(|e| matches!(e, LocalScopeEnded(_))).unwrap());
+            assert!(!out.has_balanced_frame_trace());
+        }
+        let failed = source.replace("value:int = 7","value:int = 9223372036854775807");
+        let out = PreparedPrivateScalarCall::prepare(&failed).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.has_balanced_frame_trace());
+        let plan = PreparedPrivateScalarCall::prepare(source).unwrap();
+        let mut hit = false;
+        for budget in 1..80 {
+            let out = plan.execute_with_budget(PrivateScalarExecutionBudget { max_call_frames: 8, max_steps: budget }).unwrap();
+            if out.result == Err(PrivateScalarCallRuntimeError::StepBudget) && out.events.iter().any(|event|
+                matches!(event, PrivateScalarCallEvent::SelfRead { trace, .. } if trace.iter().any(|e| matches!(e, LocalScopeEnded(_))))) {
+                hit = true;
+                assert!(out.has_balanced_frame_trace());
+            }
+        }
+        assert!(hit);
+    }
+
+    #[test]
     fn 原方法可轉交普通函式的新字串() {
         let src = r#"fn fresh(code:int)->str{ return "獨立資源" }
 struct Holder{
@@ -56,6 +108,15 @@ fn main()->int{ return inspect(relay()) }
         assert!(out.has_balanced_frame_trace());
         assert!(out.resource_events.starts_with(&[Created(1), Returned(1), Returned(1)]));
         assert_eq!(out.resource_events.last(), Some(&Released(1)));
+        let conditional = src.replace("fn fresh(code:int)->str{ return \"獨立資源\" }", "fn fresh(code:int, flag:bool)->str{\nvar n:int = code\nif(flag){ return \"提前\" }\nn = n+9223372036854775807\nreturn \"後段\"\n}")
+            .replace("fresh(self.count + increment)", "fresh(self.count + increment,true)");
+        let out = PreparedPrivateScalarCall::prepare(&conditional).unwrap().execute().unwrap();
+        assert_eq!(out.result, Ok(1));
+        assert!(out.resource_events.starts_with(&[Created(1), Returned(1), Returned(1), Returned(1)]));
+        let failed = conditional.replace("increment,true)", "increment,false)");
+        let out = PreparedPrivateScalarCall::prepare(&failed).unwrap().execute().unwrap();
+        assert_eq!(out.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert!(out.resource_events.is_empty() && out.has_balanced_frame_trace());
         let overflow = src.replace("holder.acquire(3)", "holder.acquire(9223372036854775807)");
         let failed = PreparedPrivateScalarCall::prepare(&overflow).unwrap().execute().unwrap();
         assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
