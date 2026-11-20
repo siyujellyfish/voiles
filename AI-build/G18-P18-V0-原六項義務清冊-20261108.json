@@ -296,21 +296,33 @@
       "id": "T1",
       "phase": "P18.5",
       "batch": "V8",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeFailure",
-      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r03_main_if借用首實參後第二實參溢位須回滾真票據與資源",
-      "remaining": "原六項均需成功、靜態拒絕、動態故障、真清理四欄",
-      "work_file": "tools/核對G18原六項驗收差距.py"
+      "primary_case": "struct_stage::g18_t1_matrix_tests::t1_f_普通呼叫四欄",
+      "remaining": "六類來源四欄依矩陣逐項真執行。",
+      "work_file": "tools/核對G18原六項驗收差距.py",
+      "closure_proof": {
+        "contract": "T1-01..T1-06",
+        "tests": "src/struct_stage/g18_t1_matrix_tests.rs",
+        "gate": "tools/核對G18-P18.5-T1六類來源四欄.py",
+        "report": "AI-build/G18-P18.5-T1-T2四欄與交叉矩陣.md"
+      }
     },
     {
       "id": "T2",
       "phase": "P18.5",
       "batch": "V8",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "RuntimeSuccess",
       "primary_case": "struct_stage::g18_r06_cross_runtime_tests::g18_r06_同_call_整筆移動借用和同步_self_不混淆資源責任",
-      "remaining": "函式×CFG／Borrow×Move／遞迴×失敗／self×票據／async×取消高風險交叉",
-      "work_file": "tools/核對G18-R06跨執行器正反矩陣.py"
+      "remaining": "六組跨功能正反依矩陣逐項真執行。",
+      "work_file": "tools/核對G18-R06跨執行器正反矩陣.py",
+      "closure_proof": {
+        "contract": "T2-01..T2-12",
+        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "gate": "tools/核對G18-P18.5-T2六組跨功能正反.py",
+        "report": "AI-build/G18-P18.5-T1-T2四欄與交叉矩陣.md"
+      }
     },
     {
       "id": "T3",

@@ -1759,3 +1759,5 @@ include!("struct_stage/g18_f2_str_forward_budget_tests.rs");
 include!("struct_stage/g18_m2_m3_obligation_tests.rs");
 
 include!("struct_stage/g18_async_method_graph_tests.rs");
+
+include!("struct_stage/g18_t1_matrix_tests.rs");

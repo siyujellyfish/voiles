@@ -1100,6 +1100,12 @@ from pathlib import Path
         "struct_stage::g18_private_call_borrow_tests::g18_d_刪除原_checker_已簽發的_call_borrows_不可沿用舊票據",
     ),
     "P18.5": (
+        "struct_stage::g18_t1_matrix_tests::t1_f_普通呼叫四欄",
+        "struct_stage::g18_t1_matrix_tests::t1_c_選中迴圈路徑四欄",
+        "struct_stage::g18_t1_matrix_tests::t1_r_遞迴內層溢位與逐層資源四欄",
+        "struct_stage::g18_t1_matrix_tests::t1_b_借用形參正常與故障還票四欄",
+        "struct_stage::g18_t1_matrix_tests::t1_m_獨占方法動態退出四欄",
+        "struct_stage::g18_t1_matrix_tests::t1_a_直接等待方法與普通框架四欄",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_同一函式if內同名結構遮蔽更新後外層真值不變",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
@@ -1577,6 +1583,7 @@ from pathlib import Path
 }
 
 真執行群組 = (
+    "struct_stage::g18_t1_matrix_tests::",
     "struct_stage::g18_async_method_graph_tests::",
     "struct_stage::g18_m2_m3_obligation_tests::",
     "struct_stage::g18_b4_obligation_tests::",
