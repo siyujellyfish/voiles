@@ -756,6 +756,35 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_repeated_self_call_tests::中間方法溢位時不再簽發後續呼叫票據",
+        "struct_stage::g18_repeated_self_call_tests::交替持有者共用工作圖但保有各自欄位與借票",
+        "struct_stage::g18_repeated_self_call_tests::兩次呼叫共用布林欄位且每次使用自己的借票",
+        "struct_stage::g18_repeated_self_call_tests::前置呼叫順序遭變造時整批拒絕",
+        "struct_stage::g18_repeated_self_call_tests::另一持有者溢位時已還票且其後的持有者不再執行",
+        "struct_stage::g18_repeated_self_call_tests::呼叫之間保留初始化與空槽並只執行一次陳述式",
+        "struct_stage::g18_repeated_self_call_tests::普通函式持有雙實例字串時成功及溢位皆逆序清理",
+        "struct_stage::g18_repeated_self_call_tests::普通函式轉交具名整數形參且同名槽分屬不同框架",
+        "struct_stage::g18_repeated_self_call_tests::普通函式逐框架返回方法值且溢位逐框架清理",
+        "struct_stage::g18_repeated_self_call_tests::相同方法的兩份成功結果對調或遺失仍會拒絕",
+        "struct_stage::g18_repeated_self_call_tests::逐次借票收據與整段工作圖必須一致",
+        "struct_stage::g18_repeated_self_call_tests::連續方法回傳槽供後續實參與共享讀取",
+        "struct_stage::g18_scalar_self_cfg_tests::主函式最後直接返回方法或欄位並退出持有者",
+        "struct_stage::g18_scalar_self_cfg_tests::同一實參序列中普通字串借票與方法票獨立歸還",
+        "struct_stage::g18_scalar_self_cfg_tests::巢狀方法分支依每輪欄位真值寫入與提前返回",
+        "struct_stage::g18_scalar_self_cfg_tests::布林實參在方法內決定提前返回的欄位",
+        "struct_stage::g18_scalar_self_cfg_tests::布林方法結果可在普通函式分支及實參中使用",
+        "struct_stage::g18_scalar_self_cfg_tests::建構具名實參的方法讀取依序還票且溢位不提交",
+        "struct_stage::g18_scalar_self_cfg_tests::持票方法複合加減逐次讀取當下欄位且溢位歸票",
+        "struct_stage::g18_scalar_self_cfg_tests::方法來源收據與重播票據分別拒絕",
+        "struct_stage::g18_scalar_self_cfg_tests::方法內算術溢位先還獨占票再清理呼叫者",
+        "struct_stage::g18_scalar_self_cfg_tests::方法整筆移動來源與形參交叉同名仍逐筆清理",
+        "struct_stage::g18_scalar_self_cfg_tests::方法混合字串借用與整數寫入於正常及溢位皆歸票",
+        "struct_stage::g18_scalar_self_cfg_tests::方法由分支移出單一字串並逆序清理其餘形參",
+        "struct_stage::g18_scalar_self_cfg_tests::普通函式的迴圈與提前返回依動態次序借票",
+        "struct_stage::g18_scalar_self_cfg_tests::普通函式迴圈內方法持票執行輔助函式並保留故障框架",
+        "struct_stage::g18_scalar_self_cfg_tests::步數耗盡仍清理持有者且不重播方法",
+        "struct_stage::g18_scalar_self_cfg_tests::迴圈內獨占方法寫入在歸票後仍可共享讀取",
+        "struct_stage::g18_scalar_self_cfg_tests::迴圈實參以當下值綁入方法形參",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位真來源作為右值並保持先讀後寫",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位只寫所選if葉而且可傳實參",
         "struct_stage::g18_private_scalar_call_tests::g18_v1_f3_bool欄位for_continue與while_break真回邊",
@@ -1526,6 +1555,8 @@ from pathlib import Path
 }
 
 真執行群組 = (
+    "struct_stage::g18_scalar_self_cfg_tests::",
+    "struct_stage::g18_repeated_self_call_tests::",
     "execution::tests::p18_",
     "struct_stage::p17_private_str_execution_tests::p18_",
     "struct_stage::g18_private_source_loop_tests::g18_",
@@ -1582,9 +1613,9 @@ def main() -> int:
         print("G18 正反真來源缺失：" + "、".join(missing), file=sys.stderr)
         return 1
 
-    total = 0
+    executed: set[str] = set()
     for group in 真執行群組:
-        execution = run([executable, "--test-threads=2", group])
+        execution = run([executable, "--format=pretty", "--test-threads=2", group])
         printed = execution.stdout + execution.stderr
         match = re.search(
             r"test result: ok\.\s+(\d+) passed;\s+0 failed;\s+0 ignored;",
@@ -1595,8 +1626,18 @@ def main() -> int:
             print(printed[-6000:], file=sys.stderr)
             return 1
         count = int(match.group(1))
-        total += count
+        passed = set(re.findall(r"^test ([^\r\n]+) \.\.\. ok$", execution.stdout, re.MULTILINE))
+        if len(passed) != count or not passed <= available or executed.intersection(passed):
+            print(f"G18 群組 {group} 的逐項成功紀錄、清單或計數不一致", file=sys.stderr)
+            return 1
+        executed.update(passed)
         print(f"G18 來源群組真執行：{group}，{count} 通過")
+
+    unexecuted = required - executed
+    if unexecuted:
+        print("G18 來源僅列名而未成功執行：" + "、".join(sorted(unexecuted)), file=sys.stderr)
+        return 1
+    total = len(executed)
 
     # PR merge ref 絕不能自稱 main 正式 Passed。
     github_ref = os.getenv("GITHUB_REF", "")
