@@ -887,6 +887,64 @@ struct PrivateSelfApprovedHelper {
 }
 
 /// 唯有 helper 中原 Checker 真形參 DeclarationId 可作名稱節點。
+fn private_self_checked_int_helper(text: &str, verified: &VerifiedPrivateSource, helper: &Function)
+    -> Result<PrivateSelfApprovedHelper, PrivateSelfMethodPrepareError> {
+    use crate::common_ir::{NodeRole, VerifiedTypedMember};
+    // 原 Checker 簽章與 Lexer／TypedMember 是唯一參數數量權威，
+    // 不另造「最多兩個」的執行器限制；每個純 int 引數
+    // 仍必須逐一真求值後，才可以進入普通函式框架。
+    let mut parameters = Vec::<DeclarationId>::new();
+    let mut names = BTreeMap::<String, DeclarationId>::new();
+    for param in &helper.params {
+        let id = DeclarationId(param.declaration_start);
+        if param.ty != "int" || param.name == "self"
+            || names.contains_key(&param.name)
+            || parameters.contains(&id) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "B4 helper 形參必須是不重複、原 Checker 證明的 int",
+            ));
+        }
+        let member = VerifiedTypedMember::checked_private(
+            text, NodeRole::Parameter, param.declaration_span,
+            &param.name, param.name_span, &param.ty,
+            param.type_span, false,
+        ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
+            "B4 helper int 形參缺少原 Lexer／Parser 宣告身分",
+        ))?;
+        if verified.plan.members.get(&member.identity) != Some(&member) {
+            return Err(PrivateSelfMethodPrepareError::Unsupported(
+                "B4 helper int 形參缺少正式 Checker 成員型別證明",
+            ));
+        }
+        names.insert(param.name.clone(), id);
+        parameters.push(id);
+    }
+    if helper.result_ty != "int" || helper.is_async
+        || helper.body.statements.len() != 1 {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "B4 helper 僅允許同步純 int 單筆返回",
+        ));
+    }
+    let StmtKind::Return(returned) = &helper.body.statements[0].kind else {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "B4 普通函式必須具有真正 return 來源",
+        ));
+    };
+    let plan = PrivateScalarReturnExpr::from_checked_bindings(
+        &returned.expression, &names, verified,
+    ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
+        "B4 helper 返回缺少原 Checker TypedHIR／Lexer／形參證明",
+    ))?;
+    if !private_self_pure_helper_int(&plan, &parameters) {
+        return Err(PrivateSelfMethodPrepareError::Unsupported(
+            "B4 helper 僅接通原 Checker 無副作用 int 常值／形參／加減",
+        ));
+    }
+    Ok(PrivateSelfApprovedHelper {
+        name: helper.name.clone(), parameters, returned: plan,
+    })
+}
+
 fn private_self_pure_helper_int(
     expr: &PrivateScalarReturnExpr, parameters: &[DeclarationId],
 ) -> bool {
@@ -1269,62 +1327,7 @@ impl PrivateSelfMethodSite {
         let method_helpers = verified.functions.iter()
             .filter(|fun| !callers.contains(&fun.start))
             .map(|helper| {
-                // 原 Checker 簽章與 Lexer／TypedMember 是唯一參數數量權威，
-                // 不另造「最多兩個」的執行器限制；每個純 int 引數
-                // 仍必須逐一真求值後，才可以進入普通函式框架。
-                let mut parameters = Vec::<DeclarationId>::new();
-                let mut names = BTreeMap::<String, DeclarationId>::new();
-                for param in &helper.params {
-                    let id = DeclarationId(param.declaration_start);
-                    if param.ty != "int" || param.name == "self"
-                        || names.contains_key(&param.name)
-                        || parameters.contains(&id) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "B4 helper 形參必須是不重複、原 Checker 證明的 int",
-                        ));
-                    }
-                    let member = VerifiedTypedMember::checked_private(
-                        text, NodeRole::Parameter, param.declaration_span,
-                        &param.name, param.name_span, &param.ty,
-                        param.type_span, false,
-                    ).ok_or(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 helper int 形參缺少原 Lexer／Parser 宣告身分",
-                    ))?;
-                    if verified.plan.members.get(&member.identity) != Some(&member) {
-                        return Err(PrivateSelfMethodPrepareError::Unsupported(
-                            "B4 helper int 形參缺少正式 Checker 成員型別證明",
-                        ));
-                    }
-                    names.insert(param.name.clone(), id);
-                    parameters.push(id);
-                }
-                if helper.result_ty != "int" || helper.is_async
-                    || helper.body.statements.len() != 1 {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 helper 僅允許同步純 int 單筆返回",
-                    ));
-                }
-                let StmtKind::Return(returned) = &helper.body.statements[0].kind else {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 普通函式必須具有真正 return 來源",
-                    ));
-                };
-                let bindings = helper.params.iter().map(|param|
-                    (param.name.clone(), DeclarationId(param.declaration_start))
-                ).collect::<BTreeMap<_, _>>();
-                let plan = PrivateScalarReturnExpr::from_checked_bindings(
-                    &returned.expression, &bindings, &verified,
-                ).map_err(|_| PrivateSelfMethodPrepareError::Unsupported(
-                    "B4 helper 返回缺少原 Checker TypedHIR／Lexer／形參證明",
-                ))?;
-                if !private_self_pure_helper_int(&plan, &parameters) {
-                    return Err(PrivateSelfMethodPrepareError::Unsupported(
-                        "B4 helper 僅接通原 Checker 無副作用 int 常值／形參／加減",
-                    ));
-                }
-                Ok((helper.name.clone(), PrivateSelfApprovedHelper {
-                    name: helper.name.clone(), parameters, returned: plan,
-                }))
+                private_self_checked_int_helper(text, &verified, helper).map(|plan| (helper.name.clone(), plan))
             }).collect::<Result<BTreeMap<_, _>, PrivateSelfMethodPrepareError>>()?;
         if method_helpers.len() + callers.len() != verified.functions.len() {
             return Err(PrivateSelfMethodPrepareError::Unsupported(
