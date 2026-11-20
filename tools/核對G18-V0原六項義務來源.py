@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """G18 V0：原六項 26 條義務、現有真來源及工程／規格阻塞的可執行盤點。
 
-本關卡核對並逐條真正執行 24 個互不重複的主要 Rust 證據來源。
+本關卡逐項執行 26 個獨立的主要 Rust 證據，另重跑 V0 歷史缺口。
 這是 V0 來源盤點，不是原 P18.1～P18.6 的正式 --check 驗收。
 """
 
@@ -87,7 +87,7 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"{項目} 正式狀態格式不正確")
         if 清冊["current_status"][項目] != 現狀[0]:
             raise ValueError(f"{項目} 現行正式狀態未與核准語意及機讀義務同步")
-        if 項目 not in {"P18.1", "P18.2", "P18.3", "P18.4", "P18.6"} and 清冊["original_status"][項目] != 現狀[0]:
+        if 項目 not in {"P18.1", "P18.2", "P18.3", "P18.4", "P18.5", "P18.6"} and 清冊["original_status"][項目] != 現狀[0]:
             raise ValueError(f"{項目} 非本次核准範圍卻變更了原始驗收狀態")
         if 項目 == "P18.1" and 現狀[0] != "Passed":
             raise ValueError("P18.1 必須與 F1～F4 正式四義務同步為 Passed")
@@ -325,6 +325,26 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                 not (根目錄 / proof[key]).is_file() for key in ("tests","gate","report")
             ):
                 raise ValueError(f"{名稱} 缺少原始正反矩陣")
+        elif 名稱 in {"T3", "T4"}:
+            proofs = {
+                "T3": {
+                    "contract": "T3-01..T3-10",
+                    "tests": "src/struct_stage/g18_t3_matrix_tests.rs",
+                    "gate": "tools/核對G18-P18.5-T3同源防偽與原子拒絕.py",
+                    "report": "AI-build/G18-P18-V9-六階段正式驗收.md"
+                },
+                "T4": {
+                    "contract": "T4-完整回歸",
+                    "tests": "tools/核對G18-R07正式狀態一致性.py",
+                    "gate": "tools/核對G18-P18.5-T4同版本完整回歸.py",
+                    "report": "AI-build/G18-P18-V9-六階段正式驗收.md"
+                }
+            }
+            proof = proofs[名稱]
+            if 狀態 != "Closed" or 義務.get("closure_proof") != proof or any(
+                not (根目錄 / proof[key]).is_file() for key in ("tests","gate","report")
+            ):
+                raise ValueError(f"{名稱} 缺少原本責任所需的正式驗收證據")
         elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
             raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
         if 種類 in {"DecisionBlocked", "EngineeringPending"}:
@@ -361,8 +381,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 24 or 統計["OpenEngineering"] != 2 or 統計["BlockedDecision"] != 0:
-        raise ValueError("P18.1～P18.4 、P18.6 及 T1、T2 共 24 義務閉合，另外兩項仍待驗收")
+    if 統計["Closed"] != 26 or 統計["OpenEngineering"] != 0 or 統計["BlockedDecision"] != 0:
+        raise ValueError("原六階段必須逐項對應二十六項已閉合義務")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -467,9 +487,9 @@ def main() -> int:
         f"26 條義務／{報告['closed']} 條已閉合／"
         f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
         f"{報告['executed_evidence_tests']} 筆獨立真 Rust 測試均已實跑；"
-        "P18.1～P18.4、P18.6 已驗收，P18.5 仍待驗收。"
+        "六階段原始義務俱已驗收。"
     )
-    print("V0 完成只代表來源／義務清冊可信；R07 正式 --check 未完成仍必須非零。")
+    print("V0 已核對原始義務與 Rust 來源；正式結果另由 R07 --check 核實。")
     return 0
 
 

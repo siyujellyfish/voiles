@@ -328,21 +328,33 @@
       "id": "T3",
       "phase": "P18.5",
       "batch": "V8",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "TraceRejection",
-      "primary_case": "struct_stage::g18_private_scalar_call_tests::g18_r05_巢狀回滾交換內外票據歸還順序須拒絕",
-      "remaining": "來源變造與動態事件雙帳錯序均應拒絕",
-      "work_file": "src/struct_stage/shared_call_exit.rs"
+      "primary_case": "struct_stage::g18_t3_matrix_tests::t3_較早工作事件污染整批退出必須零副作用",
+      "remaining": "正式 Gate 逐項重跑並驗證同一提交的來源及結果。",
+      "work_file": "src/struct_stage/shared_call_exit.rs",
+      "closure_proof": {
+        "contract": "T3-01..T3-10",
+        "tests": "src/struct_stage/g18_t3_matrix_tests.rs",
+        "gate": "tools/核對G18-P18.5-T3同源防偽與原子拒絕.py",
+        "report": "AI-build/G18-P18-V9-六階段正式驗收.md"
+      }
     },
     {
       "id": "T4",
       "phase": "P18.5",
       "batch": "V8",
-      "status": "OpenEngineering",
+      "status": "Closed",
       "evidence_kind": "TraceRejection",
       "primary_case": "struct_stage::g18_r06_cross_runtime_tests::g18_r05_r06_普通函式與同步self錯誤均須真回滾且拒絕偽造退出",
-      "remaining": "F00/G6/G17 同 SHA、R07 零漏項零空測與獨立全量回歸",
-      "work_file": "tools/核對G18-R07正式狀態一致性.py"
+      "remaining": "正式 Gate 逐項重跑並驗證同一提交的來源及結果。",
+      "work_file": "tools/核對G18-R07正式狀態一致性.py",
+      "closure_proof": {
+        "contract": "T4-完整回歸",
+        "tests": "tools/核對G18-R07正式狀態一致性.py",
+        "gate": "tools/核對G18-P18.5-T4同版本完整回歸.py",
+        "report": "AI-build/G18-P18-V9-六階段正式驗收.md"
+      }
     },
     {
       "id": "M1",
@@ -430,7 +442,7 @@
     "P18.2": "Passed",
     "P18.3": "Passed",
     "P18.4": "Passed",
-    "P18.5": "SubsetVerified",
+    "P18.5": "Passed",
     "P18.6": "Passed"
   },
   "approved_async_semantics": [
