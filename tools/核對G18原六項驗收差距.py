@@ -756,6 +756,7 @@ from pathlib import Path
         "struct_stage::p17_private_str_execution_tests::p18_c_三層巢狀返回跳過外層結果且真資源逐層退出",
     ),
     "P18.4": (
+        "struct_stage::g18_scalar_self_cfg_tests::持票子函式迴圈反向邊與故障還票",
         "struct_stage::g18_scalar_self_cfg_tests::持票子函式多語句選葉與局部清理",
         "struct_stage::g18_scalar_self_cfg_tests::原方法可轉交普通函式的新字串",
         "struct_stage::g18_repeated_self_call_tests::中間方法溢位時不再簽發後續呼叫票據",

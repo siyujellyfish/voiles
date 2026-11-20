@@ -27,6 +27,7 @@ def run(*args):
 if __name__ == "__main__":
     cfg_prefix = "struct_stage::g18_scalar_self_cfg_tests::"
     cfg_cases = (
+        "持票子函式迴圈反向邊與故障還票",
         "持票子函式多語句選葉與局部清理",
         "原方法可轉交普通函式的新字串",
         "主函式最後直接返回方法或欄位並退出持有者",

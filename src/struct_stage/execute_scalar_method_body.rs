@@ -173,6 +173,7 @@ struct PrivateMethodHelperExit {
     span: crate::common_ir::NodeSpan,
     locals: BTreeMap<DeclarationId, i64>,
     steps: usize,
+    loop_checks: Vec<bool>,
     result: Result<PrivateMethodValue<u64>, PrivateScalarCallRuntimeError>,
 }
 
@@ -261,7 +262,7 @@ impl PrivateMethodInteger {
             PrivateMethodValue::Bool(b) => PrivateMethodValue::Bool(*b),
             PrivateMethodValue::Str(value) => PrivateMethodValue::Str(value.resource_id()),
         }).map_err(|e| *e);
-        work.helpers.push(PrivateMethodHelperExit { span, locals, steps, result: recorded });
+        work.helpers.push(PrivateMethodHelperExit { span, locals, steps, loop_checks: std::mem::take(&mut frame.loop_checks), result: recorded });
         frame.finish(result.is_ok());
         work.trace.extend(frame.events);
         work.trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() });
@@ -375,6 +376,7 @@ impl PrivateScalarSelfRead {
             if unwound || receipt.locals.len() != target.parameters.len()
                 || !target.parameters.iter().all(|id| receipt.locals.contains_key(id)) { return false; }
             let mut frame = PrivateHelperFrame::new(&receipt.locals, receipt.steps);
+            frame.loop_limit = receipt.loop_checks.len();
             let expected = frame.run(target);
             let valid = match (expected, receipt.result) {
                 (Ok(PrivateMethodValue::Str(_)), Ok(PrivateMethodValue::Str(_))) => true,
@@ -384,7 +386,7 @@ impl PrivateScalarSelfRead {
                 (Err(a), Err(b)) => a == b,
                 _ => false,
             };
-            if !valid || frame.steps != receipt.steps { return false; }
+            if !valid || frame.steps != receipt.steps || frame.loop_checks != receipt.loop_checks { return false; }
             let success = receipt.result.is_ok();
             frame.finish(success);
             let Some(tail) = inside[1..].strip_prefix(frame.events.as_slice()) else { return false; };

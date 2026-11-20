@@ -56,6 +56,9 @@ impl PrivateScalarMethodHelper {
         match action {
             A::Sequence(body) | A::Scoped(body) => body.iter().all(Self::supported),
             A::NestedIf(branch) => Self::branch_supported(branch),
+            A::ForRange { body, .. } => Self::supported(body),
+            A::While { condition, body } => Self::boolean(condition) && Self::supported(body),
+            A::Break | A::Continue => true,
             A::DeclareInt { value, .. } | A::AssignInt { value, .. } => Self::scalar(value),
             A::DeclareBool { value, .. } | A::AssignBool { value, .. } => Self::boolean(value),
             A::Return(value) => Self::scalar(value) || matches!(value,
@@ -71,17 +74,26 @@ struct PrivateHelperFrame {
     events: Vec<PrivateSharedCallExitEvent>,
     limit: usize,
     steps: usize,
+    loop_checks: Vec<bool>,
+    loop_limit: usize,
 }
 
 impl PrivateHelperFrame {
     fn new(parameters: &BTreeMap<DeclarationId, i64>, limit: usize) -> Self {
-        Self { values: parameters.clone(), initialized: Vec::new(), events: Vec::new(), limit, steps: 0 }
+        Self { values: parameters.clone(), initialized: Vec::new(), events: Vec::new(), limit, steps: 0, loop_checks: Vec::new(), loop_limit: limit }
     }
 
     fn tick(&mut self) -> Result<(), PrivateScalarCallRuntimeError> {
         if self.steps >= self.limit { return Err(PrivateScalarCallRuntimeError::StepBudget); }
         self.steps += 1;
         Ok(())
+    }
+
+    fn check_loop(&mut self, entered: bool) -> Result<bool, PrivateScalarCallRuntimeError> {
+        self.tick()?;
+        if self.loop_checks.len() >= self.loop_limit { return Err(PrivateScalarCallRuntimeError::StateMismatch); }
+        self.loop_checks.push(entered);
+        Ok(entered)
     }
 
     fn boolean(&self, expr: &PrivateScalarBoolExpr) -> Result<bool, PrivateScalarCallRuntimeError> {
@@ -110,7 +122,10 @@ impl PrivateHelperFrame {
         -> Result<PrivateMethodValue<&'a str>, PrivateScalarCallRuntimeError> {
         use PrivateScalarBranchAction as A;
         use PrivateScalarCallRuntimeError::StateMismatch;
-        enum Work<'a> { Action(&'a A), If(&'a PrivateScalarEarlyIf), Leave(usize) }
+        enum Work<'a> {
+            Action(&'a A), If(&'a PrivateScalarEarlyIf), Leave(usize),
+            While(&'a PrivateScalarBoolExpr, &'a A), For(DeclarationId, i64, i64, &'a A),
+        }
         let mut work = helper.body.iter().rev().map(Work::Action).collect::<Vec<_>>();
         while let Some(next) = work.pop() {
             let action = match next {
@@ -127,6 +142,25 @@ impl PrivateHelperFrame {
                     }
                     continue;
                 }
+                Work::While(condition, body) => {
+                    if self.check_loop(self.boolean(condition)?)? {
+                        work.push(Work::While(condition, body));
+                        work.push(Work::Action(body));
+                    }
+                    continue;
+                }
+                Work::For(id, next, end, body) => {
+                    if self.check_loop(next < end)? {
+                        let depth = self.initialized.len();
+                        if self.values.insert(id, next).is_some() { return Err(StateMismatch); }
+                        self.initialized.push(id);
+                        self.events.push(PrivateSharedCallExitEvent::LocalInitialized(id));
+                        work.push(Work::For(id, next + 1, end, body));
+                        work.push(Work::Leave(depth));
+                        work.push(Work::Action(body));
+                    }
+                    continue;
+                }
                 Work::Action(action) => action,
             };
             match action {
@@ -135,6 +169,21 @@ impl PrivateHelperFrame {
                     work.extend(body.iter().rev().map(Work::Action));
                 }
                 A::NestedIf(branch) => work.push(Work::If(branch)),
+                A::ForRange { iterator, lower, upper, body } => work.push(Work::For(*iterator, *lower, *upper, body)),
+                A::While { condition, body } => work.push(Work::While(condition, body)),
+                A::Break | A::Continue => {
+                    self.tick()?;
+                    loop {
+                        match work.pop().ok_or(StateMismatch)? {
+                            next @ (Work::For(..) | Work::While(..)) => {
+                                if matches!(action, A::Continue) { work.push(next); }
+                                break;
+                            }
+                            Work::Leave(depth) => self.leave(depth),
+                            _ => {}
+                        }
+                    }
+                }
                 A::Return(expr) => {
                     self.tick()?;
                     return match expr {
