@@ -202,6 +202,35 @@ impl OwnedStrRuntime {
 
     pub(crate) fn enter_scope(&mut self) { self.scopes.push(StrFrame::default()); }
 
+    /// 所有來源先在呼叫者作用域定位，再一次移交給新框架，避免形參遮蔽後續來源。
+    pub(crate) fn enter_with_moved_arguments(&mut self, arguments: &[(&str, &str)])
+        -> Result<Vec<u64>, StrRuntimeError> {
+        let mut slots = Vec::with_capacity(arguments.len());
+        let mut sources = std::collections::HashSet::new();
+        let mut targets = std::collections::HashSet::new();
+        for &(source, target) in arguments {
+            let slot = self.location(source)?;
+            if self.scopes[slot.0].names[slot.1].owned.is_none() || !sources.insert(slot) {
+                return Err(StrRuntimeError::MovedSource);
+            }
+            if !targets.insert(target) { return Err(StrRuntimeError::DuplicateBinding); }
+            slots.push(slot);
+        }
+        let end = self.next_order.checked_add(arguments.len() as u64).ok_or(StrRuntimeError::ExhaustedIdentity)?;
+        let mut frame = StrFrame::default();
+        let mut ids = Vec::with_capacity(slots.len());
+        for (index, ((scope, slot), &(_, target))) in slots.into_iter().zip(arguments).enumerate() {
+            let value = self.scopes[scope].names[slot].owned.take().expect("來源已完整預檢");
+            ids.push(value.id);
+            self.events.push(ResourceEvent::Moved(value.id));
+            frame.names.push(StrBinding { name: target.to_owned(), mutable: false,
+                initialized_at: self.next_order + index as u64, owned: Some(value) });
+        }
+        self.next_order = end;
+        self.scopes.push(frame);
+        Ok(ids)
+    }
+
     /// 明確 .move()：一個緩衝區只轉交，來源仍存在但已失效。
     pub(crate) fn move_named(&mut self, from: &str, to: &str)
         -> Result<(), StrRuntimeError> {

@@ -21,6 +21,47 @@ fn main()->int{ return run(true) }
 "#;
 
     #[test]
+    fn 方法整筆移動來源與形參交叉同名仍逐筆清理() {
+        use crate::owned_str_runtime::ResourceEvent::*;
+        let src = r#"struct Counter{
+var n:int = 1
+fn put(b:str,a:str,watch:str,x:int)->int{
+self.n = x+1
+return self.n
+}
+}
+fn run()->int{
+var owner:Counter = Counter()
+var a:str = "甲"
+var b:str = "乙"
+const s:str = "觀察"
+return owner.put(a.move(),b.move(),s,1)
+}
+fn main()->int{ return run() }
+"#;
+        for (program, expected) in [(src.to_owned(), Ok(2)),(src.replace("s,1)", "s,9223372036854775807)"),
+            Err(PrivateScalarCallRuntimeError::IntegerOverflow))] {
+            let mut out = PreparedPrivateScalarCall::prepare(&program).unwrap().execute().unwrap();
+            assert_eq!(out.result, expected);
+            assert!(out.has_balanced_frame_trace());
+            assert_eq!(out.resource_events, [Created(1),Created(2),Created(3),Moved(1),Moved(2),
+                Released(2),Released(1),Released(3)]);
+            for event in &mut out.events {
+                if let PrivateScalarCallEvent::SelfRead { owned_arguments, .. } = event {
+                    owned_arguments.swap(0,1);
+                }
+            }
+            assert!(!out.has_balanced_frame_trace());
+        }
+        let before = src.replace("s,1)", "s,9223372036854775807+1)");
+        let failed = PreparedPrivateScalarCall::prepare(&before).unwrap().execute().unwrap();
+        assert_eq!(failed.result, Err(PrivateScalarCallRuntimeError::IntegerOverflow));
+        assert_eq!(failed.resource_events, [Created(1),Created(2),Created(3),Released(3),Released(2),Released(1)]);
+        let duplicate = src.replace("b.move()", "a.move()");
+        assert!(matches!(PreparedPrivateScalarCall::prepare(&duplicate), Err(PrivateScalarCallPrepareError::Check(_))));
+    }
+
+    #[test]
     fn 方法混合字串借用與整數寫入於正常及溢位皆歸票() {
         let src = SOURCE.replace("fn read()", "fn put(label:str,x:int)->int{\nself.n = x+1\nreturn self.n\n}\nfn read()")
             .replace("var total:int = 0", "const s:str = \"甲\"\nvar total:int = 0")
