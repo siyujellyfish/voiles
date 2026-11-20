@@ -19,6 +19,7 @@ enum PrivateMethodValue<T> {
 enum PrivateScalarMethodStep {
     Return(PrivateMethodInteger),
     ReturnStr(PrivateScalarStrReturn),
+    ReturnStrCall(PrivateMethodInteger),
     ReturnBool(PrivateSelfBoolWriteSource),
     Declare(DeclarationId, PrivateMethodInteger),
     Assign(DeclarationId, PrivateMethodInteger),
@@ -51,17 +52,7 @@ impl PrivateScalarMethodCompiler<'_> {
                 PrivateScalarReturnExpr::Parameter(id)
             }
             TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_) => {
-                let (name, arguments) = match &leaf.kind {
-                    TermKind::Call(call) if !call.awaited => (call.name.as_str(), call.arguments.as_slice()),
-                    TermKind::UnresolvedZeroArgs(name) if !self.verified.structs.contains_key(name) => (name.as_str(), &[][..]),
-                    _ => return None,
-                };
-                let helper = self.verified.functions.iter().find(|fun| fun.name == name && fun.name != "main")?;
-                if helper.params.len() != arguments.len() { return None; }
-                let text = std::str::from_utf8(&self.verified.source.bytes).ok()?;
-                let target = private_self_checked_int_helper(text, self.verified, helper).ok()?;
-                let args = arguments.iter().map(|arg| self.integer(arg)).collect::<Option<Vec<_>>>()?;
-                return Some(PrivateMethodInteger::Helper(leaf.node_span(), Box::new(target), args));
+                return self.call(leaf, false);
             }
             TermKind::BinaryInt(binary) => {
                 let fact = self.verified.plan.scalar_hir.arithmetic(leaf.node_span())?;
@@ -78,6 +69,32 @@ impl PrivateScalarMethodCompiler<'_> {
             _ => return None,
         };
         Some(PrivateMethodInteger::Expression(expr))
+    }
+
+    fn call(&self, term: &Term, string: bool) -> Option<PrivateMethodInteger> {
+        let (name, arguments) = match &term.kind {
+            TermKind::Call(call) if !call.awaited => (call.name.as_str(), call.arguments.as_slice()),
+            TermKind::UnresolvedZeroArgs(name) if !self.verified.structs.contains_key(name) => (name.as_str(), &[][..]),
+            _ => return None,
+        };
+        let helper = self.verified.functions.iter().find(|fun| fun.name == name && fun.name != "main" && !fun.is_async)?;
+        if helper.params.len() != arguments.len() { return None; }
+        let target = if string {
+            if helper.result_ty != "str" || helper.params.iter().any(|p| p.ty != "int") { return None; }
+            let (locals, steps, returned, _) = PreparedPrivateScalarCall::prepare_function_locals(helper, self.verified).ok()?;
+            if !locals.is_empty() || !steps.is_empty()
+                || !matches!(returned, PrivateScalarReturnExpr::StrValue(PrivateScalarStrReturn::Literal(_))) { return None; }
+            PrivateSelfApprovedHelper {
+                name: helper.name.clone(),
+                parameters: helper.params.iter().map(|p| DeclarationId(p.declaration_start)).collect(),
+                returned,
+            }
+        } else {
+            let text = std::str::from_utf8(&self.verified.source.bytes).ok()?;
+            private_self_checked_int_helper(text, self.verified, helper).ok()?
+        };
+        let args = arguments.iter().map(|arg| self.integer(arg)).collect::<Option<Vec<_>>>()?;
+        Some(PrivateMethodInteger::Helper(term.node_span(), Box::new(target), args))
     }
 
     fn boolean(&self, term: &Term) -> Option<PrivateSelfBoolWriteSource> {
@@ -102,14 +119,15 @@ impl PrivateScalarMethodCompiler<'_> {
                     if !self.safety.checked_returns.contains(&statement.node_span()) { return None; }
                     if self.method.result_ty == "str" {
                         let leaf = private_self_checked_ungrouped_return(self.verified, &ret.expression).ok()?;
-                        let value = if matches!(leaf.kind, TermKind::Literal("str")) {
-                            PrivateScalarStrReturn::Literal(private_str_literal(leaf, &self.verified.tokens).ok()?)
+                        if matches!(leaf.kind, TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)) {
+                            Step::ReturnStrCall(self.call(leaf, true)?)
+                        } else if matches!(leaf.kind, TermKind::Literal("str")) {
+                            Step::ReturnStr(PrivateScalarStrReturn::Literal(private_str_literal(leaf, &self.verified.tokens).ok()?))
                         } else {
                             let name = PreparedPrivateMoveCall::checked_move_name(leaf, self.verified).ok()?;
                             let param = self.method.params.iter().find(|p| p.name == name && p.ty == "str")?;
-                            PrivateScalarStrReturn::Move { source: name.to_owned(), declaration: DeclarationId(param.declaration_start) }
-                        };
-                        Step::ReturnStr(value)
+                            Step::ReturnStr(PrivateScalarStrReturn::Move { source: name.to_owned(), declaration: DeclarationId(param.declaration_start) })
+                        }
                     } else if self.method.result_ty == "bool" {
                         Step::ReturnBool(self.boolean(&ret.expression)?)
                     } else {
@@ -149,7 +167,7 @@ impl PrivateScalarMethodCompiler<'_> {
                 }
                 _ => return None,
             };
-            let returns = matches!(step, Step::Return(_) | Step::ReturnStr(_) | Step::ReturnBool(_));
+            let returns = matches!(step, Step::Return(_) | Step::ReturnStr(_) | Step::ReturnStrCall(_) | Step::ReturnBool(_));
             body.push(step);
             if returns { break; }
         }
@@ -161,10 +179,16 @@ impl PrivateScalarMethodCompiler<'_> {
 struct PrivateMethodHelperExit {
     span: crate::common_ir::NodeSpan,
     locals: BTreeMap<DeclarationId, i64>,
-    result: Result<i64, PrivateScalarCallRuntimeError>,
+    result: Result<PrivateMethodValue<u64>, PrivateScalarCallRuntimeError>,
+}
+
+enum PrivateMethodReturnedStr<'a> {
+    Source(&'a PrivateScalarStrReturn),
+    Detached(crate::owned_str_runtime::OwnedUtf8),
 }
 
 struct PrivateMethodExecution<'a> {
+    resources: &'a mut crate::owned_str_runtime::OwnedStrRuntime,
     steps: &'a mut usize,
     limit: usize,
     helper_frame_available: bool,
@@ -199,6 +223,35 @@ impl PrivateMethodInteger {
         }
     }
 
+    fn invoke(span: crate::common_ir::NodeSpan, helper: &PrivateSelfApprovedHelper, arguments: &[Self],
+        owner: &str, parameters: &BTreeMap<DeclarationId, i64>, runtime: &crate::mixed_struct_runtime::MixedStructRuntime,
+        work: &mut PrivateMethodExecution) -> Result<PrivateMethodValue<crate::owned_str_runtime::OwnedUtf8>, PrivateScalarCallRuntimeError> {
+        let mut locals = BTreeMap::new();
+        for (id, arg) in helper.parameters.iter().zip(arguments) {
+            locals.insert(*id, arg.evaluate(owner, parameters, runtime, work)?);
+        }
+        if !work.helper_frame_available { return Err(PrivateScalarCallRuntimeError::CallBudget); }
+        work.step()?;
+        work.trace.push(PrivateSharedCallExitEvent::FunctionEntered);
+        let result = work.step().and_then(|_| match &helper.returned {
+            PrivateScalarReturnExpr::StrValue(PrivateScalarStrReturn::Literal(text)) => {
+                let value = work.resources.create_detached(text).map_err(PrivateScalarCallRuntimeError::Resource)?;
+                work.resources.mark_detached_return(&value);
+                Ok(PrivateMethodValue::Str(value))
+            }
+            expr => expr.evaluate(&locals).map(PrivateMethodValue::Int),
+        });
+        let recorded = result.as_ref().map(|value| match value {
+            PrivateMethodValue::Int(n) => PrivateMethodValue::Int(*n),
+            PrivateMethodValue::Bool(b) => PrivateMethodValue::Bool(*b),
+            PrivateMethodValue::Str(value) => PrivateMethodValue::Str(value.resource_id()),
+        }).map_err(|e| *e);
+        work.helpers.push(PrivateMethodHelperExit { span, locals, result: recorded });
+        work.trace.push(if result.is_ok() { PrivateSharedCallExitEvent::Returned } else { PrivateSharedCallExitEvent::UnwindStarted });
+        work.trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() });
+        result
+    }
+
     fn evaluate(&self, owner: &str, parameters: &BTreeMap<DeclarationId, i64>,
         runtime: &crate::mixed_struct_runtime::MixedStructRuntime, work: &mut PrivateMethodExecution) -> Result<i64, PrivateScalarCallRuntimeError> {
         use crate::mixed_struct_runtime::Observed;
@@ -206,19 +259,10 @@ impl PrivateMethodInteger {
         match self {
             Self::Expression(expr) => expr.evaluate(parameters),
             Self::Helper(span, helper, arguments) => {
-                let mut locals = BTreeMap::new();
-                for (id, arg) in helper.parameters.iter().zip(arguments) {
-                    locals.insert(*id, arg.evaluate(owner, parameters, runtime, work)?);
+                match Self::invoke(*span, helper, arguments, owner, parameters, runtime, work)? {
+                    PrivateMethodValue::Int(n) => Ok(n),
+                    _ => Err(StateMismatch),
                 }
-                if !work.helper_frame_available { return Err(PrivateScalarCallRuntimeError::CallBudget); }
-                work.step()?;
-                work.trace.push(PrivateSharedCallExitEvent::FunctionEntered);
-                let result = work.step().and_then(|_| helper.returned.evaluate(&locals));
-                work.helpers.push(PrivateMethodHelperExit { span: *span, locals, result });
-                work.trace.push(if result.is_ok() { PrivateSharedCallExitEvent::Returned }
-                    else { PrivateSharedCallExitEvent::UnwindStarted });
-                work.trace.push(PrivateSharedCallExitEvent::FunctionExited { returned: result.is_ok() });
-                result
             }
             Self::Field(field) => match runtime.field(owner, field) {
                 Ok(Observed::Int(n)) => Ok(n), _ => Err(StateMismatch),
@@ -232,6 +276,29 @@ impl PrivateMethodInteger {
 }
 
 impl PrivateScalarSelfRead {
+    fn collect_calls<'a>(&'a self, calls: &mut Vec<&'a str>) {
+        for (_, argument) in &self.arguments { argument.collect_calls(calls); }
+        let mut blocks = vec![self.body.as_slice()];
+        while let Some(block) = blocks.pop() {
+            for step in block {
+                use PrivateScalarMethodStep as Step;
+                match step {
+                    Step::If(_, yes, no) => {
+                        blocks.push(no);
+                        blocks.push(yes);
+                    }
+                    Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr)
+                    | Step::ReturnStrCall(expr) | Step::WriteInt(_, expr) => {
+                        let mut helpers = Vec::new();
+                        expr.collect_helpers(&mut helpers);
+                        calls.extend(helpers.into_iter().map(|(_, target)| target.name.as_str()));
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+
     fn selected_steps(&self, branches: &[bool], success: bool) -> Option<Vec<&PrivateScalarMethodStep>> {
         use PrivateScalarMethodStep as Step;
         let mut choices = branches.iter();
@@ -246,7 +313,7 @@ impl PrivateScalarSelfRead {
                     };
                     blocks.push(if *choice { yes.iter() } else { no.iter() });
                 }
-                Step::Return(_) | Step::ReturnStr(_) | Step::ReturnBool(_) => {
+                Step::Return(_) | Step::ReturnStr(_) | Step::ReturnStrCall(_) | Step::ReturnBool(_) => {
                     steps.push(step);
                     break;
                 }
@@ -266,7 +333,7 @@ impl PrivateScalarSelfRead {
         let Some(steps) = self.selected_steps(branches, success) else { return false; };
         for step in &steps {
             use PrivateScalarMethodStep as Step;
-            if let Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr) | Step::WriteInt(_, expr) = step {
+            if let Step::Declare(_, expr) | Step::Assign(_, expr) | Step::Return(expr) | Step::ReturnStrCall(expr) | Step::WriteInt(_, expr) = step {
                 expr.collect_helpers(&mut order);
             }
         }
@@ -293,7 +360,13 @@ impl PrivateScalarSelfRead {
                 || receipt.locals.len() != target.parameters.len()
                 || !target.parameters.iter().all(|id| receipt.locals.contains_key(id))
                 || receipt.result != Err(PrivateScalarCallRuntimeError::StepBudget)
-                    && target.returned.evaluate(&receipt.locals) != receipt.result
+                    && match (&target.returned, &receipt.result) {
+                        (PrivateScalarReturnExpr::StrValue(PrivateScalarStrReturn::Literal(_)), Ok(PrivateMethodValue::Str(_))) => false,
+                        (PrivateScalarReturnExpr::StrValue(PrivateScalarStrReturn::Literal(_)),
+                            Err(PrivateScalarCallRuntimeError::Resource(crate::owned_str_runtime::StrRuntimeError::ExhaustedIdentity))) => false,
+                        (PrivateScalarReturnExpr::StrValue(_), _) => true,
+                        (expr, _) => expr.evaluate(&receipt.locals).map(PrivateMethodValue::Int) != receipt.result,
+                    }
                 || *outcome != if *returned { Returned } else { UnwindStarted } { return false; }
             unwound = !*returned;
             inside = rest;
@@ -313,7 +386,7 @@ impl PrivateScalarSelfRead {
 
     fn run_body(&self, mut parameters: BTreeMap<DeclarationId, i64>,
         runtime: &mut crate::mixed_struct_runtime::MixedStructRuntime, work: &mut PrivateMethodExecution)
-        -> Result<PrivateMethodValue<&PrivateScalarStrReturn>, PrivateScalarCallRuntimeError> {
+        -> Result<PrivateMethodValue<PrivateMethodReturnedStr>, PrivateScalarCallRuntimeError> {
         use crate::mixed_struct_runtime::{MixedStructRuntime, Observed};
         use PrivateScalarCallRuntimeError::StateMismatch;
         let boolean = |expr: &PrivateSelfBoolWriteSource, runtime: &MixedStructRuntime, values: &BTreeMap<DeclarationId, i64>| match expr {
@@ -332,7 +405,13 @@ impl PrivateScalarSelfRead {
             match op {
                 PrivateScalarMethodStep::Return(expr) => return expr.evaluate(&self.owner, &parameters, runtime, work).map(PrivateMethodValue::Int),
                 PrivateScalarMethodStep::ReturnBool(expr) => return boolean(expr, runtime, &parameters).map(PrivateMethodValue::Bool),
-                PrivateScalarMethodStep::ReturnStr(value) => return Ok(PrivateMethodValue::Str(value)),
+                PrivateScalarMethodStep::ReturnStr(value) => return Ok(PrivateMethodValue::Str(PrivateMethodReturnedStr::Source(value))),
+                PrivateScalarMethodStep::ReturnStrCall(expr) => {
+                    let PrivateMethodInteger::Helper(span, helper, args) = expr else { return Err(StateMismatch); };
+                    let value = PrivateMethodInteger::invoke(*span, helper, args, &self.owner, &parameters, runtime, work)?;
+                    let PrivateMethodValue::Str(owned) = value else { return Err(StateMismatch); };
+                    return Ok(PrivateMethodValue::Str(PrivateMethodReturnedStr::Detached(owned)));
+                }
                 PrivateScalarMethodStep::Declare(id, expr) => {
                     let value = expr.evaluate(&self.owner, &parameters, runtime, work)?;
                     if parameters.insert(*id, value).is_some() { return Err(StateMismatch); }
