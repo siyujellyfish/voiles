@@ -384,21 +384,33 @@
       "id": "A1",
       "phase": "P18.6",
       "batch": "V7",
-      "status": "OpenEngineering",
-      "evidence_kind": "EngineeringPending",
-      "primary_case": null,
-      "remaining": "已核准 E1/E2 直接 await 延遲啟動的原 Checker 真呼叫子集已接通；仍待完整可暫停／恢復／喚醒協作式真任務圖與 async self 正反",
-      "work_file": "src/struct_stage/execute_method_self.rs"
+      "status": "Closed",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_async_method_graph_tests::a1_普通等待與兩種方法共用可喚醒框架",
+      "remaining": "協作普通函式與方法續行由原 Checker 與活框架逐項驗收。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "A1-01..A1-04",
+        "tests": "src/struct_stage/g18_async_method_graph_tests.rs",
+        "gate": "tools/核對G18-P18.6-A1協作普通函式與方法續行.py",
+        "report": "AI-build/G18-P18.6-非同步工作圖與方法正式驗收.md"
+      }
     },
     {
       "id": "A2",
       "phase": "P18.6",
       "batch": "V7",
-      "status": "OpenEngineering",
-      "evidence_kind": "EngineeringPending",
-      "primary_case": null,
-      "remaining": "已核准 E3/E4/E5 真 RuntimeFailure、BorrowTicket／ResourceId 安全點子集已接通；仍待從原 `.voil` 任務暫停／恢復後取消、異常與逐框架清理完整正反",
-      "work_file": "src/struct_stage/shared_call_exit.rs"
+      "status": "Closed",
+      "evidence_kind": "RuntimeSuccess",
+      "primary_case": "struct_stage::g18_async_method_graph_tests::a2_各安全點取消時真移交與逆序離域",
+      "remaining": "取消與逐框架清理由原 Checker 與活框架逐項驗收。",
+      "work_file": "src/struct_stage/execute_call_scalar.rs",
+      "closure_proof": {
+        "contract": "A2-01..A2-04",
+        "tests": "src/struct_stage/g18_async_method_graph_tests.rs",
+        "gate": "tools/核對G18-P18.6-A2取消與逐框架清理.py",
+        "report": "AI-build/G18-P18.6-非同步工作圖與方法正式驗收.md"
+      }
     }
   ],
   "current_status": {
@@ -407,7 +419,7 @@
     "P18.3": "Passed",
     "P18.4": "Passed",
     "P18.5": "SubsetVerified",
-    "P18.6": "Incomplete"
+    "P18.6": "Passed"
   },
   "approved_async_semantics": [
     "D18-02-E1-A: 延遲啟動且只限直接 await",

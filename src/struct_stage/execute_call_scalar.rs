@@ -31,6 +31,7 @@ enum PrivateScalarCallEvent {
     /// V7 E5：直接 await 真到達可啟動安全點後，才由同一
     /// Checker Call 工作圖簽發。下筆必須進入同名 async 函式框架。
     AwaitSafePoint(String),
+    MethodAwaitSafePoint(crate::common_ir::NodeSpan),
     FunctionEntered(String),
     ParameterBound(DeclarationId, i64),
     BoolParameterBound(DeclarationId, bool),
@@ -107,7 +108,7 @@ enum PrivateScalarCallEvent {
     FunctionExited { name: String, returned: bool },
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarCallOutcome {
     result: Result<i64, PrivateScalarCallRuntimeError>,
     events: Vec<PrivateScalarCallEvent>,
@@ -187,12 +188,16 @@ impl PrivateScalarCallOutcome {
         // 一筆已證直接等待安全點須立刻接入其目標函式，
         // 不能重播安全點、插入其它事件或改綁另一個框架。
         let mut awaited_entry: Option<&str> = None;
+        let mut awaited_method = None;
         let mut created_ids = std::collections::HashSet::<u64>::new();
         // 僅實際成功 Returned 的子框架，才可以在正式回滾之前
         // 歸還其直接呼叫者的票據；尚未入框架的失敗實參須先回滾。
         let mut returned_imported_loans =
             Vec::<crate::borrow_safety::BorrowTicket>::new();
         for (index, event) in self.events.iter().enumerate() {
+            if let Some(span) = awaited_method.take() {
+                if !matches!(event, PrivateScalarCallEvent::SelfRead { site, .. } if site.awaited && site.call_span == span) { return false; }
+            } else if matches!(event, PrivateScalarCallEvent::SelfRead { site, .. } if site.awaited) { return false; }
             if let Some(target) = awaited_entry {
                 if !matches!(event,
                     PrivateScalarCallEvent::FunctionEntered(name)
@@ -236,6 +241,11 @@ impl PrivateScalarCallOutcome {
                 return false;
             }
             match event {
+                PrivateScalarCallEvent::MethodAwaitSafePoint(span) => {
+                    if unwinding || frames.last().is_none_or(|f| f.returned)
+                        || frames.iter().any(|f| !f.loans.is_empty() || !f.imported_loans.is_empty()) { return false; }
+                    awaited_method = Some(*span);
+                }
                 PrivateScalarCallEvent::AwaitSafePoint(name) => {
                     let Some(frame) = frames.last() else { return false; };
                     if unwinding || frame.returned
@@ -918,7 +928,7 @@ impl PrivateScalarCallOutcome {
             _ => None,
             });
         }
-        frames.len() == 1 && awaited_entry.is_none()
+        frames.len() == 1 && awaited_method.is_none() && awaited_entry.is_none()
             && frames[0].locals.is_empty()
             && frames[0].resource_ids.is_empty()
             && frames[0].owner_resources.is_empty()
@@ -944,6 +954,7 @@ impl PrivateScalarCallOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarSelfRead {
     result_type: String,
+    awaited: bool,
     body: Vec<PrivateScalarMethodStep>,
     arguments: Vec<(DeclarationId, PrivateScalarCallArgument)>,
     name: String,
@@ -963,7 +974,11 @@ impl PrivateScalarSelfRead {
         let mut parser = Parser { source: &verified.source, tokens: &verified.tokens, cursor };
         let call = parser.atom().ok()?;
         if call.node_span() != span { return None; }
-        let TermKind::MethodCall(receiver, called, terms) = call.kind else { return None; };
+        let (receiver, called, terms, awaited) = match call.kind {
+            TermKind::MethodCall(r, n, args) => (r, n, args, false),
+            TermKind::AwaitMethodCall(r, n, args) => (r, n, args, true),
+            _ => return None,
+        };
         if receiver != owner || called != name { return None; }
         let (receiver_fact, argument_facts) = verified.plan.declarations.call_borrows_at(span)?.split_last()?;
         let mut facts = argument_facts.iter();
@@ -1006,7 +1021,7 @@ impl PrivateScalarSelfRead {
                     _ => return false,
                 }));
         let method = candidates.next()?;
-        if candidates.next().is_some() || method.is_async || !matches!(method.result_ty.as_str(), "int" | "bool" | "str") { return None; }
+        if candidates.next().is_some() || method.is_async != awaited || !matches!(method.result_ty.as_str(), "int" | "bool" | "str") { return None; }
         let arguments = method.params.iter().map(|p| DeclarationId(p.declaration_start)).zip(actuals).collect();
         let safety = verified.plan.method_safety.get(&method.start)?;
         let compiler = PrivateScalarMethodCompiler { verified, method, definition, safety };
@@ -1014,7 +1029,7 @@ impl PrivateScalarSelfRead {
         let loan = BorrowFact::new(id, safety.self_borrow);
         if (loan.kind == BorrowKind::ExclusiveWrite && !declaration.mutable)
             || *receiver_fact != loan { return None; }
-        Some(Self { result_type: method.result_ty.clone(), name: name.to_owned(), owner: owner.to_owned(), body,
+        Some(Self { awaited, result_type: method.result_ty.clone(), name: name.to_owned(), owner: owner.to_owned(), body,
             call_span: span, method_start: method.start, loan, arguments })
     }
 }
@@ -1073,7 +1088,7 @@ impl PrivateScalarReturnExpr {
             ));
         }
         match &term.kind {
-            TermKind::MethodCall(owner, name, _) => {
+            TermKind::MethodCall(owner, name, _) | TermKind::AwaitMethodCall(owner, name, _) => {
                 bindings.get(owner).and_then(|id|
                     PrivateScalarSelfRead::checked(span, owner, name, *id, verified)
                 ).map(Self::SelfRead).ok_or(PrivateScalarCallPrepareError::Unsupported(
@@ -1323,7 +1338,7 @@ impl PrivateScalarReturnExpr {
         match &term.kind {
             TermKind::Call(call) => Some(call.name.as_str()),
             TermKind::UnresolvedZeroArgs(name) => Some(name.as_str()),
-            TermKind::MethodCall(_, _, args) => args.iter().find_map(Self::first_source_call),
+            TermKind::MethodCall(_, _, args) | TermKind::AwaitMethodCall(_, _, args) => args.iter().find_map(Self::first_source_call),
             TermKind::Group(inner) => Self::first_source_call(inner),
             TermKind::BinaryInt(binary) => Self::first_source_call(&binary.left)
                 .or_else(|| Self::first_source_call(&binary.right)),
@@ -1397,7 +1412,7 @@ impl PrivateScalarReturnExpr {
                 }
             }
             TermKind::UnresolvedZeroArgs(name) => names.push(name.as_str()),
-            TermKind::MethodCall(_, _, args) => {
+            TermKind::MethodCall(_, _, args) | TermKind::AwaitMethodCall(_, _, args) => {
                 for arg in args { Self::collect_source_calls_in_term(arg, names); }
             }
             TermKind::Group(inner) => Self::collect_source_calls_in_term(inner, names),
@@ -1576,7 +1591,7 @@ impl PrivateScalarBoolExpr {
             ));
         }
         match &term.kind {
-            TermKind::MethodCall(owner, name, _) => {
+            TermKind::MethodCall(owner, name, _) | TermKind::AwaitMethodCall(owner, name, _) => {
                 bindings.get(owner).and_then(|id| PrivateScalarSelfRead::checked(span, owner, name, *id, verified))
                     .filter(|site| site.result_type == "bool").map(|site| Self::Method(Box::new(site)))
                     .ok_or(PrivateScalarCallPrepareError::Unsupported("布林方法缺少原接收者、簽章或借票事實"))
@@ -2691,7 +2706,7 @@ impl PreparedPrivateScalarCall {
             }
             call_term = inner;
         }
-        if let TermKind::MethodCall(owner, name, _) = &call_term.kind {
+        if let TermKind::MethodCall(owner, name, _) | TermKind::AwaitMethodCall(owner, name, _) = &call_term.kind {
             if let Some(site) = bindings.get(owner).and_then(|id|
                 PrivateScalarSelfRead::checked(call_term.node_span(), owner, name, *id, verified)).filter(|site| site.result_type == "str") {
                 return Ok(PrivateScalarStrInitializer::Method(site));
@@ -2961,7 +2976,7 @@ impl PreparedPrivateScalarCall {
                 // TypedHIR。含 Call 只能經同一動態函式堆疊實際執行，
                 // 不能再在 P16 建構器中另行求值或繞過資源退出。
                 TermKind::BinaryInt(_) | TermKind::Group(_)
-                    | TermKind::Call(_) | TermKind::MethodCall(..) | TermKind::UnresolvedZeroArgs(_)
+                    | TermKind::Call(_) | TermKind::MethodCall(..) | TermKind::AwaitMethodCall(..) | TermKind::UnresolvedZeroArgs(_)
                     if *kind == ScalarKind::Int => {
                     let expression = PrivateScalarReturnExpr::from_checked_bindings(
                         term, bindings, verified,
@@ -4142,6 +4157,21 @@ impl PreparedPrivateScalarCall {
                     PrivateScalarTask::InvokeSelf(site) => {
                         if frames.len() >= budget.max_call_frames {
                             return Err(PrivateScalarCallRuntimeError::CallBudget);
+                        }
+                        if site.awaited {
+                            Self::check_await_safe_point_chain(frames.iter().map(|frame|
+                                (&frame.borrow_tracker, frame.incoming_borrows.as_slice())))?;
+                            if allow_pause && !resuming_current_await {
+                                tasks.push(PrivateScalarTask::InvokeSelf(site));
+                                steps -= 1;
+                                paused_await = Some(site.name.clone());
+                                break 'graph;
+                            }
+                            resuming_current_await = false;
+                            if let Some(schedule) = await_scheduler.as_deref_mut() {
+                                schedule(&site.name, resources.events());
+                            }
+                            events.push(PrivateScalarCallEvent::MethodAwaitSafePoint(site.call_span));
                         }
                         let helper_frame_available = frames.len() + 1 < budget.max_call_frames;
                         let frame = frames.last_mut().ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
@@ -6417,7 +6447,7 @@ impl PreparedPrivateScalarCall {
                 // 沒有 Call 就捨棄前置呼叫、錯拒整個函式。
                 // 常值本身仍僅由 Checked TypedHIR 編譯，不在
                 // Prepare 階段執行或虛構任何返回事件。
-                TermKind::BinaryInt(_) | TermKind::Name(_) | TermKind::MethodCall(..) | TermKind::FieldRead(..)
+                TermKind::BinaryInt(_) | TermKind::Name(_) | TermKind::MethodCall(..) | TermKind::AwaitMethodCall(..) | TermKind::FieldRead(..)
                     | TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(_))
                     if needs_main_local_runtime => (source_name, &[], false),
                 TermKind::BinaryInt(_) => (source_name, &[], false),
@@ -6956,7 +6986,7 @@ enum PrivateScalarGraphPoll {
 
 /// E3 真取消證據：事件唯一來源是原 evaluate_graph_driver 中
 /// HC14 票據歸還、P16 OwnedStrRuntime 真 scope 退出與原函式幀退出。
-#[derive(Debug)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PrivateScalarGraphCancellation {
     events: Vec<PrivateScalarCallEvent>,
     resource_events: Vec<crate::owned_str_runtime::ResourceEvent>,
@@ -7281,7 +7311,36 @@ impl PrivateScalarCheckedProgramCatalog {
     fn len(&self) -> usize { self.programs.len() }
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PrivateScalarSuspensionReceipt {
+    target: String,
+    steps: usize,
+    values: Vec<i64>,
+    frames: Vec<String>,
+    events: Vec<PrivateScalarCallEvent>,
+    resources: Vec<crate::owned_str_runtime::ResourceEvent>,
+}
+
+impl PrivateScalarSuspensionReceipt {
+    fn capture(c: &PrivateScalarGraphContinuation<'_>) -> Option<Self> {
+        let saved = c.checkpoint.as_ref()?;
+        Some(Self { target: saved.awaiting_name.clone(), steps: saved.steps,
+            values: saved.values.clone(), frames: saved.frames.iter().map(|f| f.name.clone()).collect(),
+            events: c.events.clone(), resources: saved.resources.events().to_vec() })
+    }
+    fn matches(&self, c: &PrivateScalarGraphContinuation<'_>) -> bool {
+        c.checkpoint.as_ref().is_some_and(|s| self.target == s.awaiting_name
+            && self.steps == s.steps && self.values == s.values
+            && self.frames.iter().eq(s.frames.iter().map(|f| &f.name))
+            && self.events == c.events && self.resources == s.resources.events())
+    }
+}
+
 struct PrivateScalarCooperativeJob<'a> {
+    suspension: Option<PrivateScalarSuspensionReceipt>,
+    origin: &'a PreparedPrivateScalarCall,
+    completed: Option<PrivateScalarCallOutcome>,
+    cancelled: Option<PrivateScalarGraphCancellation>,
     continuation: PrivateScalarGraphContinuation<'a>,
     cancellation: Option<PrivateScalarGraphCancellation>,
 }
@@ -7376,7 +7435,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             .ok_or(PrivateScalarCooperativeError::IdExhausted)?;
         self.next_id = id;
         self.jobs.insert(id, PrivateScalarCooperativeJob {
-            continuation, cancellation: None,
+            suspension: None, origin: plan, completed: None, cancelled: None, continuation, cancellation: None,
         });
         self.ready.push_back(id);
         self.ready_issues.push(PrivateScalarReadyIssue {
@@ -7453,6 +7512,18 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         }
         let saved = job.continuation.checkpoint.as_ref()
             .ok_or(PrivateScalarCooperativeError::Engine)?;
+        if !job.suspension.as_ref().is_some_and(|receipt| receipt.matches(&job.continuation)) {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
+        let same_target = match saved.tasks.last() {
+            Some(PrivateScalarTask::InvokeSelf(site)) => site.awaited && site.name == saved.awaiting_name
+                && PrivateScalarSelfRead::checked(site.call_span, &site.owner, &site.name,
+                    site.loan.source, &job.origin.verified).as_ref() == Some(*site),
+            Some(PrivateScalarTask::EnterCall(name, _, _, true)) => *name == saved.awaiting_name
+                && job.origin.verified.functions.iter().any(|f| f.name == *name && f.is_async),
+            _ => false,
+        };
+        if !same_target { return Err(PrivateScalarCooperativeError::Engine); }
         PreparedPrivateScalarCall::check_await_safe_point_chain(
             saved.frames.iter().map(|frame| (
                 &frame.borrow_tracker, frame.incoming_borrows.as_slice(),
@@ -7506,6 +7577,10 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
             }
         };
         self.ready.pop_front();
+        job.suspension = PrivateScalarSuspensionReceipt::capture(&job.continuation);
+        if poll == PrivateScalarGraphPoll::Completed {
+            job.completed = job.continuation.outcome.clone();
+        }
         self.drive_order.push((id, poll));
         Ok(Some((id, poll)))
     }
@@ -7782,6 +7857,10 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         ) {
             return Err(PrivateScalarCooperativeError::WrongState);
         }
+        if !std::ptr::eq(job.origin, continuation.plan) || !job.origin.checked_source_still_intact()
+            || job.completed.is_some() || job.cancelled.is_some() {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
         let polls = self.drive_order.iter()
             .filter_map(|(logged_id, poll)| (*logged_id == id).then_some(*poll))
             .collect::<Vec<_>>();
@@ -7800,7 +7879,7 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
                 // 第一次 poll 前絕不可能擁有 checkpoint、任何
                 // 執行中事件或歷史完成／取消。來源核對拒絕
                 // 也不允許把曾經啟動的工作退回 Prepared。
-                if !polls.is_empty() || continuation.checkpoint.is_some()
+                if job.suspension.is_some() || !polls.is_empty() || continuation.checkpoint.is_some()
                     || !continuation.events.is_empty()
                     || !continuation.resource_events.is_empty()
                     || ready_count != 1 || wakes != 0 {
@@ -7854,6 +7933,8 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
         // 只有正式清理成功／未啟動才從可執行佇列移除；
         // 即使 wake 已加入 ready，取消仍能以相同工作身分處理。
         self.ready.retain(|candidate| *candidate != id);
+        job.suspension = None;
+        job.cancelled = job.cancellation.clone();
         self.cancellation_order.push(id);
         Ok(())
     }
@@ -7871,6 +7952,10 @@ impl<'a> PrivateScalarCooperativeQueue<'a> {
     ) -> Result<PrivateDeferredAwaitStatus, PrivateScalarCooperativeError> {
         let job = self.jobs.get(&id)
             .ok_or(PrivateScalarCooperativeError::UnknownTask)?;
+        if !std::ptr::eq(job.origin, job.continuation.plan) || !job.origin.checked_source_still_intact()
+            || job.completed != job.continuation.outcome || job.cancelled != job.cancellation {
+            return Err(PrivateScalarCooperativeError::Engine);
+        }
         let status = job.continuation.status;
         if matches!(status,
             PrivateDeferredAwaitStatus::Prepared
