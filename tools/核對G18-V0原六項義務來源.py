@@ -95,8 +95,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError("P18.2 只有四項原控制義務均 Closed 才能 Passed")
         if 項目 == "P18.3" and 現狀[0] != "Passed":
             raise ValueError("P18.3 必須完整閉合 R1～R4 才能 Passed")
-        if 項目 == "P18.6" and 現狀[0] != "Incomplete":
-            raise ValueError("D18-02 已核准但 A1/A2 尚無完整真任務證據，P18.6 只能 Incomplete")
+        if 項目 == "P18.6" and 現狀[0] != "Passed":
+            raise ValueError("P18.6 必須以 M1～M3、A1/A2 全數 Closed 認列")
     所有來源 = {來源 for 來源群 in 原證據.values() for 來源 in 來源群}
     if not 所有來源:
         raise ValueError("原六項真來源不可為空")
@@ -130,186 +130,190 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
         }:
             raise ValueError(f"V0 {名稱} 狀態或證據種類非法")
 
-        if 名稱 in {"A1", "A2"}:
-            if (
-                階段 != "P18.6" or 狀態 != "OpenEngineering"
-                or 種類 != "EngineeringPending" or 來源 is not None
+        if 名稱 == "F1":
+            # 只有實際補入原 Checker→Runtime 真正反七項獨立 Gate、
+            # 並在本次 PR 最新 HEAD CI 實際執行，才可將 F1 單條 Closed。
+            # 不以此將 P18.1 或任一相鄰義務標成 Passed。
+            必要證明 = {
+                "contract": "F1-C01..F1-C07",
+                "tests": "src/struct_stage/g18_f1_obligation_tests.rs",
+                "gate": "tools/核對G18-F1真函式圖閉合.py",
+                "report": "AI-build/G18-P18-F1-函式圖原始義務閉合證據-20261110.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("F1 不得在缺少七項來源／真 Gate 的情況下標 Closed")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("F1 正式驗收來源、Gate 或工程報告不存在")
+        elif 名稱 == "F2":
+            必要證明 = {
+                      "contract": "F2-C01..F2-C15",
+                      "tests": "src/struct_stage/g18_f2_obligation_tests.rs",
+                      "gate": "tools/核對G18-F2原始義務正式閉合.py",
+                      "report": "AI-build/G18-P18-F2-原始義務閉合證據-20261113.md"
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("F2 必須有十五等價類及三十項真來源閉合證明才可 Closed")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("F2 正式來源、Gate 或工程報告不存在")
+        elif 名稱 == "F3":
+            必要證明 = {
+                "contract": "F3-C01..F3-C15",
+                "tests": "src/struct_stage/g18_f3_call_site_tests.rs",
+                "gate": "tools/核對G18-F3原始義務正式閉合.py",
+                "report": "AI-build/G18-P18-F3-原始義務閉合證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("F3 必須有十五等價類三十真來源證據才准 Closed")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("F3 原始證據路徑不存在")
+        elif 名稱 == "F4":
+            必要證明 = {
+                "contract": "F4-C01..F4-C13",
+                "tests": "src/struct_stage/execute_call_scalar.rs",
+                "gate": "tools/核對G18-F4可達函式圖原始義務閉合.py",
+                "report": "AI-build/G18-P18-F4-可達函式圖原始義務閉合證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("F4 原 Checker 靜態圖十三類閉合證明不完整")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("F4 原始來源／專用 Gate 或報告不存在")
+        elif 名稱 in {"C1", "C2", "C3", "C4"}:
+            預期數量 = {"C1": 10, "C2": 10, "C3": 12, "C4": 12}[名稱]
+            必要證明 = {
+                "contract": f"{名稱}-01..{名稱}-{預期數量:02d}",
+                "tests": "src/struct_stage/execute_call_scalar.rs",
+                "gate": {
+                    "C1": "tools/核對G18-P18.2-C1分支選葉.py",
+                    "C2": "tools/核對G18-P18.2-C2迴圈回邊.py",
+                    "C3": "tools/核對G18-P18.2-C3巢狀控制轉移.py",
+                    "C4": "tools/核對G18-P18.2-C4局部資源離域.py",
+                }[名稱],
+                "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError(f"P18.2 {名稱} 需獨立原控制與資源真證據")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError(f"P18.2 {名稱} 真來源／Gate／報告不存在")
+        elif 名稱 in {"R1", "R2", "R3", "R4"}:
+            數量 = {"R1":16,"R2":14,"R3":16,"R4":16}[名稱]
+            必要證明 = {
+                "contract": f"{名稱}-01..{名稱}-{數量:02d}",
+                "tests": "src/struct_stage/execute_recursive_str.rs",
+                "gate": {
+                    "R1": "tools/核對G18-P18.3-R1原遞迴真返回.py",
+                    "R2": "tools/核對G18-P18.3-R2動態預算.py",
+                    "R3": "tools/核對G18-P18.3-R3跨框架身分.py",
+                    "R4": "tools/核對G18-P18.3-R4失敗回滾.py",
+                }[名稱],
+                "report": "AI-build/G18-P18.3-原始四義務正式驗收證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError(f"P18.3 {名稱} 沒有原 Checker／真動態遞迴必要證據")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError(f"P18.3 {名稱} 的 Gate／Rust 來源／報告不存在")
+        elif 名稱 == "B1":
+            # 先由原 Checker 真入口做 11 條相異、獨立 --exact 測試，
+            # 再以最新 PR HEAD／main 同 SHA CI 核實；B2～B5 不連帶關閉。
+            必要證明 = {
+                "contract": "B1-01..B1-11",
+                "tests": "src/struct_stage/g18_b1_obligation_tests.rs",
+                "gate": "tools/核對G18-P18.4-B1原始Copyable責任.py",
+                "report": "AI-build/G18-P18.4-B1-Copyable參數原始義務閉合證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("B1 沒有原 Checker Copyable 11 類真動態閉合證據")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("B1 Rust 來源／獨立 Gate／報告不存在")
+        elif 名稱 in {"B2", "B3"}:
+            # 兩組來源必須獨立，不靠既有 group pass 冒充逐條 Closed。
+            數量 = {"B2": 20, "B3": 42}[名稱]
+            必要證明 = {
+                "contract": f"{名稱}-01..{名稱}-{數量:02d}",
+                "tests": "src/struct_stage/execute_call_borrow.rs",
+                "gate": {
+                    "B2": "tools/核對G18-P18.4-B2整筆Move借用共帳.py",
+                    "B3": "tools/核對G18-P18.4-B3真Borrow來源身分.py",
+                }[名稱],
+                "report": "AI-build/G18-P18.4-B2-B3-多資源借用身分閉合證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError(f"P18.4 {名稱} 沒有原來源及 {數量} 筆獨立 Gate 閉合證明")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError(f"P18.4 {名稱} 真來源／Gate／報告不存在")
+        elif 名稱 == "B4":
+            必要證明 = {
+                "contract": "B4-01..B4-07",
+                "tests": "src/struct_stage/g18_b4_obligation_tests.rs",
+                "gate": "tools/核對G18-P18.4-B4同步方法借票責任.py",
+                "report": "AI-build/G18-P18.4-B4同步方法與原五義務驗收.md"
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("B4 缺同步方法獨立驗收證明")
+            if any(not (根目錄 / 必要證明[k]).is_file() for k in ("tests", "gate", "report")):
+                raise ValueError("B4 原始證據檔案缺失")
+        elif 名稱 == "B5":
+            # 原 P14/P15 Checker 與真 BorrowSafety 依 B5 七組 42 筆獨立
+            # Rust --exact Gate 證明；不因此解除 VB14 的無證再借限制。
+            必要證明 = {
+                "contract": "B5-01..B5-42",
+                "tests": "src/struct_stage/tests_lifetime_resources.rs",
+                "gate": "tools/核對G18-P18.4-B5借用有效期與無證再借.py",
+                "report": "AI-build/G18-P18.4-B5-借用生命期與退出票據正式證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("B5 借用有效期與無證再借沒有 42 項獨立正反證據")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("B5 Rust 來源／獨立 Gate／報告不存在")
+        elif 名稱 == "M1":
+            # 原 S20 靜態歧義拒絕九項 + 真自動 self 選擇十八項。
+            # M1 不得以舊的僅 --list 檢查冒充真 --exact 驗收。
+            必要證明 = {
+                "contract": "M1-01..M1-27",
+                "tests": "src/struct_stage/method_overload_tests.rs",
+                "gate": "tools/核對G18-P18.6-M1原始方法簽章.py",
+                "report": "AI-build/G18-P18.6-M1-唯一方法靜態簽章閉合證據-20261113.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
+                raise ValueError("M1 沒有 S20 九靜態、十八真 Runtime 的原 Checker 閉合證據")
+            if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
+                raise ValueError("M1 原 Checker Rust 來源／真 Gate／AI-build 不存在")
+            if not (根目錄 / "src/struct_stage/execute_method_self.rs").is_file():
+                raise ValueError("M1 真同步方法 Runtime 原始測試來源不存在")
+        elif 名稱 in {"M2", "M3"}:
+            gate = {
+                "M2": "tools/核對G18-P18.6-M2同步方法借用與欄位.py",
+                "M3": "tools/核對G18-P18.6-M3函式方法同一控制圖.py",
+            }[名稱]
+            expected = {
+                "contract": f"{名稱}-01..{名稱}-08",
+                "tests": "src/struct_stage/g18_m2_m3_obligation_tests.rs",
+                "gate": gate,
+                "report": "AI-build/G18-P18.6-M2-M3同步方法原始義務驗收.md",
+            }
+            if 狀態 != "Closed" or 義務.get("closure_proof") != expected:
+                raise ValueError(f"{名稱} 缺少獨立同步方法正反驗收")
+            if any(not (根目錄 / expected[key]).is_file() for key in ("tests", "gate", "report")):
+                raise ValueError(f"{名稱} 同步方法驗收來源缺失")
+        elif 名稱 in {"A1", "A2"}:
+            gate = {
+                "A1": "tools/核對G18-P18.6-A1協作普通函式與方法續行.py",
+                "A2": "tools/核對G18-P18.6-A2取消與逐框架清理.py",
+            }[名稱]
+            proof = {"contract": f"{名稱}-01..{名稱}-04", "tests": "src/struct_stage/g18_async_method_graph_tests.rs",
+                     "gate": gate, "report": "AI-build/G18-P18.6-非同步工作圖與方法正式驗收.md"}
+            if 狀態 != "Closed" or 義務.get("closure_proof") != proof or any(
+                not (根目錄 / proof[key]).is_file() for key in ("tests","gate","report")
             ):
-                raise ValueError(f"V0 {名稱} 決策已核准但真正 async 完整驗收仍不得偽造主證據")
-        else:
-            if 名稱 == "F1":
-                # 只有實際補入原 Checker→Runtime 真正反七項獨立 Gate、
-                # 並在本次 PR 最新 HEAD CI 實際執行，才可將 F1 單條 Closed。
-                # 不以此將 P18.1 或任一相鄰義務標成 Passed。
-                必要證明 = {
-                    "contract": "F1-C01..F1-C07",
-                    "tests": "src/struct_stage/g18_f1_obligation_tests.rs",
-                    "gate": "tools/核對G18-F1真函式圖閉合.py",
-                    "report": "AI-build/G18-P18-F1-函式圖原始義務閉合證據-20261110.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("F1 不得在缺少七項來源／真 Gate 的情況下標 Closed")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("F1 正式驗收來源、Gate 或工程報告不存在")
-            elif 名稱 == "F2":
-                必要證明 = {
-                          "contract": "F2-C01..F2-C15",
-                          "tests": "src/struct_stage/g18_f2_obligation_tests.rs",
-                          "gate": "tools/核對G18-F2原始義務正式閉合.py",
-                          "report": "AI-build/G18-P18-F2-原始義務閉合證據-20261113.md"
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("F2 必須有十五等價類及三十項真來源閉合證明才可 Closed")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("F2 正式來源、Gate 或工程報告不存在")
-            elif 名稱 == "F3":
-                必要證明 = {
-                    "contract": "F3-C01..F3-C15",
-                    "tests": "src/struct_stage/g18_f3_call_site_tests.rs",
-                    "gate": "tools/核對G18-F3原始義務正式閉合.py",
-                    "report": "AI-build/G18-P18-F3-原始義務閉合證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("F3 必須有十五等價類三十真來源證據才准 Closed")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("F3 原始證據路徑不存在")
-            elif 名稱 == "F4":
-                必要證明 = {
-                    "contract": "F4-C01..F4-C13",
-                    "tests": "src/struct_stage/execute_call_scalar.rs",
-                    "gate": "tools/核對G18-F4可達函式圖原始義務閉合.py",
-                    "report": "AI-build/G18-P18-F4-可達函式圖原始義務閉合證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("F4 原 Checker 靜態圖十三類閉合證明不完整")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("F4 原始來源／專用 Gate 或報告不存在")
-            elif 名稱 in {"C1", "C2", "C3", "C4"}:
-                預期數量 = {"C1": 10, "C2": 10, "C3": 12, "C4": 12}[名稱]
-                必要證明 = {
-                    "contract": f"{名稱}-01..{名稱}-{預期數量:02d}",
-                    "tests": "src/struct_stage/execute_call_scalar.rs",
-                    "gate": {
-                        "C1": "tools/核對G18-P18.2-C1分支選葉.py",
-                        "C2": "tools/核對G18-P18.2-C2迴圈回邊.py",
-                        "C3": "tools/核對G18-P18.2-C3巢狀控制轉移.py",
-                        "C4": "tools/核對G18-P18.2-C4局部資源離域.py",
-                    }[名稱],
-                    "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError(f"P18.2 {名稱} 需獨立原控制與資源真證據")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError(f"P18.2 {名稱} 真來源／Gate／報告不存在")
-            elif 名稱 in {"R1", "R2", "R3", "R4"}:
-                數量 = {"R1":16,"R2":14,"R3":16,"R4":16}[名稱]
-                必要證明 = {
-                    "contract": f"{名稱}-01..{名稱}-{數量:02d}",
-                    "tests": "src/struct_stage/execute_recursive_str.rs",
-                    "gate": {
-                        "R1": "tools/核對G18-P18.3-R1原遞迴真返回.py",
-                        "R2": "tools/核對G18-P18.3-R2動態預算.py",
-                        "R3": "tools/核對G18-P18.3-R3跨框架身分.py",
-                        "R4": "tools/核對G18-P18.3-R4失敗回滾.py",
-                    }[名稱],
-                    "report": "AI-build/G18-P18.3-原始四義務正式驗收證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError(f"P18.3 {名稱} 沒有原 Checker／真動態遞迴必要證據")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError(f"P18.3 {名稱} 的 Gate／Rust 來源／報告不存在")
-            elif 名稱 == "B1":
-                # 先由原 Checker 真入口做 11 條相異、獨立 --exact 測試，
-                # 再以最新 PR HEAD／main 同 SHA CI 核實；B2～B5 不連帶關閉。
-                必要證明 = {
-                    "contract": "B1-01..B1-11",
-                    "tests": "src/struct_stage/g18_b1_obligation_tests.rs",
-                    "gate": "tools/核對G18-P18.4-B1原始Copyable責任.py",
-                    "report": "AI-build/G18-P18.4-B1-Copyable參數原始義務閉合證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("B1 沒有原 Checker Copyable 11 類真動態閉合證據")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("B1 Rust 來源／獨立 Gate／報告不存在")
-            elif 名稱 in {"B2", "B3"}:
-                # 兩組來源必須獨立，不靠既有 group pass 冒充逐條 Closed。
-                數量 = {"B2": 20, "B3": 42}[名稱]
-                必要證明 = {
-                    "contract": f"{名稱}-01..{名稱}-{數量:02d}",
-                    "tests": "src/struct_stage/execute_call_borrow.rs",
-                    "gate": {
-                        "B2": "tools/核對G18-P18.4-B2整筆Move借用共帳.py",
-                        "B3": "tools/核對G18-P18.4-B3真Borrow來源身分.py",
-                    }[名稱],
-                    "report": "AI-build/G18-P18.4-B2-B3-多資源借用身分閉合證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError(f"P18.4 {名稱} 沒有原來源及 {數量} 筆獨立 Gate 閉合證明")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError(f"P18.4 {名稱} 真來源／Gate／報告不存在")
-            elif 名稱 == "B4":
-                必要證明 = {
-                    "contract": "B4-01..B4-07",
-                    "tests": "src/struct_stage/g18_b4_obligation_tests.rs",
-                    "gate": "tools/核對G18-P18.4-B4同步方法借票責任.py",
-                    "report": "AI-build/G18-P18.4-B4同步方法與原五義務驗收.md"
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("B4 缺同步方法獨立驗收證明")
-                if any(not (根目錄 / 必要證明[k]).is_file() for k in ("tests", "gate", "report")):
-                    raise ValueError("B4 原始證據檔案缺失")
-            elif 名稱 == "B5":
-                # 原 P14/P15 Checker 與真 BorrowSafety 依 B5 七組 42 筆獨立
-                # Rust --exact Gate 證明；不因此解除 VB14 的無證再借限制。
-                必要證明 = {
-                    "contract": "B5-01..B5-42",
-                    "tests": "src/struct_stage/tests_lifetime_resources.rs",
-                    "gate": "tools/核對G18-P18.4-B5借用有效期與無證再借.py",
-                    "report": "AI-build/G18-P18.4-B5-借用生命期與退出票據正式證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("B5 借用有效期與無證再借沒有 42 項獨立正反證據")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("B5 Rust 來源／獨立 Gate／報告不存在")
-            elif 名稱 == "M1":
-                # 原 S20 靜態歧義拒絕九項 + 真自動 self 選擇十八項。
-                # M1 不得以舊的僅 --list 檢查冒充真 --exact 驗收。
-                必要證明 = {
-                    "contract": "M1-01..M1-27",
-                    "tests": "src/struct_stage/method_overload_tests.rs",
-                    "gate": "tools/核對G18-P18.6-M1原始方法簽章.py",
-                    "report": "AI-build/G18-P18.6-M1-唯一方法靜態簽章閉合證據-20261113.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != 必要證明:
-                    raise ValueError("M1 沒有 S20 九靜態、十八真 Runtime 的原 Checker 閉合證據")
-                if any(not (根目錄 / 路徑).is_file() for 欄位, 路徑 in 必要證明.items() if 欄位 != "contract"):
-                    raise ValueError("M1 原 Checker Rust 來源／真 Gate／AI-build 不存在")
-                if not (根目錄 / "src/struct_stage/execute_method_self.rs").is_file():
-                    raise ValueError("M1 真同步方法 Runtime 原始測試來源不存在")
-            elif 名稱 in {"M2", "M3"}:
-                gate = {
-                    "M2": "tools/核對G18-P18.6-M2同步方法借用與欄位.py",
-                    "M3": "tools/核對G18-P18.6-M3函式方法同一控制圖.py",
-                }[名稱]
-                expected = {
-                    "contract": f"{名稱}-01..{名稱}-08",
-                    "tests": "src/struct_stage/g18_m2_m3_obligation_tests.rs",
-                    "gate": gate,
-                    "report": "AI-build/G18-P18.6-M2-M3同步方法原始義務驗收.md",
-                }
-                if 狀態 != "Closed" or 義務.get("closure_proof") != expected:
-                    raise ValueError(f"{名稱} 缺少獨立同步方法正反驗收")
-                if any(not (根目錄 / expected[key]).is_file() for key in ("tests", "gate", "report")):
-                    raise ValueError(f"{名稱} 同步方法驗收來源缺失")
-            elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
-                raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
-            if 種類 in {"DecisionBlocked", "EngineeringPending"}:
-                raise ValueError(f"V0 {名稱} 不得使用舊決策阻塞或偽造證據分類")
-            if not isinstance(來源, str) or 來源 not in 原證據[階段]:
-                raise ValueError(f"V0 {名稱} 主要真來源未列在相應原始六項證據")
-            if 來源 in 可用主證據:
-                raise ValueError(f"V0 {名稱} 重複使用同一主要證據充當新覆蓋")
-            可用主證據.add(來源)
+                raise ValueError(f"{名稱} 非同步工作圖原始驗收證據不足")
+        elif 狀態 != "OpenEngineering" or 義務.get("closure_proof") is not None:
+            raise ValueError(f"V0 {名稱} 尚未達完整契約，不得提前 Closed")
+        if 種類 in {"DecisionBlocked", "EngineeringPending"}:
+            raise ValueError(f"V0 {名稱} 不得使用舊決策阻塞或偽造證據分類")
+        if not isinstance(來源, str) or 來源 not in 原證據[階段]:
+            raise ValueError(f"V0 {名稱} 主要真來源未列在相應原始六項證據")
+        if 來源 in 可用主證據:
+            raise ValueError(f"V0 {名稱} 重複使用同一主要證據充當新覆蓋")
+        可用主證據.add(來源)
         已見義務.add(名稱)
         每項義務[階段] += 1
         統計[狀態] += 1
@@ -337,8 +341,8 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             raise ValueError(f"V0 {階段} 的原始義務不足或數量錯誤")
     if 已見義務 != {名稱 for 群 in 義務身分.values() for 名稱 in 群}:
         raise ValueError("V0 義務身分完整性不符")
-    if 統計["Closed"] != 20 or 統計["OpenEngineering"] != 6 or 統計["BlockedDecision"] != 0:
-        raise ValueError("P18.1～P18.4 及 M1～M3 共 20 義務閉合，另外六項仍待驗收")
+    if 統計["Closed"] != 22 or 統計["OpenEngineering"] != 4 or 統計["BlockedDecision"] != 0:
+        raise ValueError("P18.1～P18.4 及 P18.6 共 22 義務閉合，另外四項仍待驗收")
 
     待重現缺口 = 清冊.get("proven_gap", {})
     if 待重現缺口.get("id") != "F4" or (
@@ -442,8 +446,8 @@ def main() -> int:
         f"{報告['original_phase_references']} 次跨原項引用；"
         f"26 條義務／{報告['closed']} 條已閉合／"
         f"{報告['engineering_open']} 條工程未閉合／0 條待決 async 決策；"
-        f"25 筆獨立真 Rust 測試均已實跑；"
-        "P18.1～P18.4 Passed（4/6），P18.5 與 P18.6 仍待驗收。"
+        f"{報告['executed_evidence_tests']} 筆獨立真 Rust 測試均已實跑；"
+        "P18.1～P18.4、P18.6 已驗收，P18.5 仍待驗收。"
     )
     print("V0 完成只代表來源／義務清冊可信；R07 正式 --check 未完成仍必須非零。")
     return 0

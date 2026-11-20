@@ -1452,6 +1452,14 @@ from pathlib import Path
     # P18.6 同步 self 共享借用有真執行正反；多載／async 仍需
     # 原 Checker 唯一解析與正向執行，不能憑本子集宣稱 Passed。
     "P18.6": (
+        "struct_stage::g18_async_method_graph_tests::a1_普通等待與兩種方法共用可喚醒框架",
+        "struct_stage::g18_async_method_graph_tests::a1_兩工作在方法安全點按喚醒順序續行",
+        "struct_stage::g18_async_method_graph_tests::a1_借用不能跨等待且續行不重設預算",
+        "struct_stage::g18_async_method_graph_tests::a1_布林與字串等待結果回到原呼叫端",
+        "struct_stage::g18_async_method_graph_tests::a2_各安全點取消時真移交與逆序離域",
+        "struct_stage::g18_async_method_graph_tests::a2_安全點收據與方法來源不得重播",
+        "struct_stage::g18_async_method_graph_tests::a2_錯換方法等待來源須在整批取消前拒絕",
+        "struct_stage::g18_async_method_graph_tests::a2_另一合法工作的完成收據不可用於退休",
         "struct_stage::g18_m2_m3_obligation_tests::m2_交替持有者的寫入分支與參數資源",
         "struct_stage::g18_m2_m3_obligation_tests::m2_故障退出與變造持有者",
         "struct_stage::g18_m2_m3_obligation_tests::m3_求參與方法回傳共用迴圈中的真框架",
@@ -1565,10 +1573,11 @@ from pathlib import Path
     "P18.3": ("Passed", "R1～R4 各有原 Checker 合法直接／互相遞迴停止及真呼叫圖、單次可配置 StepBudget／CallBudget、同名 DeclarationId 與真 ResourceId／BorrowTicket、正常／溢位／耗盡／注入故障及事件偽造拒絕共 62 筆不重複 Rust 真來源，未擴張非同步或公開執行入口"),
     "P18.4": ("Passed", "B1～B5 原五義務以 122 個獨立正反案例驗收。"),
     "P18.5": ("SubsetVerified", "已有同堆疊控制、BorrowTicket、ResourceId 和故障回滾聯合事件及 R06 52 項真來源交叉案例，亦已加嚴成功返回／失敗回滾時序；尚未完成原六項跨全部合法型別、同步 self 及 async 的整體矩陣"),
-    "P18.6": ("Incomplete", "D18-02-E1～E4=A、E5 維持 VB15-01-A 已正式核准；同步共享／獨占 self、多載及方法欄位真讀寫已有受限正反；原 Parser/Checker 直接 await async 普通函式 int／str.move 已真執行，真 BorrowTicket 安全點與 P16 ResourceId／錯誤回滾均有子集證據；仍缺完整協作式 suspend/resume/wakeup、取消後續真任務框架、async self 方法與同步方法混合 CFG 的原六項完整正反驗收；不得標 Passed"),
+    "P18.6": ("Passed", "M1～M3、A1～A2 已逐項驗證一般方法、直接 await、FIFO 續行、取消與真資源退出。"),
 }
 
 真執行群組 = (
+    "struct_stage::g18_async_method_graph_tests::",
     "struct_stage::g18_m2_m3_obligation_tests::",
     "struct_stage::g18_b4_obligation_tests::",
     "struct_stage::g18_scalar_self_cfg_tests::",
