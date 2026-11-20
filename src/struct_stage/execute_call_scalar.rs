@@ -579,14 +579,26 @@ impl PrivateScalarCallOutcome {
                     });
                     if moves.ne(owned_arguments.iter().map(|(s,p,_)| (*s,*p))) { return false; }
                     use crate::owned_str_runtime::ResourceEvent;
+                    let mut created = None;
                     let returned = match result {
-                        Ok(PrivateMethodValue::Str(id)) if site.result_type == "str" && owned_arguments.iter().any(|(_,_,v)| v == id) => Some(*id),
+                        Ok(PrivateMethodValue::Str(id)) if site.result_type == "str" => {
+                            let Some(steps) = site.selected_steps(branches, true) else { return false; };
+                            match steps.last() {
+                                Some(PrivateScalarMethodStep::ReturnStr(PrivateScalarStrReturn::Move { declaration, .. }))
+                                    if owned_arguments.iter().any(|(_, param, value)| param == declaration && value == id) => {}
+                                Some(PrivateScalarMethodStep::ReturnStr(PrivateScalarStrReturn::Literal(_)))
+                                    if created_ids.insert(*id) && frame.resource_ids.insert(*id) => created = Some(*id),
+                                _ => return false,
+                            }
+                            Some(*id)
+                        }
                         Ok(PrivateMethodValue::Int(_)) if site.result_type == "int" => None,
                         Ok(PrivateMethodValue::Bool(_)) if site.result_type == "bool" => None,
                         Err(_) => None,
                         _ => return false,
                     };
                     let order = owned_arguments.iter().map(|(_,_,id)| ResourceEvent::Moved(*id))
+                        .chain(created.map(ResourceEvent::Created))
                         .chain(returned.map(ResourceEvent::Returned))
                         .chain(owned_arguments.iter().rev().filter(|(_,_,id)| Some(*id) != returned)
                             .map(|(_,_,id)| ResourceEvent::Released(*id)));
@@ -4205,10 +4217,19 @@ impl PreparedPrivateScalarCall {
                                 let result = result.and_then(|value| match value {
                                     PrivateMethodValue::Int(n) => Ok(PrivateMethodValue::Int(n)),
                                     PrivateMethodValue::Bool(b) => Ok(PrivateMethodValue::Bool(b)),
-                                    PrivateMethodValue::Str(id) => {
-                                        let index = moves.iter().position(|(_,_,target)| *target == id)
-                                            .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
-                                        let owned = resources.return_named(names[index].1).map_err(PrivateScalarCallRuntimeError::Resource)?;
+                                    PrivateMethodValue::Str(source) => {
+                                        let owned = match source {
+                                            PrivateScalarStrReturn::Move { declaration, .. } => {
+                                                let index = moves.iter().position(|(_,_,target)| target == declaration)
+                                                    .ok_or(PrivateScalarCallRuntimeError::StateMismatch)?;
+                                                resources.return_named(names[index].1).map_err(PrivateScalarCallRuntimeError::Resource)?
+                                            }
+                                            PrivateScalarStrReturn::Literal(text) => {
+                                                let value = resources.create_detached(text).map_err(PrivateScalarCallRuntimeError::Resource)?;
+                                                resources.mark_detached_return(&value);
+                                                value
+                                            }
+                                        };
                                         let rid = owned.resource_id();
                                         frame.pending_owned_returns.push(rid);
                                         pending_str_returns.push(owned);

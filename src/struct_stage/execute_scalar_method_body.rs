@@ -18,7 +18,7 @@ enum PrivateMethodValue<T> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PrivateScalarMethodStep {
     Return(PrivateMethodInteger),
-    ReturnMoved(DeclarationId),
+    ReturnStr(PrivateScalarStrReturn),
     ReturnBool(PrivateSelfBoolWriteSource),
     Declare(DeclarationId, PrivateMethodInteger),
     Assign(DeclarationId, PrivateMethodInteger),
@@ -102,9 +102,14 @@ impl PrivateScalarMethodCompiler<'_> {
                     if !self.safety.checked_returns.contains(&statement.node_span()) { return None; }
                     if self.method.result_ty == "str" {
                         let leaf = private_self_checked_ungrouped_return(self.verified, &ret.expression).ok()?;
-                        let source = PreparedPrivateMoveCall::checked_move_name(leaf, self.verified).ok()?;
-                        let param = self.method.params.iter().find(|p| p.name == source && p.ty == "str")?;
-                        Step::ReturnMoved(DeclarationId(param.declaration_start))
+                        let value = if matches!(leaf.kind, TermKind::Literal("str")) {
+                            PrivateScalarStrReturn::Literal(private_str_literal(leaf, &self.verified.tokens).ok()?)
+                        } else {
+                            let name = PreparedPrivateMoveCall::checked_move_name(leaf, self.verified).ok()?;
+                            let param = self.method.params.iter().find(|p| p.name == name && p.ty == "str")?;
+                            PrivateScalarStrReturn::Move { source: name.to_owned(), declaration: DeclarationId(param.declaration_start) }
+                        };
+                        Step::ReturnStr(value)
                     } else if self.method.result_ty == "bool" {
                         Step::ReturnBool(self.boolean(&ret.expression)?)
                     } else {
@@ -144,7 +149,7 @@ impl PrivateScalarMethodCompiler<'_> {
                 }
                 _ => return None,
             };
-            let returns = matches!(step, Step::Return(_) | Step::ReturnMoved(_) | Step::ReturnBool(_));
+            let returns = matches!(step, Step::Return(_) | Step::ReturnStr(_) | Step::ReturnBool(_));
             body.push(step);
             if returns { break; }
         }
@@ -241,7 +246,7 @@ impl PrivateScalarSelfRead {
                     };
                     blocks.push(if *choice { yes.iter() } else { no.iter() });
                 }
-                Step::Return(_) | Step::ReturnMoved(_) | Step::ReturnBool(_) => {
+                Step::Return(_) | Step::ReturnStr(_) | Step::ReturnBool(_) => {
                     steps.push(step);
                     break;
                 }
@@ -308,7 +313,7 @@ impl PrivateScalarSelfRead {
 
     fn run_body(&self, mut parameters: BTreeMap<DeclarationId, i64>,
         runtime: &mut crate::mixed_struct_runtime::MixedStructRuntime, work: &mut PrivateMethodExecution)
-        -> Result<PrivateMethodValue<DeclarationId>, PrivateScalarCallRuntimeError> {
+        -> Result<PrivateMethodValue<&PrivateScalarStrReturn>, PrivateScalarCallRuntimeError> {
         use crate::mixed_struct_runtime::{MixedStructRuntime, Observed};
         use PrivateScalarCallRuntimeError::StateMismatch;
         let boolean = |expr: &PrivateSelfBoolWriteSource, runtime: &MixedStructRuntime, values: &BTreeMap<DeclarationId, i64>| match expr {
@@ -327,7 +332,7 @@ impl PrivateScalarSelfRead {
             match op {
                 PrivateScalarMethodStep::Return(expr) => return expr.evaluate(&self.owner, &parameters, runtime, work).map(PrivateMethodValue::Int),
                 PrivateScalarMethodStep::ReturnBool(expr) => return boolean(expr, runtime, &parameters).map(PrivateMethodValue::Bool),
-                PrivateScalarMethodStep::ReturnMoved(id) => return Ok(PrivateMethodValue::Str(*id)),
+                PrivateScalarMethodStep::ReturnStr(value) => return Ok(PrivateMethodValue::Str(value)),
                 PrivateScalarMethodStep::Declare(id, expr) => {
                     let value = expr.evaluate(&self.owner, &parameters, runtime, work)?;
                     if parameters.insert(*id, value).is_some() { return Err(StateMismatch); }

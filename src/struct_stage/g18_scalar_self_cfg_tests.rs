@@ -222,6 +222,17 @@ fn main()->int{ return inspect(relay()) }
         assert!(out.resource_events.starts_with(&[Created(1),Created(2),Created(3),Moved(3),Moved(2),
             Returned(2),Released(3),Returned(2)]));
         assert!(out.has_balanced_frame_trace());
+        let mixed = src.replace("return left.move()", "return (\"新字串🪼\")");
+        let fresh = PreparedPrivateScalarCall::prepare(&mixed).unwrap().execute().unwrap();
+        assert_eq!(fresh.result, Ok(4));
+        assert!(fresh.resource_events.starts_with(&[Created(1), Created(2), Moved(1), Moved(2),
+            Created(3), Returned(3), Released(2), Released(1), Returned(3)]));
+        assert!(fresh.has_balanced_frame_trace());
+        let other = mixed.replace("b.move(),true", "b.move(),false");
+        let transferred = PreparedPrivateScalarCall::prepare(&other).unwrap().execute().unwrap();
+        assert_eq!(transferred.result, Ok(4));
+        assert!(!transferred.resource_events.contains(&Created(3)));
+        assert!(transferred.has_balanced_frame_trace());
         let borrowed = src.replace("pick(a.move(),b.move(),true)", "pick(a,b.move(),true)");
         assert!(matches!(PreparedPrivateScalarCall::prepare(&borrowed), Err(PrivateScalarCallPrepareError::Check(_))));
         let overflow = src.replace("if(flag){", "self.n = self.n + 9223372036854775807\nif(flag){");
