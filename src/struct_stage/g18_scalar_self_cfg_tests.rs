@@ -41,7 +41,16 @@ return total
 }
 fn main()->int{ return run() }
 "#;
-        let mut out = PreparedPrivateScalarCall::prepare(src).unwrap().execute().unwrap();
+        let plan = PreparedPrivateScalarCall::prepare(src).unwrap();
+        let mut swapped = plan.execute().unwrap();
+        for event in &mut swapped.events {
+            if let PrivateScalarCallEvent::SelfRead { helpers, .. } = event {
+                helpers.swap(0, 1);
+                break;
+            }
+        }
+        assert!(!swapped.has_balanced_frame_trace());
+        let mut out = plan.execute().unwrap();
         assert_eq!(out.result, Ok(9));
         assert!(out.has_balanced_frame_trace());
         let receipts: Vec<_> = out.events.iter_mut().filter_map(|e| match e {
