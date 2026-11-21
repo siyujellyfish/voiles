@@ -89,3 +89,10 @@ fn 原生產物與直譯共用案例() {
         .status().unwrap();
     assert!(status.success());
 }
+
+#[test]
+fn 雙模式壓力與穩定性() {
+    let status = Command::new("python3").arg("tools/核對P27雙模式.py")
+        .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
+    assert!(status.success());
+}

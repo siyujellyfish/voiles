@@ -33,7 +33,7 @@ impl Emitter<'_> {
                 format!("f{function}(globals, steps, depth + 1, site, v{object})?")
             }
             Number::Byte(place, i, j) => format!(
-                "resource_byte(&globals[{}], {i}, {j}).ok_or((site, ARITH))?", place.slot),
+                "globals[{}].byte({i}, {j}).ok_or((site, ARITH))?", place.slot),
             Number::Call(name, false) =>
                 format!("f{}(globals, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
             _ => return None,
@@ -53,6 +53,7 @@ impl LinkedProgram {
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
         out.push_str(include_str!("native_object.inc"));
+        out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
         if !plan.globals.is_empty() {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
@@ -67,7 +68,7 @@ impl LinkedProgram {
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument = signature.params.first().map(|p|
                 format!(", v{}: Object", emitter.local_id(&p.name))).unwrap_or_default();
-            writeln!(out, "fn f{id}(globals: &mut [String], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
+            writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             for step in body {
                 let unit = &self.graph.units[step.module];
@@ -106,19 +107,19 @@ impl LinkedProgram {
                         let rhs = match text {
                             Text::Literal(s) => format!("String::from({s:?})"),
                             Text::Grapheme(p, i) => format!(
-                                "resource_grapheme(&globals[{}], {i}).ok_or((site, ARITH))?.to_owned()", p.slot),
+                                "globals[{}].grapheme({i}).ok_or((site, ARITH))?.to_owned()", p.slot),
                         };
-                        writeln!(out, "globals[{}] = {rhs};", place.slot).unwrap();
+                        writeln!(out, "globals[{}] = ResourceText::new({rhs});", place.slot).unwrap();
                     }
                     Action::Replace(place, i, text) => {
-                        writeln!(out, "let range = indexed_range(&boundaries(&globals[{0}]), {i}).ok_or((site, ARITH))?; globals[{0}].replace_range(range, {text:?});", place.slot).unwrap();
+                        writeln!(out, "globals[{}].replace({i}, {text:?}).ok_or((site, ARITH))?;", place.slot).unwrap();
                     }
                 }
             }
             out.push_str("}\n");
         }
         let main = emitter.functions["main"];
-        let globals = plan.globals.iter().map(|g| format!("String::from({:?})", g.initial))
+        let globals = plan.globals.iter().map(|g| format!("ResourceText::new(String::from({:?}))", g.initial))
             .collect::<Vec<_>>().join(", ");
         writeln!(out, "fn main() -> std::process::ExitCode {{ match f{main}(&mut [{globals}], &mut 0, 0, \"\") {{").unwrap();
         out.push_str("Ok(n) => std::process::ExitCode::from(n as u8),\nErr((s, e)) => { eprintln!(\"{s}: 執行期錯誤：{e}\"); std::process::ExitCode::FAILURE } } }\n");
