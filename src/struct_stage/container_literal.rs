@@ -1,6 +1,7 @@
 /// P19 具型別常值只保存已驗證的純值。讀取借用原容器內的值。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ContainerAtom {
+    Nested(Box<ContainerLiteral>),
     ElementName(String),
     Missing,
     Integer(i64),
@@ -9,13 +10,13 @@ enum ContainerAtom {
     Decimal(u64, i32),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ContainerItems {
     List(Vec<ContainerAtom>),
     Dictionary(BTreeMap<ContainerAtom, ContainerAtom>),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ContainerLiteral {
     ty: String,
     items: ContainerItems,
@@ -27,6 +28,39 @@ impl ContainerLiteral {
             ContainerItems::List(items) => Box::new(items.iter()),
             ContainerItems::Dictionary(items) => Box::new(items.values()),
         }
+    }
+
+    fn visit_elements<E>(&self, f: &mut impl FnMut(&str, &ContainerAtom) -> Result<(), E>) -> Result<(), E> {
+        let (_, ty) = element_type(&self.ty).expect("已解析容器型別");
+        for atom in self.values() {
+            match atom {
+                ContainerAtom::Nested(child) => child.visit_elements(f)?,
+                _ => f(ty, atom)?,
+            }
+        }
+        Ok(())
+    }
+
+    fn fill_and_count(&mut self, resolve: &mut impl FnMut(&mut ContainerAtom) -> ContainerResult<()>)
+        -> ContainerResult<usize> {
+        let mut count = 1;
+        let mut visit = |atom: &mut ContainerAtom| -> ContainerResult<()> {
+            resolve(atom)?;
+            count += match atom {
+                ContainerAtom::Nested(child) => child.fill_and_count(resolve)?,
+                ContainerAtom::Text(_) => 1,
+                _ => 0,
+            };
+            Ok(())
+        };
+        match &mut self.items {
+            ContainerItems::List(items) => items.iter_mut().try_for_each(&mut visit)?,
+            ContainerItems::Dictionary(items) => {
+                items.values_mut().try_for_each(&mut visit)?;
+                count += items.keys().filter(|k| matches!(k, ContainerAtom::Text(_))).count();
+            }
+        }
+        Ok(count)
     }
 
     fn lookup(&self, selector: &ContainerAtom) -> Option<&ContainerAtom> {
@@ -41,6 +75,11 @@ impl ContainerLiteral {
 
 impl Parser<'_> {
     fn container_atom(&mut self, expected: &str) -> Result<ContainerAtom, Diagnostic> {
+        if element_type(expected).is_some() {
+            let term = self.container_literal(expected)?;
+            let TermKind::Container(inner) = term.kind else { unreachable!() };
+            return Ok(ContainerAtom::Nested(Box::new(inner)));
+        }
         let token = self.tok();
         let candidates = expected.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']'));
         let (ty, atom) = match &token.kind {
@@ -227,7 +266,8 @@ struct ContainerFrame<'a> {
     tokens: &'a [Token],
     builtin_len: bool,
     gate: crate::resource_borrow_pipeline::SafetyPipeline,
-    values: BTreeMap<DeclarationId, (u64, ContainerLiteral)>,
+    values: BTreeMap<DeclarationId, (std::ops::Range<u64>, ContainerLiteral)>,
+    next_resource: u64,
 }
 
 impl ContainerFrame<'_> {
@@ -316,7 +356,7 @@ impl ContainerFrame<'_> {
             }
             TermKind::Container(literal) => {
                 let mut value = literal.clone();
-                let resolve = |atom: &mut ContainerAtom| -> ContainerResult<()> {
+                let mut resolve = |atom: &mut ContainerAtom| -> ContainerResult<()> {
                     if let ContainerAtom::ElementName(name) = atom {
                         *atom = match self.element(names, name)? {
                             ContainerAtom::Missing => ContainerAtom::Missing,
@@ -328,13 +368,15 @@ impl ContainerFrame<'_> {
                     }
                     Ok(())
                 };
-                match &mut value.items {
-                    ContainerItems::List(xs) => xs.iter_mut().try_for_each(resolve)?,
-                    ContainerItems::Dictionary(xs) => xs.values_mut().try_for_each(resolve)?,
-                }
+                let count = value.fill_and_count(&mut resolve)?;
+                let end = self.next_resource.checked_add(count as u64).ok_or("容器資源身分耗盡")?;
+                let resources = self.next_resource..end;
                 self.gate.declare(id, CopyPermission::Forbidden).map_err(|_| "容器登錄失敗")?;
-                self.gate.register_resource(id, id.0 as u64).map_err(|_| "容器資源登錄失敗")?;
-                (id.0 as u64, value)
+                for resource in resources.clone() {
+                    self.gate.register_resource(id, resource).map_err(|_| "容器資源登錄失敗")?;
+                }
+                self.next_resource = end;
+                (resources, value)
             }
             _ => return Err("容器需要常值或明確移動"),
         };
@@ -392,7 +434,9 @@ impl ContainerFrame<'_> {
         for id in owners.into_iter().rev() {
             if let Some((resource, value)) = self.values.remove(&id) {
                 drop(value);
-                self.gate.record_resource_cleanup(id, resource).map_err(|_| "容器釋放來源失配")?;
+                for part in resource.rev() {
+                    self.gate.record_resource_cleanup(id, part).map_err(|_| "容器釋放來源失配")?;
+                }
                 self.gate.record_cleanup(id).map_err(|_| "容器所有權未閉合")?;
             }
         }
@@ -407,7 +451,7 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
         && f.result_ty == "int" && !f.is_async).ok_or("需要同步 main()->int")?;
     let mut frame = ContainerFrame {
         tokens: &checked.tokens, builtin_len: !checked.functions.iter().any(|f| f.name == "len"),
-        gate: crate::resource_borrow_pipeline::SafetyPipeline::new(), values: BTreeMap::new(),
+        gate: crate::resource_borrow_pipeline::SafetyPipeline::new(), values: BTreeMap::new(), next_resource: 1,
     };
     let result = frame.block(&main.body, HashMap::new());
     frame.gate.audit_finished().map_err(|_| "容器資源未全部釋放")?;
@@ -431,6 +475,14 @@ mod p19_scoped_execution {
         assert!(inspect(&code.replace("Optional[bool,int]", "Optional[int]")).is_err());
         let bad = code.replace("dest[\"值\"]", "dest[\"缺\"]");
         assert_eq!(execute_container_main(&bad), Err("容器索引越界或缺鍵".into()));
+    }
+
+    #[test]
+    fn nested_container_move_and_missing_lookup_clean_every_owned_part() {
+        let code = "fn main()->int{\nvar x:list[dict{str,str}] = [{\"鍵\":\"值\"},{}]\nvar y:list[dict{str,str}] = x.move()\nwith y[0] as inner {\nreturn len(y)\n}\nreturn 0\n}\n";
+        assert_eq!(execute_container_main(code), Ok(2));
+        assert_eq!(execute_container_main(&code.replace("y[0]", "y[2]")), Err("容器索引越界或缺鍵".into()));
+        assert!(inspect(&code.replace("x.move()", "x")).is_err());
     }
 
     #[test]

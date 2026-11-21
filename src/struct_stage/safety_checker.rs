@@ -1787,18 +1787,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
             }
             TermKind::Container(value) => {
-                for atom in value.values() {
+                value.visit_elements(&mut |expected, atom| {
                     if let ContainerAtom::ElementName(name) = atom {
                         self.check_direct(vars, name, term)?;
                         let binding = Self::lookup(vars, name).ok_or_else(|| self.error("找不到唯讀元素", term))?;
-                        if !binding.scoped_element || element_type(&value.ty).map(|(_, t)| t) != Some(binding.ty.as_str()) {
+                        if !binding.scoped_element || expected != binding.ty {
                             return Err(self.error("跨容器元素需要相同宣告型別的唯讀 Optional", term));
                         }
                         let allowed = binding.ty.strip_prefix("Optional[").and_then(|t| t.strip_suffix(']'))
                             .is_some_and(|set| set.split(',').all(|t| self.permission(t) == CopyPermission::Allowed));
                         if !allowed { return Err(self.error("跨容器複製要求所有候選均為 Copyable", term)); }
                     }
-                }
+                    Ok(())
+                })?;
                 Ok((value.ty.clone(), true))
             },
             TermKind::OptionalCondition(name, predicate) => {

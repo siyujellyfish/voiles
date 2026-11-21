@@ -810,7 +810,7 @@ impl VerifiedDeclarationFacts {
                         visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
                     StmtKind::ReadonlyElement(block) => visit(&block.body, direct_targets, borrow_targets, named_returns, field_writes),
-                    StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
+                    StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
             }
         }

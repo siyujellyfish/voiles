@@ -52,6 +52,10 @@ impl Parser<'_> {
         };
         let element = if matches!(&self.tok().kind, TokenKind::Name(name) if name == "Optional") {
             self.optional_annotation()?
+        } else if matches!(&self.tok().kind, TokenKind::Name(n) if n == "list" || n == "dict") {
+            let nested = self.local_type_annotation()?;
+            if element_type(&nested).is_none() { return Err(self.syntax("巢狀容器需要完整型別")); }
+            nested
         } else {
             let name = self.name()?;
             if !matches!(name.as_str(), "int" | "bool" | "str" | "float") {
