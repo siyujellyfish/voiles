@@ -38,3 +38,39 @@ with TemporaryDirectory() as tmp:
     exe = base / "無效"
     bad = run(cli, "build", main, "-o", exe)
     assert bad.returncode and bad.stderr and not exe.exists(), bad
+    dep.write_text('struct Box{\nvar value:int = 5\nvar label:str = "甲"\n}', encoding="utf-8")
+    receiver = base / "receiver.voil"
+    owner = "import Box from dep as B\n"
+    main.write_text(owner + "import receiver\nfn main()->int{\nvar a:B = B()\nreturn receiver.take(a.move())\n}", encoding="utf-8")
+    for index, expr in enumerate(["a.value", "a.value + 9223372036854775807"]):
+        receiver.write_text(owner + f"fn take(a:B)->int{{ return {expr} }}", encoding="utf-8")
+        exe = base / f"owner{index}"
+        checked = run(cli, "run", main)
+        built = run(cli, "build", main, "-o", exe)
+        assert built.returncode == 0, built
+        result = run(exe)
+        assert result.returncode == (5 if index == 0 else 1) and result.stderr == checked.stderr, result
+        import os
+        import ctypes.util
+        sanitizer = ctypes.util.find_library("lsan")
+        if os.environ.get("GITHUB_ACTIONS"):
+            assert sanitizer, "CI 需要 LeakSanitizer"
+        if sanitizer:
+            memory = subprocess.run([exe], capture_output=True, encoding="utf-8",
+                                    env={**os.environ, "LD_PRELOAD": sanitizer,
+                                         "LSAN_OPTIONS": "exitcode=77"}, timeout=45)
+            traced = "LeakSanitizer does not work under ptrace" in memory.stderr
+            if traced and not os.environ.get("GITHUB_ACTIONS"):
+                print("本機環境限制 ptrace，交由 CI 執行 LeakSanitizer")
+            else:
+                assert (memory.returncode, memory.stderr) == (result.returncode, result.stderr), memory
+    invalid_move = main.read_text(encoding="utf-8").replace("take(a.move())", "take(a.move()) + a.value")
+    main.write_text(invalid_move, encoding="utf-8")
+    bad = run(cli, "build", main, "-o", base / "invalid-move")
+    assert bad.returncode and not (base / "invalid-move").exists(), bad
+    dep.write_text('share msg:str = "A💻"\n', encoding="utf-8")
+    main.write_text('import dep\nfn main()->int{ return dep.msg[1][0] }', encoding="utf-8")
+    exe = base / "unicode"
+    built = run(cli, "build", main, "-o", exe)
+    assert built.returncode == 0, built
+    assert run(exe).returncode == int(run(cli, "run", main).stdout) == 240
