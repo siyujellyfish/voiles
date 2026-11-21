@@ -5,11 +5,14 @@ use std::path::Path;
 use std::process::ExitCode;
 use voiles_core::{check_file, CheckStatus};
 
+mod native_build;
+
 fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     const HELP: &str = "用法：voiles <檔案.voil>（單檔靜態檢查）
       voiles check <入口.voil>（模組靜態檢查）
       voiles run <入口.voil>（執行並顯示 main 回傳值）
+      voiles build <入口.voil> -o <執行檔>
       voiles --help | --version";
     match args.first().and_then(|arg| arg.to_str()) {
         Some("--help") if args.len() == 1 => println!("{HELP}"),
@@ -31,7 +34,13 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-        Some("check" | "run") => {
+        Some("build") if args.len() == 4 && args[2] == "-o" => {
+            if let Err(error) = native_build::build(Path::new(&args[1]), Path::new(&args[3])) {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Some("check" | "run" | "build") => {
             eprintln!("{HELP}");
             return ExitCode::from(2);
         }

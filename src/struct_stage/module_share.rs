@@ -69,6 +69,7 @@ struct Place {
 }
 
 enum Number {
+    Choice(bool, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
     Consume { target:String, from:String, parameter:String },
     Constant(i64),
@@ -194,6 +195,22 @@ impl Lower<'_> {
             )),
             _ => None,
         }
+    }
+
+    fn scalar_leaf(&self, statements: &[Stmt]) -> Option<Number> {
+        let [statement] = statements else { return None };
+        let StmtKind::Return(value) = &statement.kind else { return None };
+        // 此分支子集只讀取 int，兩條路徑都須獨立通過型別檢查。
+        fn pure(term: &Term) -> bool {
+            match &term.kind {
+                TermKind::Group(inner) => pure(inner),
+                TermKind::BinaryInt(op) => pure(&op.left) && pure(&op.right),
+                TermKind::Name(_) | TermKind::Scalar(ScalarLiteral::Integer(_)) => true,
+                _ => false,
+            }
+        }
+        if !pure(&value.expression) { return None; }
+        self.number(&value.expression)
     }
 
     fn text(&self, term: &Term) -> Option<Text> {
@@ -322,6 +339,17 @@ impl Lower<'_> {
                     }
                     Action::Replace(p, *i, text.clone())
                 }
+                StmtKind::If { branch, no: Some(other) } => {
+                    let TermKind::Scalar(ScalarLiteral::Boolean(test)) = &branch.condition.kind else {
+                        return Err(err("此分支需要 bool 常值條件"));
+                    };
+                    let yes = self.scalar_leaf(&branch.body.statements);
+                    let no = self.scalar_leaf(other.as_slice());
+                    let (Some(yes), Some(no)) = (yes, no) else {
+                        return Err(err("此分支兩側均需明確回傳純 int 運算式"));
+                    };
+                    Action::Return(Number::Choice(*test, Box::new(yes), Box::new(no)))
+                }
                 StmtKind::Return(r) => Action::Return(
                     self.number(&r.expression)
                         .ok_or_else(|| err("需要已驗證的 int 返回值"))?,
@@ -435,6 +463,7 @@ enum Use<'a> {
 impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
+            Self::Choice(_, yes, no) => { yes.uses(list); no.uses(list); }
             Self::Byte(p, ..) => list.push(Use::Direct(p)),
             Self::Binary(left, _, right) => {
                 left.uses(list);
@@ -813,6 +842,7 @@ impl Program {
                 result
             }
             Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some((from,parameter))),
+            Number::Choice(test, yes, no) => self.eval(if *test { yes } else { no }, frame, state, depth),
             Number::Constant(v) => Ok(*v),
             Number::Local(n) => frame
                 .locals

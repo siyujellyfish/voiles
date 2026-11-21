@@ -12,6 +12,10 @@ impl EntryProgram {
         LinkedProgram::prepare(path).map(Self).map_err(module_error)
     }
 
+    pub fn native_source(&self) -> Result<String, String> {
+        self.0.native_source().map_err(module_error)
+    }
+
     pub fn execute(&self) -> Result<i64, String> {
         let (result, _) = self.0.execute().map_err(module_error)?;
         result.map_err(module_error)
