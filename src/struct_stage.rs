@@ -191,6 +191,8 @@ struct Parser<'a> {
 
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
+mod module_share;
+pub(crate) use module_share::Program as PreparedShareModule;
 include!("struct_stage/container_literal.rs");
 
 // P17-C：只有完整私有 Checker 安全驗證後才可實際分配資源。
@@ -1448,6 +1450,9 @@ fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
  * 外部無法傳入臨時型別權限覆寫已核准 Copyable 政策。
  */
 pub(crate) fn inspect(text: &str) -> Result<(), Diagnostic> {
+    if text.contains("share") && module_share::has_module_share(text) {
+        return PreparedShareModule::prepare(text).map(|_| ());
+    }
     inspect_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
 }
 

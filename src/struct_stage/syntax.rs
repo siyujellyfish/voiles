@@ -594,13 +594,19 @@ impl Parser<'_> {
             crate::common_ir::NodeSpan::new(struct_start, struct_end),
         )))
     }
-    fn file(mut self) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
+    fn file(self) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
+        self.file_items(None)
+    }
+
+    fn file_items(mut self, mut shares: Option<&mut Vec<module_share::Declaration>>) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
         let mut structs = HashMap::new();
         let mut funcs = Vec::new();
         let mut function_names = HashSet::new();
         self.lines();
         while !self.eof() {
-            if self.keyword("struct") {
+            if let Some(declarations) = shares.as_deref_mut().filter(|_| self.keyword("share")) {
+                declarations.push(module_share::parse(&mut self)?);
+            } else if self.keyword("struct") {
                 let (name, def) = self.strukt()?;
                 if structs.insert(name, def).is_some() {
                     return Err(self.syntax("不得重複宣告相同結構型別"));

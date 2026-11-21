@@ -1,0 +1,14 @@
+share message:str = "甲"
+fn main()->int{
+const before:int = read_msg()
+const result:int = update_msg()
+return read_msg()
+}
+fn update_msg()->int{
+message = "乙"
+message = "Z"
+return 0
+}
+fn read_msg()->int{
+return message[0][0]
+}
