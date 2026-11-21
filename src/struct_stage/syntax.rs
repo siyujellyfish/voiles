@@ -42,14 +42,33 @@ impl Parser<'_> {
             "dict" if self.symbol('{') => {
                 self.cursor += 1;
                 let key = self.name()?;
+                if !matches!(key.as_str(), "int" | "str" | "bool") {
+                    return Err(self.syntax("此切片尚未支援該字典鍵型別"));
+                }
                 self.take(',', "字典型別的鍵和值之間需要逗號")?;
                 Some(key)
             }
             _ => return Ok(outer),
         };
-        if !matches!(&self.tok().kind, TokenKind::Name(name) if name == "Optional") {
-            return Err(self.syntax("本階段只解析 Optional 元素或值標註"));
+        let element = if matches!(&self.tok().kind, TokenKind::Name(name) if name == "Optional") {
+            self.optional_annotation()?
+        } else {
+            let name = self.name()?;
+            if !matches!(name.as_str(), "int" | "bool" | "str" | "float") {
+                return Err(self.syntax("此階段需要已支援的元素型別"));
+            }
+            name
+        };
+        if let Some(key) = key {
+            self.take('}', "字典型別需要右大括號")?;
+            Ok(format!("dict{{{key},{element}}}"))
+        } else {
+            self.take(']', "序列型別需要右方括號")?;
+            Ok(format!("list[{element}]"))
         }
+    }
+
+    fn optional_annotation(&mut self) -> Result<String, Diagnostic> {
         self.cursor += 1;
         self.take('[', "Optional 候選串列需要左方括號")?;
         let mut candidates = BTreeSet::new();
@@ -75,13 +94,7 @@ impl Parser<'_> {
         }
         self.take(']', "Optional 候選串列需要右方括號")?;
         let members = candidates.into_iter().collect::<Vec<_>>().join(",");
-        if let Some(key) = key {
-            self.take('}', "字典型別需要右大括號")?;
-            Ok(format!("dict{{{key},Optional[{members}]}}"))
-        } else {
-            self.take(']', "序列型別需要右方括號")?;
-            Ok(format!("list[Optional[{members}]]"))
-        }
+        Ok(format!("Optional[{members}]"))
     }
     fn end_statement(&mut self) -> Result<(), Diagnostic> {
         if crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
@@ -725,6 +738,13 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
         self.take(':', "宣告必須有型別註記")
     }
     fn declaration_type(&mut self) -> Result<String, Diagnostic> { self.local_type_annotation() }
+    fn typed_initializer(&mut self, ty: &String) -> Result<Term, Diagnostic> {
+        if self.symbol('[') || self.symbol('{') {
+            self.container_literal(ty)
+        } else {
+            self.term()
+        }
+    }
     fn declaration_has_initializer(&self) -> bool { self.symbol('=') }
     fn declaration_equals(&mut self) { self.cursor += 1; }
     fn declaration_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }

@@ -365,7 +365,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 call.arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
+            TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
         }
     }
 
@@ -385,7 +385,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::MethodCall(_, _, args) =>
                 args.iter().any(Self::term_contains_direct_await),
             TermKind::AwaitMethodCall(_, _, _) => true,
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => false,
@@ -440,7 +440,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
                 Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
             }
-            TermKind::Scalar(_) | TermKind::Literal(_)
+            TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Name(_)
             | TermKind::Borrow(_) | TermKind::FieldRead(_, _)
             | TermKind::FieldMove(_, _) => {}
@@ -1697,6 +1697,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Group(inner) => self.evaluate(inner, vars),
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
+            TermKind::Container(value) => Ok((value.ty.clone(), true)),
             TermKind::BinaryInt(binary) => {
                 let left = &binary.left;
                 let right = &binary.right;
@@ -2296,7 +2297,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             message: "此受限子集不接受同作用域重複宣告".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
-                    if !self.known_type(ty) {
+                    let parsed_container = crate::container_copy_policy::classify_container_shape(ty).is_some();
+                    if !parsed_container && !self.known_type(ty) {
                         return Err(Diagnostic { kind: DiagnosticKind::Static,
                             message: "宣告使用不存在的型別".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });

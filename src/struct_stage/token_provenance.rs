@@ -21,6 +21,14 @@ fn verified_private_token_roles(
         value: &Term, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &value.kind {
+            TermKind::Container(literal) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut parser = Parser { source: &source, tokens, cursor };
+                matches!(parser.container_literal(&literal.ty), Ok(Term {
+                    kind: TermKind::Container(actual), end, ..
+                }) if actual == *literal && end == value.end)
+            }
             TermKind::Call(call) => {
                 if call.awaited {
                     let Some(index) = tokens.binary_search_by_key(
@@ -132,9 +140,11 @@ fn verified_private_token_roles(
     ) -> bool {
         match &stmt.kind {
             StmtKind::Declare(decl) =>
-                crate::syntax_shared::checked_declaration_tokens(
-                    decl, &decl.ty, tokens, audit,
-                ) && decl.initializer.as_ref().is_none_or(|value|
+                (if crate::container_copy_policy::classify_container_shape(&decl.ty).is_some() {
+                    checked_container_declaration(decl, tokens, audit)
+                } else {
+                    crate::syntax_shared::checked_declaration_tokens(decl, &decl.ty, tokens, audit)
+                }) && decl.initializer.as_ref().is_none_or(|value|
                     term(value, tokens, audit)),
             StmtKind::If { branch, no } => {
                 term(&branch.condition, tokens, audit)

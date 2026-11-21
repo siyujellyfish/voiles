@@ -131,6 +131,7 @@ crate::common_ir::define_shared_expression_kind!(
     TermKind, Term, Vec<Term>, [Debug, Clone], {
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
+        Container(ContainerLiteral),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct
         /// 或前向宣告的零參數 fn。正式 AST 明示待語意解析，
@@ -156,6 +157,7 @@ struct Parser<'a> {
 
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
+include!("struct_stage/container_literal.rs");
 
 // P17-C：只有完整私有 Checker 安全驗證後才可實際分配資源。
 include!("struct_stage/execute_str.rs");

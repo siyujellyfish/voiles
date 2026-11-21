@@ -335,6 +335,9 @@ pub(crate) trait DeclarationSyntax {
     fn declaration_has_initializer(&self) -> bool;
     fn declaration_equals(&mut self);
     fn declaration_expression(&mut self) -> Result<Self::Expression, crate::Diagnostic>;
+    fn typed_initializer(&mut self, _ty: &Self::Type) -> Result<Self::Expression, crate::Diagnostic> {
+        self.declaration_expression()
+    }
     fn validate_declaration_initializer(
         &self, mutable: bool, initializer: &Option<Self::Expression>,
     ) -> Result<(), crate::Diagnostic>;
@@ -350,7 +353,7 @@ pub(crate) fn parse_declaration<P: DeclarationSyntax>(
     let ty = parser.declaration_type()?;
     let initializer = if parser.declaration_has_initializer() {
         parser.declaration_equals();
-        Some(parser.declaration_expression()?)
+        Some(parser.typed_initializer(&ty)?)
     } else { None };
     parser.validate_declaration_initializer(mutable, &initializer)?;
     let end = parser.declaration_end(&initializer);
