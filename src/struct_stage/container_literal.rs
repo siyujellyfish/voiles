@@ -138,6 +138,15 @@ mod p19_literal_tests {
     }
 
     #[test]
+    fn full_checker_accepts_typed_literal_and_rejects_implicit_copy() {
+        let start = "fn main()->int{\nvar a:list[Optional[int,str]] = [1,none,\"文字\"]\n";
+        inspect(&format!("{start}return 0\n}}\n")).unwrap();
+        let error = inspect(&format!("{start}var b:list[Optional[str,int]] = a\nreturn 0\n}}\n")).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("Copyable"), "{}", error.message);
+    }
+
+    #[test]
     fn optional_positions_distinguish_none_from_missing() {
         let list = parsed("list[Optional[int]]", "[none, 7]").unwrap();
         assert_eq!(list.lookup(&ContainerAtom::Integer(0)), Some(&ContainerAtom::Missing));

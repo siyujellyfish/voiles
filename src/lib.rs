@@ -194,9 +194,9 @@ mod p13_private_boundary_tests {
     fn d01_b_容器類別能力並不開放其語法() {
         for (ty, suffix) in [("list[int]", "d01list"), ("dict{str,int}", "d01dict")] {
             assert_eq!(ownership_policy::approved_leaf_copy_permission(ty),
-                ownership_model::CopyPermission::Undecided);
+                ownership_model::CopyPermission::Forbidden);
             let program = format!("fn main()->int{{\nvar item:{ty}\nreturn 0\n}}\n");
-            assert!(struct_stage::inspect(&program).is_err());
+            struct_stage::inspect(&program).expect("P19 私有區域容器宣告");
             let output = check_public_source(&program, suffix);
             assert_eq!(output.status, CheckStatus::Failed);
             assert!(output.diagnostics.iter().any(|d| d.kind == DiagnosticKind::Syntax));
