@@ -33,7 +33,7 @@ impl Parser<'_> {
     /// P19-A 首批只解析區域容器宣告的 Optional 元素／值標註。
     /// 型別標註可解析並不授予容器建立、存取或複製能力。
     fn local_type_annotation(&mut self) -> Result<String, Diagnostic> {
-        let outer = self.name()?;
+        let outer = self.qualified_type_name()?;
         let key = match outer.as_str() {
             "list" if self.symbol('[') => {
                 self.cursor += 1;
@@ -193,6 +193,44 @@ impl Parser<'_> {
         )
     }
 
+    fn qualified_type_name(&mut self) -> Result<String, Diagnostic> {
+        let first = self.name()?;
+        if !self.symbol('.') { return Ok(first); }
+        self.cursor += 1;
+        Ok(format!("{first}.{}",self.name()?))
+    }
+
+    fn constructor_arguments(&mut self, s:String) -> Result<(TermKind,usize),Diagnostic> {
+        let mut args = Vec::new();
+        let mut names = HashSet::new();
+        while !self.symbol(')') {
+            let field = self.name()?;
+            if !names.insert(field.clone()) {
+                return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
+                    message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
+                    span: Some(self.source.span(self.tok().start, self.tok().end)),
+                });
+            }
+            self.take('=', "具名欄位引數需要等號")?;
+            let value = self.term()?;
+            args.push((field, value));
+            if self.symbol(',') { self.cursor += 1; }
+            else if !self.symbol(')') {
+                return Err(self.syntax("具名欄位引數之間需要逗號"));
+            }
+        }
+        let end = self.tok().end; self.cursor += 1;
+        // 只有明確欄位名 = 值才是確定的 Struct 建構。
+        // 零引數 name() 必須延後至完整符號表可用時
+        // 唯一判定，避免真 Parser 和 Checker 兩次改類別。
+        Ok((if args.is_empty() {
+            TermKind::UnresolvedZeroArgs(s)
+        } else {
+            TermKind::Construct(s, args)
+        }, end))
+    }
+
     fn atom(&mut self) -> Result<Term, Diagnostic> {
         // V7／E1-A：在原 Lexer/Parser 單一入口辨識直接 await，
         // 只允許 await fn(args) 或已核准 await owner.method(args)。
@@ -291,34 +329,7 @@ impl Parser<'_> {
                         && self.tokens.get(self.cursor + 1)
                             .is_some_and(|token| matches!(token.kind, TokenKind::Symbol('=')));
                     if named || self.symbol(')') {
-                        let mut args = Vec::new();
-                        let mut names = HashSet::new();
-                        while !self.symbol(')') {
-                            let field = self.name()?;
-                            if !names.insert(field.clone()) {
-                                return Err(Diagnostic {
-                                    kind: DiagnosticKind::Static,
-                                    message: "VB16：DuplicateField，建立結構時不得重複指定同一欄位".into(),
-                                    span: Some(self.source.span(self.tok().start, self.tok().end)),
-                                });
-                            }
-                            self.take('=', "具名欄位引數需要等號")?;
-                            let value = self.term()?;
-                            args.push((field, value));
-                            if self.symbol(',') { self.cursor += 1; }
-                            else if !self.symbol(')') {
-                                return Err(self.syntax("具名欄位引數之間需要逗號"));
-                            }
-                        }
-                        let end = self.tok().end; self.cursor += 1;
-                        // 只有明確欄位名 = 值才是確定的 Struct 建構。
-                        // 零引數 name() 必須延後至完整符號表可用時
-                        // 唯一判定，避免真 Parser 和 Checker 兩次改類別。
-                        (if args.is_empty() {
-                            TermKind::UnresolvedZeroArgs(s)
-                        } else {
-                            TermKind::Construct(s, args)
-                        }, end)
+                        self.constructor_arguments(s)?
                     } else {
                         let (call, end) = crate::syntax_shared::parse_named_call(self, s)?;
                         (TermKind::Call(call), end)
@@ -359,6 +370,11 @@ impl Parser<'_> {
                         let byte = if self.symbol('[') { Some(self.string_offset()?) } else { None };
                         return Ok(Term { kind:TermKind::StringIndex(format!("{s}.{field_or_move}"),first,byte),
                             start,end:self.tokens[self.cursor-1].end });
+                    } else if self.symbol('(')
+                        && matches!(self.tokens.get(self.cursor+1).map(|t|&t.kind),Some(TokenKind::Name(_)))
+                        && crate::syntax_shared::symbol(self.tokens,self.cursor+2,'=') {
+                        self.cursor += 1;
+                        self.constructor_arguments(format!("{s}.{field_or_move}"))?
                     } else if self.symbol('(') {
                         self.cursor += 1;
                         let (args, end) = crate::syntax_shared::parse_call(
@@ -923,7 +939,7 @@ impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
             }
             self.take(':', "函式參數需要明確型別")?;
             let ty_start = self.tok().start;
-            let ty = self.name()?;
+            let ty = self.qualified_type_name()?;
             let type_span = crate::common_ir::NodeSpan::new(
                 ty_start, self.tokens[self.cursor - 1].end,
             );

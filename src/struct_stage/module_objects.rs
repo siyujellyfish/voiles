@@ -75,9 +75,13 @@ impl<'a> ObjectScope<'a> {
     }
     pub(in crate::struct_stage::module_share) fn construct(&mut self,name:&str,ty:&str,start:usize,t:&Term)->Option<Action> {
         let (origin,def)=self.graph.resolve_struct(self.caller,ty)?;
+        let qualified;
         let (ctor,args)=match &t.kind {
             TermKind::Construct(n,args)=>(n.as_str(),args.as_slice()),
             TermKind::UnresolvedZeroArgs(n)=>(n.as_str(),&[][..]),
+            TermKind::MethodCall(module,n,args) if args.is_empty()=>{
+                qualified=format!("{module}.{n}"); (qualified.as_str(),&[][..])
+            }
             _=>return None,
         };
         let (ctor_origin,ctor_def)=self.graph.resolve_struct(self.caller,ctor)?;

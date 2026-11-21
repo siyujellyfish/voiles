@@ -127,6 +127,7 @@ struct Lower<'a> {
 
 impl Lower<'_> {
     fn place(&self, name: &str) -> Option<Place> {
+        if self.objects.as_ref().is_some_and(|s| s.has(name.split('.').next().unwrap_or(name))) { return None; }
         if self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
             return None;
         }
@@ -140,7 +141,7 @@ impl Lower<'_> {
     fn call_target(&self, name: &str, awaited: bool) -> Option<Number> {
         if self.objects.as_ref().is_some_and(|s| s.requires_argument(name)) { return None; }
         let receiver = name.split('.').next()?;
-        if self.locals.contains_key(receiver) || self.aliases.contains_key(receiver)
+        if self.objects.as_ref().is_some_and(|s|s.has(receiver)) || self.locals.contains_key(receiver) || self.aliases.contains_key(receiver)
             || self.functions.get(name) != Some(&awaited) { return None; }
         let target = match self.linked_names { Some(names) => names.get(name)?.clone(), None => name.to_owned() };
         Some(Number::Call(target,awaited))
@@ -148,6 +149,14 @@ impl Lower<'_> {
 
     fn number(&self, term: &Term) -> Option<Number> {
         if let Some(objects) = &self.objects {
+            let callee = match &term.kind {
+                TermKind::Call(c) => Some(&c.name),
+                TermKind::MethodCall(module,_,_) if !objects.has(module) => Some(module),
+                _ => None,
+            };
+            if callee.is_some_and(|n| self.locals.contains_key(n) || self.aliases.contains_key(n) || objects.has(n)) {
+                return None;
+            }
             if let Some(value) = objects.expression(term) { return Some(value); }
             if matches!(&term.kind,TermKind::MethodCall(owner,_,_) if objects.has(owner)) { return None; }
         }

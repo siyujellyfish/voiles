@@ -9,7 +9,7 @@ CASES = {
     "P21-C": ["imported_alias_cannot_write_or_hold_loan_over_remote_write", "moved_struct_reaches_imported_method_and_cleans_original_resource"],
     "P21-D": ["diamond_calls_initialize_one_shared_owner", "cycle_missing_file_and_private_import_preserve_paths"],
     "P21-E": ["changed_dependency_rejected_before_any_initialization", "missing_duplicate_and_lexical_diagnostics_preserve_importing_file"],
-    "P21-F": ["public_type_keeps_member_visibility_in_its_defining_module", "moved_struct_reaches_imported_method_and_cleans_original_resource", "checked_calls_reject_private_members_wrong_nominal_type_and_use_after_move"],
+    "P21-F": ["qualified_constructor_overrides_public_fields_without_exposing_private_fields", "public_type_keeps_member_visibility_in_its_defining_module", "moved_struct_reaches_imported_method_and_cleans_original_resource", "checked_calls_reject_private_members_wrong_nominal_type_and_use_after_move"],
 }
 
 

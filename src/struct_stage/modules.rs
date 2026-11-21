@@ -406,6 +406,17 @@ mod tests {
     }
 
     #[test]
+    fn qualified_constructor_overrides_public_fields_without_exposing_private_fields() {
+        let files=Files::new(&[("main.voil","import model\nfn main()->int{\nvar item:model.Box = model.Box(count=9)\nreturn item.read()+item.count\n}"),
+            ("model.voil",MODEL)]);
+        let (v,events)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+        assert_eq!(v,Ok(16));
+        assert!(crate::owned_str_runtime::event_trace_balanced(&events));
+        fs::write(files.entry(),b"import model\nfn main()->int{\nvar item:model.Box = model.Box(_code=99)\nreturn item.read()\n}").unwrap();
+        assert!(matches!(LinkedProgram::prepare(&files.entry()),Err(ModuleError::Source{path,..}) if path==files.entry()));
+    }
+
+    #[test]
     fn checked_calls_reject_private_members_wrong_nominal_type_and_use_after_move() {
         for body in ["return item._code", "return item._hidden()", "return take(item.move())+item.count",
                      "return take(item.move())+take(item.move())", "return take()","return take(item)"] {
