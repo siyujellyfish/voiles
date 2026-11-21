@@ -1745,18 +1745,28 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             return Err(self.error("替換值需要字串持有者", term));
                         }
                         value.value.read().map_err(|e| self.model_error(e, term))?;
+                        if let Some(TokenKind::StringLiteral(text)) = value.literal_token.map(|i| &self.tokens[i].kind) {
+                            if !crate::owned_str_runtime::single_grapheme(text) {
+                                return Err(self.error("替換值必須恰有一個字素", term));
+                            }
+                        }
                     }
                     _ => {}
                 }
                 Ok(("str".into(), true))
             }
-            TermKind::StringIndex(name, _, byte) => {
+            TermKind::StringIndex(name, index, byte) => {
                 self.check_direct(vars, name, term)?;
                 let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;
                 if owner.ty != "str" || owner.loan.is_some() {
                     return Err(self.error("索引需要直接的字串持有者", term));
                 }
                 owner.value.read().map_err(|e| self.model_error(e, term))?;
+                if let Some(TokenKind::StringLiteral(text)) = owner.literal_token.map(|i| &self.tokens[i].kind) {
+                    if !crate::owned_str_runtime::literal_index_valid(text, *index, *byte) {
+                        return Err(self.error("常值字串索引越界", term));
+                    }
+                }
                 Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
             }
             TermKind::Container(value) => Ok((value.ty.clone(), true)),
@@ -2491,14 +2501,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         if continuation.is_empty() && loop_entry.is_none() {
                             loan.as_ref().map(|alias| alias.fact)
                         } else { None };
-                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding::new(
-        DeclarationId(statement.start),
-        ty.clone(),
-        *mutable,
-        slot,
-        pending_fields,
-        loan,
-    ));
+                    let mut binding = Binding::new(DeclarationId(statement.start), ty.clone(),
+                        *mutable, slot, pending_fields, loan);
+                    if !*mutable && ty == "str" {
+                        if let Some(value) = init.as_ref().filter(|v| matches!(v.kind, TermKind::Literal("str"))) {
+                            binding.literal_token = self.tokens.binary_search_by_key(&value.start, |t| t.start)
+                                .ok().filter(|&i| self.tokens[i].end == value.end);
+                        }
+                    }
+                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), binding);
                     self.record_declaration(DeclarationId(statement.start), ty, *mutable);
                     if let Some(fact) = direct_borrow_fact {
                         self.recorded_direct_borrows.borrow_mut()

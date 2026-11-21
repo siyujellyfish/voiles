@@ -231,6 +231,7 @@ struct Binding {
     ty: String,
     mutable: bool,
     scoped_element: bool,
+    literal_token: Option<usize>,
     candidate_sites: BTreeSet<usize>,
     redundant_sites: BTreeSet<usize>,
     safety: SafetyState,
@@ -343,7 +344,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable, scoped_element: false, candidate_sites: BTreeSet::new(), redundant_sites: BTreeSet::new(),
+            declaration_start, ty, mutable, scoped_element: false, literal_token: None, candidate_sites: BTreeSet::new(), redundant_sites: BTreeSet::new(),
             safety: SafetyState { value, pending_fields, loan },
         }
     }
@@ -570,6 +571,7 @@ impl VerifiedExitSnapshot {
 }
 
 struct Checker<'a, C> {
+    tokens: &'a [Token],
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
     functions: &'a [Function],
@@ -1290,6 +1292,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_direct_borrows: RefCell::new(BTreeMap::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
+        tokens: &tokens.tokens,
         redundant_checks: RefCell::default(),
         recorded_member_conflicts: RefCell::new(BTreeSet::new()),
         recorded_declaration_conflicts: RefCell::new(BTreeSet::new()),

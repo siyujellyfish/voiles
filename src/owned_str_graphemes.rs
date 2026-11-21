@@ -86,10 +86,18 @@ fn position(index: i64, count: usize) -> Result<usize, IndexError> {
     }
 }
 
-fn cluster(value: &OwnedUtf8, index: i64) -> Result<Range<usize>, IndexError> {
-    let starts = value.grapheme_starts.get_or_init(|| boundaries(value.text()));
+fn cluster_range(starts: &[usize], index: i64) -> Result<Range<usize>, IndexError> {
     let i = position(index, starts.len() - 1)?;
     Ok(starts[i]..starts[i + 1])
+}
+
+fn cluster(value: &OwnedUtf8, index: i64) -> Result<Range<usize>, IndexError> {
+    cluster_range(value.grapheme_starts.get_or_init(|| boundaries(value.text())), index)
+}
+
+pub(crate) fn literal_index_valid(text: &str, index: i64, byte: Option<i64>) -> bool {
+    cluster_range(&boundaries(text), index).is_ok_and(|range|
+        byte.is_none_or(|offset| position(offset, range.len()).is_ok()))
 }
 
 impl OwnedStrRuntime {

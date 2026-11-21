@@ -747,6 +747,20 @@ mod p17_private_str_execution_tests {
     }
 
     #[test]
+    fn p19_const_literal_bounds_use_the_same_unicode_rules_as_runtime() {
+        let code = "fn main()->int{\nconst s:str = \"你\"\nreturn s[0][-3]\n}\n";
+        assert_eq!(PreparedPrivateStr::prepare(code).unwrap().execute().unwrap().result, Ok(228));
+        for index in ["[1][0]", "[0][-4]"] {
+            let bad = code.replace("[0][-3]", index);
+            let diagnostic = inspect(&bad).unwrap_err();
+            assert_eq!(diagnostic.kind, DiagnosticKind::Static);
+            assert!(diagnostic.message.contains("索引越界"));
+            let outcome = PreparedPrivateStr::prepare(&bad.replace("const s", "var s")).unwrap().execute().unwrap();
+            assert_eq!(outcome.result, Err(StrRuntimeError::EvaluationFailed));
+        }
+    }
+
+    #[test]
     fn p19_named_unicode_byte_executes_from_checked_source() {
         let src = "fn main()->int{\nvar text:str = \"ABC你\"\nreturn text[-1][-1]\n}\n";
         let outcome = PreparedPrivateStr::prepare(src).unwrap().execute().unwrap();
