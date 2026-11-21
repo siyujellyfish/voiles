@@ -675,6 +675,17 @@ mod p19_candidate_execution {
     }
 
     #[test]
+    fn candidate_chain_has_no_small_fixed_count_and_does_not_escape() {
+        for count in [1, 8, 32] {
+            let chain = "if(x is str){\nreturn 3\n} else ".repeat(count);
+            let body = format!("if(x != none){{\n{chain}if(x is int){{\nreturn 2\n}}\n}}\nreturn 9");
+            assert_eq!(execute_container_main(&program("7", &body)), Ok(2));
+            let outside = format!("if(x != none){{\n{chain}if(x is int){{\nreturn 2\n}}\n}}\nif(x is int){{\nreturn 4\n}}");
+            assert!(inspect(&program("7", &outside)).unwrap_err().message.contains("非缺失證明"));
+        }
+    }
+
+    #[test]
     fn candidate_needs_same_name_immediately_after_proof() {
         for body in ["if(x is int){\nreturn 1\n}",
             "if(x != none){\nvar n:int = 0\nif(x is int){\nreturn 1\n}\n}"] {
