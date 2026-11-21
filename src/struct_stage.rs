@@ -215,7 +215,7 @@ struct Binding {
     ty: String,
     mutable: bool,
     scoped_element: bool,
-    candidate_check_at: Option<usize>,
+    candidate_sites: BTreeSet<usize>,
     safety: SafetyState,
 }
 
@@ -326,7 +326,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable, scoped_element: false, candidate_check_at: None,
+            declaration_start, ty, mutable, scoped_element: false, candidate_sites: BTreeSet::new(),
             safety: SafetyState { value, pending_fields, loan },
         }
     }

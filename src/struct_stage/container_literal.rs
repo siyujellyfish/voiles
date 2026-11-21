@@ -366,10 +366,21 @@ impl Parser<'_> {
 
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn permit_first_candidate(vars: &mut Scopes, name: &str, statements: &[Stmt]) {
-        if let Some(Stmt { kind: StmtKind::If { branch, .. }, .. }) = statements.first() {
-            if let Some(binding) = Self::lookup_mut(vars, name) {
-                binding.candidate_check_at = Some(branch.condition.start);
+        let Some(binding) = Self::lookup_mut(vars, name) else { return; };
+        let mut next = statements.first();
+        while let Some(Stmt { kind: StmtKind::If { branch, no }, .. }) = next {
+            match &branch.condition.kind {
+                TermKind::OptionalCondition(target, OptionalPredicate::Candidate(_)) if target == name => {
+                    binding.candidate_sites.insert(branch.condition.start);
+                }
+                TermKind::Name(_) | TermKind::Scalar(_) => {}
+                // 未知副作用的普通條件可能使非缺失證明失效。
+                _ => break,
             }
+            next = match no {
+                Some(crate::syntax_shared::ParsedElse::ElseIf(arm)) => Some(arm.as_ref()),
+                _ => None,
+            };
         }
     }
 }
@@ -379,6 +390,11 @@ mod p19_candidate_execution {
     use super::*;
     fn program(value: &str, body: &str) -> String {
         format!("fn main()->int{{\nvar xs:list[Optional[int,str]] = [{value}]\nwith xs[0] as x {{\n{body}\n}}\nreturn 0\n}}\n")
+    }
+    #[test]
+    fn arbitrary_candidate_order_and_interleaved_ordinary_branches() {
+        let body = "if(x != none){\nif(false){\nreturn 0\n} else if(x is str){\nreturn 1\n} else if(false){\nreturn 3\n} else if(x is int){\nreturn 2\n}\n}\nreturn 9";
+        assert_eq!(execute_container_main(&program("5", body)), Ok(2));
     }
     #[test]
     fn named_alias_is_checked_after_direct_nonmissing_guard() {

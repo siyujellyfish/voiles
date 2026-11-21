@@ -1759,7 +1759,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !types.split(',').any(|t| t == candidate) {
                         return Err(self.error("is 右側型別不在候選集合", term));
                     }
-                    if binding.candidate_check_at != Some(term.start) {
+                    if !binding.candidate_sites.contains(&term.start) {
                         return Err(self.error("is 需要緊接同一來源的非缺失證明", term));
                     }
                 }
