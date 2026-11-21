@@ -5,6 +5,8 @@
 //! P14/P15 完整來源借用驗證、結構預設值求值順序及 P17 執行入口仍待完成。
 #![allow(dead_code)]
 
+#[path = "owned_str_graphemes.rs"]
+mod graphemes;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StrRuntimeError {
     MissingOwner,
@@ -60,6 +62,7 @@ pub(crate) enum StrArgumentSource<'a> {
 pub(crate) struct OwnedUtf8 {
     id: u64,
     text: String,
+    grapheme_starts: std::sync::OnceLock<Vec<usize>>,
 }
 
 impl OwnedUtf8 {
@@ -115,7 +118,7 @@ impl OwnedStrRuntime {
         self.next_id = id.checked_add(1).ok_or(StrRuntimeError::ExhaustedIdentity)?;
         self.created += 1;
         self.events.push(ResourceEvent::Created(id));
-        Ok(OwnedUtf8 {id, text: value})
+        Ok(OwnedUtf8 {id, text: value, grapheme_starts: Default::default()})
     }
 
     /// P16：讓結構欄位共用既有唯一 UTF-8 緩衝區與事件帳簿。

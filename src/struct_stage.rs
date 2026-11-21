@@ -87,6 +87,14 @@ struct Parameter {
     type_span: crate::common_ir::NodeSpan,
 }
 
+#[derive(Debug)]
+struct ReadonlyElementBlock {
+    owner: Token,
+    selector: Term,
+    alias: Token,
+    body: crate::syntax_shared::ParsedBlock<Stmt>,
+}
+
 /// 私有安全語句 AST 共用相同具位置的節點外殼。
 type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 

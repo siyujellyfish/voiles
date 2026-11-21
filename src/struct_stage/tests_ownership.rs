@@ -1190,10 +1190,10 @@ mod str_noncopyable_policy_tests {
     }
 
     #[test]
-    fn str_明確非_copyable_float_明確_copyable_容器仍未決() {
+    fn str_與容器禁止複製而_float_可複製() {
         assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
         assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Allowed);
-        assert_eq!(approved_leaf_copy_permission("list[float]"), CopyPermission::Undecided);
+        assert_eq!(approved_leaf_copy_permission("list[float]"), CopyPermission::Forbidden);
         assert_eq!(approved_leaf_copy_permission("int"), CopyPermission::Allowed);
         assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
     }
@@ -2696,8 +2696,9 @@ mod p13_1_copyable_完整能力分類 {
             assert_eq!(permission(src,ty),CopyPermission::Allowed);
         }
         assert_eq!(permission(src,"str"),CopyPermission::Forbidden);
-        for ty in ["list[int]","dict{int,bool}","list[list[float]]","Unknown"] {
-            assert_eq!(permission(src,ty),CopyPermission::Undecided);
+        assert_eq!(permission(src,"Unknown"),CopyPermission::Undecided);
+        for ty in ["list[int]","dict{int,bool}","list[list[float]]"] {
+            assert_eq!(permission(src,ty),CopyPermission::Forbidden);
         }
     }
 
@@ -2773,9 +2774,12 @@ mod p13_1_正式來源閉包 {
     }
 
     #[test]
-    fn 容器未決與未知型別不誤報為永久不可複製() {
+    fn 容器禁止與其他未決型別分開() {
         let src = "fn main()->int{\nreturn 0\n}\n";
-        for ty in ["list[int]", "list[list[float]]", "dict{str,int}", "Optional[int]", "Unknown"] {
+        for ty in ["list[int]", "list[list[float]]", "dict{str,int}"] {
+            assert_eq!(ability(src, ty), CopyPermission::Forbidden, "{ty}");
+        }
+        for ty in ["Optional[int]", "Unknown"] {
             assert_eq!(ability(src, ty), CopyPermission::Undecided, "{ty}");
         }
         assert_eq!(ability(src, "str"), CopyPermission::Forbidden);
@@ -3217,5 +3221,71 @@ mod r03_g3_唯一詞彙來源_use_def_掃描 {
         let (all, moved, id) = scan(source, "inspect");
         assert!(!all.contains(&id));
         assert!(!moved.contains(&id));
+    }
+}
+
+#[cfg(test)]
+mod p19_optional_source {
+    use super::*;
+
+    fn local_type(annotation: &str) -> Result<String, Diagnostic> {
+        let text = format!("fn main()->int{{\nvar xs:{annotation}\nreturn 0\n}}\n");
+        let source = Source::new(text.into_bytes());
+        let scanned = lexer::scan(&source);
+        assert!(scanned.diagnostics.is_empty());
+        let (_, functions) = Parser { source: &source, tokens: &scanned.tokens, cursor: 0 }.file()?;
+        let StmtKind::Declare(binding) = &functions[0].body[0].kind else { panic!() };
+        Ok(binding.ty.clone())
+    }
+
+    #[test]
+    fn container_optional_identity_ignores_candidate_order() {
+        assert_eq!(local_type("list[Optional[str,int]]").unwrap(),
+                   local_type("list[Optional[int,str]]").unwrap());
+        assert_eq!(local_type("dict{str,Optional[bool]}").unwrap(), "dict{str,Optional[bool]}");
+    }
+
+    #[test]
+    fn duplicate_candidate_reports_second_source_span() {
+        let error = local_type("list[Optional[int,int]]").unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        let span = error.span.unwrap();
+        assert_eq!((span.start.line, span.start.column, span.end.column), (2, 26, 29));
+    }
+
+    #[test]
+    fn forbidden_positions_and_incomplete_lists_are_rejected() {
+        for ty in ["Optional[int]", "list[Optional[]]", "list[Optional[int,]]",
+                   "dict{Optional[int],Optional[int]}", "list[Optional[none]]",
+                   "list[Optional[Optional[int]]]", "list[Optional[list[int]]]"] {
+            assert!(local_type(ty).is_err(), "{ty}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod p19_readonly_block {
+    use super::*;
+
+    #[test]
+    fn header_keeps_owner_selector_alias_and_body_positions() {
+        let text = "with table[key] as item {\nreturn 0\n}";
+        let source = Source::new(text.as_bytes().to_vec());
+        let scan = lexer::scan(&source);
+        let mut parser = Parser { source: &source, tokens: &scan.tokens, cursor: 0 };
+        let block = parser.readonly_element_block().unwrap();
+        assert_eq!(&text[block.owner.start..block.owner.end], "table");
+        assert_eq!(&text[block.selector.start..block.selector.end], "key");
+        assert_eq!(&text[block.alias.start..block.alias.end], "item");
+        assert_eq!(&text[block.body.start..block.body.end], "{\nreturn 0\n}");
+    }
+
+    #[test]
+    fn incomplete_header_is_syntax_error_and_with_can_still_be_a_name() {
+        for header in ["with xs[0] item", "with xs[] as item", "with xs[0] as"] {
+            let source = format!("fn main()->int{{\n{header} {{\nreturn 1\n}}\nreturn 0\n}}\n");
+            assert_eq!(inspect(&source).unwrap_err().kind, DiagnosticKind::Syntax);
+        }
+        assert!(inspect("fn main()->int{\nvar with:int = 0\nwith = 1\nreturn with\n}\n").is_ok());
     }
 }

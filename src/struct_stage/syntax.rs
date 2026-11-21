@@ -30,6 +30,59 @@ impl Parser<'_> {
         crate::syntax_shared::take_name(self.tokens, &mut self.cursor)
             .ok_or_else(|| self.syntax("需要合法的名稱或型別名稱"))
     }
+    /// P19-A 首批只解析區域容器宣告的 Optional 元素／值標註。
+    /// 型別標註可解析並不授予容器建立、存取或複製能力。
+    fn local_type_annotation(&mut self) -> Result<String, Diagnostic> {
+        let outer = self.name()?;
+        let key = match outer.as_str() {
+            "list" if self.symbol('[') => {
+                self.cursor += 1;
+                None
+            }
+            "dict" if self.symbol('{') => {
+                self.cursor += 1;
+                let key = self.name()?;
+                self.take(',', "字典型別的鍵和值之間需要逗號")?;
+                Some(key)
+            }
+            _ => return Ok(outer),
+        };
+        if !matches!(&self.tok().kind, TokenKind::Name(name) if name == "Optional") {
+            return Err(self.syntax("本階段只解析 Optional 元素或值標註"));
+        }
+        self.cursor += 1;
+        self.take('[', "Optional 候選串列需要左方括號")?;
+        let mut candidates = BTreeSet::new();
+        loop {
+            let token = self.tok().clone();
+            let candidate = self.name()?;
+            if !matches!(candidate.as_str(), "int" | "bool" | "str" | "float") {
+                return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
+                    message: "此階段未支援此 Optional 候選型別".into(),
+                    span: Some(self.source.span(token.start, token.end)),
+                });
+            }
+            if !candidates.insert(candidate) {
+                return Err(Diagnostic {
+                    kind: DiagnosticKind::Static,
+                    message: "Optional 候選型別重複".into(),
+                    span: Some(self.source.span(token.start, token.end)),
+                });
+            }
+            if !self.symbol(',') { break; }
+            self.cursor += 1;
+        }
+        self.take(']', "Optional 候選串列需要右方括號")?;
+        let members = candidates.into_iter().collect::<Vec<_>>().join(",");
+        if let Some(key) = key {
+            self.take('}', "字典型別需要右大括號")?;
+            Ok(format!("dict{{{key},Optional[{members}]}}"))
+        } else {
+            self.take(']', "序列型別需要右方括號")?;
+            Ok(format!("list[Optional[{members}]]"))
+        }
+    }
     fn end_statement(&mut self) -> Result<(), Diagnostic> {
         if crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
             Ok(())
@@ -312,11 +365,37 @@ impl Parser<'_> {
         Ok(StmtKind::If { branch: first, no })
     }
 
+    /// 呼叫端已辨識區塊起首的情境名稱 with。
+    fn readonly_element_block(&mut self) -> Result<ReadonlyElementBlock, Diagnostic> {
+        self.cursor += 1;
+        let owner = self.tok().clone();
+        self.name()?;
+        self.take('[', "唯讀綁定的容器名稱後需要左方括號")?;
+        let selector = self.term()?;
+        self.take(']', "唯讀綁定的索引或鍵後需要右方括號")?;
+        if !matches!(&self.tok().kind, TokenKind::Name(word) if word == "as") {
+            return Err(self.syntax("唯讀綁定需要 as 與區塊內名稱"));
+        }
+        self.cursor += 1;
+        let alias = self.tok().clone();
+        self.name()?;
+        let body = self.body()?;
+        Ok(ReadonlyElementBlock { owner, selector, alias, body })
+    }
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.tok().start;
         let head = crate::syntax_shared::statement_head(
             self.tokens, self.cursor, crate::common_ir::FrontendMode::PrivateVerified,
         );
+        if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
+            && matches!(self.tokens.get(self.cursor + 1).map(|t| &t.kind), Some(TokenKind::Name(_))) {
+            let block = self.readonly_element_block()?;
+            return Err(Diagnostic {
+                kind: DiagnosticKind::Static,
+                message: "唯讀元素綁定尚無已驗證的容器來源與索引".into(),
+                span: Some(self.source.span(block.owner.start, block.owner.end)),
+            });
+        }
         let kind = if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare(parsed)
@@ -645,7 +724,7 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
     fn declaration_colon(&mut self) -> Result<(), Diagnostic> {
         self.take(':', "宣告必須有型別註記")
     }
-    fn declaration_type(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn declaration_type(&mut self) -> Result<String, Diagnostic> { self.local_type_annotation() }
     fn declaration_has_initializer(&self) -> bool { self.symbol('=') }
     fn declaration_equals(&mut self) { self.cursor += 1; }
     fn declaration_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }

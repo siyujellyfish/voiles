@@ -29,7 +29,7 @@ mod tests {
         assert_eq!(approved_leaf_copy_permission("bool"), CopyPermission::Allowed);
         assert_eq!(approved_leaf_copy_permission("float"), CopyPermission::Allowed);
         assert_eq!(approved_leaf_copy_permission("str"), CopyPermission::Forbidden);
-        for ty in ["list[int]", "dict[str,int]", "Unknown", "Sample"] {
+        for ty in ["dict[str,int]", "Unknown", "Sample"] {
             assert_eq!(approved_leaf_copy_permission(ty), CopyPermission::Undecided);
         }
     }
@@ -56,7 +56,7 @@ mod tests {
             approved_leaf_copy_permission("float")).duplicate(),
             Ok(ValueSlot::initialized(CopyPermission::Allowed)));
         assert_eq!(ValueSlot::initialized(
-            approved_leaf_copy_permission("list[int]")).duplicate(),
+            approved_leaf_copy_permission("Unknown")).duplicate(),
             Err(ModelError::CopyUndecided));
     }
     #[test]
