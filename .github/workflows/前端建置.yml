@@ -206,6 +206,8 @@ jobs:
 
       - name: P21-A 多檔來源身分與快照十項正反驗收
         run: python3 tools/核對P21來源登錄切片.py --test-bin target/p02/p04_source_internal
+      - name: G21 六項跨模組實作驗收
+        run: python3 tools/核對G21驗收.py --test-bin target/p02/p04_source_internal
 
       - name: G3 F06～F09 正式獨立真票據／SafetyState／全操作原子安全驗收
         run: |

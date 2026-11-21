@@ -215,6 +215,10 @@ impl ModuleGraph {
     }
 }
 
+#[path = "module_objects.rs"]
+pub(super) mod objects;
+use objects::ObjectScope;
+
 /// 每個節點各自解析；跨檔呼叫最後指向定義模組的函式。
 pub(crate) struct LinkedProgram {
     graph: ModuleGraph,
@@ -241,8 +245,11 @@ impl LinkedProgram {
             }
         }
         for (id,u) in graph.units.iter().enumerate() {
-            if !u.structs.is_empty() {
-                return Err(u.error(0,0,"多檔 struct 的型別、可見性與資源證明尚未接通"));
+            for f in &u.functions { owners.insert(key(id,&f.name),id); }
+        }
+        for (id,u) in graph.units.iter().enumerate() {
+            for def in u.structs.values() {
+                objects::check_definition(u,def)?;
             }
             let mut names = BTreeMap::new();
             let mut targets = BTreeMap::new();
@@ -270,14 +277,21 @@ impl LinkedProgram {
                 }
             }
             for f in &u.functions {
-                if f.result_ty!="int" || !f.params.is_empty() || (id==0 && f.name=="main" && f.is_async) {
+                if f.result_ty!="int" || f.params.len()>1 || (id==0 && f.name=="main" && (f.is_async || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
-                let mut lower = Lower { source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
+                let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
+                if let Some(p) = f.params.first() {
+                    if f.is_async || graph.resolve_struct(id,&p.ty).is_none() {
+                        return Err(u.error(f.start,f.end,"跨檔持有者參數需要同步函式與可見結構型別"));
+                    }
+                    objects.bind(&p.name,&p.ty,p.declaration_start);
+                }
+                let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals:HashMap::new(),aliases:HashMap::new() };
                 let body = lower.body(f).map_err(|diagnostic|ModuleError::Source{path:u.path.clone(),diagnostic})?;
                 let name = key(id,&f.name);
-                owners.insert(name.clone(),id);
+
                 bodies.insert(name,body);
             }
         }
@@ -369,6 +383,53 @@ mod tests {
         assert!(graph.resolve_struct(model,"_Inside").is_some());
         assert!(graph.field(model,"Box","_secret").is_some());
         assert_eq!(graph.methods(model,"Box","_peek").len(),1);
+    }
+
+    const MODEL:&str = "struct Box{\nvar _code:int = 7\nvar count:int = 3\nvar text:str = \"甲\"\nfn read()->int{\nreturn self._code\n}\nfn _hidden()->int{\nreturn self.count\n}\n}";
+
+    #[test]
+    fn moved_struct_reaches_imported_method_and_cleans_original_resource() {
+        let files = Files::new(&[
+            ("main.voil","import Box from model as Item\nimport consumer\nfn main()->int{\nvar item:Item = Item(count=4)\nreturn consumer.take(item.move())\n}"),
+            ("model.voil",MODEL),
+            ("consumer.voil","import Box from model as Arg\nfn take(item:Arg)->int{\nreturn item.read()+item.count\n}")
+        ]);
+        let p=LinkedProgram::prepare(&files.entry()).unwrap();
+        let (v,events)=p.execute().unwrap();
+        assert_eq!(v,Ok(11));
+        use ResourceEvent::*;
+        assert_eq!(events,[Created(1),Moved(1),Released(1)]);
+        fs::write(files.0.join("consumer.voil"),b"import Box from model as Arg\nfn take(item:Arg)->int{\nreturn item.read()+9223372036854775807\n}").unwrap();
+        let (v,events)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+        assert_eq!(v,Err(StrRuntimeError::EvaluationFailed));
+        assert_eq!(events,[Created(1),Moved(1),Released(1)]);
+    }
+
+    #[test]
+    fn checked_calls_reject_private_members_wrong_nominal_type_and_use_after_move() {
+        for body in ["return item._code", "return item._hidden()", "return take(item.move())+item.count",
+                     "return take(item.move())+take(item.move())", "return take()","return take(item)"] {
+            let main=format!("import Box from model as B\nimport take from usebox as take\nfn main()->int{{\nvar item:B = B()\n{body}\n}}");
+            let files=Files::new(&[("main.voil",&main),("model.voil",MODEL),
+                ("usebox.voil","import Box from model as B\nfn take(v:B)->int{\nreturn v.read()\n}")]);
+            assert!(matches!(LinkedProgram::prepare(&files.entry()),Err(ModuleError::Source{path,..}) if path==files.entry()),"{body}");
+        }
+        let files=Files::new(&[("main.voil","import Box from first as A\nimport take from second as f\nfn main()->int{\nvar a:A = A()\nreturn f(a.move())\n}"),
+            ("first.voil",MODEL),("second.voil",&format!("{MODEL}\nfn take(x:Box)->int{{\nreturn x.read()\n}}"))]);
+        assert!(matches!(LinkedProgram::prepare(&files.entry()),Err(ModuleError::Source{..})));
+    }
+
+    #[test]
+    fn missing_duplicate_and_lexical_diagnostics_preserve_importing_file() {
+        for import in ["import absent from a as x","import f from a as x\nimport f from a as x"] {
+            let files=Files::new(&[("main.voil",import),("a.voil","fn f()->int{\nreturn 3\n}")]);
+            assert!(matches!(ModuleGraph::prepare(&files.entry()),Err(ModuleError::Source{path,diagnostic})
+                if path==files.entry() && diagnostic.span.is_some()));
+        }
+        let files=Files::new(&[("main.voil","import a"),("a.voil","")]);
+        fs::write(files.0.join("a.voil"),b"fn f()->int{\nreturn \xff\n}").unwrap();
+        assert!(matches!(ModuleGraph::prepare(&files.entry()),Err(ModuleError::Source{path,diagnostic})
+            if path==files.0.join("a.voil") && diagnostic.kind==DiagnosticKind::Lexical));
     }
 
     #[test]
