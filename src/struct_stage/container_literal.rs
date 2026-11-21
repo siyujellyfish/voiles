@@ -207,6 +207,16 @@ fn container_int_value(term: &Term, gate: &mut crate::resource_borrow_pipeline::
     containers: &ContainerSlots<'_>, integers: &HashMap<String, i64>, builtin_len: bool)
     -> Result<i64, &'static str> {
     match &term.kind {
+        TermKind::Group(inner) => container_int_value(inner, gate, containers, integers, builtin_len),
+        TermKind::BinaryInt(binary) => {
+            let left = container_int_value(&binary.left, gate, containers, integers, builtin_len)?;
+            let right = container_int_value(&binary.right, gate, containers, integers, builtin_len)?;
+            match binary.operator {
+                '+' => left.checked_add(right),
+                '-' => left.checked_sub(right),
+                _ => None,
+            }.ok_or("整數運算溢位或運算子無效")
+        }
         TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
             crate::syntax_shared::integer_i64(n).map_err(|_| "整數值無效"),
         TermKind::Name(n) => integers.get(n).copied().ok_or_else(|| "找不到整數來源"),
@@ -365,6 +375,16 @@ mod p19_scoped_execution {
             assert_eq!(execute_container_main(&code.replace("return len(next)", "return count")), Ok(n));
             assert!(inspect(&code.replace("return len(next)", "return len(xs)")).is_err());
         }
+    }
+
+    #[test]
+    fn composed_length_and_out_of_bounds_execute_from_source() {
+        let source = "fn main()->int{\nvar a:list[int] = [4,4]\nreturn (len(a) + len(a)) - 1\n}\n";
+        assert_eq!(execute_container_main(source), Ok(3));
+        let missing = source.replace("return (len(a) + len(a)) - 1",
+            "with a[2] as item {\nreturn item\n}\nreturn 0");
+        assert_eq!(execute_container_main(&missing), Err("容器索引越界或缺鍵".into()));
+        assert!(inspect(&source.replace("len(a) + len(a)", "len(1)")).is_err());
     }
 
     #[test]
