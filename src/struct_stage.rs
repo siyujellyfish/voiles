@@ -192,6 +192,7 @@ struct Parser<'a> {
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
 mod module_share;
+pub(crate) use module_share::modules;
 pub(crate) use module_share::Program as PreparedShareModule;
 include!("struct_stage/container_literal.rs");
 

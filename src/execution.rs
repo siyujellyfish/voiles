@@ -6,7 +6,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 mod file;
-mod registry;
+pub(crate) mod registry;
 mod trace;
 mod source_audit;
 mod async_task;

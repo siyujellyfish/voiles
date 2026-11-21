@@ -1,11 +1,13 @@
 //! P20 的模組字串。從私有 Parser 的正式節點建立有型別的直線執行計畫。
 use super::*;
+#[path = "modules.rs"]
+pub(crate) mod modules;
 use crate::borrow_safety::BorrowTicket;
 use crate::owned_str_runtime::{OwnedStrRuntime, ResourceEvent, StrRuntimeError};
 use crate::syntax_shared::{integer_i64, ScalarLiteral};
 
 pub(super) struct Declaration {
-    name: String,
+    pub(super) name: String,
     initial: String,
     id: DeclarationId,
 }
@@ -67,6 +69,8 @@ struct Place {
 }
 
 enum Number {
+    Member { owner:String, field:String, receiver:Option<DeclarationId> },
+    Consume { target:String, from:String, parameter:String },
     Constant(i64),
     Local(String),
     Byte(Place, i64, i64),
@@ -80,6 +84,7 @@ enum Text {
 }
 
 enum Action {
+    Construct(String,Vec<PreparedField>,Vec<PreparedNamedField>),
     Bind(String, Number),
     Loan(String, Place, BorrowKind),
     Write(Place, Text),
@@ -109,17 +114,21 @@ fn problem(source: &Source, span: (usize, usize), message: &str) -> Diagnostic {
 }
 
 struct Lower<'a> {
+    objects: Option<modules::objects::ObjectScope<'a>>,
     source: &'a Source,
     tokens: &'a [Token],
     globals: &'a BTreeMap<String, usize>,
     functions: &'a BTreeMap<String, bool>,
+    linked_names: Option<&'a BTreeMap<String,String>>,
+    readonly_slots: BTreeSet<usize>,
     locals: HashMap<String, bool>,
     aliases: HashMap<String, Place>,
 }
 
 impl Lower<'_> {
     fn place(&self, name: &str) -> Option<Place> {
-        if self.locals.contains_key(name) {
+        if self.objects.as_ref().is_some_and(|s| s.has(name.split('.').next().unwrap_or(name))) { return None; }
+        if self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
             return None;
         }
         self.aliases.get(name).cloned().or_else(|| {
@@ -129,7 +138,28 @@ impl Lower<'_> {
         })
     }
 
+    fn call_target(&self, name: &str, awaited: bool) -> Option<Number> {
+        if self.objects.as_ref().is_some_and(|s| s.requires_argument(name)) { return None; }
+        let receiver = name.split('.').next()?;
+        if self.objects.as_ref().is_some_and(|s|s.has(receiver)) || self.locals.contains_key(receiver) || self.aliases.contains_key(receiver)
+            || self.functions.get(name) != Some(&awaited) { return None; }
+        let target = match self.linked_names { Some(names) => names.get(name)?.clone(), None => name.to_owned() };
+        Some(Number::Call(target,awaited))
+    }
+
     fn number(&self, term: &Term) -> Option<Number> {
+        if let Some(objects) = &self.objects {
+            let callee = match &term.kind {
+                TermKind::Call(c) => Some(&c.name),
+                TermKind::MethodCall(module,_,_) if !objects.has(module) => Some(module),
+                _ => None,
+            };
+            if callee.is_some_and(|n| self.locals.contains_key(n) || self.aliases.contains_key(n) || objects.has(n)) {
+                return None;
+            }
+            if let Some(value) = objects.expression(term) { return Some(value); }
+            if matches!(&term.kind,TermKind::MethodCall(owner,_,_) if objects.has(owner)) { return None; }
+        }
         match &term.kind {
             TermKind::Group(inner) => self.number(inner),
             TermKind::Scalar(ScalarLiteral::Integer(value)) => {
@@ -141,15 +171,10 @@ impl Lower<'_> {
                 Some(StringOffset::Constant(j)),
             ) => Some(Number::Byte(self.place(n)?, *i, *j)),
             TermKind::Name(n) if self.locals.contains_key(n) => Some(Number::Local(n.clone())),
-            TermKind::UnresolvedZeroArgs(n) if self.functions.get(n) == Some(&false) => {
-                Some(Number::Call(n.clone(), false))
-            }
-            TermKind::Call(call)
-                if call.arguments.is_empty()
-                    && self.functions.get(&call.name) == Some(&call.awaited) =>
-            {
-                Some(Number::Call(call.name.clone(), call.awaited))
-            }
+            TermKind::UnresolvedZeroArgs(n) => self.call_target(n,false),
+            TermKind::Call(call) if call.arguments.is_empty() => self.call_target(&call.name,call.awaited),
+            TermKind::MethodCall(module,member,args) if args.is_empty() && self.linked_names.is_some() =>
+                self.call_target(&format!("{module}.{member}"),false),
             TermKind::BinaryInt(node) => Some(Number::Binary(
                 Box::new(self.number(&node.left)?),
                 node.operator,
@@ -183,7 +208,8 @@ impl Lower<'_> {
         let mut steps = Vec::new();
         for stmt in &function.body.statements {
             let span = (stmt.start, stmt.end);
-            let err = |msg: &str| problem(self.source, span, msg);
+            let source = self.source;
+            let err = |msg: &str| problem(source, span, msg);
             if matches!(
                 steps.last(),
                 Some(Step {
@@ -195,7 +221,7 @@ impl Lower<'_> {
             }
             let action = match &stmt.kind {
                 StmtKind::Declare(d) => {
-                    if self.locals.contains_key(&d.name) || self.aliases.contains_key(&d.name) {
+                    if self.locals.contains_key(&d.name) || self.aliases.contains_key(&d.name) || self.objects.as_ref().is_some_and(|s|s.has(&d.name)) {
                         return Err(err("重複區域宣告"));
                     }
                     let init = d
@@ -210,6 +236,7 @@ impl Lower<'_> {
                             .place(n)
                             .filter(|p| p.alias.is_none())
                             .ok_or_else(|| err("需要模組持有者"))?;
+                        if d.mutable && self.readonly_slots.contains(&place.slot) { return Err(err("其他模組的共享字串不可獨占借用")); }
                         let kind = if d.mutable {
                             BorrowKind::ExclusiveWrite
                         } else {
@@ -229,6 +256,8 @@ impl Lower<'_> {
                             .ok_or_else(|| err("需要 int 初值或已驗證的同步函式呼叫"))?;
                         self.locals.insert(d.name.clone(), d.mutable);
                         Action::Bind(d.name.clone(), value)
+                    } else if let Some(scope) = &mut self.objects {
+                        scope.construct(&d.name,&d.ty,d.start,init).ok_or_else(||err("結構型別、具名欄位或建構值無效"))?
                     } else {
                         return Err(err("此模組執行路徑尚未支援該區域型別"));
                     }
@@ -244,7 +273,7 @@ impl Lower<'_> {
                 }
                 StmtKind::Assign(a) => {
                     let target = self.place(&a.name).ok_or_else(|| err("缺少可寫宣告"))?;
-                    if matches!(target.alias, Some((_, BorrowKind::SharedRead))) {
+                    if self.readonly_slots.contains(&target.slot) || matches!(target.alias, Some((_, BorrowKind::SharedRead))) {
                         return Err(err("唯讀借用不可寫入"));
                     }
                     Action::Write(
@@ -266,7 +295,7 @@ impl Lower<'_> {
                         return Err(err("替換值必須為單一字素"));
                     }
                     let p = self.place(name).ok_or_else(|| err("字串未宣告"))?;
-                    if matches!(p.alias, Some((_, BorrowKind::SharedRead))) {
+                    if self.readonly_slots.contains(&p.slot) || matches!(p.alias, Some((_, BorrowKind::SharedRead))) {
                         return Err(err("唯讀借用不可寫入"));
                     }
                     Action::Replace(p, *i, text.clone())
@@ -349,6 +378,7 @@ impl Program {
             let mut lower = Lower {
                 source: &source,
                 tokens: &lexed.tokens,
+                objects: None, linked_names: None, readonly_slots: BTreeSet::new(),
                 globals: &slots,
                 functions: &names,
                 locals: HashMap::new(),
@@ -388,6 +418,7 @@ impl Number {
                 left.uses(list);
                 right.uses(list);
             }
+            Self::Consume{target,..} => list.push(Use::Call(target,false)),
             Self::Call(name, waited) => list.push(Use::Call(name, *waited)),
             _ => (),
         }
@@ -400,6 +431,7 @@ impl Action {
         match self {
             Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
+            Self::Construct(..) => (),
             Self::Replace(p, ..) => uses.push(Use::Direct(p)),
             Self::Write(p, value) => {
                 if let Text::Grapheme(rhs, _) = value {
@@ -414,6 +446,10 @@ impl Action {
 
 impl Program {
     fn verify_loans(&self, source: &Source) -> Result<(), Diagnostic> {
+        self.verify_linked_loans(|_| source).map_err(|(_,diagnostic)|diagnostic)
+    }
+
+    fn verify_linked_loans<'a>(&self, source_for: impl Fn(&str) -> &'a Source) -> Result<(),(String,Diagnostic)> {
         // 將呼叫者仍持有的借用與所有可達函式的來源存取合併。
         let mut effects = BTreeMap::new();
         for (name, body) in &self.bodies {
@@ -462,7 +498,9 @@ impl Program {
                 break;
             }
         }
-        for body in self.bodies.values() {
+        for (name,body) in &self.bodies {
+            let source = source_for(name);
+            let check = || -> Result<(),Diagnostic> {
             let uses: Vec<_> = body
                 .iter()
                 .flat_map(|s| s.action.uses().into_iter().map(move |u| (u, s.span)))
@@ -551,6 +589,9 @@ impl Program {
                     }
                 }
             }
+            Ok(())
+            };
+            check().map_err(|e|(name.clone(),e))?;
         }
         Ok(())
     }
@@ -570,6 +611,7 @@ impl Program {
     fn instantiate(&self, owner: ModuleId) -> Result<State<'_>, StrRuntimeError> {
         let mut state = State {
             owner,
+            mixed: crate::mixed_struct_runtime::MixedStructRuntime::new(),
             heap: OwnedStrRuntime::new(),
             steps: 0,
             loans: BorrowSafety::new(),
@@ -586,6 +628,10 @@ impl Program {
     }
 
     fn call(&self, name: &str, state: &mut State, depth: usize) -> Result<i64, StrRuntimeError> {
+        self.call_with_owner(name,state,depth,None)
+    }
+
+    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<(&str,&str)>) -> Result<i64, StrRuntimeError> {
         let budget = crate::execution::ExecutionBudget::default();
         if depth >= budget.max_call_frames {
             return Err(StrRuntimeError::ExecutionBudgetExhausted);
@@ -601,7 +647,14 @@ impl Program {
                 *frame.remaining.entry(name.clone()).or_default() += 1;
             }
         }
-        let result = self.run_body(body, &mut frame, state, depth, budget.max_steps);
+        state.mixed.enter_scope();
+        let result = (|| {
+            if let Some((from,to)) = transfer {
+                state.mixed.move_whole_with_shared_ledger(&mut state.heap,from,to).map_err(|_|StrRuntimeError::EvaluationFailed)?;
+            }
+            self.run_body(body,&mut frame,state,depth,budget.max_steps)
+        })();
+        state.mixed.leave_scope_with_shared_ledger(&mut state.heap).map_err(|_|StrRuntimeError::OutstandingResource)?;
         for ticket in frame.tickets.into_values() {
             state
                 .loans
@@ -625,6 +678,14 @@ impl Program {
                 return Err(StrRuntimeError::ExecutionBudgetExhausted);
             }
             match &step.action {
+                Action::Construct(n,fields,named) => {
+                    use crate::mixed_struct_runtime::{MixedFieldSpec,NamedMixed};
+                    let schema:Vec<_> = fields.iter().map(|f|MixedFieldSpec{name:&f.name,kind:f.kind,
+                        default:f.default.as_ref().map(ApprovedSeed::runtime),immutable:f.immutable}).collect();
+                    let args:Vec<_> = named.iter().map(|f|NamedMixed{field:&f.name,value:f.seed.runtime()}).collect();
+                    state.mixed.construct_with_shared_ledger(&mut state.heap,n,&schema,&args,None)
+                        .map_err(|_|StrRuntimeError::EvaluationFailed)?;
+                }
                 Action::Bind(n, rhs) => {
                     let value = self.eval(rhs, frame, state, depth)?;
                     frame.locals.insert(n.clone(), value);
@@ -706,6 +767,17 @@ impl Program {
         depth: usize,
     ) -> Result<i64, StrRuntimeError> {
         match n {
+            Number::Member { owner,field,receiver } => {
+                let ticket = receiver.map(|id|frame.object_loans.acquire(id,BorrowKind::SharedRead)).transpose()
+                    .map_err(|_|StrRuntimeError::OutstandingResource)?;
+                let result = match state.mixed.field(owner,field) {
+                    Ok(crate::mixed_struct_runtime::Observed::Int(n)) => Ok(n),
+                    _ => Err(StrRuntimeError::EvaluationFailed),
+                };
+                if let Some(ticket) = ticket { frame.object_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?; }
+                result
+            }
+            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some((from,parameter))),
             Number::Constant(v) => Ok(*v),
             Number::Local(n) => frame
                 .locals
@@ -746,6 +818,7 @@ impl Program {
 
 #[derive(Default)]
 struct Frame {
+    object_loans: BorrowSafety,
     locals: HashMap<String, i64>,
     tickets: HashMap<String, BorrowTicket>,
     remaining: HashMap<String, usize>,
@@ -788,6 +861,7 @@ impl Frame {
 }
 
 struct State<'a> {
+    mixed: crate::mixed_struct_runtime::MixedStructRuntime,
     declarations: &'a [Declaration],
     _local: std::marker::PhantomData<Rc<()>>,
     loans: BorrowSafety,

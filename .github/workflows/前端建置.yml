@@ -204,8 +204,10 @@ jobs:
       - name: G18 P18.1／18.4 真 str BorrowTicket 與多 Copyable int 三十四項正反 Gate
         run: python3 tools/核對G18函式借用真票據.py --test-bin target/p02/p04_source_internal
 
-      - name: P21-A 多檔 canonical／inode 身分與來源快照九項正反 Gate
+      - name: P21-A 多檔來源身分與快照十項正反驗收
         run: python3 tools/核對P21來源登錄切片.py --test-bin target/p02/p04_source_internal
+      - name: G21 六項跨模組實作驗收
+        run: python3 tools/核對G21驗收.py --test-bin target/p02/p04_source_internal
 
       - name: G3 F06～F09 正式獨立真票據／SafetyState／全操作原子安全驗收
         run: |
