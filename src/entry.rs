@@ -14,7 +14,7 @@ impl EntryProgram {
 
     pub fn execute(&self) -> Result<i64, String> {
         let (result, _) = self.0.execute().map_err(module_error)?;
-        result.map_err(|error| module_error(ModuleError::Runtime(error)))
+        result.map_err(module_error)
     }
 }
 
@@ -37,20 +37,10 @@ fn file_error(error: RegistryFailure) -> String {
 fn module_error(error: ModuleError) -> String {
     match error {
         ModuleError::Runtime(error) => {
-            let message = match error {
-                StrRuntimeError::MissingOwner => "找不到資源持有者",
-                StrRuntimeError::DuplicateBinding => "重複綁定",
-                StrRuntimeError::ImmutableBinding => "不可修改唯讀綁定",
-                StrRuntimeError::MovedSource => "來源已移動",
-                StrRuntimeError::NoInnerScope => "缺少內層作用域",
-                StrRuntimeError::IncompleteReturn => "函式未完成回傳",
-                StrRuntimeError::EvaluationFailed => "運算失敗",
-                StrRuntimeError::ExecutionBudgetExhausted => "執行步數已耗盡",
-                StrRuntimeError::ExhaustedIdentity => "資源識別碼已耗盡",
-                StrRuntimeError::OutstandingResource => "仍有資源尚待釋放",
-            };
-            format!("執行期錯誤：{message}")
+            format!("執行期錯誤：{}", runtime_message(error))
         }
+        ModuleError::RuntimeAt { path, span, error } => format!("{}:{}:{}: 執行期錯誤：{}",
+            path.display(), span.start.line, span.start.column, runtime_message(error)),
         ModuleError::File(error) => file_error(error),
         ModuleError::Source { path, diagnostic } => source_error(&path, diagnostic),
         ModuleError::Import { path, span, cause } => format!("{}:{}:{}: 匯入失敗：{}",
@@ -59,5 +49,20 @@ fn module_error(error: ModuleError) -> String {
             let chain = chain.iter().map(|p| p.display().to_string()).collect::<Vec<_>>().join(" → ");
             format!("{}:{}:{}: 循環匯入：{chain}", path.display(), span.start.line, span.start.column)
         }
+    }
+}
+
+fn runtime_message(error: StrRuntimeError) -> &'static str {
+    match error {
+        StrRuntimeError::MissingOwner => "找不到資源持有者",
+        StrRuntimeError::DuplicateBinding => "重複綁定",
+        StrRuntimeError::ImmutableBinding => "不可修改唯讀綁定",
+        StrRuntimeError::MovedSource => "來源已移動",
+        StrRuntimeError::NoInnerScope => "缺少內層作用域",
+        StrRuntimeError::IncompleteReturn => "函式未完成回傳",
+        StrRuntimeError::EvaluationFailed => "運算失敗",
+        StrRuntimeError::ExecutionBudgetExhausted => "執行步數已耗盡",
+        StrRuntimeError::ExhaustedIdentity => "資源識別碼已耗盡",
+        StrRuntimeError::OutstandingResource => "仍有資源尚待釋放",
     }
 }

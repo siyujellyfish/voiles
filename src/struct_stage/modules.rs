@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 #[derive(Debug)]
 pub(crate) enum ModuleError {
     Runtime(StrRuntimeError),
+    RuntimeAt { path: PathBuf, span: crate::SourceSpan, error: StrRuntimeError },
     File(RegistryFailure),
     Source { path: PathBuf, diagnostic: Diagnostic },
     Import { path: PathBuf, span: crate::SourceSpan, cause: RegistryFailure },
@@ -248,7 +249,9 @@ impl LinkedProgram {
             for f in &u.functions { owners.insert(key(id,&f.name),id); }
         }
         for (id,u) in graph.units.iter().enumerate() {
-            for def in u.structs.values() {
+            let mut definitions: Vec<_> = u.structs.values().collect();
+            definitions.sort_unstable_by_key(|def| def.source_span.start);
+            for def in definitions {
                 objects::check_definition(u,def)?;
             }
             let mut names = BTreeMap::new();
@@ -289,7 +292,7 @@ impl LinkedProgram {
                 }
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals:HashMap::new(),aliases:HashMap::new() };
-                let body = lower.body(f).map_err(|diagnostic|ModuleError::Source{path:u.path.clone(),diagnostic})?;
+                let body = lower.body(f, id).map_err(|diagnostic|ModuleError::Source{path:u.path.clone(),diagnostic})?;
                 let name = key(id,&f.name);
 
                 bodies.insert(name,body);
@@ -302,9 +305,16 @@ impl LinkedProgram {
         Ok(Self{graph,plan})
     }
 
-    pub(crate) fn execute(&self) -> Result<(Result<i64,StrRuntimeError>,Vec<ResourceEvent>),ModuleError> {
+    pub(crate) fn execute(&self) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
         self.graph.check_unchanged()?;
-        self.plan.execute().map_err(ModuleError::Runtime)
+        self.plan.execute_with_origin(|error, origin| match origin {
+            Some(step) => {
+                let unit = &self.graph.units[step.module];
+                ModuleError::RuntimeAt { path: unit.path.clone(),
+                    span: unit.source.span(step.span.0, step.span.1), error }
+            }
+            None => ModuleError::Runtime(error),
+        }).map_err(ModuleError::Runtime)
     }
 }
 
@@ -339,7 +349,7 @@ mod tests {
         let order:Vec<_> = p.graph.order.iter().map(|&id|p.graph.units[id].path.file_name().unwrap().to_str().unwrap()).collect();
         assert_eq!(order,["core.voil","left.voil","right.voil","main.voil"]);
         let (v,events) = p.execute().unwrap();
-        assert_eq!(v,Ok(90));
+        assert_eq!(v.unwrap(),90);
         use ResourceEvent::*;
         assert_eq!(events,[Created(1),Created(2),Released(1),Released(2)]);
     }
@@ -396,12 +406,13 @@ mod tests {
         ]);
         let p=LinkedProgram::prepare(&files.entry()).unwrap();
         let (v,events)=p.execute().unwrap();
-        assert_eq!(v,Ok(11));
+        assert_eq!(v.unwrap(),11);
         use ResourceEvent::*;
         assert_eq!(events,[Created(1),Moved(1),Released(1)]);
         fs::write(files.0.join("consumer.voil"),b"import Box from model as Arg\nfn take(item:Arg)->int{\nreturn item.read()+9223372036854775807\n}").unwrap();
         let (v,events)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
-        assert_eq!(v,Err(StrRuntimeError::EvaluationFailed));
+        assert!(matches!(v, Err(ModuleError::RuntimeAt { error: StrRuntimeError::EvaluationFailed, path, span })
+            if path == files.0.join("consumer.voil") && span.start.line == 3));
         assert_eq!(events,[Created(1),Moved(1),Released(1)]);
     }
 
@@ -410,7 +421,7 @@ mod tests {
         let files=Files::new(&[("main.voil","import model\nfn main()->int{\nvar item:model.Box = model.Box(count=9)\nreturn item.read()+item.count\n}"),
             ("model.voil",MODEL)]);
         let (v,events)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
-        assert_eq!(v,Ok(16));
+        assert_eq!(v.unwrap(),16);
         assert!(crate::owned_str_runtime::event_trace_balanced(&events));
         fs::write(files.entry(),b"import model\nfn main()->int{\nvar item:model.Box = model.Box(_code=99)\nreturn item.read()\n}").unwrap();
         assert!(matches!(LinkedProgram::prepare(&files.entry()),Err(ModuleError::Source{path,..}) if path==files.entry()));

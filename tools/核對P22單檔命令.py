@@ -63,6 +63,39 @@ def main():
                         encoding="utf-8")
         for mode in ["check", "run"]:
             verify([mode, path.name], 1, error="靜態錯誤")
+        model = Path(directory) / "model.voil"
+        model.write_text("struct Box{\nvar value:int = 8\n}\n", encoding="utf-8")
+        for constructor in ["model.Box()", "model.Box(value=8)", "Box()"]:
+            imported = "import Box from model as Box" if constructor == "Box()" else "import model"
+            root = constructor.split("(")[0].split(".")[0]
+            ty = constructor.split("(")[0]
+            bindings = ["", f"var {root}:int = 1\n", f"const {root}:str = msg.borrow()\n",
+                        f"var {root}:{ty} = {constructor}\n"]
+            for binding in bindings:
+                path.write_text(f'{imported}\nshare msg:str = "A"\nfn main()->int{{\n{binding}'
+                                f"var item:{ty} = {constructor}\nreturn item.value\n}}\n",
+                                encoding="utf-8")
+                if binding:
+                    for command in ["check", "run"]:
+                        verify([command, path.name], 1, error="建構式名稱已被區域綁定遮蔽")
+                else:
+                    verify(["check", path.name], 0)
+                    verify(["run", path.name], 0, "8\n")
+
+        invalid = "struct {name}{{\nfn getter()->int{{\nreturn 9\n}}\n}}\n"
+        model.write_text(invalid.format(name="Zed") + invalid.format(name="Alpha"), encoding="utf-8")
+        path.write_text("import model\nfn main()->int{\nreturn 0\n}\n", encoding="utf-8")
+        for _ in range(8):
+            verify(["check", path.name], 1, error="model.voil:2:1: 靜態錯誤")
+
+        path.write_text("import model\nfn main()->int{\n    return model.wrapper() + 1\n}\n",
+                        encoding="utf-8")
+        prefix = "fn wrapper()->int{\nreturn inner()\n}\nfn inner()->int{\n"
+        model.write_text(prefix + "  return 9223372036854775807 + 1\n}\n", encoding="utf-8")
+        verify(["check", path.name], 0)
+        verify(["run", path.name], 1, error="model.voil:5:3: 執行期錯誤：運算失敗")
+        model.write_text(prefix + "  return 9223372036854775807\n}\n", encoding="utf-8")
+        verify(["run", path.name], 1, error=f"{path.name}:3:5: 執行期錯誤：運算失敗")
     print("P22 公開 CLI 單檔、多檔、靜態與動態失敗、退出碼及舊命令回歸通過")
 
 
