@@ -36,7 +36,7 @@ def main() -> int:
             print(f"P21-A 失敗 {name}\n{result.stdout}{result.stderr}", file=sys.stderr)
             return 1
     print(f"P21-A 非公開來源登錄：{len(案例)}/{len(案例)} 真 Rust 正反案例通過。")
-    print("不包含 import 語意、跨檔求值或模組資源交接，G21 尚未正式驗收。")
+    print("本項只驗證來源登錄；匯入、跨檔求值與資源交接由 G21 多檔驗收另行執行。")
     return 0
 
 
