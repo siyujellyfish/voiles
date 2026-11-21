@@ -27,8 +27,9 @@ enum PrivateStrAction {
     /// P18-B：原 Checker 已驗證 var bool 直接常值重綁；分支以同一身分取最新值。
     AssignBool { identity: DeclarationId, value: bool },
     AssignBoolFrom { identity: DeclarationId, source: DeclarationId },
-    DeclareGrapheme { name: Option<String>, mutable: bool, owner: String, index: i64, replacement: Option<GraphemeReplacement> },
-    ReturnByte { name: String, grapheme: i64, byte: i64 },
+    DeclareGrapheme { name: Option<String>, mutable: bool, owner: String, index: StringOffset, replacement: Option<GraphemeReplacement> },
+    ReturnByte { name: String, grapheme: StringOffset, byte: StringOffset },
+    SetOffset(String, StringOffset),
     Return(i64),
 }
 /// 具名 bool 必須已在來源中由原 Checker 確認宣告和型別；
@@ -312,6 +313,24 @@ struct PreparedPrivateStr {
 
 /// 僅從這份真 Parser 已保留的 UTF-8 token 拿到正式 Lexer 解碼值。
 /// 不對原始文字 find() 猜測 literal，更不允許推測未知字串語法。
+fn offset_source(term: &Term) -> Result<StringOffset, PrivateStrPrepareError> {
+    match &term.kind {
+        TermKind::Name(n) => Ok(StringOffset::Named(n.clone())),
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+            crate::syntax_shared::integer_i64(n).map(StringOffset::Constant)
+                .map_err(|_| PrivateStrPrepareError::Unsupported("無效 int 索引初值")),
+        _ => Err(PrivateStrPrepareError::Unsupported("此字串執行器需要具名或常值 int 索引初值")),
+    }
+}
+
+fn read_offset(offset: &StringOffset, values: &BTreeMap<String, i64>)
+    -> Result<i64, crate::owned_str_runtime::StrRuntimeError> {
+    match offset {
+        StringOffset::Constant(n) => Ok(*n),
+        StringOffset::Named(name) => values.get(name).copied().ok_or(crate::owned_str_runtime::StrRuntimeError::MissingOwner),
+    }
+}
+
 fn private_str_literal(
     term: &Term, tokens: &[Token],
 ) -> Result<String, PrivateStrPrepareError> {
@@ -346,6 +365,7 @@ impl PreparedPrivateStr {
         }
         let mut bound = BTreeMap::<String, (DeclarationId, bool)>::new();
         let mut bool_bindings = BTreeMap::<String, DeclarationId>::new();
+        let mut offsets = BTreeSet::new();
         let mut operations = Vec::new();
         let mut returned = false;
         let mut has_resource = false;
@@ -383,12 +403,20 @@ impl PreparedPrivateStr {
                     bool_bindings.insert(binding.name.clone(), identity);
                     operations.push(action);
                 }
+                StmtKind::Declare(d) if d.ty == "int" => {
+                    let value = d.initializer.as_ref().ok_or(PrivateStrPrepareError::Unsupported("索引需要初值"))?;
+                    operations.push(PrivateStrAction::SetOffset(d.name.clone(), offset_source(value)?));
+                    offsets.insert(d.name.clone());
+                }
+                StmtKind::Assign(a) if offsets.contains(&a.name) => {
+                    operations.push(PrivateStrAction::SetOffset(a.name.clone(), offset_source(&a.expression)?));
+                }
                 StmtKind::GraphemeWrite(term) => {
                     let TermKind::StringReplace(owner, index, rhs) = &term.kind else {
                         return Err(PrivateStrPrepareError::Unsupported("需要已檢查的字素寫入"));
                     };
                     operations.push(PrivateStrAction::DeclareGrapheme { name: None, mutable: false,
-                        owner: owner.clone(), index: *index, replacement: Some(rhs.clone()) });
+                        owner: owner.clone(), index: index.clone(), replacement: Some(rhs.clone()) });
                 }
                 StmtKind::Declare(binding) if binding.ty == "str" => {
                     let identity = DeclarationId(binding.start);
@@ -414,7 +442,7 @@ impl PreparedPrivateStr {
                         TermKind::StringIndex(owner, index, None) | TermKind::StringReplace(owner, index, _)
                             if bound.contains_key(owner) => PrivateStrAction::DeclareGrapheme {
                                 name: Some(binding.name.clone()), mutable: binding.mutable,
-                                owner: owner.clone(), index: *index,
+                                owner: owner.clone(), index: index.clone(),
                                 replacement: match &expression.kind {
                                     TermKind::StringReplace(_, _, rhs) => Some(rhs.clone()), _ => None,
                                 },
@@ -568,7 +596,7 @@ impl PreparedPrivateStr {
                             return Err(PrivateStrPrepareError::Unsupported("缺少真字串宣告"));
                         }
                         operations.push(PrivateStrAction::ReturnByte {
-                            name: name.clone(), grapheme: *grapheme, byte: *byte,
+                            name: name.clone(), grapheme: grapheme.clone(), byte: byte.clone(),
                         });
                         returned = true;
                         continue;
@@ -639,6 +667,7 @@ impl PreparedPrivateStr {
         let mut resources = crate::owned_str_runtime::OwnedStrRuntime::new();
         let result = (|| {
             let mut bool_values = BTreeMap::<DeclarationId, bool>::new();
+            let mut offsets = BTreeMap::new();
             let mut assignment_index = 0usize;
             let mut completed_branch_declarations = 0usize;
             for op in &self.operations {
@@ -703,13 +732,14 @@ impl PreparedPrivateStr {
                         }
                     }
                     PrivateStrAction::DeclareGrapheme { name, mutable, owner, index, replacement } => {
+                        let index = read_offset(index, &offsets)?;
                         let result = match replacement {
-                            Some(GraphemeReplacement::Literal(rhs)) => resources.replace_grapheme(owner, *index, rhs),
+                            Some(GraphemeReplacement::Literal(rhs)) => resources.replace_grapheme(owner, index, rhs),
                             Some(GraphemeReplacement::Named(source)) => {
                                 let rhs = resources.read(source)?.to_owned();
-                                resources.replace_grapheme(owner, *index, &rhs)
+                                resources.replace_grapheme(owner, index, &rhs)
                             }
-                            None => resources.read_grapheme(owner, *index),
+                            None => resources.read_grapheme(owner, index),
                         }.map_err(|_| crate::owned_str_runtime::StrRuntimeError::EvaluationFailed)?;
                         if let Some(name) = name {
                             if let Err((error, result)) = resources.accept_return_as(name, result, *mutable) {
@@ -718,8 +748,12 @@ impl PreparedPrivateStr {
                             }
                         } else { resources.release_detached(result); }
                     }
+                    PrivateStrAction::SetOffset(name, source) => {
+                        let value = read_offset(source, &offsets)?;
+                        offsets.insert(name.clone(), value);
+                    }
                     PrivateStrAction::ReturnByte { name, grapheme, byte } =>
-                        return resources.read_grapheme_byte(name, *grapheme, *byte)
+                        return resources.read_grapheme_byte(name, read_offset(grapheme, &offsets)?, read_offset(byte, &offsets)?)
                             .map_err(|_| crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
                     PrivateStrAction::Return(value) => return Ok(*value),
                 }
@@ -798,6 +832,15 @@ mod p17_private_str_execution_tests {
         assert!(inspect(&code.replace("[-1]", "[3]")).is_err());
         let first = code.replace("return \"你\"[0][-1]", "const g:str = \"你我\"[-1]\nreturn g[0][0]");
         assert_eq!(PreparedPrivateStr::prepare(&first).unwrap().execute().unwrap().result, Ok(230));
+    }
+
+    #[test]
+    fn p19_named_indices_follow_latest_value_and_bounds() {
+        let src = "fn main()->int{\nvar s:str = \"AB\"\nvar i:int = 0\ni = 1\ns[i] = \"你\"\nconst b:int = 2\nreturn s[i][b]\n}\n";
+        let outcome = PreparedPrivateStr::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(160));
+        let bad = src.replace("b:int = 2", "b:int = 3");
+        assert_eq!(PreparedPrivateStr::prepare(&bad).unwrap().execute().unwrap().result, Err(StrRuntimeError::EvaluationFailed));
     }
 
     #[test]

@@ -100,6 +100,16 @@ impl Parser<'_> {
         let members = candidates.into_iter().collect::<Vec<_>>().join(",");
         Ok(format!("Optional[{members}]"))
     }
+    fn string_offset(&mut self) -> Result<StringOffset, Diagnostic> {
+        if self.symbol('[') && matches!(self.tokens.get(self.cursor + 1).map(|t| &t.kind), Some(TokenKind::Name(_))) {
+            self.cursor += 1;
+            let n = self.name()?;
+            self.take(']', "字串索引需要右方括號")?;
+            return Ok(StringOffset::Named(n));
+        }
+        self.index_number().map(StringOffset::Constant)
+    }
+
     fn index_number(&mut self) -> Result<i64, Diagnostic> {
         self.take('[', "字串索引需要左方括號")?;
         let negative = self.symbol('-');
@@ -357,8 +367,8 @@ impl Parser<'_> {
                 } else if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
                     == crate::syntax_shared::NameSuffixHead::Index {
                     let saved = self.cursor;
-                    let grapheme = self.index_number()?;
-                    let byte = if self.symbol('[') { Some(self.index_number()?) } else { None };
+                    let grapheme = self.string_offset()?;
+                    let byte = if self.symbol('[') { Some(self.string_offset()?) } else { None };
                     if self.symbol('=') {
                         if byte.is_some() { return Err(self.syntax("第二層 UTF-8 位元組只能讀取")); }
                         self.cursor += 1;

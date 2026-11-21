@@ -328,7 +328,7 @@ mod a2_f02_suffix_原詞彙後綴共同分類與模式防護 {
             "公開正式 MVP-A 仍不可將內部索引 AST 辨識擴大為核准的來源語法");
         let indexed = Parser { source:&src, tokens:&scan.tokens, cursor:0 }.file().unwrap();
         assert!(matches!(&indexed.1[0].body[1].kind,
-            StmtKind::Return(ret) if matches!(&ret.expression.kind, TermKind::StringIndex(name, 0, None) if name == "item")));
+            StmtKind::Return(ret) if matches!(&ret.expression.kind, TermKind::StringIndex(name, StringOffset::Constant(0), None) if name == "item")));
         assert_eq!(&*inspect(index_code).unwrap_err().message, "索引需要直接的字串持有者");
 
         let chained = "fn helper()->int{\nreturn 7\n}\nfn main()->int{\nreturn helper().move()\n}\n";

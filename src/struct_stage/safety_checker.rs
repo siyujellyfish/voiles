@@ -361,8 +361,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
             TermKind::Group(inner) => Self::term_mentions(inner, name),
-            TermKind::StringReplace(id, _, rhs) => id == name || matches!(rhs, GraphemeReplacement::Named(n) if n == name),
-            TermKind::StringIndex(id, ..) | TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+            TermKind::StringReplace(id, offset, rhs) => id == name || offset.name() == Some(name) || matches!(rhs, GraphemeReplacement::Named(n) if n == name),
+            TermKind::StringIndex(id, first, second) => id == name || first.name() == Some(name) || second.as_ref().and_then(StringOffset::name) == Some(name),
+            TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
             TermKind::MethodCall(id, _, args)
@@ -450,15 +451,23 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
                 Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
             }
-            TermKind::StringReplace(name, _, rhs) => {
+            TermKind::StringReplace(name, offset, rhs) => {
                 if kind == ResolvedUseKind::All {
                     Self::record_named_future_use(visible, used, name);
+                    if let Some(n) = offset.name() { Self::record_named_future_use(visible, used, n); }
                     if let GraphemeReplacement::Named(rhs) = rhs {
                         Self::record_named_future_use(visible, used, rhs);
                     }
                 }
             }
-            TermKind::StringIndex(name, ..) | TermKind::OptionalCondition(name, _) => {
+            TermKind::StringIndex(name, first, second) => {
+                if kind == ResolvedUseKind::All {
+                    for n in [Some(name.as_str()), first.name(), second.as_ref().and_then(StringOffset::name)].into_iter().flatten() {
+                        Self::record_named_future_use(visible, used, n);
+                    }
+                }
+            }
+            TermKind::OptionalCondition(name, _) => {
                 if kind == ResolvedUseKind::All { Self::record_named_future_use(visible, used, name); }
             }
             TermKind::Container(value) => {
@@ -1739,13 +1748,24 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(result)
     }
 
+    fn check_string_offset(&self, offset: &StringOffset, vars: &Scopes, term: &Term) -> Result<(), Diagnostic> {
+        if let Some(n) = offset.name() {
+            self.check_direct(vars, n, term)?;
+            let b = Self::lookup(vars, n).ok_or_else(|| self.error("索引名稱未宣告", term))?;
+            if b.ty != "int" || b.loan.is_some() { return Err(self.error("索引需要具名 int 持有者", term)); }
+            b.value.read().map_err(|e| self.model_error(e, term))?;
+        }
+        Ok(())
+    }
+
     fn evaluate_inner(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
             TermKind::Group(inner) => self.evaluate(inner, vars),
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
-            TermKind::StringReplace(name, _, rhs) => {
+            TermKind::StringReplace(name, offset, rhs) => {
+                self.check_string_offset(offset, vars, term)?;
                 self.check_direct(vars, name, term)?;
                 let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;
                 if owner.ty != "str" || !owner.mutable || owner.loan.is_some() {
@@ -1779,14 +1799,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
             }
             TermKind::StringIndex(name, index, byte) => {
+                self.check_string_offset(index, vars, term)?;
+                if let Some(b) = byte { self.check_string_offset(b, vars, term)?; }
                 self.check_direct(vars, name, term)?;
                 let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;
                 if owner.ty != "str" || owner.loan.is_some() {
                     return Err(self.error("索引需要直接的字串持有者", term));
                 }
                 owner.value.read().map_err(|e| self.model_error(e, term))?;
-                if let Some(TokenKind::StringLiteral(text)) = owner.literal_token.map(|i| &self.tokens[i].kind) {
-                    if !crate::owned_str_runtime::literal_index_valid(text, *index, *byte) {
+                if let (Some(TokenKind::StringLiteral(text)), StringOffset::Constant(first)) =
+                    (owner.literal_token.map(|i| &self.tokens[i].kind), index) {
+                    let known_byte = match byte { Some(StringOffset::Constant(b)) => Some(*b), _ => None };
+                    if !crate::owned_str_runtime::literal_index_valid(text, *first, known_byte) {
                         return Err(self.error("常值字串索引越界", term));
                     }
                 }

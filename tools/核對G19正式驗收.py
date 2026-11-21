@@ -46,6 +46,7 @@ CASES = {
         STRINGS + "p19_const_literal_bounds_use_the_same_unicode_rules_as_runtime",
         STRINGS + "standalone_write_releases_the_independent_result_and_resegments",
         STRINGS + "p19_unicode_literal_indexes_select_a_grapheme_or_byte",
+        STRINGS + "p19_named_indices_follow_latest_value_and_bounds",
     ],
     "P19.5": [
         CONTAINERS + "繁中來源從解析到查找與區塊返回",

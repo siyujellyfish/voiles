@@ -142,6 +142,18 @@ impl GraphemeReplacement {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StringOffset {
+    Constant(i64),
+    Named(String),
+}
+
+impl StringOffset {
+    fn name(&self) -> Option<&str> {
+        match self { Self::Named(n) => Some(n), Self::Constant(_) => None }
+    }
+}
+
 type Term = crate::common_ir::SpannedNode<TermKind>;
 
 // F02：本 enum 的已核准公私交集由 common_ir 唯一宣告產生。
@@ -151,8 +163,8 @@ crate::common_ir::define_shared_expression_kind!(
         Literal(&'static str),
         Container(ContainerLiteral),
         LiteralIndex(String, i64, Option<i64>),
-        StringIndex(String, i64, Option<i64>),
-        StringReplace(String, i64, GraphemeReplacement),
+        StringIndex(String, StringOffset, Option<StringOffset>),
+        StringReplace(String, StringOffset, GraphemeReplacement),
         OptionalCondition(String, OptionalPredicate),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct

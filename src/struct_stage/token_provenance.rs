@@ -25,7 +25,7 @@ fn verified_private_token_roles(
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
                 let source = Source::new(audit.source.as_bytes().to_vec());
                 let mut p = Parser { source: &source, tokens, cursor };
-                p.name().ok().as_ref() == Some(owner) && p.index_number().ok() == Some(*index)
+                p.name().ok().as_ref() == Some(owner) && p.string_offset().ok().as_ref() == Some(index)
                     && p.take('=', "").is_ok() && p.tok().end == value.end
                     && GraphemeReplacement::from_token(&p.tok().kind).as_ref() == Some(rhs)
             }
@@ -42,8 +42,8 @@ fn verified_private_token_roles(
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
                 let source = Source::new(audit.source.as_bytes().to_vec());
                 let mut p = Parser { source: &source, tokens, cursor };
-                p.name().ok().as_ref() == Some(owner) && p.index_number().ok() == Some(*first)
-                    && second.is_none_or(|n| p.index_number().ok() == Some(n))
+                p.name().ok().as_ref() == Some(owner) && p.string_offset().ok().as_ref() == Some(first)
+                    && second.as_ref().is_none_or(|n| p.string_offset().ok().as_ref() == Some(n))
                     && tokens[p.cursor-1].end == value.end
             }
             TermKind::OptionalCondition(name, predicate) => {
