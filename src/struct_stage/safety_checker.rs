@@ -564,6 +564,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::Return(term) =>
                     Self::scan_resolved_term_uses(term, visible, used, kind),
+                StmtKind::GraphemeWrite(value) => Self::scan_resolved_term_uses(value, visible, used, kind),
                 StmtKind::ReadonlyElement(binding) => {
                     if let TokenKind::Name(owner) = &binding.owner.kind {
                         Self::record_named_future_use(visible, used, owner);
@@ -2442,6 +2443,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::release_last_uses(vars, body, continuation);
         for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
+                StmtKind::GraphemeWrite(value) => { self.evaluate(value, vars)?; }
                 StmtKind::ReadonlyElement(block) => {
                     let alias = self.scoped_element_binding(block, vars)?;
                     let TokenKind::Name(name) = &block.alias.kind else { unreachable!() };
@@ -3096,7 +3098,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::While { condition, .. } => {
                     return Err(self.error("P15：方法中的 while 借用重入尚未完成安全證明", condition));
                 }
-                StmtKind::ReadonlyElement(_) | StmtKind::ForRange { .. } => {
+                StmtKind::GraphemeWrite(_) | StmtKind::ReadonlyElement(_) | StmtKind::ForRange { .. } => {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P15：方法中的 for 借用重入尚未完成安全證明".into(),
                         span: Some(self.source.span(stmt.start, stmt.end)) });

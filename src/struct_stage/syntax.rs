@@ -431,6 +431,11 @@ impl Parser<'_> {
         let kind = if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
             && matches!(self.tokens.get(self.cursor + 1).map(|t| &t.kind), Some(TokenKind::Name(_))) {
             StmtKind::ReadonlyElement(Box::new(self.readonly_element_block()?))
+        } else if matches!(&self.tok().kind, TokenKind::Name(_))
+            && crate::syntax_shared::symbol(self.tokens, self.cursor + 1, '[') {
+            let value = self.term()?;
+            if !matches!(value.kind, TermKind::StringReplace(..)) { return Err(self.syntax("字素寫入語句需要賦值")); }
+            StmtKind::GraphemeWrite(value)
         } else if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare(parsed)

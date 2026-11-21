@@ -101,6 +101,7 @@ type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 #[derive(Debug, Clone)]
 enum StmtKind {
     ReadonlyElement(Box<ReadonlyElementBlock>),
+    GraphemeWrite(Term),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
     FieldAssign { receiver: String, field: String, value: Term },

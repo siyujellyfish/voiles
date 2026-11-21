@@ -163,6 +163,8 @@ fn verified_private_token_roles(
         stmt: &Stmt, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &stmt.kind {
+            StmtKind::GraphemeWrite(value) => matches!(value.kind, TermKind::StringReplace(..))
+                && value.node_span() == stmt.node_span() && term(value, tokens, audit),
             StmtKind::ReadonlyElement(binding) => {
                 let Ok(i) = tokens.binary_search_by_key(&stmt.start, |t| t.start) else { return false };
                 let Ok(j) = tokens.binary_search_by_key(&binding.alias.start, |t| t.start) else { return false };
