@@ -201,7 +201,34 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 }
 
-fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAtom)
+type ContainerSlots<'a> = HashMap<&'a str, (DeclarationId, Option<(u64, ContainerLiteral)>)>;
+
+fn container_int_value(term: &Term, gate: &mut crate::resource_borrow_pipeline::SafetyPipeline,
+    containers: &ContainerSlots<'_>, integers: &HashMap<String, i64>, builtin_len: bool)
+    -> Result<i64, &'static str> {
+    match &term.kind {
+        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+            crate::syntax_shared::integer_i64(n).map_err(|_| "整數值無效"),
+        TermKind::Name(n) => integers.get(n).copied().ok_or_else(|| "找不到整數來源"),
+        TermKind::Call(call) if builtin_len && call.name == "len" && !call.awaited => {
+            let [arg] = call.arguments.as_slice() else { return Err("len 引數數量不符"); };
+            let TermKind::Name(name) = &arg.kind else { return Err("len 需要具名容器"); };
+            let (id, slot) = containers.get(name.as_str()).ok_or("len 容器缺失")?;
+            let (_, value) = slot.as_ref().ok_or("容器已移動")?;
+            let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "len 借用衝突")?;
+            let count = match &value.items {
+                ContainerItems::List(values) => values.len(),
+                ContainerItems::Dictionary(values) => values.len(),
+            };
+            gate.finish_method(&[ticket]).map_err(|_| "len 退借失敗")?;
+            i64::try_from(count).map_err(|_| "容器長度超出 int")
+        }
+        _ => Err("此入口尚未支援該整數運算式"),
+    }
+}
+
+fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAtom,
+    int_value: &mut impl FnMut(&Term) -> Result<i64, &'static str>)
     -> Result<Option<i64>, &'static str> {
     for stmt in statements {
         match &stmt.kind {
@@ -210,9 +237,7 @@ fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAto
                     TermKind::Name(name) if name == alias => match element {
                         ContainerAtom::Integer(n) => *n, _ => return Err("返回值需要 int"),
                     },
-                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
-                        crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效")?,
-                    _ => return Err("此入口尚未支援該返回式"),
+                    _ => int_value(ret)?,
                 };
                 return Ok(Some(n));
             }
@@ -232,7 +257,7 @@ fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAto
                 let selected = if test { Some(branch.body.statements.as_slice()) }
                     else { no.as_ref().map(|other| other.as_slice()) };
                 if let Some(body) = selected {
-                    if let Some(value) = execute_element_body(body, alias, element)? { return Ok(Some(value)); }
+                    if let Some(value) = execute_element_body(body, alias, element, int_value)? { return Ok(Some(value)); }
                 }
             }
             _ => return Err("此入口尚未支援該區塊語句"),
@@ -256,33 +281,10 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
     let mut integers = HashMap::new();
     let run = (|| -> Result<i64, String> {
         for stmt in main.body.iter() {
-            let int_value = |term: &Term, gate: &mut SafetyPipeline,
-                containers: &HashMap<&str, (DeclarationId, Option<(u64, ContainerLiteral)>)>,
-                integers: &HashMap<String, i64>| -> Result<i64, String> {
-                match &term.kind {
-                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
-                        crate::syntax_shared::integer_i64(n).map_err(|_| "整數值無效".into()),
-                    TermKind::Name(n) => integers.get(n).copied().ok_or_else(|| "找不到整數來源".into()),
-                    TermKind::Call(call) if builtin_len && call.name == "len" && !call.awaited => {
-                        let [arg] = call.arguments.as_slice() else { return Err("len 引數數量不符".into()); };
-                        let TermKind::Name(name) = &arg.kind else { return Err("len 需要具名容器".into()); };
-                        let (id, slot) = containers.get(name.as_str()).ok_or("len 容器缺失")?;
-                        let (_, value) = slot.as_ref().ok_or("容器已移動")?;
-                        let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "len 借用衝突")?;
-                        let count = match &value.items {
-                            ContainerItems::List(values) => values.len(),
-                            ContainerItems::Dictionary(values) => values.len(),
-                        };
-                        gate.finish_method(&[ticket]).map_err(|_| "len 退借失敗")?;
-                        i64::try_from(count).map_err(|_| "容器長度超出 int".into())
-                    }
-                    _ => Err("此入口尚未支援該整數運算式".into()),
-                }
-            };
             match &stmt.kind {
                 StmtKind::Declare(d) if d.ty == "int" => {
                     let init = d.initializer.as_ref().ok_or("需要已初始化整數")?;
-                    let n = int_value(init, &mut gate, &containers, &integers)?;
+                    let n = container_int_value(init, &mut gate, &containers, &integers, builtin_len)?;
                     integers.insert(d.name.clone(), n);
                 }
                 StmtKind::Declare(d) => {
@@ -327,11 +329,12 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
                     };
                     let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
                     let result = value.lookup(&selector).ok_or("容器索引越界或缺鍵")
-                        .and_then(|element| execute_element_body(&block.body, alias, element));
+                        .and_then(|element| execute_element_body(&block.body, alias, element, &mut |term|
+                                container_int_value(term, &mut gate, &containers, &integers, builtin_len)));
                     gate.finish_method_with_snapshot(&[ticket], &[BorrowFact::new(*id, BorrowKind::SharedRead)]).map_err(|_| "容器借用歸還失敗")?;
                     if let Some(n) = result.map_err(str::to_owned)? { return Ok(n); }
                 }
-                StmtKind::Return(ret) => return int_value(ret, &mut gate, &containers, &integers),
+                StmtKind::Return(ret) => return container_int_value(ret, &mut gate, &containers, &integers, builtin_len).map_err(str::to_owned),
                 _ => return Err("此入口尚未支援該語句".into()),
             }
         }
@@ -362,6 +365,13 @@ mod p19_scoped_execution {
             assert_eq!(execute_container_main(&code.replace("return len(next)", "return count")), Ok(n));
             assert!(inspect(&code.replace("return len(next)", "return len(xs)")).is_err());
         }
+    }
+
+    #[test]
+    fn length_inside_readonly_scope_returns_only_its_own_ticket() {
+        let code = include_str!("../../tests/fixtures/p19/容器長度.voil");
+        assert_eq!(execute_container_main(code), Ok(2));
+        assert!(inspect(&code.replace("len(entries)", "len(item)")).is_err());
     }
 
     #[test]
