@@ -49,6 +49,21 @@ rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=
 
 `check` 與 `run` 目前支援 P21 已驗證的直線函式、整數運算、模組與受限資源操作。舊版單檔檢查另支援 MVP-A 分支等文法。兩個入口的支援範圍不同。工具優先順序為命令說明與可執行範例，其後依序為格式化、編輯器支援與互動除錯。
 
+## 建置與攜帶原生程式
+
+在 Linux x86-64 GNU 開發機安裝 stable rustc、系統連結器及 glibc 靜態函式庫。依上方步驟建置 voiles，使用新檔名產生執行檔：
+
+```sh
+./target/p02/voiles build examples/入門/多檔/main.voil -o ./numbers
+./target/p02/voiles pack examples/入門/多檔/main.voil -o ./numbers-portable
+./numbers-portable
+echo "$?"
+```
+
+範例的程序結束狀態為 42。僅需將 pack 產生的單一 ELF 複製到相容的 Linux x86-64 機器；來源、voiles、rustc、動態載入器與動態函式庫均無須隨附。原生程式以結果的低八位作退出碼，執行錯誤退出 1 並寫入 stderr。目的檔已存在時建置失敗並保留舊檔。
+
+原生子集涵蓋整數加減、區域變數、同步跨檔呼叫、受限條件返回、模組共享字串和已驗證的結構移交。完整語法與自舉進度見 [原生工具鏈](AI-build/P23-P27原生工具鏈.md)。
+
 ## 已驗收範圍
 
 P00～P12 的單檔前端、P13～P16 的受限所有權與資源檢查、P17～P22 的直譯器及公開命令均已完成各階段驗收。P22 主線提交 `598a1e0c` 的核心測試為 3,327 項通過、零失敗、零忽略。P23 起的原生編譯、封裝與自舉仍屬後續階段。[主線 CI](https://github.com/siyujellyfish/voiles/actions/runs/44897419801)
