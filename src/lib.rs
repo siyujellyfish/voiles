@@ -1,5 +1,8 @@
 //! voiles 最小 Rust 前端核心介面。
-//! 對外仍僅提供 P01 MVP-A 靜態檢查；P17 求值器限內部實作，尚無公開執行命令。
+//! 保留單檔檢查介面，並提供 P22 命令使用的模組程式入口。
+
+mod entry;
+pub use entry::EntryProgram;
 
 mod source;
 mod lexer;

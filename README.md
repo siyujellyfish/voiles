@@ -2,13 +2,13 @@
 
 **voiles** 是開發中的自製程式語言，目標為 Python 式易讀簡潔的編寫風格、Rust 式記憶體安全、直譯優先，後續再提供原生可執行產物及單檔封裝，長期以自舉為目標。
 
-> **目前能力（2026-11-04）**：公開 MVP-A P00～P12 單檔靜態檢查器已驗收；P13～P16 原始私有受限安全 24/24、P16.6-R **6/6**、F00～F14 **15/15** 全部在最新 main 正式通過。**公開 CLI 仍不執行程式、不產生可執行檔；P17～P30 未驗收。** 見 [全專案統整](AI-build/專案全域統整-20261104.md)。
+> **目前能力（2026-11-21）**：公開 CLI 保留 MVP-A 單檔靜態檢查，並提供 P21 已支援的模組子集檢查與執行命令。見 [建構階段](AI-build/建構階段.md)。
 
 ## 編寫風格與已支援的首版語法
 
 voiles 借鑑 Python 的可讀性，但不複製 Python 全部語法或隱含型別規則。首版 MVP-A 使用 `fn`、`{}`、明確型別的 `var`／`const`、`int`／`bool`、一般 `if`／`else if`／`else`、無參數函式、明確 `return`、`int` 二元 `+`／`-` 與括號分組。
 
-以下程式**現在可以通過首版靜態檢查**，但不能執行：
+以下程式可用舊命令靜態檢查，也可用 `run` 執行，結果為 5：
 
 ```voiles
 fn main()->int{
@@ -20,7 +20,7 @@ fn main()->int{
 
 支援的宣告、初始化、名稱作用域、分支可達路徑、回傳型別及 `int64` 確定溢位均已具備真實 Rust 回歸測試；詳細支援／拒絕矩陣見 [P01 首版驗收契約](AI-build/P01-驗收契約.md)。首版不接受完整語言的 Optional／`struct`／容器等，不代表完整語言將永久禁止。
 
-## 建置與使用靜態檢查命令
+## 快速開始
 
 使用 Rust stable、直接以 `rustc` 編譯標準函式庫核心，不要求 Cargo：
 
@@ -29,10 +29,25 @@ rustup toolchain install stable --profile minimal
 mkdir -p target/p02
 rustup run stable rustc --edition=2021 --crate-name voiles_core --crate-type rlib src/lib.rs -o target/p02/libvoiles_core.rlib
 rustup run stable rustc --edition=2021 --crate-name voiles --extern voiles_core=target/p02/libvoiles_core.rlib -L dependency=target/p02 src/main.rs -o target/p02/voiles
-./target/p02/voiles tests/fixtures/voiles/P01-正01.voil
+./target/p02/voiles examples/入門/基本加法.voil
 ```
 
-最後一步應**退出 0**且沒有阻斷診斷；換成 `tests/fixtures/voiles/P01-反08.voil` 時，應**退出 1**並於 stderr 輸出有來源位置的繁體中文靜態錯誤。命令只檢查一個 `.voil` 檔案，不執行程式、不生成產物，也不把 `main()` 回傳的 `int` 當作命令退出碼。
+直接提供路徑會執行舊版單檔檢查，成功時安靜退出 0。以下命令使用同一個剛建置的 CLI：
+
+```sh
+./target/p02/voiles --help
+./target/p02/voiles --version
+./target/p02/voiles check examples/入門/基本加法.voil
+./target/p02/voiles run examples/入門/基本加法.voil
+./target/p02/voiles check examples/入門/多檔/main.voil
+./target/p02/voiles run examples/入門/多檔/main.voil
+```
+
+兩次 `run` 分別輸出 `5` 與 `42`。多檔範例從入口同目錄的 `numbers.voil` 匯入 `value` 並命名為 `start`。搜尋根目錄取自入口路徑，依賴優先，循環匯入會產生診斷。
+
+`check` 與 `run` 都先檢查模組，僅 `run` 會執行。成功時退出 0，`run` 將完整有號 64 位元回傳值寫至 stdout。讀檔、來源檢查與執行失敗退出 1，診斷寫至 stderr。新命令引數錯誤退出 2，舊式檢查的用法錯誤沿用 1。
+
+`check` 與 `run` 目前支援 P21 已驗證的直線函式、整數運算、模組與受限資源操作。舊版單檔檢查另支援 MVP-A 分支等文法。兩個入口的支援範圍不同。工具優先順序為命令說明與可執行範例，其後依序為格式化、編輯器支援與互動除錯。
 
 ## 真正執行的自動測試
 
@@ -48,7 +63,8 @@ G0 四組凍結：P01 49 來源／30 診斷、原 P13～P16 24 項／157 選取�
 |---|---|---|
 | P00～P12 | 儲存庫、語言契約、Rust 前端工程、來源／語法／名稱／型別／資料流及首版靜態檢查 | **MVP-A 已驗收** |
 | P13～P16 | 資源複製、明確移動、借用、有效期與 UTF-8 資源責任 | **內部受限子集 24／24 正式工程驗收完成；尚未公開** |
-| P17～P22 | 基於已選安全模型的 voiles 直譯執行 | 尚未驗收 |
+| P17～P21 | 私有直譯執行、核心操作、共享字串與多檔模組 | G17～G21 已驗收 |
+| P22 | 公開命令與使用文件 | 已開工 |
 | P23～P26 | 按 AR04 相依形成可執行編譯產物 | 尚未驗收 |
 | P27～P30 | 發行、自舉及後續完整工作 | 尚未驗收 |
 
