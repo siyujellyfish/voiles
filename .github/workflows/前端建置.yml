@@ -643,3 +643,6 @@ jobs:
 
       - name: G19 五項容器與核心函式庫正式驗收
         run: python3 tools/核對G19正式驗收.py --test-bin target/p02/p04_source_internal
+
+      - name: G20 共享字串五項驗收
+        run: python3 tools/核對G20驗收.py --test-bin target/p02/p04_source_internal
