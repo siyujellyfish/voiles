@@ -1,0 +1,9 @@
+# first 的整份字典移交給 next，透過唯讀區塊取得整數 17。
+fn main()->int{
+var first:dict{str,int} = {"key":17}
+var next:dict{str,int} = first.move()
+with next["key"] as it {
+return it
+}
+return 0
+}

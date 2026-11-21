@@ -723,7 +723,7 @@ mod p17_private_str_execution_tests {
 
     #[test]
     fn p19_checked_replacement_resegments_and_returns_independent_copy() {
-        let src = "fn main()->int{\nvar s:str = \"AB\"\nconst old:str = s[1]\nconst written:str = (s[1] = \"\u{301}\")\nreturn s[0][-1]\n}\n";
+        let src = include_str!("../../tests/fixtures/p19/字素替換.voil");
         for (owner, byte) in [("s[0][-1]",129), ("old[0][0]",66), ("written[0][0]",204)] {
             let outcome = PreparedPrivateStr::prepare(&src.replace("s[0][-1]", owner)).unwrap().execute().unwrap();
             assert_eq!(outcome.result, Ok(byte));

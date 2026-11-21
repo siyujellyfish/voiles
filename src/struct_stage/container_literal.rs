@@ -306,7 +306,7 @@ mod p19_scoped_execution {
 
     #[test]
     fn moved_dictionary_owns_original_values() {
-        let text = "fn main()->int{\nvar first:dict{str,int} = {\"key\":17}\nvar next:dict{str,int} = first.move()\nwith next[\"key\"] as it {\nreturn it\n}\nreturn 0\n}\n";
+        let text = include_str!("../../tests/fixtures/p19/移動後讀取.voil");
         assert_eq!(execute_container_main(text), Ok(17));
         assert!(inspect(&text.replace("with next", "with first")).is_err());
     }
