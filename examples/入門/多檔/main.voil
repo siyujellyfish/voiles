@@ -1,0 +1,4 @@
+import value from numbers as start
+fn main()->int{
+    return start() + 2
+}
