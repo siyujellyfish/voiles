@@ -220,6 +220,7 @@ fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAto
                             (ContainerAtom::Integer(_), "int") | (ContainerAtom::Text(_), "str")
                             | (ContainerAtom::Boolean(_), "bool") | (ContainerAtom::Decimal(..), "float")),
                         OptionalPredicate::Candidate(None) => return Err("候選型別缺失"),
+                        OptionalPredicate::IndexedCandidate { .. } => return Err("is 需要已綁定具名來源"),
                     },
                     TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => *b,
                     _ => return Err("此入口尚未支援該區塊條件"),
@@ -340,6 +341,7 @@ mod p19_scoped_execution {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum OptionalPredicate {
+    IndexedCandidate { selector_type: &'static str, candidate: Option<String> },
     IsMissing(bool),
     Candidate(Option<String>),
 }
@@ -349,6 +351,21 @@ impl Parser<'_> {
         let start = self.tok().start;
         let TokenKind::Name(name) = self.tok().kind.clone() else { return Ok(None) };
         let op = self.cursor + 1;
+        // 保留非具名索引形狀供 Checker 區分 AQ03、AN04；絕不核准其使用。
+        if crate::syntax_shared::symbol(self.tokens, op, '[')
+            && crate::syntax_shared::symbol(self.tokens, op + 2, ']')
+            && matches!(self.tokens.get(op + 3).map(|t| &t.kind), Some(TokenKind::Name(s)) if s == "is") {
+            let selector_type = match &self.tokens[op + 1].kind {
+                TokenKind::Integer(_) => "int",
+                TokenKind::StringLiteral(_) => "str",
+                TokenKind::Keyword(b) if b == "true" || b == "false" => "bool",
+                _ => return Ok(None),
+            };
+            self.cursor = op + 4;
+            let candidate = if self.symbol(')') { None } else { Some(self.name()?) };
+            return Ok(Some(Term { start, end: self.tokens[self.cursor - 1].end,
+                kind: TermKind::OptionalCondition(name, OptionalPredicate::IndexedCandidate { selector_type, candidate }) }));
+        }
         let pred = if matches!(self.tokens.get(op).map(|t| &t.kind), Some(TokenKind::Name(s)) if s == "is") {
             self.cursor += 2;
             OptionalPredicate::Candidate(if self.symbol(')') { None } else { Some(self.name()?) })
@@ -415,11 +432,21 @@ mod p19_candidate_execution {
             DiagnosticKind::Syntax);
     }
     #[test]
+    fn optional_element_expression_is_a_static_type_error() {
+        let src = program("1", "if(xs[0] is int){\nreturn 1\n}");
+        let err = inspect(&src).unwrap_err();
+        assert_eq!(err.kind, DiagnosticKind::Static);
+        assert!(err.message.contains("具名"));
+        let src = src.replace("list[Optional[int,str]]", "list[int]");
+        assert_eq!(inspect(&src).unwrap_err().kind, DiagnosticKind::Syntax);
+    }
+    #[test]
     fn nested_repeat_reports_only_the_redundant_check_and_still_executes() {
         let source = program("5", "if(x != none){\nif(x is int){\nif(x != none){\nif(x is int){\nreturn 7\n}\n}\n}\n}\nreturn 0");
-        let checked = verify_source_with_ability(&source, crate::ownership_policy::approved_leaf_copy_permission).unwrap();
         let start = source.rfind("x is int").unwrap();
-        assert_eq!(checked.redundant_checks, [(start, start + "x is int".len())].into_iter().collect());
+        let text = Source::new(source.as_bytes().to_vec());
+        assert_eq!(inspect_redundant_candidate_warnings(&source).unwrap(),
+            vec![text.span(start, start + "x is int".len())]);
         assert_eq!(execute_container_main(&source), Ok(7));
     }
     #[test]

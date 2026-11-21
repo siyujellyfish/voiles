@@ -1418,6 +1418,13 @@ pub(crate) fn inspect(text: &str) -> Result<(), Diagnostic> {
     inspect_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
 }
 
+/// 與 inspect 共用核准 Checker，將非阻斷的重檢位置交給內部呼叫端。
+pub(crate) fn inspect_redundant_candidate_warnings(text: &str)
+    -> Result<Vec<crate::SourceSpan>, Diagnostic> {
+    let checked = verify_source_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)?;
+    Ok(checked.redundant_checks.iter().map(|&(start, end)| checked.source.span(start, end)).collect())
+}
+
 /// 歷史測試保留假設能力注入，僅用於驗證 S19 合取及未知能力；
 /// 正式核准入口一律使用上方 inspect，不接受外部能力覆寫。
 #[cfg(test)]

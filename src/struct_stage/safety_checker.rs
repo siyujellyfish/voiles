@@ -1747,6 +1747,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 };
                 let span = Some(self.source.span(term.start, term.end));
                 let syntax = |message: &str| Diagnostic { kind: DiagnosticKind::Syntax, span, message: message.into() };
+                if let OptionalPredicate::IndexedCandidate { selector_type, candidate } = predicate {
+                    let Some((key, value)) = element_type(&binding.ty) else {
+                        return Err(syntax("專用條件左側需要 Optional"));
+                    };
+                    if key != *selector_type {
+                        return Err(self.error("索引或字典鍵型別不符", term));
+                    }
+                    if candidate.is_none() { return Err(syntax("is 右側缺少候選型別")); }
+                    if value.starts_with("Optional[") {
+                        return Err(self.error("is 左側需要已綁定的具名 Optional", term));
+                    }
+                    return Err(syntax("專用條件左側需要 Optional"));
+                }
                 if let OptionalPredicate::Candidate(None) = predicate {
                     return Err(syntax("is 右側缺少候選型別"));
                 }
