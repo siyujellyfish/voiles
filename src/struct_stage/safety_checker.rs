@@ -361,7 +361,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
             TermKind::Group(inner) => Self::term_mentions(inner, name),
-            TermKind::StringReplace(id, ..) | TermKind::StringIndex(id, ..) | TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+            TermKind::StringReplace(id, _, rhs) => id == name || matches!(rhs, GraphemeReplacement::Named(n) if n == name),
+            TermKind::StringIndex(id, ..) | TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
             TermKind::MethodCall(id, _, args)
@@ -448,7 +449,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
                 Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
             }
-            TermKind::StringReplace(name, ..) | TermKind::StringIndex(name, ..) | TermKind::OptionalCondition(name, _) => {
+            TermKind::StringReplace(name, _, rhs) => {
+                if kind == ResolvedUseKind::All {
+                    Self::record_named_future_use(visible, used, name);
+                    if let GraphemeReplacement::Named(rhs) = rhs {
+                        Self::record_named_future_use(visible, used, rhs);
+                    }
+                }
+            }
+            TermKind::StringIndex(name, ..) | TermKind::OptionalCondition(name, _) => {
                 if kind == ResolvedUseKind::All { Self::record_named_future_use(visible, used, name); }
             }
             TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_)
@@ -1726,8 +1735,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     return Err(self.error("字素替換需要可寫的字串持有者", term));
                 }
                 owner.value.read().map_err(|e| self.model_error(e, term))?;
-                if !crate::owned_str_runtime::single_grapheme(rhs) {
-                    return Err(self.error("替換值必須恰有一個字素", term));
+                match rhs {
+                    GraphemeReplacement::Literal(value) if !crate::owned_str_runtime::single_grapheme(value) =>
+                        return Err(self.error("替換值必須恰有一個字素", term)),
+                    GraphemeReplacement::Named(source) => {
+                        self.check_direct(vars, source, term)?;
+                        let value = Self::lookup(vars, source).ok_or_else(|| self.error("替換值未宣告", term))?;
+                        if value.ty != "str" || value.loan.is_some() {
+                            return Err(self.error("替換值需要字串持有者", term));
+                        }
+                        value.value.read().map_err(|e| self.model_error(e, term))?;
+                    }
+                    _ => {}
                 }
                 Ok(("str".into(), true))
             }
@@ -2078,6 +2097,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Call(call) => {
                 let name = &call.name;
                 let args = &call.arguments;
+                if name == "len" && self.find_function(name).is_none() {
+                    let [arg] = args.as_slice() else { return Err(self.error("len 需要一個容器", term)); };
+                    let TermKind::Name(owner) = &arg.kind else { return Err(self.error("len 需要具名容器", arg)); };
+                    let binding = Self::lookup(vars, owner).ok_or_else(|| self.error("len 的來源未宣告", arg))?;
+                    if call.awaited || element_type(&binding.ty).is_none() || binding.loan.is_some() {
+                        return Err(self.error("len 需要同步讀取 list 或 dict 持有者", term));
+                    }
+                    let identity = self.checked_binding_use(binding, arg)?.resolved.declaration;
+                    binding.value.read().map_err(|e| self.model_error(e, arg))?;
+                    self.check_borrow_conflicts(vars, identity, BorrowKind::SharedRead, arg, "len 與獨占借用衝突")?;
+                    return Ok(("int".into(), true));
+                }
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
                 if function.is_async && !call.awaited {

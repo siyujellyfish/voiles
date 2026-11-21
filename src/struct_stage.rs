@@ -125,6 +125,22 @@ enum StmtKind {
 }
 
 /// 私有受限運算式與公開 Expr 使用同一 AST 外殼，仍保留私有節點種類。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GraphemeReplacement {
+    Literal(String),
+    Named(String),
+}
+
+impl GraphemeReplacement {
+    fn from_token(token: &TokenKind) -> Option<Self> {
+        match token {
+            TokenKind::StringLiteral(value) => Some(Self::Literal(value.clone())),
+            TokenKind::Name(name) => Some(Self::Named(name.clone())),
+            _ => None,
+        }
+    }
+}
+
 type Term = crate::common_ir::SpannedNode<TermKind>;
 
 // F02：本 enum 的已核准公私交集由 common_ir 唯一宣告產生。
@@ -134,7 +150,7 @@ crate::common_ir::define_shared_expression_kind!(
         Literal(&'static str),
         Container(ContainerLiteral),
         StringIndex(String, i64, Option<i64>),
-        StringReplace(String, i64, String),
+        StringReplace(String, i64, GraphemeReplacement),
         OptionalCondition(String, OptionalPredicate),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct

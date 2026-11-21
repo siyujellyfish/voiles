@@ -27,7 +27,7 @@ enum PrivateStrAction {
     /// P18-B：原 Checker 已驗證 var bool 直接常值重綁；分支以同一身分取最新值。
     AssignBool { identity: DeclarationId, value: bool },
     AssignBoolFrom { identity: DeclarationId, source: DeclarationId },
-    DeclareGrapheme { name: String, mutable: bool, owner: String, index: i64, replacement: Option<String> },
+    DeclareGrapheme { name: String, mutable: bool, owner: String, index: i64, replacement: Option<GraphemeReplacement> },
     ReturnByte { name: String, grapheme: i64, byte: i64 },
     Return(i64),
 }
@@ -684,7 +684,11 @@ impl PreparedPrivateStr {
                     }
                     PrivateStrAction::DeclareGrapheme { name, mutable, owner, index, replacement } => {
                         let result = match replacement {
-                            Some(rhs) => resources.replace_grapheme(owner, *index, rhs),
+                            Some(GraphemeReplacement::Literal(rhs)) => resources.replace_grapheme(owner, *index, rhs),
+                            Some(GraphemeReplacement::Named(source)) => {
+                                let rhs = resources.read(source)?.to_owned();
+                                resources.replace_grapheme(owner, *index, &rhs)
+                            }
                             None => resources.read_grapheme(owner, *index),
                         }.map_err(|_| crate::owned_str_runtime::StrRuntimeError::EvaluationFailed)?;
                         if let Err((error, result)) = resources.accept_return_as(name, result, *mutable) {
@@ -728,6 +732,17 @@ mod p17_private_str_execution_tests {
             let outcome = PreparedPrivateStr::prepare(&src.replace("s[0][-1]", owner)).unwrap().execute().unwrap();
             assert_eq!(outcome.result, Ok(byte));
             assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
+        }
+    }
+
+    #[test]
+    fn p19_dynamic_replacement_checks_before_commit() {
+        let src = "fn main()->int{\nvar s:str = \"甲乙\"\nvar rhs:str = \"好\"\nconst written:str = (s[1] = rhs)\nreturn s[1][0]\n}\n";
+        for (right, expected) in [("好", Ok(229)), ("", Err(StrRuntimeError::EvaluationFailed)),
+            ("甲乙", Err(StrRuntimeError::EvaluationFailed))] {
+            let actual = PreparedPrivateStr::prepare(&src.replace("好", right)).unwrap().execute().unwrap();
+            assert_eq!(actual.result, expected);
+            assert!(crate::owned_str_runtime::event_trace_balanced(&actual.events));
         }
     }
 

@@ -27,7 +27,7 @@ fn verified_private_token_roles(
                 let mut p = Parser { source: &source, tokens, cursor };
                 p.name().ok().as_ref() == Some(owner) && p.index_number().ok() == Some(*index)
                     && p.take('=', "").is_ok() && p.tok().end == value.end
-                    && matches!(&p.tok().kind, TokenKind::StringLiteral(t) if t == rhs)
+                    && GraphemeReplacement::from_token(&p.tok().kind).as_ref() == Some(rhs)
             }
             TermKind::StringIndex(owner, first, second) => {
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };

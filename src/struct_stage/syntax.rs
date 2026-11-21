@@ -352,8 +352,8 @@ impl Parser<'_> {
                     if self.symbol('=') {
                         if byte.is_some() { return Err(self.syntax("第二層 UTF-8 位元組只能讀取")); }
                         self.cursor += 1;
-                        let TokenKind::StringLiteral(rhs) = self.tok().kind.clone() else {
-                            return Err(self.syntax("此切片要求替換右側為字串常值"));
+                        let Some(rhs) = GraphemeReplacement::from_token(&self.tok().kind) else {
+                            return Err(self.syntax("字素替換需要字串常值或具名字串"));
                         };
                         let end = self.tok().end;
                         self.cursor += 1;

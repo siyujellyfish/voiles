@@ -77,12 +77,16 @@ impl Parser<'_> {
             self.take('{', "dict 常值需要左大括號")?;
             let mut items = BTreeMap::new();
             while !self.symbol('}') {
+                let key_token = self.tok().clone();
                 let k = self.container_atom(key)?;
+                if items.contains_key(&k) {
+                    return Err(Diagnostic { kind: DiagnosticKind::Static,
+                        span: Some(self.source.span(key_token.start, key_token.end)),
+                        message: "字典常值的鍵重複".into() });
+                }
                 self.take(':', "dict 鍵和值之間需要冒號")?;
                 let v = self.container_atom(value)?;
-                if items.insert(k, v).is_some() {
-                    return Err(self.syntax("目前只支援鍵唯一的字典常值"));
-                }
+                items.insert(k, v);
                 if self.symbol('}') { break; }
                 self.take(',', "dict 項目之間需要逗號")?;
                 if self.symbol('}') { return Err(self.syntax("逗號之後需要鍵值")); }
@@ -248,9 +252,39 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
     let mut containers = HashMap::new();
     let mut gate = SafetyPipeline::new();
     let mut declaration_order = Vec::new();
+    let builtin_len = !checked.functions.iter().any(|f| f.name == "len");
+    let mut integers = HashMap::new();
     let run = (|| -> Result<i64, String> {
         for stmt in main.body.iter() {
+            let int_value = |term: &Term, gate: &mut SafetyPipeline,
+                containers: &HashMap<&str, (DeclarationId, Option<(u64, ContainerLiteral)>)>,
+                integers: &HashMap<String, i64>| -> Result<i64, String> {
+                match &term.kind {
+                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+                        crate::syntax_shared::integer_i64(n).map_err(|_| "整數值無效".into()),
+                    TermKind::Name(n) => integers.get(n).copied().ok_or_else(|| "找不到整數來源".into()),
+                    TermKind::Call(call) if builtin_len && call.name == "len" && !call.awaited => {
+                        let [arg] = call.arguments.as_slice() else { return Err("len 引數數量不符".into()); };
+                        let TermKind::Name(name) = &arg.kind else { return Err("len 需要具名容器".into()); };
+                        let (id, slot) = containers.get(name.as_str()).ok_or("len 容器缺失")?;
+                        let (_, value) = slot.as_ref().ok_or("容器已移動")?;
+                        let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "len 借用衝突")?;
+                        let count = match &value.items {
+                            ContainerItems::List(values) => values.len(),
+                            ContainerItems::Dictionary(values) => values.len(),
+                        };
+                        gate.finish_method(&[ticket]).map_err(|_| "len 退借失敗")?;
+                        i64::try_from(count).map_err(|_| "容器長度超出 int".into())
+                    }
+                    _ => Err("此入口尚未支援該整數運算式".into()),
+                }
+            };
             match &stmt.kind {
+                StmtKind::Declare(d) if d.ty == "int" => {
+                    let init = d.initializer.as_ref().ok_or("需要已初始化整數")?;
+                    let n = int_value(init, &mut gate, &containers, &integers)?;
+                    integers.insert(d.name.clone(), n);
+                }
                 StmtKind::Declare(d) => {
                     let id = DeclarationId(stmt.start);
                     let content = match d.initializer.as_ref().map(|term| &term.kind) {
@@ -297,9 +331,7 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
                     gate.finish_method_with_snapshot(&[ticket], &[BorrowFact::new(*id, BorrowKind::SharedRead)]).map_err(|_| "容器借用歸還失敗")?;
                     if let Some(n) = result.map_err(str::to_owned)? { return Ok(n); }
                 }
-                StmtKind::Return(ret) => if let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) = &ret.kind {
-                    return crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效".into());
-                } else { return Err("此入口尚未支援該返回式".into()); },
+                StmtKind::Return(ret) => return int_value(ret, &mut gate, &containers, &integers),
                 _ => return Err("此入口尚未支援該語句".into()),
             }
         }
@@ -320,6 +352,26 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
 #[cfg(test)]
 mod p19_scoped_execution {
     use super::*;
+
+    #[test]
+    fn builtin_length_reads_list_and_dictionary_without_consuming() {
+        for (ty, literal, n) in [("list[int]", "[]", 0), ("list[int]", "[1,1,3]", 3),
+            ("dict{str,int}", "{}", 0), ("dict{str,int}", "{\"一\":7,\"二\":7}", 2)] {
+            let code = format!("fn main()->int{{\nvar xs:{ty} = {literal}\nconst count:int = len(xs)\nvar next:{ty} = xs.move()\nreturn len(next)\n}}\n");
+            assert_eq!(execute_container_main(&code), Ok(n));
+            assert_eq!(execute_container_main(&code.replace("return len(next)", "return count")), Ok(n));
+            assert!(inspect(&code.replace("return len(next)", "return len(xs)")).is_err());
+        }
+    }
+
+    #[test]
+    fn repeated_key_points_to_the_second_literal() {
+        let code = "fn main()->int{\nvar d:dict{str,int} = {\"鍵\":1,\"鍵\":2}\nreturn 0\n}\n";
+        let d = inspect(code).unwrap_err();
+        let at = code.rfind("\"鍵\"").unwrap();
+        assert_eq!(d.kind, DiagnosticKind::Static);
+        assert_eq!(d.span, Some(Source::new(code.as_bytes().to_vec()).span(at, at + "\"鍵\"".len())));
+    }
 
     #[test]
     fn moved_dictionary_owns_original_values() {
