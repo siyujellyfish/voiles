@@ -1,11 +1,13 @@
 //! P20 的模組字串。從私有 Parser 的正式節點建立有型別的直線執行計畫。
 use super::*;
+#[path = "modules.rs"]
+pub(crate) mod modules;
 use crate::borrow_safety::BorrowTicket;
 use crate::owned_str_runtime::{OwnedStrRuntime, ResourceEvent, StrRuntimeError};
 use crate::syntax_shared::{integer_i64, ScalarLiteral};
 
 pub(super) struct Declaration {
-    name: String,
+    pub(super) name: String,
     initial: String,
     id: DeclarationId,
 }
@@ -113,13 +115,15 @@ struct Lower<'a> {
     tokens: &'a [Token],
     globals: &'a BTreeMap<String, usize>,
     functions: &'a BTreeMap<String, bool>,
+    linked_names: Option<&'a BTreeMap<String,String>>,
+    readonly_slots: BTreeSet<usize>,
     locals: HashMap<String, bool>,
     aliases: HashMap<String, Place>,
 }
 
 impl Lower<'_> {
     fn place(&self, name: &str) -> Option<Place> {
-        if self.locals.contains_key(name) {
+        if self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
             return None;
         }
         self.aliases.get(name).cloned().or_else(|| {
@@ -127,6 +131,14 @@ impl Lower<'_> {
                 .get(name)
                 .map(|&slot| Place { slot, alias: None })
         })
+    }
+
+    fn call_target(&self, name: &str, awaited: bool) -> Option<Number> {
+        let receiver = name.split('.').next()?;
+        if self.locals.contains_key(receiver) || self.aliases.contains_key(receiver)
+            || self.functions.get(name) != Some(&awaited) { return None; }
+        let target = match self.linked_names { Some(names) => names.get(name)?.clone(), None => name.to_owned() };
+        Some(Number::Call(target,awaited))
     }
 
     fn number(&self, term: &Term) -> Option<Number> {
@@ -141,15 +153,10 @@ impl Lower<'_> {
                 Some(StringOffset::Constant(j)),
             ) => Some(Number::Byte(self.place(n)?, *i, *j)),
             TermKind::Name(n) if self.locals.contains_key(n) => Some(Number::Local(n.clone())),
-            TermKind::UnresolvedZeroArgs(n) if self.functions.get(n) == Some(&false) => {
-                Some(Number::Call(n.clone(), false))
-            }
-            TermKind::Call(call)
-                if call.arguments.is_empty()
-                    && self.functions.get(&call.name) == Some(&call.awaited) =>
-            {
-                Some(Number::Call(call.name.clone(), call.awaited))
-            }
+            TermKind::UnresolvedZeroArgs(n) => self.call_target(n,false),
+            TermKind::Call(call) if call.arguments.is_empty() => self.call_target(&call.name,call.awaited),
+            TermKind::MethodCall(module,member,args) if args.is_empty() && self.linked_names.is_some() =>
+                self.call_target(&format!("{module}.{member}"),false),
             TermKind::BinaryInt(node) => Some(Number::Binary(
                 Box::new(self.number(&node.left)?),
                 node.operator,
@@ -210,6 +217,7 @@ impl Lower<'_> {
                             .place(n)
                             .filter(|p| p.alias.is_none())
                             .ok_or_else(|| err("需要模組持有者"))?;
+                        if d.mutable && self.readonly_slots.contains(&place.slot) { return Err(err("其他模組的共享字串不可獨占借用")); }
                         let kind = if d.mutable {
                             BorrowKind::ExclusiveWrite
                         } else {
@@ -244,7 +252,7 @@ impl Lower<'_> {
                 }
                 StmtKind::Assign(a) => {
                     let target = self.place(&a.name).ok_or_else(|| err("缺少可寫宣告"))?;
-                    if matches!(target.alias, Some((_, BorrowKind::SharedRead))) {
+                    if self.readonly_slots.contains(&target.slot) || matches!(target.alias, Some((_, BorrowKind::SharedRead))) {
                         return Err(err("唯讀借用不可寫入"));
                     }
                     Action::Write(
@@ -266,7 +274,7 @@ impl Lower<'_> {
                         return Err(err("替換值必須為單一字素"));
                     }
                     let p = self.place(name).ok_or_else(|| err("字串未宣告"))?;
-                    if matches!(p.alias, Some((_, BorrowKind::SharedRead))) {
+                    if self.readonly_slots.contains(&p.slot) || matches!(p.alias, Some((_, BorrowKind::SharedRead))) {
                         return Err(err("唯讀借用不可寫入"));
                     }
                     Action::Replace(p, *i, text.clone())
@@ -349,6 +357,7 @@ impl Program {
             let mut lower = Lower {
                 source: &source,
                 tokens: &lexed.tokens,
+                linked_names: None, readonly_slots: BTreeSet::new(),
                 globals: &slots,
                 functions: &names,
                 locals: HashMap::new(),
@@ -414,6 +423,10 @@ impl Action {
 
 impl Program {
     fn verify_loans(&self, source: &Source) -> Result<(), Diagnostic> {
+        self.verify_linked_loans(|_| source).map_err(|(_,diagnostic)|diagnostic)
+    }
+
+    fn verify_linked_loans<'a>(&self, source_for: impl Fn(&str) -> &'a Source) -> Result<(),(String,Diagnostic)> {
         // 將呼叫者仍持有的借用與所有可達函式的來源存取合併。
         let mut effects = BTreeMap::new();
         for (name, body) in &self.bodies {
@@ -462,7 +475,9 @@ impl Program {
                 break;
             }
         }
-        for body in self.bodies.values() {
+        for (name,body) in &self.bodies {
+            let source = source_for(name);
+            let check = || -> Result<(),Diagnostic> {
             let uses: Vec<_> = body
                 .iter()
                 .flat_map(|s| s.action.uses().into_iter().map(move |u| (u, s.span)))
@@ -551,6 +566,9 @@ impl Program {
                     }
                 }
             }
+            Ok(())
+            };
+            check().map_err(|e|(name.clone(),e))?;
         }
         Ok(())
     }

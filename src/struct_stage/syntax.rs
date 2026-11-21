@@ -354,6 +354,11 @@ impl Parser<'_> {
                         self.take(')', "欄位移動呼叫缺少右括號")?;
                         (TermKind::FieldMove(s, field_or_move),
                             self.tokens[self.cursor - 1].end)
+                    } else if self.symbol('[') {
+                        let first = self.string_offset()?;
+                        let byte = if self.symbol('[') { Some(self.string_offset()?) } else { None };
+                        return Ok(Term { kind:TermKind::StringIndex(format!("{s}.{field_or_move}"),first,byte),
+                            start,end:self.tokens[self.cursor-1].end });
                     } else if self.symbol('(') {
                         self.cursor += 1;
                         let (args, end) = crate::syntax_shared::parse_call(
@@ -598,13 +603,19 @@ impl Parser<'_> {
         self.file_items(None)
     }
 
-    fn file_items(mut self, mut shares: Option<&mut Vec<module_share::Declaration>>) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
+    fn file_items(self, shares: Option<&mut Vec<module_share::Declaration>>) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
+        self.module_items(shares, None)
+    }
+
+    fn module_items(mut self, mut shares: Option<&mut Vec<module_share::Declaration>>, mut imports: Option<&mut Vec<modules::Import>>) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
         let mut structs = HashMap::new();
         let mut funcs = Vec::new();
         let mut function_names = HashSet::new();
         self.lines();
         while !self.eof() {
-            if let Some(declarations) = shares.as_deref_mut().filter(|_| self.keyword("share")) {
+            if let Some(items) = imports.as_deref_mut().filter(|_| self.keyword("import")) {
+                items.push(modules::parse_import(&mut self)?);
+            } else if let Some(declarations) = shares.as_deref_mut().filter(|_| self.keyword("share")) {
                 declarations.push(module_share::parse(&mut self)?);
             } else if self.keyword("struct") {
                 let (name, def) = self.strukt()?;

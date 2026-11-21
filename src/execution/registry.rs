@@ -3,7 +3,8 @@
  //! 不把登錄成功當成可跨檔呼叫、共享資源或執行權限。
 
 use std::collections::BTreeSet;
-use std::io::ErrorKind;
+use std::fs::File;
+use std::io::{ErrorKind, Read};
 use std::path::{Path, PathBuf};
 
 use super::PreparedProgram;
@@ -42,17 +43,31 @@ fn file_io(path: &Path, error: std::io::Error) -> RegistryFailure {
 
 /// OS 實際檔案身分與文字路徑分開；Linux/Unix 硬連結會共享 inode。
 /// 不把此資訊解讀為 voiles 模組宣告名稱、載入順序或所有權。
-fn physical_identity(path: &Path) -> Result<Option<(u64, u64)>, RegistryFailure> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::MetadataExt;
-        let meta = std::fs::metadata(path).map_err(|error| file_io(path, error))?;
-        Ok(Some((meta.dev(), meta.ino())))
+pub(crate) struct OpenSource {
+    file: File,
+    pub(crate) canonical: PathBuf,
+    pub(crate) physical: Option<(u64, u64)>,
+}
+
+impl OpenSource {
+    pub(crate) fn open(path: &Path) -> Result<Self, RegistryFailure> {
+        let canonical = std::fs::canonicalize(path).map_err(|e| file_io(path, e))?;
+        let file = File::open(&canonical).map_err(|e| file_io(path, e))?;
+        #[cfg(unix)]
+        let physical = {
+            use std::os::unix::fs::MetadataExt;
+            let meta = file.metadata().map_err(|e| file_io(path, e))?;
+            Some((meta.dev(), meta.ino()))
+        };
+        #[cfg(not(unix))]
+        let physical = None;
+        Ok(Self { file, canonical, physical })
     }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(None)
+
+    pub(crate) fn bytes(&mut self, requested: &Path) -> Result<Vec<u8>, RegistryFailure> {
+        let mut bytes = Vec::new();
+        self.file.read_to_end(&mut bytes).map_err(|e| file_io(requested, e))?;
+        Ok(bytes)
     }
 }
 
@@ -64,25 +79,23 @@ impl VerifiedSourceRegistry {
         let mut seen_physical = BTreeSet::<(u64, u64)>::new();
         let mut files = Vec::with_capacity(paths.len());
         for path in paths {
-            let canonical = std::fs::canonicalize(path)
-                .map_err(|error| file_io(path, error))?;
-            let physical = physical_identity(path)?;
-            if !seen.insert(canonical.clone())
+            let mut opened = OpenSource::open(path)?;
+            let physical = opened.physical;
+            if !seen.insert(opened.canonical.clone())
                 || physical.is_some_and(|identity| !seen_physical.insert(identity)) {
                 return Err(RegistryFailure::DuplicateSource {
                     path: path.clone(),
-                    canonical,
+                    canonical: opened.canonical,
                 });
             }
-            let original_bytes = std::fs::read(path)
-                .map_err(|error| file_io(path, error))?;
+            let original_bytes = opened.bytes(path)?;
             let prepared = PreparedProgram::prepare(original_bytes)
                 .map_err(|error| RegistryFailure::Static {
                     path: path.clone(),
                     diagnostic: error.0,
                 })?;
             files.push(VerifiedSourceFile {
-                requested_path: path.clone(), canonical_path: canonical,
+                requested_path: path.clone(), canonical_path: opened.canonical,
                 physical_identity: physical, prepared,
             });
         }
@@ -99,14 +112,12 @@ impl VerifiedSourceRegistry {
     pub(crate) fn check_unchanged(&self) -> Result<(), RegistryFailure> {
         for entry in &self.files {
             let path = &entry.requested_path;
-            let canonical = std::fs::canonicalize(path)
-                .map_err(|error| file_io(path, error))?;
-            if canonical != entry.canonical_path
-                || physical_identity(path)? != entry.physical_identity {
+            let mut opened = OpenSource::open(path)?;
+            if opened.canonical != entry.canonical_path
+                || opened.physical != entry.physical_identity {
                 return Err(RegistryFailure::SourceChanged { path: path.clone() });
             }
-            let bytes = std::fs::read(path)
-                .map_err(|error| file_io(path, error))?;
+            let bytes = opened.bytes(path)?;
             if bytes.as_slice() != entry.prepared.original_bytes.as_ref() {
                 return Err(RegistryFailure::SourceChanged { path: path.clone() });
             }
@@ -292,6 +303,23 @@ mod tests {
             symlink(&b, &alias).unwrap();
             assert!(matches!(registry.check_unchanged(),
                 Err(RegistryFailure::SourceChanged { path }) if path == alias));
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn p21_a_登錄身分與來源位元組來自同一開啟檔案() {
+        with_directory("open_snapshot", |dir| {
+            let path = dir.join("來源.voil");
+            let next = dir.join("替換.voil");
+            write(&path, b"fn main()->int{ return 1 }");
+            let mut before = OpenSource::open(&path).unwrap();
+            write(&next, b"fn main()->int{ return 2 }");
+            std::fs::rename(next, &path).unwrap();
+            let mut after = OpenSource::open(&path).unwrap();
+            assert_ne!(before.physical, after.physical);
+            assert_eq!(before.bytes(&path).unwrap(), b"fn main()->int{ return 1 }");
+            assert_eq!(after.bytes(&path).unwrap(), b"fn main()->int{ return 2 }");
         });
     }
 }
