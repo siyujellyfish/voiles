@@ -216,6 +216,7 @@ struct Binding {
     mutable: bool,
     scoped_element: bool,
     candidate_sites: BTreeSet<usize>,
+    redundant_sites: BTreeSet<usize>,
     safety: SafetyState,
 }
 
@@ -326,7 +327,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable, scoped_element: false, candidate_sites: BTreeSet::new(),
+            declaration_start, ty, mutable, scoped_element: false, candidate_sites: BTreeSet::new(), redundant_sites: BTreeSet::new(),
             safety: SafetyState { value, pending_fields, loan },
         }
     }
@@ -575,6 +576,7 @@ struct Checker<'a, C> {
         crate::common_ir::ModeNodeIdentity, crate::common_ir::VerifiedTypedMember
     >>,
     recorded_member_conflicts: RefCell<BTreeSet<usize>>,
+    redundant_checks: RefCell<BTreeSet<(usize, usize)>>,
     /// F11：相同 AST 宣告被不同路徑檢查時若型別／可變權限不一致，
     /// 不能以覆寫表項掩藏衝突，也不能只靠 debug_assert 保護。
     recorded_declaration_conflicts: RefCell<BTreeSet<DeclarationId>>,
@@ -1211,6 +1213,7 @@ impl VerifiedSafetyPlan {
 }
 
 struct VerifiedPrivateSource {
+    redundant_checks: BTreeSet<(usize, usize)>,
     source: Source,
     /// 保留同一正式 Lexer 交給私有 Parser 的原始 token，避免第二套解析。
     tokens: Vec<Token>,
@@ -1271,6 +1274,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_direct_borrows: RefCell::new(BTreeMap::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
+        redundant_checks: RefCell::default(),
         recorded_member_conflicts: RefCell::new(BTreeSet::new()),
         recorded_declaration_conflicts: RefCell::new(BTreeSet::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
@@ -1346,7 +1350,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
-    Ok(VerifiedPrivateSource { source, tokens: tokens.tokens, structs, functions, plan })
+    Ok(VerifiedPrivateSource { redundant_checks: checker.redundant_checks.into_inner(), source, tokens: tokens.tokens, structs, functions, plan })
 }
 
 /// F00：唯一的正式私有來源入口維持原樣；只有內部測試開啟

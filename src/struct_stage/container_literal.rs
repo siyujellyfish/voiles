@@ -365,13 +365,16 @@ impl Parser<'_> {
 }
 
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
-    fn permit_first_candidate(vars: &mut Scopes, name: &str, statements: &[Stmt]) {
+    fn permit_candidates(vars: &mut Scopes, name: &str, statements: &[Stmt], prior: Option<&str>) {
         let Some(binding) = Self::lookup_mut(vars, name) else { return; };
         let mut next = statements.first();
         while let Some(Stmt { kind: StmtKind::If { branch, no }, .. }) = next {
             match &branch.condition.kind {
-                TermKind::OptionalCondition(target, OptionalPredicate::Candidate(_)) if target == name => {
+                TermKind::OptionalCondition(target, OptionalPredicate::Candidate(candidate)) if target == name => {
                     binding.candidate_sites.insert(branch.condition.start);
+                    if prior.is_some() && candidate.as_deref() == prior {
+                        binding.redundant_sites.insert(branch.condition.start);
+                    }
                 }
                 TermKind::Name(_) | TermKind::Scalar(_) => {}
                 // 未知副作用的普通條件可能使非缺失證明失效。
@@ -410,6 +413,14 @@ mod p19_candidate_execution {
         assert!(error.message.contains("未宣告"));
         assert_eq!(inspect(&program("none", "if(x is){\nreturn 2\n}")).unwrap_err().kind,
             DiagnosticKind::Syntax);
+    }
+    #[test]
+    fn nested_repeat_reports_only_the_redundant_check_and_still_executes() {
+        let source = program("5", "if(x != none){\nif(x is int){\nif(x != none){\nif(x is int){\nreturn 7\n}\n}\n}\n}\nreturn 0");
+        let checked = verify_source_with_ability(&source, crate::ownership_policy::approved_leaf_copy_permission).unwrap();
+        let start = source.rfind("x is int").unwrap();
+        assert_eq!(checked.redundant_checks, [(start, start + "x is int".len())].into_iter().collect());
+        assert_eq!(execute_container_main(&source), Ok(7));
     }
     #[test]
     fn candidate_needs_same_name_immediately_after_proof() {

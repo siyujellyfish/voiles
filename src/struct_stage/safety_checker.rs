@@ -1762,6 +1762,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !binding.candidate_sites.contains(&term.start) {
                         return Err(self.error("is 需要緊接同一來源的非缺失證明", term));
                     }
+                    if binding.redundant_sites.contains(&term.start) {
+                        self.redundant_checks.borrow_mut().insert((term.start, term.end));
+                    }
                 }
                 Ok(("bool".into(), true))
             }
@@ -2776,7 +2779,20 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
                     if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(false)) = &condition.kind {
-                        Self::permit_first_candidate(&mut on_true, name, yes);
+                        Self::permit_candidates(&mut on_true, name, yes, None);
+                    }
+                    if let TermKind::OptionalCondition(name, OptionalPredicate::Candidate(Some(ty))) = &condition.kind {
+                        if let Some(Stmt { kind: StmtKind::If { branch: guard, no }, .. }) = yes.first() {
+                            if let TermKind::OptionalCondition(target, OptionalPredicate::IsMissing(equal)) = &guard.condition.kind {
+                                if target == name {
+                                    let proven = if *equal { no.as_ref().map(|arm| arm.as_slice()) }
+                                        else { Some(guard.body.statements.as_slice()) };
+                                    if let Some(body) = proven {
+                                        Self::permit_candidates(&mut on_true, name, body, Some(ty));
+                                    }
+                                }
+                            }
+                        }
                     }
                     let true_flow = self.statements_with_follow(
                         yes, &mut on_true, expected_return, true, &after_branch,
@@ -2784,7 +2800,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let mut on_false = snapshot.clone();
                     let false_flow = if let Some(otherwise) = no {
                         if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(true)) = &condition.kind {
-                            Self::permit_first_candidate(&mut on_false, name, otherwise.as_slice());
+                            Self::permit_candidates(&mut on_false, name, otherwise.as_slice(), None);
                         }
                         self.statements_with_follow(
                             otherwise, &mut on_false, expected_return, true, &after_branch,
