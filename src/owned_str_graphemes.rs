@@ -73,6 +73,8 @@ impl From<StrRuntimeError> for IndexError {
     fn from(error: StrRuntimeError) -> Self { Self::Owner(error) }
 }
 
+pub(crate) fn single_grapheme(text: &str) -> bool { boundaries(text).len() == 2 }
+
 fn position(index: i64, count: usize) -> Result<usize, IndexError> {
     let distance = usize::try_from(index.unsigned_abs()).map_err(|_| IndexError::OutOfBounds)?;
     if index < 0 {
@@ -117,7 +119,7 @@ impl OwnedStrRuntime {
         if !binding.mutable { return Err(StrRuntimeError::ImmutableBinding.into()); }
         let value = binding.owned.as_ref().ok_or(StrRuntimeError::MovedSource)?;
         let range = cluster(value, index)?;
-        if boundaries(rhs).len() != 2 { return Err(IndexError::ReplacementLength); }
+        if !single_grapheme(rhs) { return Err(IndexError::ReplacementLength); }
         // 預先配置獨立結果，任何可回報錯誤均發生在寫入前。更新後立即重算整份字串的字素邊界。
         let result = self.allocate(rhs.to_owned())?;
         let value = self.scopes[scope].names[slot].owned.as_mut().unwrap();

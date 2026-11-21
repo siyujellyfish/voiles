@@ -361,7 +361,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
             TermKind::Group(inner) => Self::term_mentions(inner, name),
-            TermKind::StringIndex(id, ..) | TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+            TermKind::StringReplace(id, ..) | TermKind::StringIndex(id, ..) | TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
             TermKind::MethodCall(id, _, args)
@@ -393,7 +393,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::MethodCall(_, _, args) =>
                 args.iter().any(Self::term_contains_direct_await),
             TermKind::AwaitMethodCall(_, _, _) => true,
-            TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::StringReplace(..) | TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => false,
@@ -448,7 +448,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
                 Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
             }
-            TermKind::StringIndex(name, ..) | TermKind::OptionalCondition(name, _) => {
+            TermKind::StringReplace(name, ..) | TermKind::StringIndex(name, ..) | TermKind::OptionalCondition(name, _) => {
                 if kind == ResolvedUseKind::All { Self::record_named_future_use(visible, used, name); }
             }
             TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_)
@@ -1719,6 +1719,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Group(inner) => self.evaluate(inner, vars),
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
+            TermKind::StringReplace(name, _, rhs) => {
+                self.check_direct(vars, name, term)?;
+                let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;
+                if owner.ty != "str" || !owner.mutable || owner.loan.is_some() {
+                    return Err(self.error("字素替換需要可寫的字串持有者", term));
+                }
+                owner.value.read().map_err(|e| self.model_error(e, term))?;
+                if !crate::owned_str_runtime::single_grapheme(rhs) {
+                    return Err(self.error("替換值必須恰有一個字素", term));
+                }
+                Ok(("str".into(), true))
+            }
             TermKind::StringIndex(name, _, byte) => {
                 self.check_direct(vars, name, term)?;
                 let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;

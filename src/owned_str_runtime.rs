@@ -7,6 +7,7 @@
 
 #[path = "owned_str_graphemes.rs"]
 mod graphemes;
+pub(crate) use graphemes::single_grapheme;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum StrRuntimeError {
     MissingOwner,

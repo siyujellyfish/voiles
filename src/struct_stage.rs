@@ -134,6 +134,7 @@ crate::common_ir::define_shared_expression_kind!(
         Literal(&'static str),
         Container(ContainerLiteral),
         StringIndex(String, i64, Option<i64>),
+        StringReplace(String, i64, String),
         OptionalCondition(String, OptionalPredicate),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct

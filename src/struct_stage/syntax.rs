@@ -349,6 +349,16 @@ impl Parser<'_> {
                     let saved = self.cursor;
                     let grapheme = self.index_number()?;
                     let byte = if self.symbol('[') { Some(self.index_number()?) } else { None };
+                    if self.symbol('=') {
+                        if byte.is_some() { return Err(self.syntax("第二層 UTF-8 位元組只能讀取")); }
+                        self.cursor += 1;
+                        let TokenKind::StringLiteral(rhs) = self.tok().kind.clone() else {
+                            return Err(self.syntax("此切片要求替換右側為字串常值"));
+                        };
+                        let end = self.tok().end;
+                        self.cursor += 1;
+                        return Ok(Term { start, end, kind: TermKind::StringReplace(s, grapheme, rhs) });
+                    }
                     if !self.symbol('.') {
                         return Ok(Term { start, end: self.tokens[self.cursor-1].end,
                             kind: TermKind::StringIndex(s, grapheme, byte) });

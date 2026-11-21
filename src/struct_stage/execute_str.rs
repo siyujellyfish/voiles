@@ -27,6 +27,7 @@ enum PrivateStrAction {
     /// P18-B：原 Checker 已驗證 var bool 直接常值重綁；分支以同一身分取最新值。
     AssignBool { identity: DeclarationId, value: bool },
     AssignBoolFrom { identity: DeclarationId, source: DeclarationId },
+    DeclareGrapheme { name: String, mutable: bool, owner: String, index: i64, replacement: Option<String> },
     ReturnByte { name: String, grapheme: i64, byte: i64 },
     Return(i64),
 }
@@ -395,8 +396,18 @@ impl PreparedPrivateStr {
                     }
                     let init = binding.initializer.as_ref()
                         .ok_or(PrivateStrPrepareError::Unsupported("此切片需要已初始化 str"))?;
-                    let action = match &init.kind {
-                        TermKind::Literal("str") => PrivateStrAction::DeclareLiteral {
+                    let mut expression = init;
+                    while let TermKind::Group(inner) = &expression.kind { expression = inner; }
+                    let action = match &expression.kind {
+                        TermKind::StringIndex(owner, index, None) | TermKind::StringReplace(owner, index, _)
+                            if bound.contains_key(owner) => PrivateStrAction::DeclareGrapheme {
+                                name: binding.name.clone(), mutable: binding.mutable,
+                                owner: owner.clone(), index: *index,
+                                replacement: match &expression.kind {
+                                    TermKind::StringReplace(_, _, rhs) => Some(rhs.clone()), _ => None,
+                                },
+                            },
+                        TermKind::Literal("str") if expression.start == init.start => PrivateStrAction::DeclareLiteral {
                             name: binding.name.clone(), mutable: binding.mutable,
                             text: private_str_literal(init, &verified.tokens)?,
                         },
@@ -671,6 +682,16 @@ impl PreparedPrivateStr {
                             return Ok(value);
                         }
                     }
+                    PrivateStrAction::DeclareGrapheme { name, mutable, owner, index, replacement } => {
+                        let result = match replacement {
+                            Some(rhs) => resources.replace_grapheme(owner, *index, rhs),
+                            None => resources.read_grapheme(owner, *index),
+                        }.map_err(|_| crate::owned_str_runtime::StrRuntimeError::EvaluationFailed)?;
+                        if let Err((error, result)) = resources.accept_return_as(name, result, *mutable) {
+                            resources.release_detached(result);
+                            return Err(error);
+                        }
+                    }
                     PrivateStrAction::ReturnByte { name, grapheme, byte } =>
                         return resources.read_grapheme_byte(name, *grapheme, *byte)
                             .map_err(|_| crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
@@ -699,6 +720,16 @@ mod p17_private_str_execution_tests {
 
 
 
+
+    #[test]
+    fn p19_checked_replacement_resegments_and_returns_independent_copy() {
+        let src = "fn main()->int{\nvar s:str = \"AB\"\nconst old:str = s[1]\nconst written:str = (s[1] = \"\u{301}\")\nreturn s[0][-1]\n}\n";
+        for (owner, byte) in [("s[0][-1]",129), ("old[0][0]",66), ("written[0][0]",204)] {
+            let outcome = PreparedPrivateStr::prepare(&src.replace("s[0][-1]", owner)).unwrap().execute().unwrap();
+            assert_eq!(outcome.result, Ok(byte));
+            assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
+        }
+    }
 
     #[test]
     fn p19_named_unicode_byte_executes_from_checked_source() {
