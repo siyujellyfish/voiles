@@ -400,16 +400,10 @@ impl Parser<'_> {
         let head = crate::syntax_shared::statement_head(
             self.tokens, self.cursor, crate::common_ir::FrontendMode::PrivateVerified,
         );
-        if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
+        let kind = if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
             && matches!(self.tokens.get(self.cursor + 1).map(|t| &t.kind), Some(TokenKind::Name(_))) {
-            let block = self.readonly_element_block()?;
-            return Err(Diagnostic {
-                kind: DiagnosticKind::Static,
-                message: "唯讀元素綁定尚無已驗證的容器來源與索引".into(),
-                span: Some(self.source.span(block.owner.start, block.owner.end)),
-            });
-        }
-        let kind = if head == Some(crate::syntax_shared::StatementHead::Declaration) {
+            StmtKind::ReadonlyElement(Box::new(self.readonly_element_block()?))
+        } else if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare(parsed)
         } else if head == Some(crate::syntax_shared::StatementHead::Conditional) {

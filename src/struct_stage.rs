@@ -87,7 +87,7 @@ struct Parameter {
     type_span: crate::common_ir::NodeSpan,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct ReadonlyElementBlock {
     owner: Token,
     selector: Term,
@@ -100,6 +100,7 @@ type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
 enum StmtKind {
+    ReadonlyElement(Box<ReadonlyElementBlock>),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
     FieldAssign { receiver: String, field: String, value: Term },
@@ -210,6 +211,7 @@ struct Binding {
     declaration_start: DeclarationId,
     ty: String,
     mutable: bool,
+    scoped_element: bool,
     safety: SafetyState,
 }
 
@@ -320,7 +322,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable,
+            declaration_start, ty, mutable, scoped_element: false,
             safety: SafetyState { value, pending_fields, loan },
         }
     }
@@ -782,6 +784,7 @@ impl VerifiedDeclarationFacts {
                     StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } => {
                         visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
+                    StmtKind::ReadonlyElement(block) => visit(&block.body, direct_targets, borrow_targets, named_returns, field_writes),
                     StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
             }
@@ -1038,6 +1041,7 @@ impl VerifiedSafetyPlan {
                     | (StmtKind::Continue, FlowState::Continue)
             );
             (same_span && same_flow) || match &stmt.kind {
+                StmtKind::ReadonlyElement(block) => Self::control_edge_matches_ast(&block.body, edge),
                 StmtKind::If { branch, no } =>
                     Self::control_edge_matches_ast(&branch.body, edge)
                         || no.as_ref().is_some_and(|otherwise|

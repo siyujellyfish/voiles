@@ -304,6 +304,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             // 來源 Binding 本身也必須由同一份 Checker 已提交的
             // TypedDeclaration 授權；不能只看一筆可以被篡改的詞彙型別。
             let verified_source = self.checked_binding_use(source, term)?;
+            if owner.scoped_element {
+                if !owner.mutable && loan.active && loan.fact.kind == BorrowKind::SharedRead
+                    && element_type(verified_source.resolved.ty).is_some_and(|(_, t)| t == reference.resolved.ty) {
+                    return Self::active_loan_snapshot(vars).validate()
+                        .map_err(|_| self.error("唯讀元素的借用來源衝突", term));
+                }
+                return Err(self.error("唯讀元素與持有者型別或借用權限不符", term));
+            }
             if verified_source.resolved.declaration != loan.fact.source
                 || verified_source.resolved.ty != reference.resolved.ty
                 || source.mutable != owner.mutable
@@ -458,6 +466,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn future_stmt_exit(statement: &Stmt) -> Option<FlowState> {
         match &statement.kind {
             StmtKind::Return(_) => Some(FlowState::Returned),
+            StmtKind::ReadonlyElement(block) => Self::future_block_exit(&block.body),
             StmtKind::Break => Some(FlowState::Break),
             StmtKind::Continue => Some(FlowState::Continue),
             StmtKind::If { branch, no: Some(otherwise) } => {
@@ -535,6 +544,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::Return(term) =>
                     Self::scan_resolved_term_uses(term, visible, used, kind),
+                StmtKind::ReadonlyElement(binding) => {
+                    if let TokenKind::Name(owner) = &binding.owner.kind {
+                        Self::record_named_future_use(visible, used, owner);
+                    }
+                    Self::scan_resolved_term_uses(&binding.selector, visible, used, kind);
+                    let mut nested = visible.clone();
+                    if let TokenKind::Name(name) = &binding.alias.kind { nested.remove(name); }
+                    Self::scan_resolved_block_uses(&binding.body, &mut nested, used, kind);
+                }
                 StmtKind::Break | StmtKind::Continue => {}
             }
             if Self::future_stmt_must_exit(statement) {
@@ -602,6 +620,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 continue;
             }
             for binding in Rc::make_mut(scope).values_mut() {
+                if binding.scoped_element { continue; }
                 let declaration_start = binding.declaration_start;
                 if let Some(loan) = binding.loan.as_mut() {
                     // 參數及 self 的原有效期仍須由其函式出口負責。
@@ -2218,6 +2237,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// break／continue 不屬於外層，不能因此封鎖合法單次移動。
     fn has_current_loop_transfer(body: &[Stmt]) -> bool {
         body.iter().any(|stmt| match &stmt.kind {
+            StmtKind::ReadonlyElement(binding) => Self::has_current_loop_transfer(&binding.body),
             StmtKind::Break | StmtKind::Continue => true,
             StmtKind::If { branch, no } => Self::has_current_loop_transfer(&branch.body)
                 || no.as_ref().is_some_and(|other| Self::has_current_loop_transfer(other)),
@@ -2287,6 +2307,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::release_last_uses(vars, body, continuation);
         for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
+                StmtKind::ReadonlyElement(block) => {
+                    let alias = self.scoped_element_binding(block, vars)?;
+                    let TokenKind::Name(name) = &block.alias.kind else { unreachable!() };
+                    self.record_declaration(alias.declaration_start, &alias.ty, false);
+                    let mut following = continuation.to_vec();
+                    following.push((vars.len()-1, body[position+1..].to_vec()));
+                    vars.push(Rc::new(HashMap::from([(name.clone(), alias)])));
+                    let result = self.statement_body(&block.body, vars, expected_return, &following, loop_entry);
+                    vars.pop();
+                    let state = result?;
+                    if state != FlowState::Fallthrough { return Ok(state); }
+                }
                 StmtKind::Declare(declaration) => {
                     let name = &declaration.name;
                     let ty = &declaration.ty;
@@ -2913,7 +2945,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::While { condition, .. } => {
                     return Err(self.error("P15：方法中的 while 借用重入尚未完成安全證明", condition));
                 }
-                StmtKind::ForRange { .. } => {
+                StmtKind::ReadonlyElement(_) | StmtKind::ForRange { .. } => {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P15：方法中的 for 借用重入尚未完成安全證明".into(),
                         span: Some(self.source.span(stmt.start, stmt.end)) });

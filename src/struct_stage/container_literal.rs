@@ -165,3 +165,122 @@ mod p19_literal_tests {
         }
     }
 }
+
+fn element_type(ty: &str) -> Option<(&str, &str)> {
+    if let Some(value) = ty.strip_prefix("list[").and_then(|s| s.strip_suffix(']')) {
+        Some(("int", value))
+    } else {
+        ty.strip_prefix("dict{")?.strip_suffix('}')?.split_once(',')
+    }
+}
+
+impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
+    fn scoped_element_binding(&self, block: &ReadonlyElementBlock, vars: &mut Scopes)
+        -> Result<Binding, Diagnostic> {
+        let at = &block.selector;
+        let TokenKind::Name(name) = &block.owner.kind else { return Err(self.error("需要容器名稱", at)); };
+        let (selector, ready) = self.evaluate(at, vars)?;
+        let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到容器來源", at))?;
+        let reference = self.checked_binding_use(owner, at)?;
+        if owner.loan.is_some() { return Err(self.error("唯讀元素需要原始容器持有者", at)); }
+        owner.value.read().map_err(|e| self.model_error(e, at))?;
+        let (key, element) = element_type(reference.resolved.ty)
+            .ok_or_else(|| self.error("唯讀綁定需要容器來源", at))?;
+        if !ready || selector != key { return Err(self.error("容器索引或鍵的型別不符", at)); }
+        self.check_borrow_conflicts(vars, owner.declaration_start, BorrowKind::SharedRead, at,
+            "容器已有衝突借用")?;
+        let mut binding = Binding::new(DeclarationId(block.alias.start), element.to_owned(), false,
+            ValueSlot::initialized(self.permission(element)), None,
+            Some(LoanBinding { fact: BorrowFact::new(owner.declaration_start, BorrowKind::SharedRead), active: true }));
+        binding.scoped_element = true;
+        Ok(binding)
+    }
+}
+
+/// 真私有 Checker 已驗證的直線容器入口。遇到此執行器尚未支援的
+/// 語句會失敗；查找只傳遞元素參考，區塊所有出口共用同一次退票。
+fn execute_container_main(text: &str) -> Result<i64, String> {
+    use crate::borrow_ownership_gate::BorrowOwnershipGate;
+    let checked = verify_source_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
+        .map_err(|d| d.message.to_string())?;
+    let main = checked.functions.iter().find(|f| f.name == "main" && f.params.is_empty()
+        && f.result_ty == "int" && !f.is_async).ok_or("需要同步 main()->int")?;
+    let mut containers = HashMap::new();
+    let mut gate = BorrowOwnershipGate::new();
+    for stmt in main.body.iter() {
+        match &stmt.kind {
+            StmtKind::Declare(d) => {
+                let Some(Term { kind: TermKind::Container(value), .. }) = &d.initializer else {
+                    return Err("此入口只支援具常值的容器宣告".into());
+                };
+                let id = DeclarationId(stmt.start);
+                gate.declare(id, ValueSlot::initialized(CopyPermission::Forbidden))
+                    .map_err(|_| "容器持有者登錄失敗")?;
+                containers.insert(d.name.as_str(), (id, value));
+            }
+            StmtKind::ReadonlyElement(block) => {
+                let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
+                    else { return Err("綁定名稱失配".into()) };
+                let (id, value) = containers.get(owner.as_str()).ok_or("容器來源缺失")?;
+                let selector = match &block.selector.kind {
+                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(text)) =>
+                        ContainerAtom::Integer(crate::syntax_shared::integer_i64(text).map_err(|_| "索引無效")?),
+                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => ContainerAtom::Boolean(*b),
+                    TermKind::Literal("str") => {
+                        let token = checked.tokens.binary_search_by_key(&block.selector.start, |t| t.start)
+                            .ok().and_then(|i| checked.tokens.get(i)).ok_or("字串鍵來源缺失")?;
+                        let TokenKind::StringLiteral(key) = &token.kind else { return Err("字串鍵來源失配".into()); };
+                        ContainerAtom::Text(key.clone())
+                    }
+                    _ => return Err("此入口尚未支援該選擇式".into()),
+                };
+                let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
+                let result = value.lookup(&selector).ok_or("容器索引越界或缺鍵")
+                    .and_then(|element| match block.body.statements.as_slice() {
+                        [Stmt { kind: StmtKind::Return(ret), .. }] => match &ret.kind {
+                            TermKind::Name(name) if name == alias => match element {
+                                ContainerAtom::Integer(n) => Ok(*n), _ => Err("返回值需要 int"),
+                            },
+                            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+                                crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效"),
+                            _ => Err("此入口尚未支援該返回式"),
+                        },
+                        _ => Err("此入口尚未支援該區塊本體"),
+                    });
+                gate.finish_method_scope(&[ticket]).map_err(|_| "容器借用歸還失敗")?;
+                return result.map_err(str::to_owned);
+            }
+            StmtKind::Return(ret) => if let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) = &ret.kind {
+                return crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效".into());
+            } else { return Err("此入口尚未支援該返回式".into()); },
+            _ => return Err("此入口尚未支援該語句".into()),
+        }
+    }
+    Err("缺少返回值".into())
+}
+
+#[cfg(test)]
+mod p19_scoped_execution {
+    use super::*;
+
+    #[test]
+    fn const_and_var_read_the_selected_integer_and_exit_scope() {
+        for binding in ["const", "var"] {
+            let code = format!("fn main()->int{{\n{binding} xs:list[int] = [3,8]\nwith xs[1] as item {{\nreturn item\n}}\n}}\n");
+            assert_eq!(execute_container_main(&code), Ok(8));
+        }
+    }
+
+    #[test]
+    fn present_none_enters_body_and_absent_key_fails() {
+        let source = |key| format!("fn main()->int{{\nvar xs:dict{{str,Optional[int]}} = {{\"k\":none}}\nwith xs[\"{key}\"] as item {{\nreturn 9\n}}\n}}\n");
+        assert_eq!(execute_container_main(&source("k")), Ok(9));
+        assert_eq!(execute_container_main(&source("missing")), Err("容器索引越界或缺鍵".into()));
+    }
+
+    #[test]
+    fn readonly_owner_cannot_move_even_after_last_alias_use() {
+        let code = "fn main()->int{\nvar xs:list[int] = [9]\nwith xs[0] as item {\nvar n:int = item\nvar stolen:list[int] = xs.move()\nreturn n\n}\n}\n";
+        assert!(inspect(code).unwrap_err().message.contains("借用"));
+    }
+}

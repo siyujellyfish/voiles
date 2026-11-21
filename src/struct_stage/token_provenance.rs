@@ -139,6 +139,21 @@ fn verified_private_token_roles(
         stmt: &Stmt, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &stmt.kind {
+            StmtKind::ReadonlyElement(binding) => {
+                let Ok(i) = tokens.binary_search_by_key(&stmt.start, |t| t.start) else { return false };
+                let Ok(j) = tokens.binary_search_by_key(&binding.alias.start, |t| t.start) else { return false };
+                matches!(tokens.get(i).map(|t| &t.kind), Some(TokenKind::Name(word)) if word == "with")
+                    && tokens.get(i+1) == Some(&binding.owner)
+                    && tokens.get(i+2).is_some_and(|t| t.kind == TokenKind::Symbol('['))
+                    && tokens.get(i+3).is_some_and(|t| t.start == binding.selector.start)
+                    && j >= i+6 && tokens[j-3].end == binding.selector.end
+                    && tokens[j-2].kind == TokenKind::Symbol(']')
+                    && matches!(&tokens[j-1].kind, TokenKind::Name(word) if word == "as")
+                    && tokens[j] == binding.alias
+                    && tokens.get(j+1).is_some_and(|t| t.start == binding.body.start && t.kind == TokenKind::Symbol('{'))
+                    && stmt.end == binding.body.end
+                    && term(&binding.selector, tokens, audit) && block(&binding.body, tokens, audit)
+            }
             StmtKind::Declare(decl) =>
                 (if crate::container_copy_policy::classify_container_shape(&decl.ty).is_some() {
                     checked_container_declaration(decl, tokens, audit)

@@ -73,6 +73,8 @@ fn verified_private_syntax_roles(
             return false;
         }
         match &value.kind {
+            StmtKind::ReadonlyElement(binding) =>
+                term(&binding.selector, span, audit) && block(&binding.body, span, audit),
             StmtKind::Declare(decl) => {
                 let dspan = NodeSpan::new(decl.start, decl.end);
                 audit.record(NodeRole::Declaration, dspan, Some(span))
