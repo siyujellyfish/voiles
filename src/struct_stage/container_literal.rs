@@ -454,6 +454,7 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
         gate: crate::resource_borrow_pipeline::SafetyPipeline::new(), values: BTreeMap::new(), next_resource: 1,
     };
     let result = frame.block(&main.body, HashMap::new());
+    frame.gate.verify_static_borrows(&[]).map_err(|_| "容器作用域仍有未歸還借用")?;
     frame.gate.audit_finished().map_err(|_| "容器資源未全部釋放")?;
     result?.ok_or_else(|| "缺少返回值".into())
 }
@@ -475,6 +476,14 @@ mod p19_scoped_execution {
         assert!(inspect(&code.replace("Optional[bool,int]", "Optional[int]")).is_err());
         let bad = code.replace("dest[\"值\"]", "dest[\"缺\"]");
         assert_eq!(execute_container_main(&bad), Err("容器索引越界或缺鍵".into()));
+    }
+
+    #[test]
+    fn nested_shared_blocks_return_separate_tickets_and_allow_subsequent_move() {
+        let code = "fn main()->int{\nvar a:list[int] = [1,2]\nwith a[0] as first {\nwith a[1] as second {\nconst n:int = second\n}\nconst m:int = first\n}\nvar b:list[int] = a.move()\nreturn len(b)\n}\n";
+        assert_eq!(execute_container_main(code), Ok(2));
+        assert!(inspect(&code.replace("return len(b)", "return first")).is_err());
+        assert!(inspect(&code.replace("const m:int = first", "var stolen:list[int] = a.move()")).is_err());
     }
 
     #[test]

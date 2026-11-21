@@ -27,6 +27,7 @@ CASES = {
         LITERALS + "full_checker_accepts_typed_literal_and_rejects_implicit_copy",
         CONTAINERS + "cross_container_copy_uses_the_whole_declared_set",
         CONTAINERS + "nested_container_move_and_missing_lookup_clean_every_owned_part",
+        CONTAINERS + "nested_shared_blocks_return_separate_tickets_and_allow_subsequent_move",
         CONTAINERS + "moved_dictionary_owns_original_values",
         CONTAINERS + "readonly_owner_cannot_move_even_after_last_alias_use",
     ],
