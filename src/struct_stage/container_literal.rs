@@ -240,65 +240,81 @@ fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAto
 /// 真私有 Checker 已驗證的直線容器入口。遇到此執行器尚未支援的
 /// 語句會失敗；查找只傳遞元素參考，區塊所有出口共用同一次退票。
 fn execute_container_main(text: &str) -> Result<i64, String> {
-    use crate::borrow_ownership_gate::BorrowOwnershipGate;
+    use crate::resource_borrow_pipeline::SafetyPipeline;
     let checked = verify_source_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
         .map_err(|d| d.message.to_string())?;
     let main = checked.functions.iter().find(|f| f.name == "main" && f.params.is_empty()
         && f.result_ty == "int" && !f.is_async).ok_or("需要同步 main()->int")?;
     let mut containers = HashMap::new();
-    let mut gate = BorrowOwnershipGate::new();
-    for stmt in main.body.iter() {
-        match &stmt.kind {
-            StmtKind::Declare(d) => {
-                let id = DeclarationId(stmt.start);
-                let content = match d.initializer.as_ref().map(|term| &term.kind) {
-                    Some(TermKind::Container(value)) => {
-                        gate.declare(id, ValueSlot::initialized(CopyPermission::Forbidden))
-                            .map_err(|_| "容器持有者登錄失敗")?;
-                        // 字面值在每次執行建立獨立的容器與內部字串。
-                        value.clone()
-                    }
-                    Some(TermKind::Move(name)) => {
-                        let (owner, storage): &mut (DeclarationId, Option<ContainerLiteral>) =
-                            containers.get_mut(name.as_str()).ok_or("移動來源缺失")?;
-                        if storage.is_none() { return Err("容器已移動".into()); }
-                        gate.move_into(*owner, id).map_err(|_| "容器整筆移動失敗")?;
-                        storage.take().expect("來源已通過移動預檢")
-                    }
-                    _ => return Err("此入口只支援具常值或整筆移動的容器宣告".into()),
-                };
-                containers.insert(d.name.as_str(), (id, Some(content)));
+    let mut gate = SafetyPipeline::new();
+    let mut declaration_order = Vec::new();
+    let run = (|| -> Result<i64, String> {
+        for stmt in main.body.iter() {
+            match &stmt.kind {
+                StmtKind::Declare(d) => {
+                    let id = DeclarationId(stmt.start);
+                    let content = match d.initializer.as_ref().map(|term| &term.kind) {
+                        Some(TermKind::Container(value)) => {
+                            gate.declare(id, CopyPermission::Forbidden)
+                                .map_err(|_| "容器持有者登錄失敗")?;
+                            // 字面值在每次執行建立獨立的容器與內部字串。
+                            let resource = id.0 as u64;
+                            gate.register_resource(id, resource).map_err(|_| "容器資源登錄失敗")?;
+                            (resource, value.clone())
+                        }
+                        Some(TermKind::Move(name)) => {
+                            let (owner, storage): &mut (DeclarationId, Option<(u64, ContainerLiteral)>) =
+                                containers.get_mut(name.as_str()).ok_or("移動來源缺失")?;
+                            if storage.is_none() { return Err("容器已移動".into()); }
+                            gate.move_into(*owner, id).map_err(|_| "容器整筆移動失敗")?;
+                            storage.take().expect("來源已通過移動預檢")
+                        }
+                        _ => return Err("此入口只支援具常值或整筆移動的容器宣告".into()),
+                    };
+                    declaration_order.push(d.name.as_str());
+                    containers.insert(d.name.as_str(), (id, Some(content)));
+                }
+                StmtKind::ReadonlyElement(block) => {
+                    let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
+                        else { return Err("綁定名稱失配".into()) };
+                    let (id, storage) = containers.get(owner.as_str()).ok_or("容器來源缺失")?;
+                    let (_, value) = storage.as_ref().ok_or("容器已移動")?;
+                    let selector = match &block.selector.kind {
+                        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(text)) =>
+                            ContainerAtom::Integer(crate::syntax_shared::integer_i64(text).map_err(|_| "索引無效")?),
+                        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => ContainerAtom::Boolean(*b),
+                        TermKind::Literal("str") => {
+                            let token = checked.tokens.binary_search_by_key(&block.selector.start, |t| t.start)
+                                .ok().and_then(|i| checked.tokens.get(i)).ok_or("字串鍵來源缺失")?;
+                            let TokenKind::StringLiteral(key) = &token.kind else { return Err("字串鍵來源失配".into()); };
+                            ContainerAtom::Text(key.clone())
+                        }
+                        _ => return Err("此入口尚未支援該選擇式".into()),
+                    };
+                    let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
+                    let result = value.lookup(&selector).ok_or("容器索引越界或缺鍵")
+                        .and_then(|element| execute_element_body(&block.body, alias, element));
+                    gate.finish_method_with_snapshot(&[ticket], &[BorrowFact::new(*id, BorrowKind::SharedRead)]).map_err(|_| "容器借用歸還失敗")?;
+                    if let Some(n) = result.map_err(str::to_owned)? { return Ok(n); }
+                }
+                StmtKind::Return(ret) => if let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) = &ret.kind {
+                    return crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效".into());
+                } else { return Err("此入口尚未支援該返回式".into()); },
+                _ => return Err("此入口尚未支援該語句".into()),
             }
-            StmtKind::ReadonlyElement(block) => {
-                let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
-                    else { return Err("綁定名稱失配".into()) };
-                let (id, storage) = containers.get(owner.as_str()).ok_or("容器來源缺失")?;
-                let value = storage.as_ref().ok_or("容器已移動")?;
-                let selector = match &block.selector.kind {
-                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(text)) =>
-                        ContainerAtom::Integer(crate::syntax_shared::integer_i64(text).map_err(|_| "索引無效")?),
-                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => ContainerAtom::Boolean(*b),
-                    TermKind::Literal("str") => {
-                        let token = checked.tokens.binary_search_by_key(&block.selector.start, |t| t.start)
-                            .ok().and_then(|i| checked.tokens.get(i)).ok_or("字串鍵來源缺失")?;
-                        let TokenKind::StringLiteral(key) = &token.kind else { return Err("字串鍵來源失配".into()); };
-                        ContainerAtom::Text(key.clone())
-                    }
-                    _ => return Err("此入口尚未支援該選擇式".into()),
-                };
-                let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
-                let result = value.lookup(&selector).ok_or("容器索引越界或缺鍵")
-                    .and_then(|element| execute_element_body(&block.body, alias, element));
-                gate.finish_method_scope(&[ticket]).map_err(|_| "容器借用歸還失敗")?;
-                if let Some(n) = result.map_err(str::to_owned)? { return Ok(n); }
-            }
-            StmtKind::Return(ret) => if let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) = &ret.kind {
-                return crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效".into());
-            } else { return Err("此入口尚未支援該返回式".into()); },
-            _ => return Err("此入口尚未支援該語句".into()),
+        }
+        Err("缺少返回值".into())
+    })();
+    for name in declaration_order.into_iter().rev() {
+        let (owner, storage) = containers.remove(name).ok_or("容器宣告遺失")?;
+        if let Some((resource, value)) = storage {
+            drop(value);
+            gate.record_resource_cleanup(owner, resource).map_err(|_| "容器釋放來源失配")?;
+            gate.record_cleanup(owner).map_err(|_| "容器借用或所有權未閉合")?;
         }
     }
-    Err("缺少返回值".into())
+    gate.audit_finished().map_err(|_| "容器資源未全部釋放")?;
+    run
 }
 
 #[cfg(test)]
