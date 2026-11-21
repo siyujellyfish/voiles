@@ -305,9 +305,14 @@ impl LinkedProgram {
         Ok(Self{graph,plan})
     }
 
-    pub(crate) fn execute(&self) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
+    /// 提供同一份已通過跨模組借用檢查的計畫；消費者不重新讀取或解析來源。
+    fn checked_plan(&self) -> Result<&Program, ModuleError> {
         self.graph.check_unchanged()?;
-        self.plan.execute_with_origin(|error, origin| match origin {
+        Ok(&self.plan)
+    }
+
+    pub(crate) fn execute(&self) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
+        self.checked_plan()?.execute_with_origin(|error, origin| match origin {
             Some(step) => {
                 let unit = &self.graph.units[step.module];
                 ModuleError::RuntimeAt { path: unit.path.clone(),
@@ -335,6 +340,31 @@ mod tests {
         }
         fn entry(&self) -> PathBuf { self.0.join("main.voil") }
     }
+    #[test]
+    fn shared_plan_preserves_linked_steps_and_rejects_stale_dependencies() {
+        let files = Files::new(&[
+            ("main.voil", "import dep\nfn main()->int{ return dep.value() + 1 }"),
+            ("dep.voil", "fn value()->int{ return 41 }"),
+        ]);
+        let program = LinkedProgram::prepare(&files.entry()).unwrap();
+        assert_eq!(program.checked_plan().unwrap().bodies.len(), 2);
+        assert_eq!(program.execute().unwrap().0.unwrap(), 42);
+        fs::write(files.0.join("dep.voil"), b"fn value()->int{ return 0 }").unwrap();
+        assert!(program.checked_plan().is_err());
+        assert!(program.execute().is_err());
+    }
+
+    #[test]
+    fn invalid_sources_never_publish_a_plan() {
+        for source in [
+            "fn main()->int{ return true }",
+            "share msg:str = \"A\"\nfn main()->int{\nconst alias:str = msg.borrow()\nmsg = \"B\"\nreturn alias[0][0]\n}",
+        ] {
+            let files = Files::new(&[("main.voil", source)]);
+            assert!(matches!(LinkedProgram::prepare(&files.entry()), Err(ModuleError::Source { .. })));
+        }
+    }
+
     impl Drop for Files { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
 
     #[test]
