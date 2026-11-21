@@ -374,7 +374,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 call.arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
-            TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
+            TermKind::Container(value) => value.values().any(|atom| matches!(atom, ContainerAtom::ElementName(n) if n == name)),
+            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
         }
     }
 
@@ -460,7 +461,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::StringIndex(name, ..) | TermKind::OptionalCondition(name, _) => {
                 if kind == ResolvedUseKind::All { Self::record_named_future_use(visible, used, name); }
             }
-            TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_)
+            TermKind::Container(value) => {
+                if kind == ResolvedUseKind::All {
+                    for atom in value.values() {
+                        if let ContainerAtom::ElementName(n) = atom { Self::record_named_future_use(visible, used, n); }
+                    }
+                }
+            }
+            TermKind::Scalar(_) | TermKind::Literal(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Name(_)
             | TermKind::Borrow(_) | TermKind::FieldRead(_, _)
             | TermKind::FieldMove(_, _) => {}
@@ -1769,7 +1777,21 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
             }
-            TermKind::Container(value) => Ok((value.ty.clone(), true)),
+            TermKind::Container(value) => {
+                for atom in value.values() {
+                    if let ContainerAtom::ElementName(name) = atom {
+                        self.check_direct(vars, name, term)?;
+                        let binding = Self::lookup(vars, name).ok_or_else(|| self.error("找不到唯讀元素", term))?;
+                        if !binding.scoped_element || element_type(&value.ty).map(|(_, t)| t) != Some(binding.ty.as_str()) {
+                            return Err(self.error("跨容器元素需要相同宣告型別的唯讀 Optional", term));
+                        }
+                        let allowed = binding.ty.strip_prefix("Optional[").and_then(|t| t.strip_suffix(']'))
+                            .is_some_and(|set| set.split(',').all(|t| self.permission(t) == CopyPermission::Allowed));
+                        if !allowed { return Err(self.error("跨容器複製要求所有候選均為 Copyable", term)); }
+                    }
+                }
+                Ok((value.ty.clone(), true))
+            },
             TermKind::OptionalCondition(name, predicate) => {
                 let Some(binding) = Self::lookup(vars, name) else {
                     return Err(self.error("Optional 條件左側名稱未宣告", term));

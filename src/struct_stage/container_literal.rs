@@ -1,6 +1,7 @@
 /// P19 具型別常值只保存已驗證的純值。讀取借用原容器內的值。
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ContainerAtom {
+    ElementName(String),
     Missing,
     Integer(i64),
     Boolean(bool),
@@ -21,6 +22,13 @@ struct ContainerLiteral {
 }
 
 impl ContainerLiteral {
+    fn values(&self) -> Box<dyn Iterator<Item = &ContainerAtom> + '_> {
+        match &self.items {
+            ContainerItems::List(items) => Box::new(items.iter()),
+            ContainerItems::Dictionary(items) => Box::new(items.values()),
+        }
+    }
+
     fn lookup(&self, selector: &ContainerAtom) -> Option<&ContainerAtom> {
         match (&self.items, selector) {
             (ContainerItems::List(items), ContainerAtom::Integer(index)) =>
@@ -38,6 +46,8 @@ impl Parser<'_> {
         let (ty, atom) = match &token.kind {
             TokenKind::Keyword(word) if word == "none" && candidates.is_some() =>
                 ("none", ContainerAtom::Missing),
+            TokenKind::Name(name) if candidates.is_some() =>
+                (expected, ContainerAtom::ElementName(name.clone())),
             TokenKind::Integer(text) => ("int", ContainerAtom::Integer(
                 crate::syntax_shared::integer_i64(text).map_err(|_| self.syntax("容器整數常值超出範圍"))?)),
             TokenKind::Keyword(word) if word == "true" || word == "false" =>
@@ -201,170 +211,227 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 }
 
-type ContainerSlots<'a> = HashMap<&'a str, (DeclarationId, Option<(u64, ContainerLiteral)>)>;
+type ContainerResult<T> = Result<T, &'static str>;
 
-fn container_int_value(term: &Term, gate: &mut crate::resource_borrow_pipeline::SafetyPipeline,
-    containers: &ContainerSlots<'_>, integers: &HashMap<String, i64>, builtin_len: bool)
-    -> Result<i64, &'static str> {
-    match &term.kind {
-        TermKind::Group(inner) => container_int_value(inner, gate, containers, integers, builtin_len),
-        TermKind::BinaryInt(binary) => {
-            let left = container_int_value(&binary.left, gate, containers, integers, builtin_len)?;
-            let right = container_int_value(&binary.right, gate, containers, integers, builtin_len)?;
-            match binary.operator {
-                '+' => left.checked_add(right),
-                '-' => left.checked_sub(right),
-                _ => None,
-            }.ok_or("整數運算溢位或運算子無效")
-        }
-        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
-            crate::syntax_shared::integer_i64(n).map_err(|_| "整數值無效"),
-        TermKind::Name(n) => integers.get(n).copied().ok_or_else(|| "找不到整數來源"),
-        TermKind::Call(call) if builtin_len && call.name == "len" && !call.awaited => {
-            let [arg] = call.arguments.as_slice() else { return Err("len 引數數量不符"); };
-            let TermKind::Name(name) = &arg.kind else { return Err("len 需要具名容器"); };
-            let (id, slot) = containers.get(name.as_str()).ok_or("len 容器缺失")?;
-            let (_, value) = slot.as_ref().ok_or("容器已移動")?;
-            let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "len 借用衝突")?;
-            let count = match &value.items {
-                ContainerItems::List(values) => values.len(),
-                ContainerItems::Dictionary(values) => values.len(),
-            };
-            gate.finish_method(&[ticket]).map_err(|_| "len 退借失敗")?;
-            i64::try_from(count).map_err(|_| "容器長度超出 int")
-        }
-        _ => Err("此入口尚未支援該整數運算式"),
-    }
+#[derive(Clone)]
+enum ContainerLocal {
+    Owner(DeclarationId),
+    Element(DeclarationId, ContainerAtom),
+    Integer(i64),
+    Boolean(bool),
 }
 
-fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAtom,
-    int_value: &mut impl FnMut(&Term) -> Result<i64, &'static str>)
-    -> Result<Option<i64>, &'static str> {
-    for stmt in statements {
-        match &stmt.kind {
-            StmtKind::Return(ret) => {
-                let n = match &ret.kind {
-                    TermKind::Name(name) if name == alias => match element {
-                        ContainerAtom::Integer(n) => *n, _ => return Err("返回值需要 int"),
-                    },
-                    _ => int_value(ret)?,
-                };
-                return Ok(Some(n));
+type LocalNames = HashMap<String, ContainerLocal>;
+
+struct ContainerFrame<'a> {
+    tokens: &'a [Token],
+    builtin_len: bool,
+    gate: crate::resource_borrow_pipeline::SafetyPipeline,
+    values: BTreeMap<DeclarationId, (u64, ContainerLiteral)>,
+}
+
+impl ContainerFrame<'_> {
+    fn element(&self, names: &LocalNames, name: &str) -> ContainerResult<&ContainerAtom> {
+        let Some(ContainerLocal::Element(id, key)) = names.get(name) else { return Err("找不到唯讀元素"); };
+        self.values.get(id).and_then(|(_, v)| v.lookup(key)).ok_or("元素來源失效")
+    }
+
+    fn integer(&mut self, term: &Term, names: &LocalNames) -> ContainerResult<i64> {
+        match &term.kind {
+            TermKind::Group(inner) => self.integer(inner, names),
+            TermKind::BinaryInt(binary) => {
+                let left = self.integer(&binary.left, names)?;
+                let right = self.integer(&binary.right, names)?;
+                match binary.operator {
+                    '+' => left.checked_add(right),
+                    '-' => left.checked_sub(right),
+                    _ => None,
+                }.ok_or("整數運算溢位或運算子無效")
             }
-            StmtKind::If { branch, no } => {
-                let test = match &branch.condition.kind {
-                    TermKind::OptionalCondition(name, pred) if name == alias => match pred {
-                        OptionalPredicate::IsMissing(equal) => matches!(element, ContainerAtom::Missing) == *equal,
-                        OptionalPredicate::Candidate(Some(ty)) => matches!((element, ty.as_str()),
-                            (ContainerAtom::Integer(_), "int") | (ContainerAtom::Text(_), "str")
-                            | (ContainerAtom::Boolean(_), "bool") | (ContainerAtom::Decimal(..), "float")),
-                        OptionalPredicate::Candidate(None) => return Err("候選型別缺失"),
-                        OptionalPredicate::IndexedCandidate { .. } => return Err("is 需要已綁定具名來源"),
-                    },
-                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => *b,
-                    _ => return Err("此入口尚未支援該區塊條件"),
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+                crate::syntax_shared::integer_i64(n).map_err(|_| "整數值無效"),
+            TermKind::Name(n) => match names.get(n) {
+                Some(ContainerLocal::Integer(value)) => Ok(*value),
+                Some(ContainerLocal::Element(..)) => match self.element(names, n)? {
+                    ContainerAtom::Integer(value) => Ok(*value), _ => Err("返回值需要 int"),
+                },
+                _ => Err("找不到整數來源"),
+            },
+            TermKind::Call(call) if self.builtin_len && call.name == "len" && !call.awaited => {
+                let [arg] = call.arguments.as_slice() else { return Err("len 引數數量不符"); };
+                let TermKind::Name(n) = &arg.kind else { return Err("len 需要具名容器"); };
+                let Some(ContainerLocal::Owner(id)) = names.get(n) else { return Err("len 容器缺失"); };
+                let (_, value) = self.values.get(id).ok_or("容器已移動")?;
+                let ticket = self.gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "len 借用衝突")?;
+                let count = match &value.items {
+                    ContainerItems::List(values) => values.len(),
+                    ContainerItems::Dictionary(values) => values.len(),
                 };
-                let selected = if test { Some(branch.body.statements.as_slice()) }
-                    else { no.as_ref().map(|other| other.as_slice()) };
-                if let Some(body) = selected {
-                    if let Some(value) = execute_element_body(body, alias, element, int_value)? { return Ok(Some(value)); }
+                self.gate.finish_method(&[ticket]).map_err(|_| "len 退借失敗")?;
+                i64::try_from(count).map_err(|_| "容器長度超出 int")
+            }
+            _ => Err("此入口尚未支援該整數運算式"),
+        }
+    }
+
+    fn condition(&self, term: &Term, names: &LocalNames) -> ContainerResult<bool> {
+        match &term.kind {
+            TermKind::OptionalCondition(name, pred) => {
+                let v = self.element(names, name)?;
+                match pred {
+                    OptionalPredicate::IsMissing(equal) => Ok(matches!(v, ContainerAtom::Missing) == *equal),
+                    OptionalPredicate::Candidate(Some(ty)) => Ok(matches!((v, ty.as_str()),
+                        (ContainerAtom::Integer(_), "int") | (ContainerAtom::Text(_), "str") |
+                        (ContainerAtom::Boolean(_), "bool") | (ContainerAtom::Decimal(..), "float"))),
+                    _ => Err("候選檢查未獲授權"),
                 }
             }
-            _ => return Err("此入口尚未支援該區塊語句"),
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => Ok(*b),
+            TermKind::Name(n) => match names.get(n) {
+                Some(ContainerLocal::Boolean(b)) => Ok(*b),
+                _ => Err("條件需要 bool"),
+            },
+            _ => Err("此入口尚未支援該區塊條件"),
         }
     }
-    Ok(None)
+
+    fn selector(&mut self, term: &Term, names: &LocalNames) -> ContainerResult<ContainerAtom> {
+        match &term.kind {
+            TermKind::Literal("str") => {
+                let i = self.tokens.binary_search_by_key(&term.start, |t| t.start).map_err(|_| "字串鍵來源缺失")?;
+                let TokenKind::StringLiteral(s) = &self.tokens[i].kind else { return Err("字串鍵來源失配"); };
+                Ok(ContainerAtom::Text(s.clone()))
+            }
+            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => Ok(ContainerAtom::Boolean(*b)),
+            _ => self.integer(term, names).map(ContainerAtom::Integer),
+        }
+    }
+
+    fn create(&mut self, id: DeclarationId, init: &Term, names: &LocalNames) -> ContainerResult<()> {
+        let resource = match &init.kind {
+            TermKind::Move(source) => {
+                let Some(ContainerLocal::Owner(from)) = names.get(source) else { return Err("移動來源缺失"); };
+                self.gate.move_into(*from, id).map_err(|_| "容器整筆移動失敗")?;
+                self.values.remove(from).ok_or("容器已移動")?
+            }
+            TermKind::Container(literal) => {
+                let mut value = literal.clone();
+                let resolve = |atom: &mut ContainerAtom| -> ContainerResult<()> {
+                    if let ContainerAtom::ElementName(name) = atom {
+                        *atom = match self.element(names, name)? {
+                            ContainerAtom::Missing => ContainerAtom::Missing,
+                            ContainerAtom::Integer(n) => ContainerAtom::Integer(*n),
+                            ContainerAtom::Boolean(b) => ContainerAtom::Boolean(*b),
+                            ContainerAtom::Decimal(c,e) => ContainerAtom::Decimal(*c,*e),
+                            _ => return Err("元素不能自共享借用複製"),
+                        };
+                    }
+                    Ok(())
+                };
+                match &mut value.items {
+                    ContainerItems::List(xs) => xs.iter_mut().try_for_each(resolve)?,
+                    ContainerItems::Dictionary(xs) => xs.values_mut().try_for_each(resolve)?,
+                }
+                self.gate.declare(id, CopyPermission::Forbidden).map_err(|_| "容器登錄失敗")?;
+                self.gate.register_resource(id, id.0 as u64).map_err(|_| "容器資源登錄失敗")?;
+                (id.0 as u64, value)
+            }
+            _ => return Err("容器需要常值或明確移動"),
+        };
+        self.values.insert(id, resource);
+        Ok(())
+    }
+
+    fn block(&mut self, body: &[Stmt], mut names: LocalNames) -> ContainerResult<Option<i64>> {
+        let mut owners = Vec::new();
+        let result = (|| {
+            for stmt in body {
+                let nested = match &stmt.kind {
+                    StmtKind::Declare(d) => {
+                        let init = d.initializer.as_ref().ok_or("宣告需要初始值")?;
+                        let local = match d.ty.as_str() {
+                            "int" => ContainerLocal::Integer(self.integer(init, &names)?),
+                            "bool" => ContainerLocal::Boolean(self.condition(init, &names)?),
+                            _ => {
+                                let id = DeclarationId(stmt.start);
+                                self.create(id, init, &names)?;
+                                owners.push(id);
+                                ContainerLocal::Owner(id)
+                            }
+                        };
+                        names.insert(d.name.clone(), local);
+                        None
+                    }
+                    StmtKind::ReadonlyElement(block) => {
+                        let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
+                            else { return Err("綁定名稱失配") };
+                        let Some(ContainerLocal::Owner(id)) = names.get(owner) else { return Err("容器來源缺失"); };
+                        let key = self.selector(&block.selector, &names)?;
+                        let (_, storage) = self.values.get(id).ok_or("容器已移動")?;
+                        let ticket = self.gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
+                        let selected = if storage.lookup(&key).is_some() {
+                            let mut inner = names.clone();
+                            inner.insert(alias.clone(), ContainerLocal::Element(*id, key));
+                            self.block(&block.body, inner)
+                        } else { Err("容器索引越界或缺鍵") };
+                        self.gate.finish_method(&[ticket]).map_err(|_| "容器借用歸還失敗")?;
+                        selected?
+                    }
+                    StmtKind::If { branch, no } => {
+                        if self.condition(&branch.condition, &names)? { self.block(&branch.body, names.clone())? }
+                        else if let Some(other) = no { self.block(other.as_slice(), names.clone())? }
+                        else { None }
+                    }
+                    StmtKind::Return(ret) => Some(self.integer(ret, &names)?),
+                    _ => return Err("此入口尚未支援該語句"),
+                };
+                if nested.is_some() { return Ok(nested); }
+            }
+            Ok(None)
+        })();
+        for id in owners.into_iter().rev() {
+            if let Some((resource, value)) = self.values.remove(&id) {
+                drop(value);
+                self.gate.record_resource_cleanup(id, resource).map_err(|_| "容器釋放來源失配")?;
+                self.gate.record_cleanup(id).map_err(|_| "容器所有權未閉合")?;
+            }
+        }
+        result
+    }
 }
 
-/// 真私有 Checker 已驗證的直線容器入口。遇到此執行器尚未支援的
-/// 語句會失敗；查找只傳遞元素參考，區塊所有出口共用同一次退票。
 fn execute_container_main(text: &str) -> Result<i64, String> {
-    use crate::resource_borrow_pipeline::SafetyPipeline;
     let checked = verify_source_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
         .map_err(|d| d.message.to_string())?;
     let main = checked.functions.iter().find(|f| f.name == "main" && f.params.is_empty()
         && f.result_ty == "int" && !f.is_async).ok_or("需要同步 main()->int")?;
-    let mut containers = HashMap::new();
-    let mut gate = SafetyPipeline::new();
-    let mut declaration_order = Vec::new();
-    let builtin_len = !checked.functions.iter().any(|f| f.name == "len");
-    let mut integers = HashMap::new();
-    let run = (|| -> Result<i64, String> {
-        for stmt in main.body.iter() {
-            match &stmt.kind {
-                StmtKind::Declare(d) if d.ty == "int" => {
-                    let init = d.initializer.as_ref().ok_or("需要已初始化整數")?;
-                    let n = container_int_value(init, &mut gate, &containers, &integers, builtin_len)?;
-                    integers.insert(d.name.clone(), n);
-                }
-                StmtKind::Declare(d) => {
-                    let id = DeclarationId(stmt.start);
-                    let content = match d.initializer.as_ref().map(|term| &term.kind) {
-                        Some(TermKind::Container(value)) => {
-                            gate.declare(id, CopyPermission::Forbidden)
-                                .map_err(|_| "容器持有者登錄失敗")?;
-                            // 字面值在每次執行建立獨立的容器與內部字串。
-                            let resource = id.0 as u64;
-                            gate.register_resource(id, resource).map_err(|_| "容器資源登錄失敗")?;
-                            (resource, value.clone())
-                        }
-                        Some(TermKind::Move(name)) => {
-                            let (owner, storage): &mut (DeclarationId, Option<(u64, ContainerLiteral)>) =
-                                containers.get_mut(name.as_str()).ok_or("移動來源缺失")?;
-                            if storage.is_none() { return Err("容器已移動".into()); }
-                            gate.move_into(*owner, id).map_err(|_| "容器整筆移動失敗")?;
-                            storage.take().expect("來源已通過移動預檢")
-                        }
-                        _ => return Err("此入口只支援具常值或整筆移動的容器宣告".into()),
-                    };
-                    declaration_order.push(d.name.as_str());
-                    containers.insert(d.name.as_str(), (id, Some(content)));
-                }
-                StmtKind::ReadonlyElement(block) => {
-                    let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
-                        else { return Err("綁定名稱失配".into()) };
-                    let (id, storage) = containers.get(owner.as_str()).ok_or("容器來源缺失")?;
-                    let (_, value) = storage.as_ref().ok_or("容器已移動")?;
-                    let selector = match &block.selector.kind {
-                        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(text)) =>
-                            ContainerAtom::Integer(crate::syntax_shared::integer_i64(text).map_err(|_| "索引無效")?),
-                        TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => ContainerAtom::Boolean(*b),
-                        TermKind::Literal("str") => {
-                            let token = checked.tokens.binary_search_by_key(&block.selector.start, |t| t.start)
-                                .ok().and_then(|i| checked.tokens.get(i)).ok_or("字串鍵來源缺失")?;
-                            let TokenKind::StringLiteral(key) = &token.kind else { return Err("字串鍵來源失配".into()); };
-                            ContainerAtom::Text(key.clone())
-                        }
-                        _ => return Err("此入口尚未支援該選擇式".into()),
-                    };
-                    let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
-                    let result = value.lookup(&selector).ok_or("容器索引越界或缺鍵")
-                        .and_then(|element| execute_element_body(&block.body, alias, element, &mut |term|
-                                container_int_value(term, &mut gate, &containers, &integers, builtin_len)));
-                    gate.finish_method_with_snapshot(&[ticket], &[BorrowFact::new(*id, BorrowKind::SharedRead)]).map_err(|_| "容器借用歸還失敗")?;
-                    if let Some(n) = result.map_err(str::to_owned)? { return Ok(n); }
-                }
-                StmtKind::Return(ret) => return container_int_value(ret, &mut gate, &containers, &integers, builtin_len).map_err(str::to_owned),
-                _ => return Err("此入口尚未支援該語句".into()),
-            }
-        }
-        Err("缺少返回值".into())
-    })();
-    for name in declaration_order.into_iter().rev() {
-        let (owner, storage) = containers.remove(name).ok_or("容器宣告遺失")?;
-        if let Some((resource, value)) = storage {
-            drop(value);
-            gate.record_resource_cleanup(owner, resource).map_err(|_| "容器釋放來源失配")?;
-            gate.record_cleanup(owner).map_err(|_| "容器借用或所有權未閉合")?;
-        }
-    }
-    gate.audit_finished().map_err(|_| "容器資源未全部釋放")?;
-    run
+    let mut frame = ContainerFrame {
+        tokens: &checked.tokens, builtin_len: !checked.functions.iter().any(|f| f.name == "len"),
+        gate: crate::resource_borrow_pipeline::SafetyPipeline::new(), values: BTreeMap::new(),
+    };
+    let result = frame.block(&main.body, HashMap::new());
+    frame.gate.audit_finished().map_err(|_| "容器資源未全部釋放")?;
+    result?.ok_or_else(|| "缺少返回值".into())
 }
 
 #[cfg(test)]
 mod p19_scoped_execution {
     use super::*;
+
+    #[test]
+    fn cross_container_copy_uses_the_whole_declared_set() {
+        let code = include_str!("../../tests/fixtures/p19/跨容器元素複製.voil");
+        for (value, expected) in [("7",1), ("true",0), ("none",0)] {
+            assert_eq!(execute_container_main(&code.replace("[7]", &format!("[{value}]"))), Ok(expected));
+        }
+        for value in ["7", "none"] {
+            let source = code.replace("bool", "str").replace("[7]", &format!("[{value}]"));
+            assert!(inspect(&source).unwrap_err().message.contains("Copyable"));
+        }
+        assert!(inspect(&code.replace("Optional[bool,int]", "Optional[int]")).is_err());
+        let bad = code.replace("dest[\"值\"]", "dest[\"缺\"]");
+        assert_eq!(execute_container_main(&bad), Err("容器索引越界或缺鍵".into()));
+    }
 
     #[test]
     fn builtin_length_reads_list_and_dictionary_without_consuming() {
