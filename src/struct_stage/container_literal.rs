@@ -264,23 +264,29 @@ mod p19_scoped_execution {
     use super::*;
 
     #[test]
+    fn 繁中來源從解析到查找與區塊返回() {
+        let text = include_str!("../../tests/fixtures/p19/唯讀字典元素.voil");
+        assert_eq!(execute_container_main(text), Ok(9));
+    }
+
+    #[test]
     fn const_and_var_read_the_selected_integer_and_exit_scope() {
         for binding in ["const", "var"] {
-            let code = format!("fn main()->int{{\n{binding} xs:list[int] = [3,8]\nwith xs[1] as item {{\nreturn item\n}}\n}}\n");
+            let code = format!("fn main()->int{{\n{binding} xs:list[int] = [3,8]\nwith xs[1] as item {{\nreturn item\n}}\nreturn 0\n}}\n");
             assert_eq!(execute_container_main(&code), Ok(8));
         }
     }
 
     #[test]
     fn present_none_enters_body_and_absent_key_fails() {
-        let source = |key| format!("fn main()->int{{\nvar xs:dict{{str,Optional[int]}} = {{\"k\":none}}\nwith xs[\"{key}\"] as item {{\nreturn 9\n}}\n}}\n");
+        let source = |key| format!("fn main()->int{{\nvar xs:dict{{str,Optional[int]}} = {{\"k\":none}}\nwith xs[\"{key}\"] as item {{\nreturn 9\n}}\nreturn 0\n}}\n");
         assert_eq!(execute_container_main(&source("k")), Ok(9));
         assert_eq!(execute_container_main(&source("missing")), Err("容器索引越界或缺鍵".into()));
     }
 
     #[test]
     fn readonly_owner_cannot_move_even_after_last_alias_use() {
-        let code = "fn main()->int{\nvar xs:list[int] = [9]\nwith xs[0] as item {\nvar n:int = item\nvar stolen:list[int] = xs.move()\nreturn n\n}\n}\n";
+        let code = "fn main()->int{\nvar xs:list[int] = [9]\nwith xs[0] as item {\nvar n:int = item\nvar stolen:list[int] = xs.move()\nreturn n\n}\nreturn 0\n}\n";
         assert!(inspect(code).unwrap_err().message.contains("借用"));
     }
 }

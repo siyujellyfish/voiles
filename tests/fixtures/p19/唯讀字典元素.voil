@@ -1,0 +1,8 @@
+# 「備註」存在，值為 none，因此進入區塊並回傳 9。
+fn main()->int{
+var entries:dict{str,Optional[int]} = {"備註":none}
+with entries["備註"] as item {
+return 9
+}
+return 0
+}

@@ -2774,7 +2774,8 @@ mod p13_1_正式來源閉包 {
     }
 
     #[test]
-    fn 容器禁止與其他未決型別分開() {
+    // F00 的歷史案例名稱供 24 項原始義務追溯。P19 已將容器裁決為 Forbidden。
+    fn 容器未決與未知型別不誤報為永久不可複製() {
         let src = "fn main()->int{\nreturn 0\n}\n";
         for ty in ["list[int]", "list[list[float]]", "dict{str,int}"] {
             assert_eq!(ability(src, ty), CopyPermission::Forbidden, "{ty}");
