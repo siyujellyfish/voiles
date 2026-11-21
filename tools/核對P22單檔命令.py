@@ -52,6 +52,17 @@ def main():
         verify(["run", path.name], 1, error="執行期錯誤")
         path.write_text("import missing\nfn main()->int{\nreturn 0\n}\n", encoding="utf-8")
         verify(["check", path.name], 1, error=f"{path.name}:1:1: 匯入失敗")
+        path.write_text("fn main()->int{\nreturn 9223372036854775807\n}\n", encoding="utf-8")
+        verify(["run", path.name], 0, "9223372036854775807\n")
+        dep = Path(directory) / "shared.voil"
+        dep.write_text('share message:str = "A"\n', encoding="utf-8")
+        path.write_text("import shared\nfn main()->int{\nreturn shared.message[0][0]\n}\n",
+                        encoding="utf-8")
+        verify(["run", path.name], 0, "65\n")
+        path.write_text('import message from shared as msg\nfn main()->int{\nmsg = "B"\nreturn 0\n}\n',
+                        encoding="utf-8")
+        for mode in ["check", "run"]:
+            verify([mode, path.name], 1, error="靜態錯誤")
     print("P22 公開 CLI 單檔、多檔、靜態與動態失敗、退出碼及舊命令回歸通過")
 
 
