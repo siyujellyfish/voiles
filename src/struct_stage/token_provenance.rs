@@ -29,6 +29,15 @@ fn verified_private_token_roles(
                     && p.take('=', "").is_ok() && p.tok().end == value.end
                     && GraphemeReplacement::from_token(&p.tok().kind).as_ref() == Some(rhs)
             }
+            TermKind::LiteralIndex(text, first, second) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor: cursor + 1 };
+                matches!(&tokens[cursor].kind, TokenKind::StringLiteral(s) if s == text)
+                    && p.index_number().ok() == Some(*first)
+                    && second.is_none_or(|n| p.index_number().ok() == Some(n))
+                    && tokens[p.cursor-1].end == value.end
+            }
             TermKind::StringIndex(owner, first, second) => {
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
                 let source = Source::new(audit.source.as_bytes().to_vec());

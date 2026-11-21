@@ -95,6 +95,16 @@ fn cluster(value: &OwnedUtf8, index: i64) -> Result<Range<usize>, IndexError> {
     cluster_range(value.grapheme_starts.get_or_init(|| boundaries(value.text())), index)
 }
 
+pub(crate) fn literal_grapheme(text: &str, index: i64) -> Option<&str> {
+    let range = cluster_range(&boundaries(text), index).ok()?;
+    text.get(range)
+}
+
+pub(crate) fn literal_byte(text: &str, index: i64, byte: i64) -> Option<i64> {
+    let bytes = literal_grapheme(text, index)?.as_bytes();
+    Some(i64::from(bytes[position(byte, bytes.len()).ok()?]))
+}
+
 pub(crate) fn literal_index_valid(text: &str, index: i64, byte: Option<i64>) -> bool {
     cluster_range(&boundaries(text), index).is_ok_and(|range|
         byte.is_none_or(|offset| position(offset, range.len()).is_ok()))

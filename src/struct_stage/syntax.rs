@@ -252,8 +252,14 @@ impl Parser<'_> {
                 self.cursor += 1;
                 (TermKind::Literal("float"), end)
             }
-            TokenKind::StringLiteral(_) => {
+            TokenKind::StringLiteral(text) => {
                 let end = self.tok().end; self.cursor += 1;
+                if self.symbol('[') {
+                    let first = self.index_number()?;
+                    let byte = if self.symbol('[') { Some(self.index_number()?) } else { None };
+                    return Ok(Term { kind: TermKind::LiteralIndex(text, first, byte), start,
+                        end: self.tokens[self.cursor - 1].end });
+                }
                 (TermKind::Literal("str"), end)
             }
             TokenKind::Symbol('(') => {

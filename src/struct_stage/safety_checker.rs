@@ -375,7 +375,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
             TermKind::Container(value) => value.values().any(|atom| matches!(atom, ContainerAtom::ElementName(n) if n == name)),
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
+            TermKind::LiteralIndex(..) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
         }
     }
 
@@ -395,7 +395,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::MethodCall(_, _, args) =>
                 args.iter().any(Self::term_contains_direct_await),
             TermKind::AwaitMethodCall(_, _, _) => true,
-            TermKind::StringReplace(..) | TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::LiteralIndex(..) | TermKind::StringReplace(..) | TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => false,
@@ -468,7 +468,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     }
                 }
             }
-            TermKind::Scalar(_) | TermKind::Literal(_)
+            TermKind::LiteralIndex(..) | TermKind::Scalar(_) | TermKind::Literal(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Name(_)
             | TermKind::Borrow(_) | TermKind::FieldRead(_, _)
             | TermKind::FieldMove(_, _) => {}
@@ -1771,6 +1771,12 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     _ => {}
                 }
                 Ok(("str".into(), true))
+            }
+            TermKind::LiteralIndex(text, index, byte) => {
+                if !crate::owned_str_runtime::literal_index_valid(text, *index, *byte) {
+                    return Err(self.error("常值字串索引越界", term));
+                }
+                Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
             }
             TermKind::StringIndex(name, index, byte) => {
                 self.check_direct(vars, name, term)?;

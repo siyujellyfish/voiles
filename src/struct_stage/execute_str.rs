@@ -406,6 +406,11 @@ impl PreparedPrivateStr {
                     let mut expression = init;
                     while let TermKind::Group(inner) = &expression.kind { expression = inner; }
                     let action = match &expression.kind {
+                        TermKind::LiteralIndex(text, index, None) => PrivateStrAction::DeclareLiteral {
+                            name: binding.name.clone(), mutable: binding.mutable,
+                            text: crate::owned_str_runtime::literal_grapheme(text, *index)
+                                .ok_or(PrivateStrPrepareError::Unsupported("常值字素越界"))?.to_owned(),
+                        },
                         TermKind::StringIndex(owner, index, None) | TermKind::StringReplace(owner, index, _)
                             if bound.contains_key(owner) => PrivateStrAction::DeclareGrapheme {
                                 name: Some(binding.name.clone()), mutable: binding.mutable,
@@ -550,6 +555,14 @@ impl PreparedPrivateStr {
                     });
                 }
                 StmtKind::Return(ret) => {
+                    if let TermKind::LiteralIndex(text, index, Some(byte)) = &ret.kind {
+                        let value = crate::owned_str_runtime::literal_byte(text, *index, *byte)
+                            .ok_or(PrivateStrPrepareError::Unsupported("常值位元組越界"))?;
+                        operations.push(PrivateStrAction::Return(value));
+                        has_resource = true;
+                        returned = true;
+                        continue;
+                    }
                     if let TermKind::StringIndex(name, grapheme, Some(byte)) = &ret.kind {
                         if !bound.contains_key(name) {
                             return Err(PrivateStrPrepareError::Unsupported("缺少真字串宣告"));
@@ -776,6 +789,15 @@ mod p17_private_str_execution_tests {
         assert_eq!(outcome.result, Ok(160));
         assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
         assert!(inspect(&src.replace("s[1] =", "s[1][0] =")).is_err());
+    }
+
+    #[test]
+    fn p19_unicode_literal_indexes_select_a_grapheme_or_byte() {
+        let code = "fn main()->int{\nreturn \"你\"[0][-1]\n}\n";
+        assert_eq!(PreparedPrivateStr::prepare(code).unwrap().execute().unwrap().result, Ok(160));
+        assert!(inspect(&code.replace("[-1]", "[3]")).is_err());
+        let first = code.replace("return \"你\"[0][-1]", "const g:str = \"你我\"[-1]\nreturn g[0][0]");
+        assert_eq!(PreparedPrivateStr::prepare(&first).unwrap().execute().unwrap().result, Ok(230));
     }
 
     #[test]
