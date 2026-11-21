@@ -21,6 +21,47 @@ fn verified_private_token_roles(
         value: &Term, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &value.kind {
+            TermKind::StringReplace(owner, index, rhs) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor };
+                p.name().ok().as_ref() == Some(owner) && p.string_offset().ok().as_ref() == Some(index)
+                    && p.take('=', "").is_ok() && p.tok().end == value.end
+                    && GraphemeReplacement::from_token(&p.tok().kind).as_ref() == Some(rhs)
+            }
+            TermKind::LiteralIndex(text, first, second) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor: cursor + 1 };
+                matches!(&tokens[cursor].kind, TokenKind::StringLiteral(s) if s == text)
+                    && p.index_number().ok() == Some(*first)
+                    && second.is_none_or(|n| p.index_number().ok() == Some(n))
+                    && tokens[p.cursor-1].end == value.end
+            }
+            TermKind::StringIndex(owner, first, second) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor };
+                p.name().ok().as_ref() == Some(owner) && p.string_offset().ok().as_ref() == Some(first)
+                    && second.as_ref().is_none_or(|n| p.string_offset().ok().as_ref() == Some(n))
+                    && tokens[p.cursor-1].end == value.end
+            }
+            TermKind::OptionalCondition(name, predicate) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor };
+                matches!(p.optional_condition(), Ok(Some(Term {
+                    kind: TermKind::OptionalCondition(actual, pred), end, ..
+                })) if &actual == name && &pred == predicate && end == value.end)
+            }
+            TermKind::Container(literal) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut parser = Parser { source: &source, tokens, cursor };
+                matches!(parser.container_literal(&literal.ty), Ok(Term {
+                    kind: TermKind::Container(actual), end, ..
+                }) if actual == *literal && end == value.end)
+            }
             TermKind::Call(call) => {
                 if call.awaited {
                     let Some(index) = tokens.binary_search_by_key(
@@ -131,10 +172,29 @@ fn verified_private_token_roles(
         stmt: &Stmt, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &stmt.kind {
+            StmtKind::GraphemeWrite(value) => matches!(value.kind, TermKind::StringReplace(..))
+                && value.node_span() == stmt.node_span() && term(value, tokens, audit),
+            StmtKind::ReadonlyElement(binding) => {
+                let Ok(i) = tokens.binary_search_by_key(&stmt.start, |t| t.start) else { return false };
+                let Ok(j) = tokens.binary_search_by_key(&binding.alias.start, |t| t.start) else { return false };
+                matches!(tokens.get(i).map(|t| &t.kind), Some(TokenKind::Name(word)) if word == "with")
+                    && tokens.get(i+1) == Some(&binding.owner)
+                    && tokens.get(i+2).is_some_and(|t| t.kind == TokenKind::Symbol('['))
+                    && tokens.get(i+3).is_some_and(|t| t.start == binding.selector.start)
+                    && j >= i+6 && tokens[j-3].end == binding.selector.end
+                    && tokens[j-2].kind == TokenKind::Symbol(']')
+                    && matches!(&tokens[j-1].kind, TokenKind::Name(word) if word == "as")
+                    && tokens[j] == binding.alias
+                    && tokens.get(j+1).is_some_and(|t| t.start == binding.body.start && t.kind == TokenKind::Symbol('{'))
+                    && stmt.end == binding.body.end
+                    && term(&binding.selector, tokens, audit) && block(&binding.body, tokens, audit)
+            }
             StmtKind::Declare(decl) =>
-                crate::syntax_shared::checked_declaration_tokens(
-                    decl, &decl.ty, tokens, audit,
-                ) && decl.initializer.as_ref().is_none_or(|value|
+                (if crate::container_copy_policy::classify_container_shape(&decl.ty).is_some() {
+                    checked_container_declaration(decl, tokens, audit)
+                } else {
+                    crate::syntax_shared::checked_declaration_tokens(decl, &decl.ty, tokens, audit)
+                }) && decl.initializer.as_ref().is_none_or(|value|
                     term(value, tokens, audit)),
             StmtKind::If { branch, no } => {
                 term(&branch.condition, tokens, audit)

@@ -1,0 +1,16 @@
+# 將唯讀清單元素放入新字典。兩個容器各自擁有一份 Optional 值。
+fn main()->int{
+var source:list[Optional[int,bool]] = [7]
+with source[0] as item {
+var dest:dict{str,Optional[bool,int]} = {"值":item}
+with dest["值"] as copy {
+if(copy != none){
+if(copy is int){
+return 1
+}
+}
+return 0
+}
+}
+return 0
+}

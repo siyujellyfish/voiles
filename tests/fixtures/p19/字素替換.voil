@@ -1,0 +1,7 @@
+# 將 B 換成組合重音後，它與 A 合為一個字素。
+fn main()->int{
+var s:str = "AB"
+const old:str = s[1]
+const written:str = (s[1] = "́")
+return s[0][-1]
+}

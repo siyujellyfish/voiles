@@ -48,7 +48,7 @@ fn verified_private_syntax_roles(
                     && arguments.iter().all(|expression|
                         term(expression, span, audit))
             },
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::LiteralIndex(..) | TermKind::StringReplace(..) | TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_)
             | TermKind::Move(_) | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => true,
@@ -73,6 +73,10 @@ fn verified_private_syntax_roles(
             return false;
         }
         match &value.kind {
+            StmtKind::GraphemeWrite(value) => term(value, span, audit),
+            StmtKind::ReadonlyElement(binding) =>
+                audit.record(NodeRole::Declaration, NodeSpan::new(binding.alias.start, binding.alias.end), Some(span))
+                    && term(&binding.selector, span, audit) && block(&binding.body, span, audit),
             StmtKind::Declare(decl) => {
                 let dspan = NodeSpan::new(decl.start, decl.end);
                 audit.record(NodeRole::Declaration, dspan, Some(span))

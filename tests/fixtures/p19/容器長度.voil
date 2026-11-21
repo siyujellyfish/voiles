@@ -1,0 +1,8 @@
+# 值相同的兩個鍵各計一次。區塊內仍可共享讀取原字典長度。
+fn main()->int{
+var entries:dict{str,int} = {"甲":9,"乙":9}
+with entries["甲"] as item {
+return len(entries)
+}
+return 0
+}

@@ -87,11 +87,21 @@ struct Parameter {
     type_span: crate::common_ir::NodeSpan,
 }
 
+#[derive(Debug, Clone)]
+struct ReadonlyElementBlock {
+    owner: Token,
+    selector: Term,
+    alias: Token,
+    body: crate::syntax_shared::ParsedBlock<Stmt>,
+}
+
 /// 私有安全語句 AST 共用相同具位置的節點外殼。
 type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
 enum StmtKind {
+    ReadonlyElement(Box<ReadonlyElementBlock>),
+    GraphemeWrite(Term),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
     FieldAssign { receiver: String, field: String, value: Term },
@@ -116,6 +126,34 @@ enum StmtKind {
 }
 
 /// 私有受限運算式與公開 Expr 使用同一 AST 外殼，仍保留私有節點種類。
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum GraphemeReplacement {
+    Literal(String),
+    Named(String),
+}
+
+impl GraphemeReplacement {
+    fn from_token(token: &TokenKind) -> Option<Self> {
+        match token {
+            TokenKind::StringLiteral(value) => Some(Self::Literal(value.clone())),
+            TokenKind::Name(name) => Some(Self::Named(name.clone())),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum StringOffset {
+    Constant(i64),
+    Named(String),
+}
+
+impl StringOffset {
+    fn name(&self) -> Option<&str> {
+        match self { Self::Named(n) => Some(n), Self::Constant(_) => None }
+    }
+}
+
 type Term = crate::common_ir::SpannedNode<TermKind>;
 
 // F02：本 enum 的已核准公私交集由 common_ir 唯一宣告產生。
@@ -123,6 +161,11 @@ crate::common_ir::define_shared_expression_kind!(
     TermKind, Term, Vec<Term>, [Debug, Clone], {
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
+        Container(ContainerLiteral),
+        LiteralIndex(String, i64, Option<i64>),
+        StringIndex(String, StringOffset, Option<StringOffset>),
+        StringReplace(String, StringOffset, GraphemeReplacement),
+        OptionalCondition(String, OptionalPredicate),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct
         /// 或前向宣告的零參數 fn。正式 AST 明示待語意解析，
@@ -148,6 +191,7 @@ struct Parser<'a> {
 
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
+include!("struct_stage/container_literal.rs");
 
 // P17-C：只有完整私有 Checker 安全驗證後才可實際分配資源。
 include!("struct_stage/execute_str.rs");
@@ -200,6 +244,10 @@ struct Binding {
     declaration_start: DeclarationId,
     ty: String,
     mutable: bool,
+    scoped_element: bool,
+    literal_token: Option<usize>,
+    candidate_sites: BTreeSet<usize>,
+    narrowed_candidate: Option<String>,
     safety: SafetyState,
 }
 
@@ -310,7 +358,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable,
+            declaration_start, ty, mutable, scoped_element: false, literal_token: None, candidate_sites: BTreeSet::new(), narrowed_candidate: None,
             safety: SafetyState { value, pending_fields, loan },
         }
     }
@@ -537,6 +585,7 @@ impl VerifiedExitSnapshot {
 }
 
 struct Checker<'a, C> {
+    tokens: &'a [Token],
     source: &'a Source,
     structs: &'a HashMap<String, StructDecl>,
     functions: &'a [Function],
@@ -559,6 +608,7 @@ struct Checker<'a, C> {
         crate::common_ir::ModeNodeIdentity, crate::common_ir::VerifiedTypedMember
     >>,
     recorded_member_conflicts: RefCell<BTreeSet<usize>>,
+    redundant_checks: RefCell<BTreeSet<(usize, usize)>>,
     /// F11：相同 AST 宣告被不同路徑檢查時若型別／可變權限不一致，
     /// 不能以覆寫表項掩藏衝突，也不能只靠 debug_assert 保護。
     recorded_declaration_conflicts: RefCell<BTreeSet<DeclarationId>>,
@@ -772,7 +822,8 @@ impl VerifiedDeclarationFacts {
                     StmtKind::While { body, .. } | StmtKind::ForRange { body, .. } => {
                         visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
-                    StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
+                    StmtKind::ReadonlyElement(block) => visit(&block.body, direct_targets, borrow_targets, named_returns, field_writes),
+                    StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
             }
         }
@@ -1028,6 +1079,7 @@ impl VerifiedSafetyPlan {
                     | (StmtKind::Continue, FlowState::Continue)
             );
             (same_span && same_flow) || match &stmt.kind {
+                StmtKind::ReadonlyElement(block) => Self::control_edge_matches_ast(&block.body, edge),
                 StmtKind::If { branch, no } =>
                     Self::control_edge_matches_ast(&branch.body, edge)
                         || no.as_ref().is_some_and(|otherwise|
@@ -1193,6 +1245,7 @@ impl VerifiedSafetyPlan {
 }
 
 struct VerifiedPrivateSource {
+    redundant_checks: BTreeSet<(usize, usize)>,
     source: Source,
     /// 保留同一正式 Lexer 交給私有 Parser 的原始 token，避免第二套解析。
     tokens: Vec<Token>,
@@ -1253,6 +1306,8 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
         recorded_direct_borrows: RefCell::new(BTreeMap::new()),
         recorded_declarations: RefCell::new(BTreeMap::new()),
         recorded_member_types: RefCell::new(BTreeMap::new()),
+        tokens: &tokens.tokens,
+        redundant_checks: RefCell::default(),
         recorded_member_conflicts: RefCell::new(BTreeSet::new()),
         recorded_declaration_conflicts: RefCell::new(BTreeSet::new()),
         recorded_named_returns: RefCell::new(BTreeSet::new()),
@@ -1328,7 +1383,7 @@ fn verify_source_core_with_ability(text: &str, ability: impl Fn(&str) -> CopyPer
             span: None,
         });
     }
-    Ok(VerifiedPrivateSource { source, tokens: tokens.tokens, structs, functions, plan })
+    Ok(VerifiedPrivateSource { redundant_checks: checker.redundant_checks.into_inner(), source, tokens: tokens.tokens, structs, functions, plan })
 }
 
 /// F00：唯一的正式私有來源入口維持原樣；只有內部測試開啟
@@ -1394,6 +1449,13 @@ fn inspect_with_ability(text: &str, ability: impl Fn(&str) -> CopyPermission)
  */
 pub(crate) fn inspect(text: &str) -> Result<(), Diagnostic> {
     inspect_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)
+}
+
+/// 與 inspect 共用核准 Checker，將非阻斷的重檢位置交給內部呼叫端。
+pub(crate) fn inspect_redundant_candidate_warnings(text: &str)
+    -> Result<Vec<crate::SourceSpan>, Diagnostic> {
+    let checked = verify_source_with_ability(text, crate::ownership_policy::approved_leaf_copy_permission)?;
+    Ok(checked.redundant_checks.iter().map(|&(start, end)| checked.source.span(start, end)).collect())
 }
 
 /// 歷史測試保留假設能力注入，僅用於驗證 S19 合取及未知能力；

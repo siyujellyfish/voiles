@@ -57,7 +57,7 @@ grep -q "p13_d02_const_partial_safety_tests::d02_a_const_" \
   target/p13-accept/internal_tests.list
 grep -q "float_copyable_method_tests::float_已准_copyable_" \
   target/p13-accept/internal_tests.list
-grep -q "container_copy_policy::tests::d01_後續_list_a_dict_a_保留兩種類獨立未決" \
+grep -q "container_copy_policy::tests::p19_兩種容器禁止複製" \
   target/p13-accept/internal_tests.list
 grep -q "container_copy_policy::tests::d01_後續_list_a_dict_a_拒絕隱含複製" \
   target/p13-accept/internal_tests.list

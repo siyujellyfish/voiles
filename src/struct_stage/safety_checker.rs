@@ -304,6 +304,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             // 來源 Binding 本身也必須由同一份 Checker 已提交的
             // TypedDeclaration 授權；不能只看一筆可以被篡改的詞彙型別。
             let verified_source = self.checked_binding_use(source, term)?;
+            if owner.scoped_element {
+                if !owner.mutable && loan.active && loan.fact.kind == BorrowKind::SharedRead
+                    && element_type(verified_source.resolved.ty).is_some_and(|(_, t)| t == reference.resolved.ty) {
+                    return Self::active_loan_snapshot(vars).validate()
+                        .map_err(|_| self.error("唯讀元素的借用來源衝突", term));
+                }
+                return Err(self.error("唯讀元素與持有者型別或借用權限不符", term));
+            }
             if verified_source.resolved.declaration != loan.fact.source
                 || verified_source.resolved.ty != reference.resolved.ty
                 || source.mutable != owner.mutable
@@ -353,7 +361,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
             TermKind::Group(inner) => Self::term_mentions(inner, name),
-            TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+            TermKind::StringReplace(id, offset, rhs) => id == name || offset.name() == Some(name) || matches!(rhs, GraphemeReplacement::Named(n) if n == name),
+            TermKind::StringIndex(id, first, second) => id == name || first.name() == Some(name) || second.as_ref().and_then(StringOffset::name) == Some(name),
+            TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
             TermKind::MethodCall(id, _, args)
@@ -365,7 +375,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 call.arguments.iter().any(|value| Self::term_mentions(value, name)),
             TermKind::BinaryInt(binary) =>
                 Self::term_mentions(&binary.left, name) || Self::term_mentions(&binary.right, name),
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
+            TermKind::Container(value) => value.values().any(|atom| matches!(atom, ContainerAtom::ElementName(n) if n == name)),
+            TermKind::LiteralIndex(..) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::UnresolvedZeroArgs(_) => false,
         }
     }
 
@@ -385,7 +396,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::MethodCall(_, _, args) =>
                 args.iter().any(Self::term_contains_direct_await),
             TermKind::AwaitMethodCall(_, _, _) => true,
-            TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::LiteralIndex(..) | TermKind::StringReplace(..) | TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => false,
@@ -440,7 +451,33 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
                 Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
             }
-            TermKind::Scalar(_) | TermKind::Literal(_)
+            TermKind::StringReplace(name, offset, rhs) => {
+                if kind == ResolvedUseKind::All {
+                    Self::record_named_future_use(visible, used, name);
+                    if let Some(n) = offset.name() { Self::record_named_future_use(visible, used, n); }
+                    if let GraphemeReplacement::Named(rhs) = rhs {
+                        Self::record_named_future_use(visible, used, rhs);
+                    }
+                }
+            }
+            TermKind::StringIndex(name, first, second) => {
+                if kind == ResolvedUseKind::All {
+                    for n in [Some(name.as_str()), first.name(), second.as_ref().and_then(StringOffset::name)].into_iter().flatten() {
+                        Self::record_named_future_use(visible, used, n);
+                    }
+                }
+            }
+            TermKind::OptionalCondition(name, _) => {
+                if kind == ResolvedUseKind::All { Self::record_named_future_use(visible, used, name); }
+            }
+            TermKind::Container(value) => {
+                if kind == ResolvedUseKind::All {
+                    for atom in value.values() {
+                        if let ContainerAtom::ElementName(n) = atom { Self::record_named_future_use(visible, used, n); }
+                    }
+                }
+            }
+            TermKind::LiteralIndex(..) | TermKind::Scalar(_) | TermKind::Literal(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Name(_)
             | TermKind::Borrow(_) | TermKind::FieldRead(_, _)
             | TermKind::FieldMove(_, _) => {}
@@ -458,6 +495,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn future_stmt_exit(statement: &Stmt) -> Option<FlowState> {
         match &statement.kind {
             StmtKind::Return(_) => Some(FlowState::Returned),
+            StmtKind::ReadonlyElement(block) => Self::future_block_exit(&block.body),
             StmtKind::Break => Some(FlowState::Break),
             StmtKind::Continue => Some(FlowState::Continue),
             StmtKind::If { branch, no: Some(otherwise) } => {
@@ -535,6 +573,16 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::Return(term) =>
                     Self::scan_resolved_term_uses(term, visible, used, kind),
+                StmtKind::GraphemeWrite(value) => Self::scan_resolved_term_uses(value, visible, used, kind),
+                StmtKind::ReadonlyElement(binding) => {
+                    if let TokenKind::Name(owner) = &binding.owner.kind {
+                        Self::record_named_future_use(visible, used, owner);
+                    }
+                    Self::scan_resolved_term_uses(&binding.selector, visible, used, kind);
+                    let mut nested = visible.clone();
+                    if let TokenKind::Name(name) = &binding.alias.kind { nested.remove(name); }
+                    Self::scan_resolved_block_uses(&binding.body, &mut nested, used, kind);
+                }
                 StmtKind::Break | StmtKind::Continue => {}
             }
             if Self::future_stmt_must_exit(statement) {
@@ -602,6 +650,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 continue;
             }
             for binding in Rc::make_mut(scope).values_mut() {
+                if binding.scoped_element { continue; }
                 let declaration_start = binding.declaration_start;
                 if let Some(loan) = binding.loan.as_mut() {
                     // 參數及 self 的原有效期仍須由其函式出口負責。
@@ -1682,6 +1731,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         let result = self.evaluate_inner(term, vars)?;
+        if matches!(term.kind, TermKind::Call(_) | TermKind::MethodCall(..) | TermKind::AwaitMethodCall(..))
+            || matches!(&term.kind, TermKind::UnresolvedZeroArgs(n) if self.find_function(n).is_some()) {
+            for scope in vars.iter_mut() {
+                if scope.values().any(|binding| binding.narrowed_candidate.is_some()) {
+                    for binding in Rc::make_mut(scope).values_mut() { binding.narrowed_candidate = None; }
+                }
+            }
+        }
         if result.1 {
             if let Some(ty) = crate::common_ir::ScalarType::from_name(&result.0) {
                 self.recorded_scalar_hir.borrow_mut()
@@ -1691,12 +1748,130 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Ok(result)
     }
 
+    fn check_string_offset(&self, offset: &StringOffset, vars: &Scopes, term: &Term) -> Result<(), Diagnostic> {
+        if let Some(n) = offset.name() {
+            self.check_direct(vars, n, term)?;
+            let b = Self::lookup(vars, n).ok_or_else(|| self.error("索引名稱未宣告", term))?;
+            if b.ty != "int" || b.loan.is_some() { return Err(self.error("索引需要具名 int 持有者", term)); }
+            b.value.read().map_err(|e| self.model_error(e, term))?;
+        }
+        Ok(())
+    }
+
     fn evaluate_inner(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
             TermKind::Group(inner) => self.evaluate(inner, vars),
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
+            TermKind::StringReplace(name, offset, rhs) => {
+                self.check_string_offset(offset, vars, term)?;
+                self.check_direct(vars, name, term)?;
+                let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;
+                if owner.ty != "str" || !owner.mutable || owner.loan.is_some() {
+                    return Err(self.error("字素替換需要可寫的字串持有者", term));
+                }
+                owner.value.read().map_err(|e| self.model_error(e, term))?;
+                match rhs {
+                    GraphemeReplacement::Literal(value) if !crate::owned_str_runtime::single_grapheme(value) =>
+                        return Err(self.error("替換值必須恰有一個字素", term)),
+                    GraphemeReplacement::Named(source) => {
+                        self.check_direct(vars, source, term)?;
+                        let value = Self::lookup(vars, source).ok_or_else(|| self.error("替換值未宣告", term))?;
+                        if value.ty != "str" || value.loan.is_some() {
+                            return Err(self.error("替換值需要字串持有者", term));
+                        }
+                        value.value.read().map_err(|e| self.model_error(e, term))?;
+                        if let Some(TokenKind::StringLiteral(text)) = value.literal_token.map(|i| &self.tokens[i].kind) {
+                            if !crate::owned_str_runtime::single_grapheme(text) {
+                                return Err(self.error("替換值必須恰有一個字素", term));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+                Ok(("str".into(), true))
+            }
+            TermKind::LiteralIndex(text, index, byte) => {
+                if !crate::owned_str_runtime::literal_index_valid(text, *index, *byte) {
+                    return Err(self.error("常值字串索引越界", term));
+                }
+                Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
+            }
+            TermKind::StringIndex(name, index, byte) => {
+                self.check_string_offset(index, vars, term)?;
+                if let Some(b) = byte { self.check_string_offset(b, vars, term)?; }
+                self.check_direct(vars, name, term)?;
+                let owner = Self::lookup(vars, name).ok_or_else(|| self.error("找不到字串來源", term))?;
+                if owner.ty != "str" || owner.loan.is_some() {
+                    return Err(self.error("索引需要直接的字串持有者", term));
+                }
+                owner.value.read().map_err(|e| self.model_error(e, term))?;
+                if let (Some(TokenKind::StringLiteral(text)), StringOffset::Constant(first)) =
+                    (owner.literal_token.map(|i| &self.tokens[i].kind), index) {
+                    let known_byte = match byte { Some(StringOffset::Constant(b)) => Some(*b), _ => None };
+                    if !crate::owned_str_runtime::literal_index_valid(text, *first, known_byte) {
+                        return Err(self.error("常值字串索引越界", term));
+                    }
+                }
+                Ok((if byte.is_some() { "int" } else { "str" }.to_owned(), true))
+            }
+            TermKind::Container(value) => {
+                value.visit_elements(&mut |expected, atom| {
+                    if let ContainerAtom::ElementName(name) = atom {
+                        self.check_direct(vars, name, term)?;
+                        let binding = Self::lookup(vars, name).ok_or_else(|| self.error("找不到唯讀元素", term))?;
+                        if !binding.scoped_element || expected != binding.ty {
+                            return Err(self.error("跨容器元素需要相同宣告型別的唯讀 Optional", term));
+                        }
+                        let allowed = binding.ty.strip_prefix("Optional[").and_then(|t| t.strip_suffix(']'))
+                            .is_some_and(|set| set.split(',').all(|t| self.permission(t) == CopyPermission::Allowed));
+                        if !allowed { return Err(self.error("跨容器複製要求所有候選均為 Copyable", term)); }
+                    }
+                    Ok(())
+                })?;
+                Ok((value.ty.clone(), true))
+            },
+            TermKind::OptionalCondition(name, predicate) => {
+                let Some(binding) = Self::lookup(vars, name) else {
+                    return Err(self.error("Optional 條件左側名稱未宣告", term));
+                };
+                let span = Some(self.source.span(term.start, term.end));
+                let syntax = |message: &str| Diagnostic { kind: DiagnosticKind::Syntax, span, message: message.into() };
+                if let OptionalPredicate::IndexedCandidate { selector_type, candidate } = predicate {
+                    let Some((key, value)) = element_type(&binding.ty) else {
+                        return Err(syntax("專用條件左側需要 Optional"));
+                    };
+                    if key != *selector_type {
+                        return Err(self.error("索引或字典鍵型別不符", term));
+                    }
+                    if candidate.is_none() { return Err(syntax("is 右側缺少候選型別")); }
+                    if value.starts_with("Optional[") {
+                        return Err(self.error("is 左側需要已綁定的具名 Optional", term));
+                    }
+                    return Err(syntax("專用條件左側需要 Optional"));
+                }
+                if let OptionalPredicate::Candidate(None) = predicate {
+                    return Err(syntax("is 右側缺少候選型別"));
+                }
+                let Some(types) = binding.ty.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']')) else {
+                    return Err(syntax("專用條件左側需要 Optional"));
+                };
+                self.check_direct(vars, name, term)?;
+                if !binding.scoped_element { return Err(self.error("缺少區塊唯讀元素來源", term)); }
+                if let OptionalPredicate::Candidate(Some(candidate)) = predicate {
+                    if !types.split(',').any(|t| t == candidate) {
+                        return Err(self.error("is 右側型別不在候選集合", term));
+                    }
+                    if !binding.candidate_sites.contains(&term.start) {
+                        return Err(self.error("is 需要緊接同一來源的非缺失證明", term));
+                    }
+                    if binding.narrowed_candidate.as_deref() == Some(candidate.as_str()) {
+                        self.redundant_checks.borrow_mut().insert((term.start, term.end));
+                    }
+                }
+                Ok(("bool".into(), true))
+            }
             TermKind::BinaryInt(binary) => {
                 let left = &binary.left;
                 let right = &binary.right;
@@ -1994,6 +2169,18 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Call(call) => {
                 let name = &call.name;
                 let args = &call.arguments;
+                if name == "len" && self.find_function(name).is_none() {
+                    let [arg] = args.as_slice() else { return Err(self.error("len 需要一個容器", term)); };
+                    let TermKind::Name(owner) = &arg.kind else { return Err(self.error("len 需要具名容器", arg)); };
+                    let binding = Self::lookup(vars, owner).ok_or_else(|| self.error("len 的來源未宣告", arg))?;
+                    if call.awaited || element_type(&binding.ty).is_none() || binding.loan.is_some() {
+                        return Err(self.error("len 需要同步讀取 list 或 dict 持有者", term));
+                    }
+                    let identity = self.checked_binding_use(binding, arg)?.resolved.declaration;
+                    binding.value.read().map_err(|e| self.model_error(e, arg))?;
+                    self.check_borrow_conflicts(vars, identity, BorrowKind::SharedRead, arg, "len 與獨占借用衝突")?;
+                    return Ok(("int".into(), true));
+                }
                 let function = self.find_function(name)
                     .ok_or_else(|| self.error("P13：呼叫不存在的函式", term))?;
                 if function.is_async && !call.awaited {
@@ -2217,6 +2404,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// break／continue 不屬於外層，不能因此封鎖合法單次移動。
     fn has_current_loop_transfer(body: &[Stmt]) -> bool {
         body.iter().any(|stmt| match &stmt.kind {
+            StmtKind::ReadonlyElement(binding) => Self::has_current_loop_transfer(&binding.body),
             StmtKind::Break | StmtKind::Continue => true,
             StmtKind::If { branch, no } => Self::has_current_loop_transfer(&branch.body)
                 || no.as_ref().is_some_and(|other| Self::has_current_loop_transfer(other)),
@@ -2286,6 +2474,19 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::release_last_uses(vars, body, continuation);
         for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
+                StmtKind::GraphemeWrite(value) => { self.evaluate(value, vars)?; }
+                StmtKind::ReadonlyElement(block) => {
+                    let alias = self.scoped_element_binding(block, vars)?;
+                    let TokenKind::Name(name) = &block.alias.kind else { unreachable!() };
+                    self.record_declaration(alias.declaration_start, &alias.ty, false);
+                    let mut following = continuation.to_vec();
+                    following.push((vars.len()-1, body[position+1..].to_vec()));
+                    vars.push(Rc::new(HashMap::from([(name.clone(), alias)])));
+                    let result = self.statement_body(&block.body, vars, expected_return, &following, loop_entry);
+                    vars.pop();
+                    let state = result?;
+                    if state != FlowState::Fallthrough { return Ok(state); }
+                }
                 StmtKind::Declare(declaration) => {
                     let name = &declaration.name;
                     let ty = &declaration.ty;
@@ -2296,7 +2497,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                             message: "此受限子集不接受同作用域重複宣告".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
                     }
-                    if !self.known_type(ty) {
+                    let parsed_container = crate::container_copy_policy::classify_container_shape(ty).is_some();
+                    if !parsed_container && !self.known_type(ty) {
                         return Err(Diagnostic { kind: DiagnosticKind::Static,
                             message: "宣告使用不存在的型別".into(),
                             span: Some(self.source.span(statement.start, statement.end)) });
@@ -2362,14 +2564,15 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                         if continuation.is_empty() && loop_entry.is_none() {
                             loan.as_ref().map(|alias| alias.fact)
                         } else { None };
-                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), Binding::new(
-        DeclarationId(statement.start),
-        ty.clone(),
-        *mutable,
-        slot,
-        pending_fields,
-        loan,
-    ));
+                    let mut binding = Binding::new(DeclarationId(statement.start), ty.clone(),
+                        *mutable, slot, pending_fields, loan);
+                    if !*mutable && ty == "str" {
+                        if let Some(value) = init.as_ref().filter(|v| matches!(v.kind, TermKind::Literal("str"))) {
+                            binding.literal_token = self.tokens.binary_search_by_key(&value.start, |t| t.start)
+                                .ok().filter(|&i| self.tokens[i].end == value.end);
+                        }
+                    }
+                    Rc::make_mut(vars.last_mut().expect("應有詞彙作用域")).insert(name.clone(), binding);
                     self.record_declaration(DeclarationId(statement.start), ty, *mutable);
                     if let Some(fact) = direct_borrow_fact {
                         self.recorded_direct_borrows.borrow_mut()
@@ -2693,11 +2896,22 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_branch.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
+                    if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(false)) = &condition.kind {
+                        Self::permit_candidates(&mut on_true, name, yes);
+                    }
+                    if let TermKind::OptionalCondition(name, OptionalPredicate::Candidate(Some(ty))) = &condition.kind {
+                        if let Some(binding) = Self::lookup_mut(&mut on_true, name) {
+                            binding.narrowed_candidate = Some(ty.clone());
+                        }
+                    }
                     let true_flow = self.statements_with_follow(
                         yes, &mut on_true, expected_return, true, &after_branch,
                         loop_entry)?;
                     let mut on_false = snapshot.clone();
                     let false_flow = if let Some(otherwise) = no {
+                        if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(true)) = &condition.kind {
+                            Self::permit_candidates(&mut on_false, name, otherwise.as_slice());
+                        }
                         self.statements_with_follow(
                             otherwise, &mut on_false, expected_return, true, &after_branch,
                             loop_entry)?
@@ -2733,6 +2947,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 }
                                 Some(same.value)
                             } else { None };
+                            if (live_true && original.narrowed_candidate != on_true[depth][name].narrowed_candidate)
+                                || (live_false && original.narrowed_candidate != on_false[depth][name].narrowed_candidate) {
+                                original.narrowed_candidate = None;
+                            }
                             let joined_value = ValueSlot::join_reachable(&[left, right])
                                 .map_err(|err| self.model_error(err, condition))?;
                             // 只有各可達分支的缺失欄位集合完全相同，才能
@@ -2911,7 +3129,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::While { condition, .. } => {
                     return Err(self.error("P15：方法中的 while 借用重入尚未完成安全證明", condition));
                 }
-                StmtKind::ForRange { .. } => {
+                StmtKind::GraphemeWrite(_) | StmtKind::ReadonlyElement(_) | StmtKind::ForRange { .. } => {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P15：方法中的 for 借用重入尚未完成安全證明".into(),
                         span: Some(self.source.span(stmt.start, stmt.end)) });

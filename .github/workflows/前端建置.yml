@@ -640,3 +640,6 @@ jobs:
 
       - name: G18 V0 原六項二十六義務與歷史回歸來源盤點
         run: python3 tools/核對G18-V0原六項義務來源.py --test-bin target/p02/p04_source_internal --report target/p02/g18_v0_obligations.json
+
+      - name: G19 五項容器與核心函式庫正式驗收
+        run: python3 tools/核對G19正式驗收.py --test-bin target/p02/p04_source_internal
