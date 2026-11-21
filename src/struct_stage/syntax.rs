@@ -96,6 +96,16 @@ impl Parser<'_> {
         let members = candidates.into_iter().collect::<Vec<_>>().join(",");
         Ok(format!("Optional[{members}]"))
     }
+    fn index_number(&mut self) -> Result<i64, Diagnostic> {
+        self.take('[', "字串索引需要左方括號")?;
+        let negative = self.symbol('-');
+        if negative { self.cursor += 1; }
+        let TokenKind::Integer(n) = &self.tok().kind else { return Err(self.syntax("目前支援整數常值索引")); };
+        let absolute = crate::syntax_shared::integer_i64(n).map_err(|_| self.syntax("索引超出 int 範圍"))?;
+        self.cursor += 1;
+        self.take(']', "字串索引需要右方括號")?;
+        Ok(if negative { -absolute } else { absolute })
+    }
     fn end_statement(&mut self) -> Result<(), Diagnostic> {
         if crate::syntax_shared::finish_statement(self.tokens, &mut self.cursor) {
             Ok(())
@@ -336,6 +346,14 @@ impl Parser<'_> {
                     }
                 } else if crate::syntax_shared::name_suffix_head(self.tokens, self.cursor)
                     == crate::syntax_shared::NameSuffixHead::Index {
+                    let saved = self.cursor;
+                    let grapheme = self.index_number()?;
+                    let byte = if self.symbol('[') { Some(self.index_number()?) } else { None };
+                    if !self.symbol('.') {
+                        return Ok(Term { start, end: self.tokens[self.cursor-1].end,
+                            kind: TermKind::StringIndex(s, grapheme, byte) });
+                    }
+                    self.cursor = saved;
                     // P15.4：仍無索引項目的來源身分／存活期證明，
                     // 不得把 str、list 或 dict 的元素當成可直接借用的持有者。
                     return Err(self.syntax(

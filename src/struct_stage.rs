@@ -133,6 +133,7 @@ crate::common_ir::define_shared_expression_kind!(
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
         Container(ContainerLiteral),
+        StringIndex(String, i64, Option<i64>),
         OptionalCondition(String, OptionalPredicate),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct

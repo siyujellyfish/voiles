@@ -27,6 +27,7 @@ enum PrivateStrAction {
     /// P18-B：原 Checker 已驗證 var bool 直接常值重綁；分支以同一身分取最新值。
     AssignBool { identity: DeclarationId, value: bool },
     AssignBoolFrom { identity: DeclarationId, source: DeclarationId },
+    ReturnByte { name: String, grapheme: i64, byte: i64 },
     Return(i64),
 }
 /// 具名 bool 必須已在來源中由原 Checker 確認宣告和型別；
@@ -531,6 +532,16 @@ impl PreparedPrivateStr {
                     });
                 }
                 StmtKind::Return(ret) => {
+                    if let TermKind::StringIndex(name, grapheme, Some(byte)) = &ret.kind {
+                        if !bound.contains_key(name) {
+                            return Err(PrivateStrPrepareError::Unsupported("缺少真字串宣告"));
+                        }
+                        operations.push(PrivateStrAction::ReturnByte {
+                            name: name.clone(), grapheme: *grapheme, byte: *byte,
+                        });
+                        returned = true;
+                        continue;
+                    }
                     let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(raw)) =
                         &ret.expression.kind else {
                         return Err(PrivateStrPrepareError::Unsupported("此切片只接受整數字面值返回"));
@@ -660,6 +671,9 @@ impl PreparedPrivateStr {
                             return Ok(value);
                         }
                     }
+                    PrivateStrAction::ReturnByte { name, grapheme, byte } =>
+                        return resources.read_grapheme_byte(name, *grapheme, *byte)
+                            .map_err(|_| crate::owned_str_runtime::StrRuntimeError::EvaluationFailed),
                     PrivateStrAction::Return(value) => return Ok(*value),
                 }
             }
@@ -685,6 +699,14 @@ mod p17_private_str_execution_tests {
 
 
 
+
+    #[test]
+    fn p19_named_unicode_byte_executes_from_checked_source() {
+        let src = "fn main()->int{\nvar text:str = \"ABC你\"\nreturn text[-1][-1]\n}\n";
+        let outcome = PreparedPrivateStr::prepare(src).unwrap().execute().unwrap();
+        assert_eq!(outcome.result, Ok(160));
+        assert!(crate::owned_str_runtime::event_trace_balanced(&outcome.events));
+    }
 
     #[test]
     fn p18_b_具名_bool_copyable_直接初始化另一個宣告並真正選中分支() {

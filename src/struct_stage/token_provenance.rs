@@ -21,6 +21,14 @@ fn verified_private_token_roles(
         value: &Term, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &value.kind {
+            TermKind::StringIndex(owner, first, second) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor };
+                p.name().ok().as_ref() == Some(owner) && p.index_number().ok() == Some(*first)
+                    && second.is_none_or(|n| p.index_number().ok() == Some(n))
+                    && tokens[p.cursor-1].end == value.end
+            }
             TermKind::OptionalCondition(name, predicate) => {
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
                 let source = Source::new(audit.source.as_bytes().to_vec());

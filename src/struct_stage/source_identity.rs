@@ -48,7 +48,7 @@ fn verified_private_syntax_roles(
                     && arguments.iter().all(|expression|
                         term(expression, span, audit))
             },
-            TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::StringIndex(..) | TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_)
             | TermKind::Move(_) | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => true,

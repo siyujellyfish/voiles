@@ -249,18 +249,30 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
     for stmt in main.body.iter() {
         match &stmt.kind {
             StmtKind::Declare(d) => {
-                let Some(Term { kind: TermKind::Container(value), .. }) = &d.initializer else {
-                    return Err("此入口只支援具常值的容器宣告".into());
-                };
                 let id = DeclarationId(stmt.start);
-                gate.declare(id, ValueSlot::initialized(CopyPermission::Forbidden))
-                    .map_err(|_| "容器持有者登錄失敗")?;
-                containers.insert(d.name.as_str(), (id, value));
+                let content = match d.initializer.as_ref().map(|term| &term.kind) {
+                    Some(TermKind::Container(value)) => {
+                        gate.declare(id, ValueSlot::initialized(CopyPermission::Forbidden))
+                            .map_err(|_| "容器持有者登錄失敗")?;
+                        // 字面值在每次執行建立獨立的容器與內部字串。
+                        value.clone()
+                    }
+                    Some(TermKind::Move(name)) => {
+                        let (owner, storage): &mut (DeclarationId, Option<ContainerLiteral>) =
+                            containers.get_mut(name.as_str()).ok_or("移動來源缺失")?;
+                        if storage.is_none() { return Err("容器已移動".into()); }
+                        gate.move_into(*owner, id).map_err(|_| "容器整筆移動失敗")?;
+                        storage.take().expect("來源已通過移動預檢")
+                    }
+                    _ => return Err("此入口只支援具常值或整筆移動的容器宣告".into()),
+                };
+                containers.insert(d.name.as_str(), (id, Some(content)));
             }
             StmtKind::ReadonlyElement(block) => {
                 let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
                     else { return Err("綁定名稱失配".into()) };
-                let (id, value) = containers.get(owner.as_str()).ok_or("容器來源缺失")?;
+                let (id, storage) = containers.get(owner.as_str()).ok_or("容器來源缺失")?;
+                let value = storage.as_ref().ok_or("容器已移動")?;
                 let selector = match &block.selector.kind {
                     TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(text)) =>
                         ContainerAtom::Integer(crate::syntax_shared::integer_i64(text).map_err(|_| "索引無效")?),
@@ -292,6 +304,12 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
 mod p19_scoped_execution {
     use super::*;
 
+    #[test]
+    fn moved_dictionary_owns_original_values() {
+        let text = "fn main()->int{\nvar first:dict{str,int} = {\"key\":17}\nvar next:dict{str,int} = first.move()\nwith next[\"key\"] as it {\nreturn it\n}\nreturn 0\n}\n";
+        assert_eq!(execute_container_main(text), Ok(17));
+        assert!(inspect(&text.replace("with next", "with first")).is_err());
+    }
     #[test]
     fn 繁中來源從解析到查找與區塊返回() {
         let text = include_str!("../../tests/fixtures/p19/唯讀字典元素.voil");
