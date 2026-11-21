@@ -8,6 +8,11 @@ struct Emitter<'a> {
 }
 
 impl Emitter<'_> {
+    fn local_id(&mut self, name: &str) -> usize {
+        let next = self.locals.len();
+        *self.locals.entry(name.to_string()).or_insert(next)
+    }
+
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
             Number::Constant(n) => format!("({n}i64)"),
@@ -18,8 +23,19 @@ impl Emitter<'_> {
             }
             Number::Choice(test, yes, no) =>
                 format!("(if {test} {{ {} }} else {{ {} }})", self.number(yes)?, self.number(no)?),
+            Number::Member { owner, field, .. } => {
+                let object = self.locals.get(owner)?;
+                format!("v{object}.integer({field:?}).ok_or((site, ARITH))?")
+            }
+            Number::Consume { target, from, .. } => {
+                let object = self.locals.get(from)?;
+                let function = self.functions.get(target.as_str())?;
+                format!("f{function}(globals, steps, depth + 1, site, v{object})?")
+            }
+            Number::Byte(place, i, j) => format!(
+                "resource_byte(&globals[{}], {i}, {j}).ok_or((site, ARITH))?", place.slot),
             Number::Call(name, false) =>
-                format!("f{}(steps, depth + 1, site)?", self.functions.get(name.as_str())?),
+                format!("f{}(globals, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
             _ => return None,
         })
     }
@@ -28,22 +44,30 @@ impl Emitter<'_> {
 impl LinkedProgram {
     pub(crate) fn native_source(&self) -> Result<String, ModuleError> {
         let plan = self.checked_plan()?;
-        let root = &self.graph.units[0];
-        if !plan.globals.is_empty() {
-            return Err(root.error(0, 0, "原生後端尚未支援共享資源"));
-        }
         let mut emitter = Emitter {
             functions: plan.bodies.keys().enumerate().map(|(i, n)| (n.as_str(), i)).collect(),
             locals: BTreeMap::new(),
         };
-        let mut out = String::from("#![forbid(unsafe_code)]\n#![allow(unused_variables, unused_parens)]\n");
+        let mut out = String::from("#![forbid(unsafe_code)]\n#![allow(unused_variables, unused_parens, dead_code)]\n");
         let budget = crate::execution::ExecutionBudget::default();
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
+        out.push_str(include_str!("native_object.inc"));
+        if !plan.globals.is_empty() {
+            out.push_str(include_str!("../grapheme_data.rs"));
+            out.push_str(include_str!("../grapheme_boundaries.rs"));
+            out.push_str(include_str!("native_strings.inc"));
+        }
         for (name, body) in &plan.bodies {
             emitter.locals.clear();
             let id = emitter.functions[name.as_str()];
-            writeln!(out, "fn f{id}(steps: &mut usize, depth: usize, caller: &'static str) -> Result<i64, Failure> {{").unwrap();
+            let step = &body[0]; // Lower::body 要求每個函式都有明確 return。
+            let unit = &self.graph.units[step.module];
+            let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
+            let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
+            let argument = signature.params.first().map(|p|
+                format!(", v{}: Object", emitter.local_id(&p.name))).unwrap_or_default();
+            writeln!(out, "fn f{id}(globals: &mut [String], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             for step in body {
                 let unit = &self.graph.units[step.module];
@@ -54,21 +78,49 @@ impl LinkedProgram {
                 match &step.action {
                     Action::Bind(name, value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
-                        let next = emitter.locals.len();
-                        let local = emitter.locals.entry(name.clone()).or_insert(next);
+                        let local = emitter.local_id(name);
                         writeln!(out, "let v{local} = {expr};").unwrap();
                     }
                     Action::Return(value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
                         writeln!(out, "return Ok({expr});").unwrap();
                     }
-                    _ => return Err(unsupported()),
+                    Action::Construct(name, fields, supplied) => {
+                        let id = emitter.local_id(name);
+                        writeln!(out, "let mut v{id} = Object::default();").unwrap();
+                        for field in fields {
+                            let seed = supplied.iter().find(|f| f.name == field.name)
+                                .map(|f| &f.seed).or(field.default.as_ref()).ok_or_else(unsupported)?;
+                            let value = match seed {
+                                ApprovedSeed::Int(n) => format!("Field::Int({n})"),
+                                ApprovedSeed::Str(s) => format!("Field::Text(String::from({s:?}))"),
+                                ApprovedSeed::Bool(b) => format!("Field::Bool({b})"),
+                                _ => return Err(unsupported()),
+                            };
+                            writeln!(out, "v{id}.0.insert({:?}, {value});", field.name).unwrap();
+                        }
+                    }
+                    // 借用的有效期與權限已由同一模組計畫驗證；存取仍使用原 slot。
+                    Action::Loan(..) => (),
+                    Action::Write(place, text) => {
+                        let rhs = match text {
+                            Text::Literal(s) => format!("String::from({s:?})"),
+                            Text::Grapheme(p, i) => format!(
+                                "resource_grapheme(&globals[{}], {i}).ok_or((site, ARITH))?.to_owned()", p.slot),
+                        };
+                        writeln!(out, "globals[{}] = {rhs};", place.slot).unwrap();
+                    }
+                    Action::Replace(place, i, text) => {
+                        writeln!(out, "let range = indexed_range(&boundaries(&globals[{0}]), {i}).ok_or((site, ARITH))?; globals[{0}].replace_range(range, {text:?});", place.slot).unwrap();
+                    }
                 }
             }
             out.push_str("}\n");
         }
         let main = emitter.functions["main"];
-        writeln!(out, "fn main() -> std::process::ExitCode {{ match f{main}(&mut 0, 0, \"\") {{").unwrap();
+        let globals = plan.globals.iter().map(|g| format!("String::from({:?})", g.initial))
+            .collect::<Vec<_>>().join(", ");
+        writeln!(out, "fn main() -> std::process::ExitCode {{ match f{main}(&mut [{globals}], &mut 0, 0, \"\") {{").unwrap();
         out.push_str("Ok(n) => std::process::ExitCode::from(n as u8),\nErr((s, e)) => { eprintln!(\"{s}: 執行期錯誤：{e}\"); std::process::ExitCode::FAILURE } } }\n");
         Ok(out)
     }
