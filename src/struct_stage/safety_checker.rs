@@ -1721,6 +1721,14 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn evaluate(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         let result = self.evaluate_inner(term, vars)?;
+        if matches!(term.kind, TermKind::Call(_) | TermKind::MethodCall(..) | TermKind::AwaitMethodCall(..))
+            || matches!(&term.kind, TermKind::UnresolvedZeroArgs(n) if self.find_function(n).is_some()) {
+            for scope in vars.iter_mut() {
+                if scope.values().any(|binding| binding.narrowed_candidate.is_some()) {
+                    for binding in Rc::make_mut(scope).values_mut() { binding.narrowed_candidate = None; }
+                }
+            }
+        }
         if result.1 {
             if let Some(ty) = crate::common_ir::ScalarType::from_name(&result.0) {
                 self.recorded_scalar_hir.borrow_mut()
@@ -1826,7 +1834,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     if !binding.candidate_sites.contains(&term.start) {
                         return Err(self.error("is 需要緊接同一來源的非缺失證明", term));
                     }
-                    if binding.redundant_sites.contains(&term.start) {
+                    if binding.narrowed_candidate.as_deref() == Some(candidate.as_str()) {
                         self.redundant_checks.borrow_mut().insert((term.start, term.end));
                     }
                 }
@@ -2856,19 +2864,11 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
                     if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(false)) = &condition.kind {
-                        Self::permit_candidates(&mut on_true, name, yes, None);
+                        Self::permit_candidates(&mut on_true, name, yes);
                     }
                     if let TermKind::OptionalCondition(name, OptionalPredicate::Candidate(Some(ty))) = &condition.kind {
-                        if let Some(Stmt { kind: StmtKind::If { branch: guard, no }, .. }) = yes.first() {
-                            if let TermKind::OptionalCondition(target, OptionalPredicate::IsMissing(equal)) = &guard.condition.kind {
-                                if target == name {
-                                    let proven = if *equal { no.as_ref().map(|arm| arm.as_slice()) }
-                                        else { Some(guard.body.statements.as_slice()) };
-                                    if let Some(body) = proven {
-                                        Self::permit_candidates(&mut on_true, name, body, Some(ty));
-                                    }
-                                }
-                            }
+                        if let Some(binding) = Self::lookup_mut(&mut on_true, name) {
+                            binding.narrowed_candidate = Some(ty.clone());
                         }
                     }
                     let true_flow = self.statements_with_follow(
@@ -2877,7 +2877,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     let mut on_false = snapshot.clone();
                     let false_flow = if let Some(otherwise) = no {
                         if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(true)) = &condition.kind {
-                            Self::permit_candidates(&mut on_false, name, otherwise.as_slice(), None);
+                            Self::permit_candidates(&mut on_false, name, otherwise.as_slice());
                         }
                         self.statements_with_follow(
                             otherwise, &mut on_false, expected_return, true, &after_branch,
@@ -2914,6 +2914,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                                 }
                                 Some(same.value)
                             } else { None };
+                            if (live_true && original.narrowed_candidate != on_true[depth][name].narrowed_candidate)
+                                || (live_false && original.narrowed_candidate != on_false[depth][name].narrowed_candidate) {
+                                original.narrowed_candidate = None;
+                            }
                             let joined_value = ValueSlot::join_reachable(&[left, right])
                                 .map_err(|err| self.model_error(err, condition))?;
                             // 只有各可達分支的缺失欄位集合完全相同，才能

@@ -194,7 +194,7 @@ impl<'a> Lexer<'a> {
         const WORDS: &[&str] = &[
             "fn", "const", "var", "share", "if", "else", "return",
             "true", "false", "struct", "async", "while", "for", "import",
-            "and", "or", "not", "none", "break", "continue", "try", "except",
+            "and", "or", "not", "is", "none", "break", "continue", "try", "except",
         ];
         let kind = if WORDS.contains(&value.as_str()) {
             TokenKind::Keyword(value)

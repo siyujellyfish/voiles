@@ -233,7 +233,7 @@ struct Binding {
     scoped_element: bool,
     literal_token: Option<usize>,
     candidate_sites: BTreeSet<usize>,
-    redundant_sites: BTreeSet<usize>,
+    narrowed_candidate: Option<String>,
     safety: SafetyState,
 }
 
@@ -344,7 +344,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable, scoped_element: false, literal_token: None, candidate_sites: BTreeSet::new(), redundant_sites: BTreeSet::new(),
+            declaration_start, ty, mutable, scoped_element: false, literal_token: None, candidate_sites: BTreeSet::new(), narrowed_candidate: None,
             safety: SafetyState { value, pending_fields, loan },
         }
     }

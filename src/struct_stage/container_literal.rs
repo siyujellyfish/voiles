@@ -519,7 +519,7 @@ impl Parser<'_> {
         // 保留非具名索引形狀供 Checker 區分 AQ03、AN04；絕不核准其使用。
         if crate::syntax_shared::symbol(self.tokens, op, '[')
             && crate::syntax_shared::symbol(self.tokens, op + 2, ']')
-            && matches!(self.tokens.get(op + 3).map(|t| &t.kind), Some(TokenKind::Name(s)) if s == "is") {
+            && matches!(self.tokens.get(op + 3).map(|t| &t.kind), Some(TokenKind::Keyword(s)) if s == "is") {
             let selector_type = match &self.tokens[op + 1].kind {
                 TokenKind::Integer(_) => "int",
                 TokenKind::StringLiteral(_) => "str",
@@ -531,7 +531,7 @@ impl Parser<'_> {
             return Ok(Some(Term { start, end: self.tokens[self.cursor - 1].end,
                 kind: TermKind::OptionalCondition(name, OptionalPredicate::IndexedCandidate { selector_type, candidate }) }));
         }
-        let pred = if matches!(self.tokens.get(op).map(|t| &t.kind), Some(TokenKind::Name(s)) if s == "is") {
+        let pred = if matches!(self.tokens.get(op).map(|t| &t.kind), Some(TokenKind::Keyword(s)) if s == "is") {
             self.cursor += 2;
             OptionalPredicate::Candidate(if self.symbol(')') { None } else { Some(self.name()?) })
         } else if (crate::syntax_shared::symbol(self.tokens, op, '!') || crate::syntax_shared::symbol(self.tokens, op, '='))
@@ -547,16 +547,14 @@ impl Parser<'_> {
 }
 
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
-    fn permit_candidates(vars: &mut Scopes, name: &str, statements: &[Stmt], prior: Option<&str>) {
+    fn permit_candidates(vars: &mut Scopes, name: &str, statements: &[Stmt]) {
         let Some(binding) = Self::lookup_mut(vars, name) else { return; };
         let mut next = statements.first();
         while let Some(Stmt { kind: StmtKind::If { branch, no }, .. }) = next {
             match &branch.condition.kind {
-                TermKind::OptionalCondition(target, OptionalPredicate::Candidate(candidate)) if target == name => {
+                TermKind::OptionalCondition(target, OptionalPredicate::Candidate(_)) if target == name => {
                     binding.candidate_sites.insert(branch.condition.start);
-                    if prior.is_some() && candidate.as_deref() == prior {
-                        binding.redundant_sites.insert(branch.condition.start);
-                    }
+
                 }
                 TermKind::Name(_) | TermKind::Scalar(_) => {}
                 // 未知副作用的普通條件可能使非缺失證明失效。
@@ -614,6 +612,16 @@ mod p19_candidate_execution {
             vec![text.span(start, start + "x is int".len())]);
         assert_eq!(execute_container_main(&source), Ok(7));
     }
+    #[test]
+    fn repeat_after_local_statement_is_scoped_and_calls_invalidate_it() {
+        let body = "if(x != none){\nif(x is int){\nconst n:int = 1\nif(x != none){\nif(x is int){\nreturn 7\n}\n}\n}\n}\nreturn 0";
+        let source = program("5", body);
+        assert_eq!(inspect_redundant_candidate_warnings(&source).unwrap().len(), 1);
+        let called = format!("fn step()->int{{\nreturn 1\n}}\n{}", source.replace("= 1\nif", "= step()\nif"));
+        assert!(inspect_redundant_candidate_warnings(&called).unwrap().is_empty());
+        assert!(inspect(&source.replace("n:int", "is:int")).is_err());
+    }
+
     #[test]
     fn candidate_needs_same_name_immediately_after_proof() {
         for body in ["if(x is int){\nreturn 1\n}",
