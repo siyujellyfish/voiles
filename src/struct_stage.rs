@@ -133,6 +133,7 @@ crate::common_ir::define_shared_expression_kind!(
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
         Container(ContainerLiteral),
+        OptionalCondition(String, OptionalPredicate),
         Construct(String, Vec<(String, Term)>),
         /// A2/F02：裸 name() 在 Parser 完成時尚不能知道是 struct
         /// 或前向宣告的零參數 fn。正式 AST 明示待語意解析，
@@ -212,6 +213,7 @@ struct Binding {
     ty: String,
     mutable: bool,
     scoped_element: bool,
+    candidate_check_at: Option<usize>,
     safety: SafetyState,
 }
 
@@ -322,7 +324,7 @@ impl Binding {
         loan: Option<LoanBinding>,
     ) -> Self {
         Self {
-            declaration_start, ty, mutable, scoped_element: false,
+            declaration_start, ty, mutable, scoped_element: false, candidate_check_at: None,
             safety: SafetyState { value, pending_fields, loan },
         }
     }

@@ -361,7 +361,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
             TermKind::Group(inner) => Self::term_mentions(inner, name),
-            TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
+            TermKind::OptionalCondition(id, _) | TermKind::Name(id) | TermKind::Move(id) | TermKind::Borrow(id)
                 => id == name,
             TermKind::FieldRead(id, _) | TermKind::FieldMove(id, _) => id == name,
             TermKind::MethodCall(id, _, args)
@@ -393,7 +393,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::MethodCall(_, _, args) =>
                 args.iter().any(Self::term_contains_direct_await),
             TermKind::AwaitMethodCall(_, _, _) => true,
-            TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
+            TermKind::OptionalCondition(..) | TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_) | TermKind::Name(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Move(_)
             | TermKind::Borrow(_) | TermKind::FieldMove(_, _)
             | TermKind::FieldRead(_, _) => false,
@@ -447,6 +447,9 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::BinaryInt(binary) => {
                 Self::scan_resolved_term_uses(&binary.left, visible, used, kind);
                 Self::scan_resolved_term_uses(&binary.right, visible, used, kind);
+            }
+            TermKind::OptionalCondition(name, _) => {
+                if kind == ResolvedUseKind::All { Self::record_named_future_use(visible, used, name); }
             }
             TermKind::Container(_) | TermKind::Scalar(_) | TermKind::Literal(_)
             | TermKind::UnresolvedZeroArgs(_) | TermKind::Name(_)
@@ -1717,6 +1720,30 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
             TermKind::Container(value) => Ok((value.ty.clone(), true)),
+            TermKind::OptionalCondition(name, predicate) => {
+                let Some(binding) = Self::lookup(vars, name) else {
+                    return Err(self.error("Optional 條件左側名稱未宣告", term));
+                };
+                let span = Some(self.source.span(term.start, term.end));
+                let syntax = |message: &str| Diagnostic { kind: DiagnosticKind::Syntax, span, message: message.into() };
+                if let OptionalPredicate::Candidate(None) = predicate {
+                    return Err(syntax("is 右側缺少候選型別"));
+                }
+                let Some(types) = binding.ty.strip_prefix("Optional[").and_then(|s| s.strip_suffix(']')) else {
+                    return Err(syntax("專用條件左側需要 Optional"));
+                };
+                self.check_direct(vars, name, term)?;
+                if !binding.scoped_element { return Err(self.error("缺少區塊唯讀元素來源", term)); }
+                if let OptionalPredicate::Candidate(Some(candidate)) = predicate {
+                    if !types.split(',').any(|t| t == candidate) {
+                        return Err(self.error("is 右側型別不在候選集合", term));
+                    }
+                    if binding.candidate_check_at != Some(term.start) {
+                        return Err(self.error("is 需要緊接同一來源的非缺失證明", term));
+                    }
+                }
+                Ok(("bool".into(), true))
+            }
             TermKind::BinaryInt(binary) => {
                 let left = &binary.left;
                 let right = &binary.right;
@@ -2727,11 +2754,17 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                     after_branch.push((vars.len() - 1, body[position + 1..].to_vec()));
                     after_branch.extend_from_slice(continuation);
                     let mut on_true = snapshot.clone();
+                    if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(false)) = &condition.kind {
+                        Self::permit_first_candidate(&mut on_true, name, yes);
+                    }
                     let true_flow = self.statements_with_follow(
                         yes, &mut on_true, expected_return, true, &after_branch,
                         loop_entry)?;
                     let mut on_false = snapshot.clone();
                     let false_flow = if let Some(otherwise) = no {
+                        if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(true)) = &condition.kind {
+                            Self::permit_first_candidate(&mut on_false, name, otherwise.as_slice());
+                        }
                         self.statements_with_follow(
                             otherwise, &mut on_false, expected_return, true, &after_branch,
                             loop_entry)?

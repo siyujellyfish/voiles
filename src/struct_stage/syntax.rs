@@ -792,7 +792,7 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
     }
     fn if_condition(&mut self) -> Result<Term, Diagnostic> {
         self.take('(', "if 條件需要左括號")?;
-        let condition = self.term()?;
+        let condition = match self.optional_condition()? { Some(test) => test, None => self.term()? };
         self.take(')', "if 條件需要右括號")?;
         Ok(condition)
     }

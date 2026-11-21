@@ -197,6 +197,45 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     }
 }
 
+fn execute_element_body(statements: &[Stmt], alias: &str, element: &ContainerAtom)
+    -> Result<Option<i64>, &'static str> {
+    for stmt in statements {
+        match &stmt.kind {
+            StmtKind::Return(ret) => {
+                let n = match &ret.kind {
+                    TermKind::Name(name) if name == alias => match element {
+                        ContainerAtom::Integer(n) => *n, _ => return Err("返回值需要 int"),
+                    },
+                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
+                        crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效")?,
+                    _ => return Err("此入口尚未支援該返回式"),
+                };
+                return Ok(Some(n));
+            }
+            StmtKind::If { branch, no } => {
+                let test = match &branch.condition.kind {
+                    TermKind::OptionalCondition(name, pred) if name == alias => match pred {
+                        OptionalPredicate::IsMissing(equal) => matches!(element, ContainerAtom::Missing) == *equal,
+                        OptionalPredicate::Candidate(Some(ty)) => matches!((element, ty.as_str()),
+                            (ContainerAtom::Integer(_), "int") | (ContainerAtom::Text(_), "str")
+                            | (ContainerAtom::Boolean(_), "bool") | (ContainerAtom::Decimal(..), "float")),
+                        OptionalPredicate::Candidate(None) => return Err("候選型別缺失"),
+                    },
+                    TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Boolean(b)) => *b,
+                    _ => return Err("此入口尚未支援該區塊條件"),
+                };
+                let selected = if test { Some(branch.body.statements.as_slice()) }
+                    else { no.as_ref().map(|other| other.as_slice()) };
+                if let Some(body) = selected {
+                    if let Some(value) = execute_element_body(body, alias, element)? { return Ok(Some(value)); }
+                }
+            }
+            _ => return Err("此入口尚未支援該區塊語句"),
+        }
+    }
+    Ok(None)
+}
+
 /// 真私有 Checker 已驗證的直線容器入口。遇到此執行器尚未支援的
 /// 語句會失敗；查找只傳遞元素參考，區塊所有出口共用同一次退票。
 fn execute_container_main(text: &str) -> Result<i64, String> {
@@ -236,19 +275,9 @@ fn execute_container_main(text: &str) -> Result<i64, String> {
                 };
                 let ticket = gate.borrow(*id, BorrowKind::SharedRead).map_err(|_| "容器借用衝突")?;
                 let result = value.lookup(&selector).ok_or("容器索引越界或缺鍵")
-                    .and_then(|element| match block.body.statements.as_slice() {
-                        [Stmt { kind: StmtKind::Return(ret), .. }] => match &ret.kind {
-                            TermKind::Name(name) if name == alias => match element {
-                                ContainerAtom::Integer(n) => Ok(*n), _ => Err("返回值需要 int"),
-                            },
-                            TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) =>
-                                crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效"),
-                            _ => Err("此入口尚未支援該返回式"),
-                        },
-                        _ => Err("此入口尚未支援該區塊本體"),
-                    });
+                    .and_then(|element| execute_element_body(&block.body, alias, element));
                 gate.finish_method_scope(&[ticket]).map_err(|_| "容器借用歸還失敗")?;
-                return result.map_err(str::to_owned);
+                if let Some(n) = result.map_err(str::to_owned)? { return Ok(n); }
             }
             StmtKind::Return(ret) => if let TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) = &ret.kind {
                 return crate::syntax_shared::integer_i64(n).map_err(|_| "整數返回值無效".into());
@@ -288,5 +317,71 @@ mod p19_scoped_execution {
     fn readonly_owner_cannot_move_even_after_last_alias_use() {
         let code = "fn main()->int{\nvar xs:list[int] = [9]\nwith xs[0] as item {\nvar n:int = item\nvar stolen:list[int] = xs.move()\nreturn n\n}\nreturn 0\n}\n";
         assert!(inspect(code).unwrap_err().message.contains("借用"));
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum OptionalPredicate {
+    IsMissing(bool),
+    Candidate(Option<String>),
+}
+
+impl Parser<'_> {
+    fn optional_condition(&mut self) -> Result<Option<Term>, Diagnostic> {
+        let start = self.tok().start;
+        let TokenKind::Name(name) = self.tok().kind.clone() else { return Ok(None) };
+        let op = self.cursor + 1;
+        let pred = if matches!(self.tokens.get(op).map(|t| &t.kind), Some(TokenKind::Name(s)) if s == "is") {
+            self.cursor += 2;
+            OptionalPredicate::Candidate(if self.symbol(')') { None } else { Some(self.name()?) })
+        } else if (crate::syntax_shared::symbol(self.tokens, op, '!') || crate::syntax_shared::symbol(self.tokens, op, '='))
+            && crate::syntax_shared::symbol(self.tokens, op+1, '=')
+            && self.tokens[op].end == self.tokens[op+1].start
+            && crate::syntax_shared::keyword(self.tokens, op+2, "none") {
+            self.cursor += 4;
+            OptionalPredicate::IsMissing(self.tokens[op].kind == TokenKind::Symbol('='))
+        } else { return Ok(None) };
+        Ok(Some(Term { start, end: self.tokens[self.cursor-1].end,
+            kind: TermKind::OptionalCondition(name, pred) }))
+    }
+}
+
+impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
+    fn permit_first_candidate(vars: &mut Scopes, name: &str, statements: &[Stmt]) {
+        if let Some(Stmt { kind: StmtKind::If { branch, .. }, .. }) = statements.first() {
+            if let Some(binding) = Self::lookup_mut(vars, name) {
+                binding.candidate_check_at = Some(branch.condition.start);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod p19_candidate_execution {
+    use super::*;
+    fn program(value: &str, body: &str) -> String {
+        format!("fn main()->int{{\nvar xs:list[Optional[int,str]] = [{value}]\nwith xs[0] as x {{\n{body}\n}}\nreturn 0\n}}\n")
+    }
+    #[test]
+    fn named_alias_is_checked_after_direct_nonmissing_guard() {
+        let body = "if(x != none){\nif(x is str){\nreturn 7\n} else {\nreturn 2\n}\n}\nreturn 9";
+        for (value, expected) in [("none", 9), ("1", 2), ("\"值\"", 7)] {
+            assert_eq!(execute_container_main(&program(value, body)), Ok(expected));
+        }
+    }
+    #[test]
+    fn missing_candidate_and_missing_name_prioritize_name_resolution() {
+        let error = inspect(&program("none", "if(missing is){\nreturn 2\n}")).unwrap_err();
+        assert_eq!(error.kind, DiagnosticKind::Static);
+        assert!(error.message.contains("未宣告"));
+        assert_eq!(inspect(&program("none", "if(x is){\nreturn 2\n}")).unwrap_err().kind,
+            DiagnosticKind::Syntax);
+    }
+    #[test]
+    fn candidate_needs_same_name_immediately_after_proof() {
+        for body in ["if(x is int){\nreturn 1\n}",
+            "if(x != none){\nvar n:int = 0\nif(x is int){\nreturn 1\n}\n}"] {
+            assert!(inspect(&program("1", body)).unwrap_err().message.contains("非缺失證明"));
+        }
     }
 }

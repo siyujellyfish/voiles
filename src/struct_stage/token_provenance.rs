@@ -21,6 +21,14 @@ fn verified_private_token_roles(
         value: &Term, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &value.kind {
+            TermKind::OptionalCondition(name, predicate) => {
+                let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
+                let source = Source::new(audit.source.as_bytes().to_vec());
+                let mut p = Parser { source: &source, tokens, cursor };
+                matches!(p.optional_condition(), Ok(Some(Term {
+                    kind: TermKind::OptionalCondition(actual, pred), end, ..
+                })) if &actual == name && &pred == predicate && end == value.end)
+            }
             TermKind::Container(literal) => {
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
                 let source = Source::new(audit.source.as_bytes().to_vec());
