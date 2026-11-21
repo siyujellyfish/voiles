@@ -92,7 +92,14 @@ enum Action {
     Return(Number),
 }
 
+#[derive(Clone, Copy)]
+struct StepOrigin {
+    module: usize,
+    span: (usize, usize),
+}
+
 struct Step {
+    module: usize,
     action: Action,
     span: (usize, usize),
 }
@@ -138,10 +145,15 @@ impl Lower<'_> {
         })
     }
 
+    fn shadowed(&self, name: &str) -> bool {
+        let root = name.split_once('.').map_or(name, |(root, _)| root);
+        self.locals.contains_key(root) || self.aliases.contains_key(root)
+            || self.objects.as_ref().is_some_and(|scope| scope.has(root))
+    }
+
     fn call_target(&self, name: &str, awaited: bool) -> Option<Number> {
         if self.objects.as_ref().is_some_and(|s| s.requires_argument(name)) { return None; }
-        let receiver = name.split('.').next()?;
-        if self.objects.as_ref().is_some_and(|s|s.has(receiver)) || self.locals.contains_key(receiver) || self.aliases.contains_key(receiver)
+        if self.shadowed(name)
             || self.functions.get(name) != Some(&awaited) { return None; }
         let target = match self.linked_names { Some(names) => names.get(name)?.clone(), None => name.to_owned() };
         Some(Number::Call(target,awaited))
@@ -154,7 +166,7 @@ impl Lower<'_> {
                 TermKind::MethodCall(module,_,_) if !objects.has(module) => Some(module),
                 _ => None,
             };
-            if callee.is_some_and(|n| self.locals.contains_key(n) || self.aliases.contains_key(n) || objects.has(n)) {
+            if callee.is_some_and(|n| self.shadowed(n)) {
                 return None;
             }
             if let Some(value) = objects.expression(term) { return Some(value); }
@@ -204,7 +216,7 @@ impl Lower<'_> {
         }
     }
 
-    fn body(&mut self, function: &Function) -> Result<Body, Diagnostic> {
+    fn body(&mut self, function: &Function, module: usize) -> Result<Body, Diagnostic> {
         let mut steps = Vec::new();
         for stmt in &function.body.statements {
             let span = (stmt.start, stmt.end);
@@ -256,10 +268,20 @@ impl Lower<'_> {
                             .ok_or_else(|| err("需要 int 初值或已驗證的同步函式呼叫"))?;
                         self.locals.insert(d.name.clone(), d.mutable);
                         Action::Bind(d.name.clone(), value)
-                    } else if let Some(scope) = &mut self.objects {
-                        scope.construct(&d.name,&d.ty,d.start,init).ok_or_else(||err("結構型別、具名欄位或建構值無效"))?
                     } else {
-                        return Err(err("此模組執行路徑尚未支援該區域型別"));
+                        if self.objects.is_none() {
+                            return Err(err("此模組執行路徑尚未支援該區域型別"));
+                        }
+                        let root = match &init.kind {
+                            TermKind::Construct(name, _) | TermKind::UnresolvedZeroArgs(name)
+                                | TermKind::MethodCall(name, _, _) => name,
+                            _ => return Err(err("結構需要建構式初值")),
+                        };
+                        if self.shadowed(root) {
+                            return Err(err("建構式名稱已被區域綁定遮蔽"));
+                        }
+                        self.objects.as_mut().and_then(|scope| scope.construct(&d.name, &d.ty, d.start, init))
+                            .ok_or_else(|| err("結構型別、具名欄位或建構值無效"))?
                     }
                 }
                 StmtKind::Assign(a) if self.locals.contains_key(&a.name) => {
@@ -306,7 +328,7 @@ impl Lower<'_> {
                 ),
                 _ => return Err(err("此模組語句缺少共享存取證明")),
             };
-            steps.push(Step { action, span });
+            steps.push(Step { action, module, span });
         }
         if !matches!(
             steps.last(),
@@ -384,7 +406,7 @@ impl Program {
                 locals: HashMap::new(),
                 aliases: HashMap::new(),
             };
-            bodies.insert(f.name.clone(), lower.body(&f)?);
+            bodies.insert(f.name.clone(), lower.body(&f, 0)?);
         }
         let plan = Self {
             globals,
@@ -599,13 +621,20 @@ impl Program {
     pub(crate) fn execute(
         &self,
     ) -> Result<(Result<i64, StrRuntimeError>, Vec<ResourceEvent>), StrRuntimeError> {
+        self.execute_with_origin(|error, _| error)
+    }
+
+    fn execute_with_origin<E>(
+        &self,
+        locate: impl FnOnce(StrRuntimeError, Option<StepOrigin>) -> E,
+    ) -> Result<(Result<i64, E>, Vec<ResourceEvent>), StrRuntimeError> {
         let mut state = self.instantiate(ModuleId(0))?;
         let result = self.call("main", &mut state, 0);
         state
             .loans
             .verify_static_snapshot(std::iter::empty())
             .map_err(|_| StrRuntimeError::OutstandingResource)?;
-        Ok((result, state.heap.finish()?))
+        Ok((result.map_err(|e| locate(e, state.current_step)), state.heap.finish()?))
     }
 
     fn instantiate(&self, owner: ModuleId) -> Result<State<'_>, StrRuntimeError> {
@@ -613,6 +642,7 @@ impl Program {
             owner,
             mixed: crate::mixed_struct_runtime::MixedStructRuntime::new(),
             heap: OwnedStrRuntime::new(),
+            current_step: None,
             steps: 0,
             loans: BorrowSafety::new(),
             declarations: &self.globals,
@@ -636,6 +666,7 @@ impl Program {
         if depth >= budget.max_call_frames {
             return Err(StrRuntimeError::ExecutionBudgetExhausted);
         }
+        let caller_step = state.current_step;
         let body = &self.bodies[name];
         let mut frame = Frame::default();
         for site in body.iter().flat_map(|s| s.action.uses()) {
@@ -661,6 +692,9 @@ impl Program {
                 .release(ticket)
                 .map_err(|_| StrRuntimeError::OutstandingResource)?;
         }
+        if result.is_ok() {
+            state.current_step = caller_step;
+        }
         result
     }
 
@@ -673,6 +707,7 @@ impl Program {
         max_steps: usize,
     ) -> Result<i64, StrRuntimeError> {
         for step in body {
+            state.current_step = Some(StepOrigin { module: step.module, span: step.span });
             state.steps += 1;
             if state.steps > max_steps {
                 return Err(StrRuntimeError::ExecutionBudgetExhausted);
@@ -867,6 +902,7 @@ struct State<'a> {
     loans: BorrowSafety,
     owner: ModuleId,
     heap: OwnedStrRuntime,
+    current_step: Option<StepOrigin>,
     steps: usize,
 }
 impl State<'_> {
