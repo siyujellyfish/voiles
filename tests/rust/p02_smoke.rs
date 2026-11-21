@@ -80,3 +80,12 @@ fn 命令辨識_io_錯誤且對合法來源退出零() {
     assert!(invalid.stdout.is_empty());
     assert!(String::from_utf8(invalid.stderr).unwrap().contains("靜態錯誤"));
 }
+
+#[test]
+fn 原生產物與直譯共用案例() {
+    let status = Command::new("python3")
+        .arg("tools/驗證原生工具鏈.py")
+        .arg(std::env::var_os("VOILES_CLI").unwrap())
+        .status().unwrap();
+    assert!(status.success());
+}

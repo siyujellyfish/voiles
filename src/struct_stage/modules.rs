@@ -226,6 +226,9 @@ pub(crate) struct LinkedProgram {
     plan: Program,
 }
 
+#[path = "native.rs"]
+mod native;
+
 impl LinkedProgram {
     pub(crate) fn prepare(entry: &Path) -> Result<Self,ModuleError> {
         let graph = ModuleGraph::prepare(entry)?;
