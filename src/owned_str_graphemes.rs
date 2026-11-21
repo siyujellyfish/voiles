@@ -1,21 +1,63 @@
-//! P19-D，Linux x86-64 執行環境以 GNU libunistring 的 Unicode 資料分割字素。
+//! P19-D，voiles 執行期內建 Unicode 15.1 字素分割資料。
 use super::{OwnedStrRuntime, OwnedUtf8, StrRuntimeError};
 use std::ops::Range;
 
-#[link(name = "libunistring.so.5", kind = "dylib", modifiers = "+verbatim")]
-extern "C" {
-    fn u8_grapheme_breaks(input: *const u8, length: usize, breaks: *mut u8);
+include!("grapheme_data.rs");
+
+fn property(table: &[(u32,u32,&'static str)], cp: u32) -> &'static str {
+    let end = table.partition_point(|row| row.0 <= cp);
+    match end.checked_sub(1).map(|i| table[i]) {
+        Some((_, hi, prop)) if cp <= hi => prop,
+        _ => "Other",
+    }
 }
 
+fn grapheme_property(cp: u32) -> &'static str {
+    if (0xac00..=0xd7a3).contains(&cp) {
+        if (cp - 0xac00) % 28 == 0 { "LV" } else { "LVT" }
+    } else { property(GCB, cp) }
+}
+
+// UAX #29 extended grapheme clusters. RI、emoji ZWJ、Indic linker
+// 三個跨碼位條件均以從左到右的狀態維護，無需重掃前綴。
 fn boundaries(text: &str) -> Vec<usize> {
-    let mut flags = vec![0; text.len()];
-    if !text.is_empty() {
-        // GNU API 讀取 length 個 UTF-8 位元組，寫出等長的逐位元組邊界旗標。
-        // 兩段記憶體在呼叫期間有效且不重疊；長度參數也容許內嵌 NUL。
-        unsafe { u8_grapheme_breaks(text.as_ptr(), text.len(), flags.as_mut_ptr()) };
+    let mut starts = Vec::new();
+    let mut prev = "start";
+    let mut ri_odd = false;
+    let mut emoji_run = false;
+    let mut emoji_zwj = false;
+    let mut indic_base = false;
+    let mut indic_linked = false;
+    for (offset, ch) in text.char_indices() {
+        let cp = ch as u32;
+        let next = grapheme_property(cp);
+        let pict = property(EP, cp) == "Extended_Pictographic";
+        let indic = property(INCB, cp);
+        let join = if prev == "CR" && next == "LF" {
+            true
+        } else if prev == "start" || matches!(prev, "Control" | "CR" | "LF")
+            || matches!(next, "Control" | "CR" | "LF") {
+            false
+        } else {
+            (prev == "L" && matches!(next, "L" | "V" | "LV" | "LVT"))
+                || (matches!(prev, "V" | "LV") && matches!(next, "V" | "T"))
+                || (matches!(prev, "LVT" | "T") && next == "T")
+                || matches!(next, "Extend" | "ZWJ" | "SpacingMark") || prev == "Prepend"
+                || (indic_linked && indic == "Consonant") || (emoji_zwj && pict)
+                || (ri_odd && next == "Regional_Indicator")
+        };
+        if !join { starts.push(offset); }
+        ri_odd = next == "Regional_Indicator" && !ri_odd;
+        emoji_zwj = next == "ZWJ" && emoji_run;
+        emoji_run = pict || (emoji_run && next == "Extend");
+        match indic {
+            "Consonant" => { indic_base = true; indic_linked = false; }
+            "Linker" => indic_linked = indic_base,
+            "Extend" => {}
+            _ => { indic_base = false; indic_linked = false; }
+        }
+        prev = next;
     }
-    let mut starts: Vec<_> = flags.into_iter().enumerate()
-        .filter_map(|(i, flag)| (flag != 0).then_some(i)).collect();
     starts.push(text.len());
     starts
 }
@@ -89,6 +131,27 @@ impl OwnedStrRuntime {
 mod tests {
     use super::*;
     use crate::owned_str_runtime::event_trace_balanced;
+
+    #[test]
+    fn unicode_15_1_grapheme_conformance() {
+        let mut cases = 0;
+        for line in include_str!("../tests/fixtures/GraphemeBreakTest-15.1.txt").lines() {
+            let data = line.split('#').next().unwrap().trim();
+            if data.is_empty() { continue; }
+            let mut text = String::new();
+            let mut expected = Vec::new();
+            for token in data.split_whitespace() {
+                match token {
+                    "÷" => expected.push(text.len()),
+                    "×" => {}
+                    hex => text.push(char::from_u32(u32::from_str_radix(hex, 16).unwrap()).unwrap()),
+                }
+            }
+            assert_eq!(boundaries(&text), expected, "{data}");
+            cases += 1;
+        }
+        assert_eq!(cases, 1187);
+    }
 
     #[test]
     fn changed_boundaries_and_independent_results() {
