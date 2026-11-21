@@ -13,6 +13,7 @@ fn main() -> ExitCode {
       voiles check <入口.voil>（模組靜態檢查）
       voiles run <入口.voil>（執行並顯示 main 回傳值）
       voiles build <入口.voil> -o <執行檔>
+      voiles pack <入口.voil> -o <獨立執行檔>
       voiles --help | --version";
     match args.first().and_then(|arg| arg.to_str()) {
         Some("--help") if args.len() == 1 => println!("{HELP}"),
@@ -34,13 +35,13 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-        Some("build") if args.len() == 4 && args[2] == "-o" => {
-            if let Err(error) = native_build::build(Path::new(&args[1]), Path::new(&args[3])) {
+        Some(command @ ("build" | "pack")) if args.len() == 4 && args[2] == "-o" => {
+            if let Err(error) = native_build::build(Path::new(&args[1]), Path::new(&args[3]), command == "pack") {
                 eprintln!("{error}");
                 return ExitCode::FAILURE;
             }
         }
-        Some("check" | "run" | "build") => {
+        Some("check" | "run" | "build" | "pack") => {
             eprintln!("{HELP}");
             return ExitCode::from(2);
         }

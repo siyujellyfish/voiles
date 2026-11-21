@@ -74,3 +74,29 @@ with TemporaryDirectory() as tmp:
     built = run(cli, "build", main, "-o", exe)
     assert built.returncode == 0, built
     assert run(exe).returncode == int(run(cli, "run", main).stdout) == 240
+
+    # 將唯一封裝產物移入空根目錄。測試必須實際跨越檔案系統邊界。
+    clean_root = base / "root"
+    clean_root.mkdir()
+    packed = clean_root / "app"
+    packed_result = run(cli, "pack", main, "-o", packed)
+    assert packed_result.returncode == 0, packed_result
+    elf = run("readelf", "-lWd", packed)
+    assert elf.returncode == 0 and "INTERP" not in elf.stdout and "(NEEDED)" not in elf.stdout, elf
+    assert list(clean_root.iterdir()) == [packed]
+    if os.environ.get("GITHUB_ACTIONS"):
+        isolated = run("sudo", "-n", "chroot", clean_root, "/app")
+    else:
+        isolated = run("bwrap", "--ro-bind", clean_root, "/", "--chdir", "/", "--", "/app")
+    assert (isolated.returncode, isolated.stdout, isolated.stderr) == (240, "", ""), isolated
+
+    original = packed.read_bytes()
+    collision = run(cli, "pack", main, "-o", packed)
+    assert collision.returncode and packed.read_bytes() == original, collision
+    dep.unlink()
+    missing = run(cli, "pack", main, "-o", base / "missing")
+    assert missing.returncode and "匯入失敗" in missing.stderr and not (base / "missing").exists(), missing
+    main.write_text("fn main()->int{ return 5 }", encoding="utf-8")
+    no_host = subprocess.run([cli, "pack", main, "-o", base / "no-host"], capture_output=True,
+                             encoding="utf-8", env={**os.environ, "PATH": str(clean_root)})
+    assert no_host.returncode and "rustc" in no_host.stderr and not (base / "no-host").exists(), no_host
