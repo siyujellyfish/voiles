@@ -367,7 +367,7 @@ impl Machine {
             Some("list:int" | "dict:str:int")) {
             return Err(Fault::Syntax(format!("{name} 不是已支援的容器")));
         }
-        self.emit(&format!("v_{name}.len() as i64"))
+        self.emit(&format!("(v_{name}.len() as i64)"))
     }
     fn list_append(&mut self) -> R {
         let name = self.take_name()?;
