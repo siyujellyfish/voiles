@@ -312,7 +312,7 @@ impl LinkedProgram {
                     }
                 } else if let [p] = f.params.as_slice() {
                     if !f.is_async && graph.resolve_struct(id,&p.ty).is_some() {
-                        objects.bind(&p.name,&p.ty,p.declaration_start);
+                        objects.bind(&p.name,&p.ty,p.declaration_start,false);
                     } else {
                         return Err(u.error(f.start,f.end,"跨檔持有者參數需要同步函式與可見結構型別"));
                     }

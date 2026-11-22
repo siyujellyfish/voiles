@@ -74,12 +74,14 @@ enum Number {
     Lookup(Box<Number>, BTreeMap<i64, i64>),
     Logic(&'static str, Box<Number>, Box<Number>),
     ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
-    Choice(bool, Box<Number>, Box<Number>),
+    Choice(Box<Number>, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
     TextCall(TextInvocation),
     Consume { target:String, from:String, parameter:String },
     Constant(i64),
     Local(String),
+    BoolMember(String, String),
+    MemberByte(String, String, StringOffset, StringOffset),
     LocalByte(String, StringOffset, StringOffset),
     Byte(Place, StringOffset, StringOffset),
     Call(String, bool),
@@ -154,7 +156,15 @@ enum Replacement {
     Named(Place),
 }
 
+enum MemberValue {
+    Integer(Number),
+    Boolean(Number),
+    Text(String),
+}
+
 enum Action {
+    RelocateObject { source: String, target: String, moving: bool },
+    WriteMember { owner: String, field: String, value: MemberValue },
     ReturnText(LocalText),
     ReplaceLocal(LocalReplacement),
     StoreText { target: String, declaration: Option<bool>, value: LocalText },
@@ -355,6 +365,11 @@ impl Lower<'_> {
             TermKind::Scalar(ScalarLiteral::Integer(value)) => {
                 Some(Number::Constant(integer_i64(value).ok()?))
             }
+            TermKind::StringIndex(n, i, Some(j)) if n.split_once('.').is_some_and(|(owner,_)| self.objects.as_ref().is_some_and(|objects| objects.has(owner))) => {
+                let (owner, field) = n.split_once('.')?;
+                if self.objects.as_ref()?.field_type(owner,field,false)? != "str" { return None; }
+                Some(Number::MemberByte(owner.into(),field.into(),self.offset(i)?,self.offset(j)?))
+            }
             TermKind::StringIndex(n, i, Some(j)) if self.strings.contains_key(n) =>
                 self.strings[n].live.get().then_some(Number::LocalByte(n.clone(), self.offset(i)?, self.offset(j)?)),
             TermKind::LiteralIndex(s, i, Some(j)) =>
@@ -378,6 +393,17 @@ impl Lower<'_> {
         }
     }
 
+    fn boolean(&self, term: &Term) -> Option<Number> {
+        match &term.kind {
+            TermKind::Group(t) => self.boolean(t),
+            TermKind::Scalar(ScalarLiteral::Boolean(b)) => Some(Number::Constant(i64::from(*b))),
+            TermKind::FieldRead(owner, field) if self.objects.as_ref()?.field_type(owner, field, false)? == "bool" =>
+                Some(Number::BoolMember(owner.clone(),field.clone())),
+            TermKind::Logic(op, a, b) => Some(Number::Logic(op,Box::new(self.boolean(a)?),Box::new(self.boolean(b)?))),
+            _ => None,
+        }
+    }
+
     fn scalar_leaf(&self, statements: &[Stmt]) -> Option<Number> {
         let [statement] = statements else { return None };
         let StmtKind::Return(value) = &statement.kind else { return None };
@@ -386,7 +412,7 @@ impl Lower<'_> {
             match &term.kind {
                 TermKind::Group(inner) => pure(inner),
                 TermKind::BinaryInt(op) => pure(&op.left) && pure(&op.right),
-                TermKind::Name(_) | TermKind::Scalar(ScalarLiteral::Integer(_)) => true,
+                TermKind::Name(_) | TermKind::FieldRead(_, _) | TermKind::Scalar(ScalarLiteral::Integer(_)) => true,
                 _ => false,
             }
         }
@@ -475,14 +501,15 @@ impl Lower<'_> {
                             return Err(err("此模組執行路徑尚未支援該區域型別"));
                         }
                         let root = match &init.kind {
+                            TermKind::Name(_) | TermKind::Move(_) => None,
                             TermKind::Construct(name, _) | TermKind::UnresolvedZeroArgs(name)
-                                | TermKind::MethodCall(name, _, _) => name,
+                                | TermKind::MethodCall(name, _, _) => Some(name),
                             _ => return Err(err("結構需要建構式初值")),
                         };
-                        if self.shadowed(root) {
+                        if root.is_some_and(|n| self.shadowed(n)) {
                             return Err(err("建構式名稱已被區域綁定遮蔽"));
                         }
-                        self.objects.as_mut().and_then(|scope| scope.construct(&d.name, &d.ty, d.start, init))
+                        self.objects.as_mut().and_then(|scope| scope.construct(&d.name, &d.ty, d.start, d.mutable, init))
                             .ok_or_else(|| err("結構型別、具名欄位或建構值無效"))?
                     }
                 }
@@ -511,6 +538,23 @@ impl Lower<'_> {
                         self.text(&a.expression)
                             .ok_or_else(|| err("需要獨立的字串值"))?,
                     )
+                }
+                StmtKind::FieldAssign { receiver, field, value } => {
+                    let ty = self.objects.as_ref().and_then(|o| o.field_type(receiver,field,true))
+                        .ok_or_else(|| err("需要可見、可寫且仍由此變數持有的欄位"))?;
+                    let rhs = match (ty, &value.kind) {
+                        ("int", _) => MemberValue::Integer(self.number(value).ok_or_else(||err("需要 int 欄位值"))?),
+                        ("bool", _) => MemberValue::Boolean(self.boolean(value).ok_or_else(||err("需要 bool 欄位值"))?),
+                        ("str", _) => match self.text(value) {
+                            Some(Text::Literal(s)) => MemberValue::Text(s),
+                            _ => return Err(err("需要獨立字串欄位值")),
+                        },
+                        _ => return Err(err("欄位賦值型別不符")),
+                    };
+                    if self.objects.as_ref().and_then(|o|o.field_type(receiver,field,true)).is_none() {
+                        return Err(err("求值後接收者已經移動"));
+                    }
+                    Action::WriteMember { owner: receiver.clone(), field: field.clone(), value: rhs }
                 }
                 StmtKind::GraphemeWrite(t) => {
                     let TermKind::StringReplace(
@@ -544,15 +588,13 @@ impl Lower<'_> {
                     Action::Replace(p, self.offset(i).ok_or_else(|| err("字素索引需要 int"))?, rhs)
                 }
                 StmtKind::If { branch, no: Some(other) } if function.result_ty == "int" => {
-                    let TermKind::Scalar(ScalarLiteral::Boolean(test)) = &branch.condition.kind else {
-                        return Err(err("此分支需要 bool 常值條件"));
-                    };
+                    let test = self.boolean(&branch.condition).ok_or_else(||err("此分支需要 bool 條件"))?;
                     let yes = self.scalar_leaf(&branch.body.statements);
                     let no = self.scalar_leaf(other.as_slice());
                     let (Some(yes), Some(no)) = (yes, no) else {
                         return Err(err("此分支兩側均需明確回傳純 int 運算式"));
                     };
-                    Action::Return(Number::Choice(*test, Box::new(yes), Box::new(no)))
+                    Action::Return(Number::Choice(Box::new(test), Box::new(yes), Box::new(no)))
                 }
                 StmtKind::Return(r) if function.result_ty == "str" => Action::ReturnText(
                     self.local_text(&r.expression, "").ok_or_else(|| err("需要獨立的 str 返回值"))?),
@@ -675,7 +717,7 @@ impl Number {
                 for (_, _, value) in arguments { value.uses(list); }
                 list.push(Use::Call(target, false));
             }
-            Self::Choice(_, yes, no) => { yes.uses(list); no.uses(list); }
+            Self::Choice(test, yes, no) => { test.uses(list); yes.uses(list); no.uses(list); }
             Self::Byte(p, ..) => list.push(Use::Direct(p)),
             Self::Binary(left, _, right) => {
                 left.uses(list);
@@ -696,7 +738,8 @@ impl Action {
             Self::ReturnText(value) | Self::StoreText { value, .. } => {
                 if let LocalText::Call(call) = value { call.uses(&mut uses); }
             }
-            Self::Jump(_) | Self::ReplaceLocal(_) => (),
+            Self::WriteMember { value: MemberValue::Integer(n) | MemberValue::Boolean(n), .. } => n.uses(&mut uses),
+            Self::WriteMember { .. } | Self::RelocateObject { .. } | Self::Jump(_) | Self::ReplaceLocal(_) => (),
             Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(..) => (),
@@ -1020,6 +1063,25 @@ impl Program {
             match &step.action {
                 Action::Jump(target) => pc = *target,
                 Action::Unless(test,target) => if self.eval(test, frame, state, depth)? == 0 { pc = *target; },
+                Action::RelocateObject { source, target, moving } => {
+                    let result = if *moving { state.mixed.move_whole_with_shared_ledger(&mut state.heap, source,target) }
+                        else { state.mixed.copy_whole(source,target) };
+                    result.map_err(|_| StrRuntimeError::EvaluationFailed)?;
+                }
+                Action::WriteMember { owner, field, value } => {
+                    let result = match value {
+                        MemberValue::Integer(n) => {
+                            let v = self.eval(n, frame, state, depth)?;
+                            state.mixed.write_int_field(owner,field,v,true)
+                        }
+                        MemberValue::Boolean(n) => {
+                            let b = self.eval(n, frame, state, depth)? != 0;
+                            state.mixed.write_bool_field(owner,field,b,true)
+                        }
+                        MemberValue::Text(s) => state.mixed.write_str_field_with_shared_ledger(&mut state.heap,owner,field,s,true),
+                    };
+                    result.map_err(|_| StrRuntimeError::EvaluationFailed)?;
+                }
                 Action::Construct(n,fields,named) => {
                     use crate::mixed_struct_runtime::{MixedFieldSpec,NamedMixed};
                     let schema:Vec<_> = fields.iter().map(|f|MixedFieldSpec{name:&f.name,kind:f.kind,
@@ -1166,7 +1228,14 @@ impl Program {
                 let key = self.eval(key, frame, state, depth)?;
                 entries.get(&key).copied().ok_or(StrRuntimeError::EvaluationFailed)
             }
-            Number::Choice(test, yes, no) => self.eval(if *test { yes } else { no }, frame, state, depth),
+            Number::Choice(test, yes, no) => {
+                let selected = if self.eval(test, frame, state, depth)? != 0 { yes } else { no };
+                self.eval(selected, frame, state, depth)
+            }
+            Number::BoolMember(owner, field) => match state.mixed.field(owner,field) {
+                Ok(crate::mixed_struct_runtime::Observed::Bool(b)) => Ok(i64::from(b)),
+                _ => Err(StrRuntimeError::EvaluationFailed),
+            },
             Number::ScalarCall { target, arguments } => {
                 let mut bindings = HashMap::new();
                 for (name, _, value) in arguments {
@@ -1199,6 +1268,14 @@ impl Program {
                         .map_err(|_| StrRuntimeError::OutstandingResource)?;
                 }
                 self.call(n, state, depth + 1)
+            }
+            Number::MemberByte(owner, field, i, j) => {
+                match state.mixed.field(owner,field) {
+                    Ok(crate::mixed_struct_runtime::Observed::Str(text)) =>
+                        crate::owned_str_runtime::literal_byte(text,i.value(frame)?,j.value(frame)?)
+                            .ok_or(StrRuntimeError::EvaluationFailed),
+                    _ => Err(StrRuntimeError::EvaluationFailed),
+                }
             }
             Number::LocalByte(owner, i, j) => state.heap.read_grapheme_byte(&format!("@{owner}"),
                 i.value(frame)?, j.value(frame)?).map_err(|_| StrRuntimeError::EvaluationFailed),
