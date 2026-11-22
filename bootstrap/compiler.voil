@@ -85,7 +85,15 @@ fn statement()->int{
 }
 
 fn list_borrow()->int{
-    return host.expect("with") + host.list_owner() + host.expect("[") + expression() + host.expect("]") + host.expect("as") + host.list_alias() + host.expect("{") + statement() + host.expect("}") + host.finish_list_borrow() + statement()
+    return host.expect("with") + host.list_owner() + host.expect("[") + expression() + host.expect("]") + host.expect("as") + host.list_alias() + host.expect("{") + statement() + host.expect("}") + host.finish_list_borrow() + after_list_borrow()
+}
+
+fn after_list_borrow()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        return statement()
+    }
 }
 
 fn local()->int{

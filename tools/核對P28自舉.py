@@ -267,7 +267,7 @@ fn main(){
 
     # list[int] 常值與公開 with 唯讀索引共用已解析的區域容器身分。
     lists = ("fn main()->int{\nvar xs:list[int] = [3,42]\n"
-             "with xs[1] as item {\nreturn item\n}\nreturn 0\n}")
+             "with xs[1] as item {\nreturn item\n}\n}")
     source.write_text("import host\n" + lists, encoding="utf-8")
     generated_lists = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
     assert generated_lists[0] == generated_lists[1] == generated_lists[2]
@@ -281,8 +281,7 @@ fn main(){
         encoding="utf-8")
     subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
     assert invoke(native) == (42, "", "")
-    public_lists = "fn main()->int{\nvar xs:list[int] = [40,2]\nreturn 40+len(xs)\n}"
-    public.write_text(public_lists, encoding="utf-8")
+    public.write_text(lists, encoding="utf-8")
     assert invoke(next_stage, "check", public) == (0, "", "")
     assert invoke(next_stage, "run", public) == (0, "42\n", "")
     for mode in ("build", "pack"):
@@ -308,7 +307,7 @@ fn main(){
 
     # 越界是已通過靜態檢查後的執行期錯誤，三代生成物與公開兩種產物都必須失敗。
     missing_item = ("fn main()->int{\nvar xs:list[int] = [1]\n"
-                    "with xs[2] as item {\nreturn item\n}\nreturn 0\n}")
+                    "with xs[2] as item {\nreturn item\n}\n}")
     source.write_text("import host\n" + missing_item, encoding="utf-8")
     generated_missing = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
     assert generated_missing[0] == generated_missing[1] == generated_missing[2]
@@ -321,6 +320,13 @@ fn main(){
         encoding="utf-8")
     subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
     assert invoke(native)[0] == 1
+    public.write_text(missing_item, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public)[0] == 1
+    for mode in ("build", "pack"):
+        exe = root / f"list-missing-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe)[0] == 1
 
     for invalid in (
         "fn bad(a:bool)->int{ return 0 }",
