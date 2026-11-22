@@ -294,6 +294,10 @@ impl LinkedProgram {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
+                if std::iter::once(&f.result_ty).chain(f.params.iter().map(|p|&p.ty))
+                    .any(|ty|stored_type(ty) && !objects.valid_storage(ty)) {
+                    return Err(u.error(f.start,f.end,"容器簽章引用不可見或未宣告的元素型別"));
+                }
                 let mut locals = HashMap::new();
                 let mut strings = HashMap::new();
                 if f.params.iter().all(|p| stored_type(&p.ty) || matches!(p.ty.as_str(), "int" | "bool" | "float")) {
@@ -490,6 +494,18 @@ mod tests {
             assert_eq!(trace, events);
             assert_eq!(actual.ok(), success.then_some(42));
         }
+    }
+
+    #[test]
+    fn shared_text_parameters_reuse_one_resource() {
+        use ResourceEvent::*;
+        let files=Files::new(&[("main.voil","fn read(a:str,b:str)->int{ return a[0][0]+b[0][0] }
+fn main()->int{ var s:str = \"*\"
+const n:int = read(s,s)
+return n - s[0][0] }")]);
+        let (value,trace)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+        assert_eq!(value.ok(),Some(42));
+        assert_eq!(trace,vec![Created(1),Released(1)]);
     }
 
     #[test]

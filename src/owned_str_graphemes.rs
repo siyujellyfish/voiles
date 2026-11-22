@@ -48,7 +48,7 @@ pub(crate) fn literal_index_valid(text: &str, index: i64, byte: Option<i64>) -> 
 
 impl OwnedStrRuntime {
     fn indexed_value(&self, owner: &str) -> Result<&OwnedUtf8, StrRuntimeError> {
-        let (scope, slot) = self.location(owner)?;
+        let (scope, slot) = self.find_binding(owner, true)?;
         self.scopes[scope].names[slot].owned.as_ref().ok_or(StrRuntimeError::MovedSource)
     }
 

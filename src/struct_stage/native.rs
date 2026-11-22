@@ -4,6 +4,7 @@ use std::fmt::Write;
 
 #[derive(Clone)]
 struct Emitter<'a> {
+    text_parameters: BTreeSet<String>,
     functions: BTreeMap<&'a str, usize>,
     locals: BTreeMap<String, usize>,
 }
@@ -60,7 +61,7 @@ impl Emitter<'_> {
             self.locals.get(&change.owner)?, self.offset(&change.index)?))
     }
 
-    fn standard(&self,call:&StandardCall,text:bool)->Option<String> {
+    fn standard(&self,call:&StandardCall,result:&str)->Option<String> {
         let mut values=Vec::new();
         for arg in &call.args {
             values.push(match arg {
@@ -69,7 +70,12 @@ impl Emitter<'_> {
                 StandardArg::Text(t)=>format!("standard::Value::Text(({}).text)",self.local_text(t)?),
             });
         }
-        let (variant,expr)=if text {("Text","ResourceText::new(value)")} else {("Int","value")};
+        let (variant,expr)=match result {
+            "str" => ("Text","ResourceText::new(value)"),
+            "int" => ("Int","value"),
+            "list[int]" => ("Bytes","containers::Value::from_bytes(value)"),
+            _ => return None,
+        };
         Some(format!("(match standard::invoke({:?}, &[{}], argv) {{ Some(standard::Value::{variant}(value)) => {expr}, _ => return Err((site,ARITH)) }})",call.name,values.join(",")))
     }
 
@@ -91,9 +97,11 @@ impl Emitter<'_> {
                 code.push_str("ResourceText::new(output) }");
                 code
             }
-            LocalText::Standard(call) => self.standard(call,true)?,
+            LocalText::Standard(call) => self.standard(call,"str")?,
             LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
             LocalText::Replace(change) => self.local_replace(change)?,
+            LocalText::Move(source) if self.text_parameters.contains(source) =>
+                format!("v{}.into_owned().ok_or((site,ARITH))?",self.locals.get(source)?),
             LocalText::Move(source) => format!("v{}", self.locals.get(source)?),
             LocalText::Grapheme(source, index) => format!("ResourceText::new(v{}.grapheme({}).ok_or((site, ARITH))?.to_owned())",
                 self.locals.get(source)?, self.offset(index)?),
@@ -111,7 +119,11 @@ impl Emitter<'_> {
     fn invocation(&self, call: &TextInvocation) -> Option<String> {
         let mut code = String::new();
         for (_,slot,value) in &call.arguments {
-            let expr = match value { Argument::Integer(n) => self.number(n)?, Argument::Text(t) => self.local_text(t)? };
+            let expr = match value {
+                Argument::SharedText(n) => format!("TextArgument::Shared(&v{})",self.locals.get(n)?),
+                Argument::Integer(n) => self.number(n)?,
+                Argument::Text(t) => format!("TextArgument::Owned({})",self.local_text(t)?),
+            };
             write!(code,"let arg{slot} = {expr}; ").ok()?;
         }
         self.call_code(&call.target,code,call.arguments.len())
@@ -134,6 +146,13 @@ impl Emitter<'_> {
     }
     fn container_item(&self, item: &ContainerItem) -> Option<String> {
         Some(match item {
+            ContainerItem::Record(fields) => {
+                let mut code=String::from("{let mut fields=std::collections::BTreeMap::new();");
+                for (field,value) in fields {
+                    write!(code,"fields.insert(containers::Key::Text(String::from({field:?})),{});",self.container_item(value)?).ok()?;
+                }
+                code.push_str("containers::Value::Dict(fields)}"); code
+            }
             ContainerItem::Decimal(n)=>format!("containers::Value::Decimal({})",self.number(n)?),
             ContainerItem::Scalar(n,true) => format!("containers::Value::Boolean(({}) != 0)",self.number(n)?),
             ContainerItem::Scalar(n,false) => format!("containers::Value::Integer({})",self.number(n)?),
@@ -152,7 +171,7 @@ impl Emitter<'_> {
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
             Number::FromCollection(call)=>self.collection_call(call)?,
-            Number::Standard(call)=>self.standard(call,false)?,
+            Number::Standard(call)=>self.standard(call,"int")?,
             Number::ViewByte(slot,i,j) => format!("{{ let Some(containers::Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
             Number::Edit(slot,edit) => match edit.as_ref() {
                 Edit::ReplaceOptional(item)=>format!("{{ let value={}; containers.put({slot:?},value).ok_or((site,ARITH))?; 0i64 }}",self.container_item(item)?),
@@ -161,7 +180,7 @@ impl Emitter<'_> {
                 Edit::Pop => format!("containers.pop({slot:?}).ok_or((site,ARITH))?"),
             },
             Number::Container(slot,read) => {
-                let method = match read { ContainerRead::Length => "length", ContainerRead::Tag => "tag", ContainerRead::Scalar => "scalar" };
+                let method = match read { ContainerRead::Field(field) => return Some(format!("containers.get({slot:?}).and_then(|v|v.field({field:?})).and_then(containers::Value::scalar).ok_or((site,ARITH))?")), ContainerRead::Length => "length", ContainerRead::Tag => "tag", ContainerRead::Scalar => "scalar" };
                 format!("containers.get({slot:?}).and_then(containers::Value::{method}).ok_or((site, ARITH))?")
             }
             Number::ScalarCall { target, arguments,.. } => {
@@ -239,6 +258,7 @@ impl LinkedProgram {
     pub(crate) fn native_source(&self) -> Result<String, ModuleError> {
         let plan = self.checked_plan()?;
         let mut emitter = Emitter {
+            text_parameters: BTreeSet::new(),
             functions: plan.bodies.keys().enumerate().map(|(i, n)| (n.as_str(), i)).collect(),
             locals: BTreeMap::new(),
         };
@@ -259,6 +279,9 @@ impl LinkedProgram {
         out.push_str(include_str!("public_containers.rs"));
         out.push_str("}\n");
         out.push_str(include_str!("native_object.inc"));
+        out.push_str("enum TextArgument<'a> { Shared(&'a ResourceText), Owned(ResourceText) }\n");
+        out.push_str("impl std::ops::Deref for TextArgument<'_> { type Target=ResourceText; fn deref(&self)->&ResourceText { match self {Self::Shared(v)=>v,Self::Owned(v)=>v} } }\n");
+        out.push_str("impl TextArgument<'_> { fn into_owned(self)->Option<ResourceText>{match self{Self::Owned(v)=>Some(v),Self::Shared(_)=>None}} }\n");
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
         out.push_str("impl ResourceText { fn new(text:String)->Self { Self { text, starts:Default::default() } } }\n");
         if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || self.graph.units.iter().any(|u|u.functions.iter().any(|f|f.params.iter().any(|p|stored_type(&p.ty)))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
@@ -270,13 +293,14 @@ impl LinkedProgram {
         }
         for (name, body) in &plan.bodies {
             emitter.locals.clear();
+            emitter.text_parameters.clear();
             let id = emitter.functions[name.as_str()];
             let step = &body[0]; // Lower::body 要求每個函式都有明確 return。
             let unit = &self.graph.units[step.module];
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument: String = signature.params.iter().map(|p| {
-                let ty = match p.ty.as_str() { ty if stored_type(ty) => "containers::Value", "int" | "bool" | "float" => "i64", "str" => "ResourceText", _ => "Object" };
+                let ty = match p.ty.as_str() { ty if stored_type(ty) => "containers::Value", "int" | "bool" | "float" => "i64", "str" => { emitter.text_parameters.insert(p.name.clone()); "TextArgument<'_>" }, _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
             let ret = if stored_type(&signature.result_ty) {"containers::Value"} else if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
@@ -313,6 +337,7 @@ impl LinkedProgram {
                 if guarded { writeln!(out, "let outcome = (|| -> Result<Option<{ret}>, Failure> {{").unwrap(); }
                 match &step.action {
                     Action::Container(slot,init) => match init {
+                        ContainerInit::ReadBytes(call) => writeln!(out,"let value={}; containers.put({slot:?},value).ok_or((site,ARITH))?;",emitter.standard(call,"list[int]").ok_or_else(unsupported)?).unwrap(),
                         ContainerInit::Call(call)=>writeln!(out,"let result={}; containers.put({slot:?},result).ok_or((site,ARITH))?;",emitter.collection_call(call).ok_or_else(unsupported)?).unwrap(),
                         ContainerInit::Optional(item)=>writeln!(out,"let value={}; containers.put({slot:?},value).ok_or((site,ARITH))?;",emitter.container_item(item).ok_or_else(unsupported)?).unwrap(),
                         ContainerInit::Literal(v) => writeln!(out,"containers.put({slot:?},{}).ok_or((site, ARITH))?;",container_source(&v.runtime().ok_or_else(unsupported)?)).unwrap(),

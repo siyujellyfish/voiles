@@ -41,7 +41,9 @@ verify(cli, ((consume + forward + "fn main()->int{\n" + body + "\n}", result) fo
     ('var value:str = "*"\nreturn forward(value=value.move())', 42),
     ('var s:str = ""\nreturn forward(s.move())', "runtime"),
     ('var s:str = "*"\nvar n:int = read(s.move())\nreturn s[0][0]', "reject"),
-    ('var s:str = "*"\nreturn read(s)', "reject"),
+    ('var s:str = "*"\nreturn read(s)', 42),
+    ('var s:str = "*"\nvar n:int = read(s)\nreturn s[0][0] + n - 42', 42),
+    ('var s:str = "*"\nreturn forward(s)', "reject"),
     ('var s:str = "*"\nreturn read(s.move()) + read(s.move())', "reject"),
 ]))
 
@@ -84,4 +86,11 @@ verify(cli, [
     (local('var edit:str = owner.borrow()\nconst shared:str = owner.borrow()\nreturn edit[0][0]'),"reject"),
     ('async fn job()->int{ return 42 }\n' + local('const a:str = owner.borrow()\nconst n:int = await job()\nreturn a[0][0]'),"reject"),
     ('async fn job()->int{ return 42 }\n' + local('const a:str = owner.borrow()\nconst n:int = a[0][0]\nreturn await job()'),42),
+])
+
+pair = "fn both(a:str,b:str)->int{ return a[0][0] + b[0][0] }\n"
+verify(cli, [
+    (pair + 'fn main()->int{ var s:str = "*"\nreturn both(s,s) - 42 }',42),
+    (pair + 'fn main()->int{ var s:str = "*"\nreturn both(s,s.move()) }',"reject"),
+    (pair + 'fn main()->int{ var s:str = "*"\nreturn both(s,s[0]="x") }',"reject"),
 ])

@@ -20,6 +20,13 @@ pub(super) enum Value {
 }
 
 impl Value {
+    pub(super) fn from_bytes(bytes: Vec<u8>) -> Self {
+        Self::List(bytes.into_iter().map(|b| Self::Integer(i64::from(b))).collect())
+    }
+
+    pub(super) fn field(&self,name:&str)->Option<&Value> {
+        self.child(&Key::Text(name.to_owned()))
+    }
     fn child(&self, key: &Key) -> Option<&Value> {
         match (self, key) {
             (Self::List(items), Key::Index(i)) => items.get(usize::try_from(*i).ok()?),

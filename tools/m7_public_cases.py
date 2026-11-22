@@ -4,9 +4,11 @@ import subprocess
 from tempfile import TemporaryDirectory
 
 
-def verify(cli, cases):
+def verify(cli, cases, modules=None):
     with TemporaryDirectory() as temporary:
         root = Path(temporary)
+        for name, source in (modules or {}).items():
+            (root / name).write_text(source, encoding="utf-8")
         for i, (program, expected) in enumerate(cases):
             source = root / "main.voil"
             source.write_text(program, encoding="utf-8")

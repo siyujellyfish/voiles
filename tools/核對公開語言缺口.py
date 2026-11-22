@@ -88,3 +88,20 @@ verify(cli, [(main(body), expected) for body, expected in [
     ("var n:int\nreturn n+=2", "reject"),
     ("var n:int = 9223372036854775807\ntry{ return n+=1 } except EvaluationError{ return n - 9223372036854775765 }", 42),
 ]])
+
+lexer = """struct Token{ var start:int
+const _tag:int = 3 }
+fn scan(n:int)->list[Token]{
+    var tokens:list[Token] = []
+    tokens.append(Token(start=n))
+    return tokens.move()
+}
+fn first(tokens:list[Token])->int{ with tokens[0] as t{ return t.start } }"""
+program = "import lexer\n"
+verify(cli, [(program + main(body), expected) for body, expected in [
+    ("var xs:list[lexer.Token] = lexer.scan(42)\nreturn lexer.first(xs.move())", 42),
+    ("var xs:list[lexer.Token] = lexer.scan(42)\nwith xs[0] as t{ return t.start }", 42),
+    ("var xs:list[lexer.Token] = lexer.scan(42)\nwith xs[0] as t{ return t._tag }", "reject"),
+    ("var xs:list[Missing] = []\nreturn len(xs)", "reject"),
+    ("var xs:list[lexer.Token] = []\nxs.append(42)\nreturn 0", "reject"),
+]], {"lexer.voil": lexer})

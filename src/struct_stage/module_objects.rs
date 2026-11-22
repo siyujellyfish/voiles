@@ -103,8 +103,52 @@ impl<'a> ObjectScope<'a> {
         let f=self.graph.units[origin].functions.iter().find(|f|f.name==name)?;
         Some((target,origin,f))
     }
+    pub(in crate::struct_stage::module_share) fn allows_shared(&self,name:&str,param:&str)->bool {
+        let Some((_,origin,f))=self.function(name) else { return false };
+        let tokens=&self.graph.units[origin].tokens;
+        let start=tokens.partition_point(|t|t.start<f.body.start);
+        let end=tokens.partition_point(|t|t.start<f.body.end);
+        !tokens[start..end].windows(3).any(|w|matches!(&w[0].kind,TokenKind::Name(n) if n==param)
+            && w[1].kind==TokenKind::Symbol('.') && matches!(&w[2].kind,TokenKind::Name(n) if n=="move"))
+    }
     pub(in crate::struct_stage::module_share) fn requires_argument(&self,name:&str)->bool {
         self.function(name).is_some_and(|(_,_,f)|!f.params.is_empty())
+    }
+    pub(in crate::struct_stage::module_share) fn valid_storage(&self,ty:&str)->bool {
+        if let Some((_,inner))=element_type(ty) {return self.valid_storage(inner);}
+        matches!(ty,"int"|"float"|"str"|"bool") || ty.starts_with("Optional[") || self.graph.resolve_struct(self.caller,ty).is_some()
+    }
+    pub(in crate::struct_stage::module_share) fn same_type(&self,local:&str,origin:usize,remote:&str)->bool {
+        match (element_type(local),element_type(remote)) {
+            (Some((k,a)),Some((other,b))) => local.starts_with("list[")==remote.starts_with("list[") &&
+                k==other && self.same_type(a,origin,b),
+            (None,None) => match (self.graph.resolve_struct(self.caller,local),self.graph.resolve_struct(origin,remote)) {
+                (Some((_,a)),Some((_,b)))=>std::ptr::eq(a,b),
+                (None,None)=>local==remote,
+                _=>false,
+            },
+            _=>false,
+        }
+    }
+    pub(in crate::struct_stage::module_share) fn record_defaults(&self,ty:&str,constructor:&str)
+        -> Option<Vec<(String,Option<containers::Value>)>> {
+        let (origin,def)=self.graph.resolve_struct(self.caller,ty)?;
+        if !std::ptr::eq(def,self.graph.resolve_struct(self.caller,constructor)?.1) {return None;}
+        let mut fields=Vec::new();
+        for field in &def.fields {
+            let default=match &field.default {
+                None=>None,
+                Some(t)=>Some(match seed(&self.graph.units[origin],t)? {
+                    ApprovedSeed::Int(v) if field.ty=="float"=>containers::Value::Decimal(v),
+                    ApprovedSeed::Int(v)=>containers::Value::Integer(v),
+                    ApprovedSeed::Bool(v)=>containers::Value::Boolean(v),
+                    ApprovedSeed::Str(v)=>containers::Value::Text(v),
+                    _=>return None,
+                })
+            };
+            fields.push((field.name.clone(),default));
+        }
+        Some(fields)
     }
     pub(in crate::struct_stage::module_share) fn named_field(&self,ty:&str,name:&str)->Option<&str> {
         Some(&self.graph.field(self.caller,ty,name)?.ty)
