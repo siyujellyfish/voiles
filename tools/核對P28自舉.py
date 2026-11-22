@@ -424,6 +424,67 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe)[0] == 1
 
+    nested_lists = ('fn main()->int{\nvar matrix:list[list[int]] = [[1,2],[],[42]]\n'
+                    'with matrix[0] as row {\nreturn len(row)+40\n}\n}')
+    source.write_text("import host\n" + nested_lists, encoding="utf-8")
+    generated_nested = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_nested[0] == generated_nested[1] == generated_nested[2]
+    code, generated, error = generated_nested[2]
+    assert (code == 0 and not error and "Vec<Vec<i64>>" in generated
+            and "vec![vec![1i64,2i64],vec![],vec![42i64]]" in generated
+            and "let v_row: &Vec<i64>" in generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(nested_lists, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"nested-list-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_nested_lists = (
+        "fn main()->int{ var xs:list[list[int]] = [[true]] return 0 }",
+        "fn main()->int{ var xs:list[list[int]] = [1] return 0 }",
+        "fn main()->int{ var xs:list[list[int]] = [[1,]] return 0 }",
+        "fn main()->int{ var xs:list[list[int]] = [[1],] return 0 }",
+        "fn main()->int{ var xs:list[list[int]] = [[1]] with xs[0] as xs { return len(xs) } return 0 }",
+        "fn main()->int{ var xs:list[list[int]] = [[1]] with xs[0] as row { return row.append(2) } }",
+    )
+    for invalid in invalid_nested_lists:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
+    missing_row = ('fn main()->int{\nvar matrix:list[list[int]] = [[1]]\n'
+                   'with matrix[2] as row {\nreturn len(row)\n}\n}')
+    source.write_text("import host\n" + missing_row, encoding="utf-8")
+    generated_missing_row = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_missing_row[0] == generated_missing_row[1] == generated_missing_row[2]
+    code, generated, error = generated_missing_row[2]
+    assert code == 0 and not error and "清單索引越界" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native)[0] == 1
+    public.write_text(missing_row, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public)[0] == 1
+    for mode in ("build", "pack"):
+        exe = root / f"nested-list-missing-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe)[0] == 1
+
     invalid_lists = (
         "fn main()->int{ var xs:list[int] = [true] return 0 }",
         "fn main()->int{ var xs:list[int] = [1,] return 0 }",
