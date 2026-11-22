@@ -119,3 +119,30 @@ with TemporaryDirectory() as tmp:
         for cli in (seed, stage, next_stage):
             code, generated, diagnostic = invoke(cli, "bootstrap-compiler", source)
             assert code == 1 and not generated and diagnostic, (expr, code, diagnostic)
+
+    # 用可觀察的游標前進，核對迴圈真實次數及每次回邊的預算檢查。
+    loop = ("import host\nfn main()->int{ while(host.at(\"x\") == 1){ host.expect(\"x\") } "
+            "if(host.at_end() >= 1){ return 42 } else { return 0 } }")
+    source.write_text(loop, encoding="utf-8")
+    code, generated, error = invoke(next_stage, "bootstrap-compiler", source)
+    assert (code, error) == (0, ""), error
+    harness = """
+type R=Result<i64,Fault>; enum Fault{Overflow}
+struct Machine{items:i64,steps:i64}
+impl Machine{
+    fn enter(&mut self,_:usize)->Result<(),Fault>{self.steps+=1; Ok(())}
+    fn at(&self,_:&str)->R{Ok(i64::from(self.items>0))}
+    fn expect(&mut self,_:&str)->R{self.items-=1;Ok(0)}
+    fn at_end(&self)->R{Ok(i64::from(self.items==0))}
+}
+fn main(){
+    for n in [0,3]{
+        let mut s=Machine{items:n,steps:0};
+        assert_eq!(v_main(&mut s,0).ok(),Some(42));
+        assert_eq!((s.items,s.steps),(0,n+1));
+    }
+}
+"""
+    rust_source.write_text(harness + generated, encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (0, "", "")

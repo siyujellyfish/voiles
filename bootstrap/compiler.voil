@@ -28,12 +28,64 @@ fn statement()->int{
     if (host.at("return") != 0) {
         return host.expect("return") + host.emit("Ok(") + expression() + host.emit(")\n")
     } else {
+        return control()
+    }
+}
+
+fn control()->int{
+    if (host.at("while") != 0) {
+        return host.expect("while") + host.emit("while ") + comparison() + host.expect("{") + host.emit("s.enter(depth)?;\n") + actions() + host.expect("}") + host.emit("}\n") + statement()
+    } else {
         return condition() + body() + host.expect("else") + host.emit("} else {\n") + body() + host.emit("}\n")
     }
 }
 
 fn condition()->int{
-    return host.expect("if") + host.expect("(") + host.emit("if ") + expression() + host.expect("!") + host.expect("=") + host.emit(" != ") + expression() + host.expect(")") + host.emit(" {\n")
+    return host.expect("if") + host.emit("if ") + comparison()
+}
+
+fn actions()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        return call() + host.emit(";\n") + actions()
+    }
+}
+
+fn comparison()->int{
+    return host.expect("(") + expression() + relation() + expression() + host.expect(")") + host.emit(" {\n")
+}
+
+fn relation()->int{
+    if (host.at("!") != 0) {
+        return host.expect("!") + host.expect("=") + host.emit(" != ")
+    } else {
+        return equality()
+    }
+}
+
+fn equality()->int{
+    if (host.at("=") != 0) {
+        return host.expect("=") + host.expect("=") + host.emit(" == ")
+    } else {
+        return ordering()
+    }
+}
+
+fn ordering()->int{
+    if (host.at("<") != 0) {
+        return host.expect("<") + host.emit(" <") + inclusive()
+    } else {
+        return host.expect(">") + host.emit(" >") + inclusive()
+    }
+}
+
+fn inclusive()->int{
+    if (host.at("=") != 0) {
+        return host.expect("=") + host.emit("= ")
+    } else {
+        return host.emit(" ")
+    }
 }
 
 fn expression()->int{
