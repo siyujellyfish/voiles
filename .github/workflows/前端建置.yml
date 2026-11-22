@@ -73,6 +73,9 @@ jobs:
           python3 tools/核對M7十進位.py target/p02/voiles
           python3 tools/核對M7例外.py target/p02/voiles
 
+      - name: 原生建置、資源與獨立封裝回歸
+        run: python3 tools/驗證原生工具鏈.py target/p02/voiles
+
       - name: M8 多檔詞數統計與 voiles 測試
         run: python3 tools/核對M8詞數統計.py target/p02/voiles
       - name: G22 公開命令、退出碼、繁中範例與實體路徑驗收

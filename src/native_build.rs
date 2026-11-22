@@ -4,6 +4,24 @@ use std::process::Command;
 use voiles_core::EntryProgram;
 
 struct Staging(PathBuf);
+impl Staging {
+    fn create(parent: &Path) -> std::io::Result<Self> {
+        let name = format!(".voiles-build-{}", std::process::id());
+        let mut path = parent.join(&name);
+        let mut attempt = 0u64;
+        loop {
+            match fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    attempt += 1;
+                    path = parent.join(format!("{name}-{attempt}"));
+                }
+                Err(error) => return Err(error),
+            }
+        }
+    }
+}
+
 impl Drop for Staging {
     fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
 }
@@ -17,9 +35,7 @@ pub(super) fn build(input: &Path, output: &Path, standalone: bool) -> Result<(),
     }
     let rust = EntryProgram::prepare(input)?.native_source()?;
     let parent = output.parent().unwrap_or(Path::new("."));
-    let temp = parent.join(format!(".voiles-build-{}", std::process::id()));
-    fs::create_dir(&temp).map_err(|e| format!("無法建立建置目錄：{e}"))?;
-    let stage = Staging(temp);
+    let stage = Staging::create(parent).map_err(|e| format!("無法建立建置目錄：{e}"))?;
     let source = stage.0.join("program.rs");
     let binary = stage.0.join("program");
     fs::write(&source, rust.as_bytes()).map_err(|e| e.to_string())?;
