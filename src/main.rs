@@ -16,6 +16,12 @@ fn main() -> ExitCode {
       voiles pack <入口.voil> -o <獨立執行檔>
       voiles --help | --version";
     match args.first().and_then(|arg| arg.to_str()) {
+        Some("bootstrap-compiler") if args.len() == 2 => {
+            match voiles_core::compile_bootstrap_source(Path::new(&args[1])) {
+                Ok(source) => print!("{source}"),
+                Err(error) => { eprintln!("{error}"); return ExitCode::FAILURE; }
+            }
+        }
         Some("bootstrap-digits") if args.len() == 2 => {
             match voiles_core::EntryProgram::prepare(Path::new(&args[1])).and_then(|p| p.bootstrap_digits()) {
                 Ok(source) => print!("{source}"),
