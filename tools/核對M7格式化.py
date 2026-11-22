@@ -41,3 +41,10 @@ verify(Path(sys.argv[1]).resolve(strict=True), [
     (program("{n + 9223372036854775807}"),"runtime"),
     (program("{n + true}"),"reject"),
 ])
+
+verify(Path(sys.argv[1]).resolve(strict=True), [
+    ('fn main()->int{ var text:str = "a"\nfor i in 0..3{ const digit:str = f"{i+1}"\n'
+     'text[0] = digit }\nreturn text[0][0] }',ord("3")),
+    ('fn main()->int{ var n:int = 0\nwhile(n != 2){ const t:str = t"{n}"\n'
+     'n = t.to_int()+1 }\nreturn n }',2),
+])

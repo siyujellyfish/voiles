@@ -65,8 +65,12 @@ impl Store {
         }
         Some(())
     }
-    pub(super) fn put(&mut self, slot: &str, mut value: Value) -> Option<()> {
+    pub(super) fn materialize(&self,mut value:Value)->Option<Value> {
         self.resolve(&mut value)?;
+        Some(value)
+    }
+    pub(super) fn put(&mut self, slot: &str, value: Value) -> Option<()> {
+        let value=self.materialize(value)?;
         self.owners.insert(slot.into(), value);
         Some(())
     }

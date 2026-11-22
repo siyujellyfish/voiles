@@ -120,7 +120,12 @@ impl Emitter<'_> {
     fn collection_call(&self,call:&CollectionCall)->Option<String> {
         let mut code=String::new();
         for (_,index,arg) in &call.arguments {
-            if let CollectionArgument::Scalar(n)=arg { write!(code,"let arg{index}={}; ",self.number(n)?).ok()?; }
+            if let CollectionArgument::Optional(item)=arg {
+                let value=self.container_item(item)?;
+                if matches!(item,ContainerItem::Literal(containers::Value::CopyFrom(_))) {
+                    write!(code,"let arg{index}=containers.materialize({value}).ok_or((site,ARITH))?; ").ok()?;
+                } else {write!(code,"let arg{index}={value}; ").ok()?;}
+            } else if let CollectionArgument::Scalar(n)=arg { write!(code,"let arg{index}={}; ",self.number(n)?).ok()?; }
         }
         for (_,index,arg) in &call.arguments {
             if let CollectionArgument::Move(slot)=arg { write!(code,"let arg{index}=containers.take({slot:?}).ok_or((site,ARITH))?; ").ok()?; }
@@ -138,6 +143,7 @@ impl Emitter<'_> {
 
     fn key(&self, key:&ContainerKey) -> Option<String> {
         Some(match key {
+            ContainerKey::NamedText(n)=>format!("containers::Key::Text(v{}.text.clone())",self.locals.get(n)?),
             ContainerKey::Text(s) => format!("containers::Key::Text(String::from({s:?}))"),
             ContainerKey::Index(n) => format!("containers::Key::Index({})",self.number(n)?),
         })
@@ -252,7 +258,7 @@ impl LinkedProgram {
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
         out.push_str("impl ResourceText { fn new(text:String)->Self { Self { text, starts:Default::default() } } }\n");
-        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || self.graph.units.iter().any(|u|u.functions.iter().any(|f|f.params.iter().any(|p|element_type(&p.ty).is_some()))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
+        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || self.graph.units.iter().any(|u|u.functions.iter().any(|f|f.params.iter().any(|p|stored_type(&p.ty)))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
             out.push_str(include_str!("native_strings.inc"));
@@ -267,16 +273,16 @@ impl LinkedProgram {
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument: String = signature.params.iter().map(|p| {
-                let ty = match p.ty.as_str() { ty if element_type(ty).is_some() => "containers::Value", "int" | "bool" | "float" => "i64", "str" => "ResourceText", _ => "Object" };
+                let ty = match p.ty.as_str() { ty if stored_type(ty) => "containers::Value", "int" | "bool" | "float" => "i64", "str" => "ResourceText", _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
-            let ret = if element_type(&signature.result_ty).is_some() {"containers::Value"} else if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
+            let ret = if stored_type(&signature.result_ty) {"containers::Value"} else if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], argv:&[std::ffi::OsString], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
-            if signature.params.iter().any(|p|element_type(&p.ty).is_some()) || body.iter().any(|step| matches!(step.action, Action::Container(..))) {
+            if stored_type(&signature.result_ty) || signature.params.iter().any(|p|stored_type(&p.ty)) || body.iter().any(|step| matches!(step.action, Action::Container(..))) {
                 out.push_str("let mut containers = containers::Store::default();\n");
                 for p in &signature.params {
-                    if element_type(&p.ty).is_some() {writeln!(out,"containers.put({:?},v{}).ok_or((caller,ARITH))?;",p.name,emitter.locals[&p.name]).unwrap();}
+                    if stored_type(&p.ty) {writeln!(out,"containers.put({:?},v{}).ok_or((caller,ARITH))?;",p.name,emitter.locals[&p.name]).unwrap();}
                 }
             }
             let flow = body.iter().any(|s| !s.handlers.is_empty() || matches!(s.action, Action::Jump(_) | Action::Unless(..)));
@@ -327,6 +333,11 @@ impl LinkedProgram {
                     Action::ReceiveObject {target,owner} => {
                         let called = *emitter.functions.get(target.as_str()).ok_or_else(unsupported)?;
                         writeln!(out,"let mut v{} = f{called}(globals, argv, steps, depth + 1, site)?;",emitter.local_id(owner)).unwrap();
+                    }
+                    Action::ReturnOptional(item)=>{
+                        let expr=emitter.container_item(item).ok_or_else(unsupported)?;
+                        writeln!(out,"let value={expr}; let value=containers.materialize(value).ok_or((site,ARITH))?;").unwrap();
+                        out.push_str(if guarded {"return Ok(Some(value));\n"} else {"return Ok(value);\n"});
                     }
                     Action::ReturnCollection(slot)=>{
                         let expr=format!("containers.take({slot:?}).ok_or((site,ARITH))?");

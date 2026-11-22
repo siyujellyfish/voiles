@@ -110,3 +110,23 @@ verify(cli, ((factory + 'fn main()->int{\n' + body + '\n}', expected) for body,e
     ("var a:list[bool] = [true]\nreturn read(a.move(),2)","reject"),
     ("var a:list[int] = []\nreturn read(a.move(),2)","runtime"),
 ]))
+
+optional = """fn make(n:int)->Optional[int]{ return n }
+fn use(x:Optional[int])->int{
+if(x != none){ return x }
+return 0
+}
+"""
+verify(cli, [
+    (optional+"fn main()->int{ var x:Optional[int] = make(42)\nreturn use(x) }",42),
+    (optional+"fn main()->int{ return use(42) }",42),
+    (optional+"fn main()->int{ return use(none) }",0),
+    (optional+"fn main()->int{ return use(true) }","reject"),
+    ('fn relay(v:Optional[str])->Optional[str]{ return v.move() }\n'
+     'fn main()->int{ var x:Optional[str] = "*"\nvar y:Optional[str] = relay(x.move())\n'
+     'if(y != none){ return y[0][0] }\nreturn 0 }',42),
+])
+
+verify(cli, [('fn main()->int{ var d:dict{str,int} = {}\nvar key:str = "甲"\n'
+              'd.set(key,42)\nkey = "乙"\nd.set(key,2)\n'
+              'with d["甲"] as a { with d[key] as b { return a + b - 2 } } }',42)])
