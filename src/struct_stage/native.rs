@@ -225,7 +225,8 @@ impl Emitter<'_> {
                     write!(code,"let site={:?}; *steps+=1; if *steps>{} {{ return Err((site,LIMIT)); }} ",step.site,budget.max_steps).ok()?;
                     let expr=inner.number(&step.value)?;
                     if let Some(field)=&step.write {
-                        write!(code,"let n={expr}; v{owner}.0.insert({field:?},Field::Int(n)); ").ok()?;
+                        let value=if step.boolean {"Field::Bool(n!=0)"} else {"Field::Int(n)"};
+                        write!(code,"let n={expr}; v{owner}.0.insert({field:?},{value}); ").ok()?;
                     } else {code.push_str(&expr);}
                 }
                 code.push_str(" }");

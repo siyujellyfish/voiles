@@ -25,34 +25,66 @@ fn seed(unit:&Unit,t:&Term)->Option<ApprovedSeed> {
     }
 }
 
-fn method_value(t:&Term, owner:&str, def:&StructDecl, method:&Function)->Option<Number> {
-    match &t.kind {
-        TermKind::Group(t)=>method_value(t,owner,def,method),
-        TermKind::Scalar(ScalarLiteral::Integer(n))=>Some(Number::Constant(integer_i64(n).ok()?)),
-        TermKind::Name(n) if method.params.iter().any(|p|p.name==*n && p.ty=="int")=>Some(Number::Local(format!("$arg/{n}"))),
-        TermKind::FieldRead(receiver,n) if receiver=="self" && def.field(n)?.ty=="int" =>
-            Some(Number::Member {owner:owner.into(),field:n.clone(),receiver:None}),
-        TermKind::BinaryInt(n)=>Some(Number::Binary(Box::new(method_value(&n.left,owner,def,method)?),n.operator,
-            Box::new(method_value(&n.right,owner,def,method)?))),
-        _=>None,
-    }
+fn method_value(unit:&Unit,t:&Term,owner:&str,def:&StructDecl,method:&Function)->Option<(String,Number)> {
+    let (ty,value)=match &t.kind {
+        TermKind::Group(t)=>return method_value(unit,t,owner,def,method),
+        TermKind::Scalar(ScalarLiteral::Integer(n))=>("int",Number::Constant(integer_i64(n).ok()?)),
+        TermKind::Scalar(ScalarLiteral::Boolean(v))=>("bool",Number::Constant(i64::from(*v))),
+        TermKind::Literal("float")=>{let ApprovedSeed::Int(n)=seed(unit,t)? else{return None};("float",Number::Constant(n))}
+        TermKind::Name(n)=>{
+            let p=method.params.iter().find(|p|p.name==*n)?;
+            (p.ty.as_str(),Number::Local(format!("$arg/{n}")))
+        }
+        TermKind::FieldRead(receiver,n) if receiver=="self"=>{
+            let ty=def.field(n)?.ty.as_str();
+            (ty,match ty {
+                "int"|"float"=>Number::Member{owner:owner.into(),field:n.clone(),receiver:None},
+                "bool"=>Number::BoolMember(owner.into(),n.clone()),
+                _=>return None,
+            })
+        }
+        TermKind::BinaryInt(n)=>{
+            let (ty,left)=method_value(unit,&n.left,owner,def,method)?;
+            let (other,right)=method_value(unit,&n.right,owner,def,method)?;
+            if ty!=other {return None;}
+            let (a,b)=(Box::new(left),Box::new(right));
+            let value=match ty.as_str() {
+                "int"=>Number::Binary(a,n.operator,b),
+                "float" if matches!(n.operator,'+'|'-'|'*'|'/')=>Number::Decimal(a,n.operator,b),
+                _=>return None,
+            };
+            return Some((ty,value));
+        }
+        TermKind::Logic(op,a,b)=>{
+            let (ty,left)=method_value(unit,a,owner,def,method)?;
+            let (other,right)=method_value(unit,b,owner,def,method)?;
+            if ty!=other || !public_format::logic_types(op,&ty) {return None;}
+            ("bool",Number::Logic(op,Box::new(left),Box::new(right)))
+        }
+        _=>return None,
+    };
+    Some((ty.to_owned(),value))
 }
 
 fn method_steps(unit:&Unit, module:usize, owner:&str, def:&StructDecl, method:&Function)->Option<Vec<MethodStep>> {
-    if method.is_async || method.result_ty!="int" {return None;}
+    let scalar=|ty:&str| matches!(ty,"int"|"bool"|"float");
+    if method.is_async || !scalar(&method.result_ty) {return None;}
     let mut names=HashSet::new();
-    if method.params.iter().any(|p|p.ty!="int" || p.name=="self" || !names.insert(&p.name)) {return None;}
+    if method.params.iter().any(|p|!scalar(&p.ty) || p.name=="self" || !names.insert(&p.name)) {return None;}
     let (last,body)=method.body.statements.split_last()?;
     let mut steps=Vec::new();
     for stmt in body.iter().chain(std::iter::once(last)) {
         let (write,expr)=match &stmt.kind {
             StmtKind::FieldAssign{receiver,field,value} if receiver=="self" && !std::ptr::eq(stmt,last)
-                && !def.field(field)?.immutable && def.field(field)?.ty=="int" => (Some(field.clone()),value),
+                && !def.field(field)?.immutable => (Some(field.clone()),value),
             StmtKind::Return(r) if std::ptr::eq(stmt,last)=>(None,&r.expression),
             _=>return None,
         };
         let start=unit.source.span(stmt.start,stmt.end).start;
-        steps.push(MethodStep { write,value:method_value(expr,owner,def,method)?,
+        let expected=if let Some(n)=&write {&def.field(n)?.ty} else {&method.result_ty};
+        let (ty,value)=method_value(unit,expr,owner,def,method)?;
+        if &ty!=expected {return None;}
+        steps.push(MethodStep { write,value,boolean:ty=="bool",
             origin:StepOrigin {module,span:(stmt.start,stmt.end)},
             site:format!("{}:{}:{}",unit.path.display(),start.line,start.column) });
     }
@@ -72,8 +104,8 @@ pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleErro
     }
     let mut seen=HashSet::new();
     for m in &def.methods {
-        if !seen.insert(&m.name) || method_steps(unit,0,"self",def,m).is_none() {
-            return Err(unit.error(m.start,m.end,"跨檔方法需要唯一的已檢查整數欄位讀取"));
+        if !seen.insert((&m.name,m.params.iter().map(|p|&p.ty).collect::<Vec<_>>())) || method_steps(unit,0,"self",def,m).is_none() {
+            return Err(unit.error(m.start,m.end,"方法簽章重複，或方法本體與簽章不符"));
         }
     }
     Ok(())
@@ -221,17 +253,17 @@ impl<'a> ObjectScope<'a> {
         if object.moved.get() || !object.missing.is_empty() || self.graph.field(self.caller,&object.ty,field)?.ty!="int" {return None;}
         Some(Number::Member{owner:owner.clone(),field:field.clone(),receiver:None})
     }
-    pub(in crate::struct_stage::module_share) fn method(&self,owner:&str,name:&str,values:Vec<Number>)->Option<MethodCall> {
+    pub(in crate::struct_stage::module_share) fn method(&self,owner:&str,name:&str,values:Vec<(&str,Number)>,expected:&str)->Option<MethodCall> {
         let object=self.variables.get(owner)?;
         if object.moved.get() || !object.missing.is_empty() {return None;}
         let (module,def)=self.graph.resolve_struct(self.caller,&object.ty)?;
         let methods=self.graph.methods(self.caller,&object.ty,name);
-        let [method]=methods.as_slice() else {return None;};
-        if values.len()!=method.params.len() {return None;}
+        let method=methods.into_iter().find(|m|m.params.iter().map(|p|p.ty.as_str()).eq(values.iter().map(|(t,_)|*t)))?;
+        if method.result_ty!=expected {return None;}
         let steps=method_steps(&self.graph.units[module],module,owner,def,method)?;
         let writes=steps.iter().any(|s|s.write.is_some());
         if writes && !object.mutable {return None;}
-        let arguments=method.params.iter().zip(values).map(|(p,n)|(format!("$arg/{}",p.name),n)).collect();
+        let arguments=method.params.iter().zip(values).map(|(p,(_,n))|(format!("$arg/{}",p.name),n)).collect();
         Some(MethodCall{owner:owner.into(),id:object.id,writes,steps,arguments})
     }
     pub(in crate::struct_stage::module_share) fn return_owner(&self,ty:&str,value:&Term)->Option<String> {
