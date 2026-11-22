@@ -288,15 +288,15 @@ impl LinkedProgram {
                 if f.result_ty == "str" && f.params.iter().any(|p| !matches!(p.ty.as_str(), "int" | "str")) {
                     return Err(u.error(f.start,f.end,"字串返回簽章需要 int 或 str 形參"));
                 }
-                let collection_signature = element_type(&f.result_ty).is_some() || f.params.iter().any(|p|element_type(&p.ty).is_some());
+                let collection_signature = stored_type(&f.result_ty) || f.params.iter().any(|p|stored_type(&p.ty));
                 let object_result = !f.is_async && graph.resolve_struct(id,&f.result_ty).is_some();
-                if (collection_signature && f.is_async) || (!object_result && element_type(&f.result_ty).is_none() && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
+                if (collection_signature && f.is_async) || (!object_result && !stored_type(&f.result_ty) && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
                 let mut locals = HashMap::new();
                 let mut strings = HashMap::new();
-                if f.params.iter().all(|p| element_type(&p.ty).is_some() || matches!(p.ty.as_str(), "int" | "bool" | "float")) {
+                if f.params.iter().all(|p| stored_type(&p.ty) || matches!(p.ty.as_str(), "int" | "bool" | "float")) {
                     for p in &f.params {
                         if locals.insert(p.name.clone(), (false,p.ty.clone())).is_some() {
                             return Err(u.error(f.start, f.end, "函式參數重複"));

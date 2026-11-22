@@ -68,21 +68,27 @@ struct Place {
     alias: Option<(String, BorrowKind)>,
 }
 
+#[path = "public_format.rs"]
+mod public_format;
 #[path = "scalar_flow.rs"]
 mod scalar_flow;
 #[path = "public_containers.rs"]
 mod containers;
 
-enum ContainerKey { Text(String), Index(Number) }
+enum ContainerKey { NamedText(String), Text(String), Index(Number) }
 enum ContainerItem { Decimal(Number), Scalar(Number, bool), Literal(containers::Value) }
 enum Edit { ReplaceOptional(ContainerItem), Append(ContainerItem), Set(ContainerKey, ContainerItem), Pop }
 enum ContainerRead { Length, Tag, Scalar }
-enum CollectionArgument { Move(String), Scalar(Number) }
+fn stored_type(ty:&str)->bool { element_type(ty).is_some() || ty.starts_with("Optional[") }
+enum CollectionArgument { Optional(ContainerItem), Move(String), Scalar(Number) }
 struct CollectionCall { target:String, arguments:Vec<(String,usize,CollectionArgument)> }
 impl CollectionCall {
     fn uses<'a>(&'a self,uses:&mut Vec<Use<'a>>) {
         for (_,_,arg) in &self.arguments {
-            if let CollectionArgument::Scalar(n)=arg {n.uses(uses);}
+            match arg {
+                CollectionArgument::Scalar(n)|CollectionArgument::Optional(ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n))=>n.uses(uses),
+                _=>(),
+            }
         }
         uses.push(Use::Call(&self.target,false));
     }
@@ -251,6 +257,7 @@ enum MemberValue {
 enum Action {
     BorrowLocal { alias:String, owner:String,kind:BorrowKind },
     ReturnCollection(String),
+    ReturnOptional(ContainerItem),
     ReturnObject(String),
     ReceiveObject {target:String,owner:String},
     Evaluate(Number),
@@ -466,97 +473,14 @@ impl Lower<'_> {
         self.invocation(name,args,"str").map(LocalText::Call)
     }
 
-    fn format_scalar(&self, t:&Term, tokens:&[Token])->Option<(String,Number)> {
-        let (ty,n)=match &t.kind {
-            TermKind::Group(inner)=>return self.format_scalar(inner,tokens),
-            TermKind::Name(name)=>return Some((self.locals.get(name)?.1.clone(),Number::Local(name.clone()))),
-            TermKind::Scalar(ScalarLiteral::Integer(v))=>("int",Number::Constant(integer_i64(v).ok()?)),
-            TermKind::Scalar(ScalarLiteral::Boolean(v))=>("bool",Number::Constant(i64::from(*v))),
-            TermKind::Literal("float")=>{
-                let i=tokens.binary_search_by_key(&t.start,|t|t.start).ok()?;
-                let TokenKind::Decimal(text)=&tokens[i].kind else {return None};
-                let (c,e)=decimal::parts(text)?;
-                ("float",Number::Constant(decimal::encode(c,e)))
+    fn format_parts(&self,term:&Term)->Option<Vec<FormatPart>> {
+        public_format::format_parts(self.tokens,term,|name|self.text_owner(name,false,true),|t|{
+            if let TermKind::Name(n)=&t.kind {
+                let ty=self.locals.get(n)?.1.clone();
+                return Some((ty,Number::Local(n.clone())));
             }
-            TermKind::UnresolvedZeroArgs(name)=>("int",self.call_target(name,false)?),
-            TermKind::BinaryInt(node)=>{
-                let (ty,a)=self.format_scalar(&node.left,tokens)?;
-                let (other,b)=self.format_scalar(&node.right,tokens)?;
-                if ty!=other {return None;}
-                let (a,b)=(Box::new(a),Box::new(b));
-                match ty.as_str() { "int"=>("int",Number::Binary(a,node.operator,b)),
-                    "float"=>("float",Number::Decimal(a,node.operator,b)), _=>return None }
-            }
-            TermKind::Not(rhs)=>{
-                let (ty,n)=self.format_scalar(rhs,tokens)?;
-                if ty!="bool" {return None;}
-                ("bool",Number::Logic("==",Box::new(n),Box::new(Number::Constant(0))))
-            }
-            TermKind::Logic(op,a,b)=>{
-                let (ty,a)=self.format_scalar(a,tokens)?;
-                let (other,b)=self.format_scalar(b,tokens)?;
-                if other!=ty || *op!="!=" && ty!="bool" {return None;}
-                ("bool",Number::Logic(op,Box::new(a),Box::new(b)))
-            }
-            _=>return None,
-        };
-        Some((ty.into(),n))
-    }
-
-    fn format_parts(&self, term: &Term) -> Option<Vec<FormatPart>> {
-        let index = self.tokens.binary_search_by_key(&term.start, |t| t.start).ok()?;
-        let TokenKind::StringLiteral(template) = &self.tokens.get(index + 1)?.kind else { return None };
-        let mut chars = template.chars().peekable();
-        let mut parts = Vec::new();
-        let mut literal = String::new();
-        while let Some(ch) = chars.next() {
-            if ch != '{' && ch != '}' {
-                literal.push(ch);
-            } else if chars.next_if_eq(&ch).is_some() {
-                literal.push(ch);
-            } else if ch == '}' {
-                return None;
-            } else {
-                if !literal.is_empty() {
-                    parts.push(FormatPart::Literal(std::mem::take(&mut literal)));
-                }
-                let mut field = String::new();
-                loop {
-                    let c = chars.next()?;
-                    if c == '}' { break; }
-                    field.push(c);
-                }
-                let (name, spec) = field.split_once(':').unwrap_or((&field, ""));
-                let name=name.trim();
-                let part = if self.strings.get(name).is_some_and(|b|b.live.get()) && matches!(spec,""|"s") {
-                    FormatPart::Text(self.text_owner(name,false,true)?)
-                } else {
-                    if name.is_empty() {return None;}
-                    let source=Source::new(name.as_bytes().to_vec());
-                    let scan=lexer::scan(&source);
-                    if !scan.diagnostics.is_empty() {return None;}
-                    let mut parser=LanguageParser::<true> {source:&source,tokens:&scan.tokens,cursor:0};
-                    let expression=parser.term().ok()?;
-                    if !parser.eof() {return None;}
-                    let (ty,value)=self.format_scalar(&expression,&scan.tokens)?;
-                    match (ty.as_str(),spec) {
-                        ("bool","") => FormatPart::Boolean(value),
-                        ("float","") => FormatPart::Float(value,None),
-                        ("float",format) => {
-                            let places=format.strip_prefix('.')?.strip_suffix('f')?.parse::<usize>().ok()?;
-                            if places>398 {return None;}
-                            FormatPart::Float(value,Some(places))
-                        }
-                        ("int","" | "d") => FormatPart::Decimal(value),
-                        ("int","x") => FormatPart::Hex(value),
-                        _ => return None,
-                    }
-                };
-                parts.push(part);
-            }
-        }
-        parts.push(FormatPart::Literal(literal));
-        Some(parts)
+            Some(("int".into(),self.number(t)?))
+        })
     }
 
     fn local_text(&self, term: &Term, target: &str) -> Option<LocalText> {
@@ -1080,7 +1004,8 @@ impl Action {
         match self {
             Self::Select { key: ContainerKey::Index(n), .. } => n.uses(&mut uses),
             Self::Container(_,ContainerInit::Call(call))=>call.uses(&mut uses),
-            Self::ReturnCollection(_)|Self::BorrowLocal{..}=>(),
+            Self::ReturnOptional(ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n))=>n.uses(&mut uses),
+            Self::ReturnOptional(_)|Self::ReturnCollection(_)|Self::BorrowLocal{..}=>(),
             Self::Container(_,ContainerInit::Optional(ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n)))=>n.uses(&mut uses),
             Self::Select { .. } | Self::Container(..) | Self::DropStorage(_) => (),
             Self::ReturnObject(_) => (),
@@ -1475,6 +1400,7 @@ impl Program {
                 Action::Select { alias, owner, key } => {
                     let key = match key {
                         ContainerKey::Index(n) => containers::Key::Index(self.eval(n,frame,state,depth)?),
+                        ContainerKey::NamedText(n)=>containers::Key::Text(state.heap.read(&format!("@{n}"))?.into()),
                         ContainerKey::Text(s) => containers::Key::Text(s.clone()),
                     };
                     frame.containers.select(alias,owner,key).ok_or(StrRuntimeError::EvaluationFailed)?;
@@ -1495,6 +1421,11 @@ impl Program {
                     let id=DeclarationId(usize::try_from(resource).map_err(|_|StrRuntimeError::ExhaustedIdentity)?);
                     let ticket=frame.text_loans.acquire(id,*kind).map_err(|_|StrRuntimeError::OutstandingResource)?;
                     frame.text_tickets.insert(alias.clone(),ticket);
+                }
+                Action::ReturnOptional(item)=>{
+                    let value=self.container_item(item,frame,state,depth)?;
+                    let value=frame.containers.materialize(value).ok_or(StrRuntimeError::EvaluationFailed)?;
+                    return Ok(Some(CallResult::Collection(value)));
                 }
                 Action::ReturnCollection(slot)=>return frame.containers.take(slot).map(|v|Some(CallResult::Collection(v))).ok_or(StrRuntimeError::EvaluationFailed),
                 Action::ReturnObject(name) => return state.mixed.return_with_shared_ledger(&mut state.heap,name)
@@ -1672,7 +1603,11 @@ impl Program {
         let mut locals=HashMap::new();
         let mut owned=containers::Store::default();
         for (param,_,arg) in &call.arguments {
-            if let CollectionArgument::Scalar(n)=arg {
+            if let CollectionArgument::Optional(item)=arg {
+                let value=self.container_item(item,frame,state,depth)?;
+                let value=frame.containers.materialize(value).ok_or(StrRuntimeError::EvaluationFailed)?;
+                owned.put(param,value).ok_or(StrRuntimeError::EvaluationFailed)?;
+            } else if let CollectionArgument::Scalar(n)=arg {
                 locals.insert(param.clone(),self.eval(n,frame,state,depth)?);
             }
         }
@@ -1757,7 +1692,8 @@ impl Program {
                         frame.containers.append(slot,v)
                     }
                     Edit::Set(key,value) => {
-                        let k=match key { ContainerKey::Text(s)=>containers::Key::Text(s.clone()),
+                        let k=match key { ContainerKey::NamedText(n)=>containers::Key::Text(state.heap.read(&format!("@{n}"))?.into()),
+                            ContainerKey::Text(s)=>containers::Key::Text(s.clone()),
                             ContainerKey::Index(n)=>containers::Key::Index(self.eval(n,frame,state,depth)?) };
                         let v=self.container_item(value,frame,state,depth)?;
                         frame.containers.set(slot,k,v)

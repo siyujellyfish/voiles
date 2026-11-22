@@ -37,6 +37,7 @@ struct Builder<'a,'b> {
     body: Body,
     scopes: Vec<HashMap<String, Binding>>,
     loops: Vec<Loop>,
+    move_floor: usize,
     next_slot: usize,
     candidate_sites: HashMap<usize, String>,
     containers: std::cell::RefCell<BTreeSet<String>>,
@@ -49,9 +50,9 @@ struct Builder<'a,'b> {
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
+        scopes: vec![HashMap::new()], loops: Vec::new(), move_floor: 0, next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
     for p in &function.params {
-        if element_type(&p.ty).is_some() {
+        if stored_type(&p.ty) {
             builder.containers.borrow_mut().insert(p.name.clone());
         } else if !matches!(p.ty.as_str(), "int" | "bool" | "float") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
@@ -90,7 +91,7 @@ impl Builder<'_, '_> {
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => ("bool", Number::Constant(i64::from(*b))),
             TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(equal)) => {
                 let binding = self.binding(name)?;
-                if !binding.ty.starts_with("Optional[") { return None; }
+                if !binding.ty.starts_with("Optional[") || !(self.views.contains(&binding.slot) || self.containers.borrow().contains(&binding.slot)) { return None; }
                 let operator = if *equal { "==" } else { "!=" };
                 ("bool", Number::Logic(operator, Box::new(Number::Container(binding.slot.clone(), ContainerRead::Tag)),
                     Box::new(Number::Constant(0))))
@@ -225,9 +226,32 @@ impl Builder<'_, '_> {
         Some(StandardCall {name:name.into(),args:values})
     }
 
+    fn formatted(&self,t:&Term)->Option<LocalText> {
+        public_format::format_parts(self.lower.tokens,t,|n|{
+            let b=self.binding(n)?;
+            (b.ty=="str" && !self.views.contains(&b.slot)).then(||b.slot.clone())
+        },|term|self.expr(term)).map(LocalText::Formatted)
+    }
+
+    fn replacement(&self,name:&str,index:&StringOffset,rhs:&GraphemeReplacement)->Option<LocalReplacement> {
+        let b=self.binding(name)?;
+        if b.ty!="str" || !b.mutable || self.views.contains(&b.slot) {return None;}
+        let rhs=match rhs {
+            GraphemeReplacement::Literal(s) if crate::owned_str_runtime::single_grapheme(s)=>rhs.clone(),
+            GraphemeReplacement::Named(n)=>{
+                let source=self.binding(n)?;
+                if source.ty!="str" || self.views.contains(&source.slot) {return None;}
+                GraphemeReplacement::Named(source.slot.clone())
+            }
+            _=>return None,
+        };
+        Some(LocalReplacement{owner:b.slot.clone(),index:self.offset(index)?,rhs})
+    }
     fn text(&self,t:&Term)->Option<LocalText> {
         match &t.kind {
             TermKind::Group(inner)=>self.text(inner),
+            TermKind::Literal("formatted")=>self.formatted(t),
+            TermKind::StringReplace(n,i,rhs)=>Some(LocalText::Replace(self.replacement(n,i,rhs)?)),
             TermKind::Call(c) if !c.awaited => self.standard_call(&c.name,c.arguments.iter().map(|t|(None,t)),"str").map(LocalText::Standard),
             TermKind::StringIndex(n,i,None) => {
                 let b=self.binding(n)?;
@@ -260,7 +284,7 @@ impl Builder<'_, '_> {
         }
         let (target,_,f) = objects.function(name)?;
         if f.is_async!=awaited || !matches!(f.result_ty.as_str(), "int" | "bool" | "float") { return None; }
-        if !awaited && f.params.iter().any(|p|element_type(&p.ty).is_some()) {
+        if !awaited && f.params.iter().any(|p|stored_type(&p.ty)) {
             let call=self.collection_call(name,args,&f.result_ty)?;
             return Some((f.result_ty.clone(),Number::FromCollection(call)));
         }
@@ -287,7 +311,9 @@ impl Builder<'_, '_> {
             let index=match label { Some(n)=>f.params.iter().position(|p|p.name==n)?, None=>i };
             let p=f.params.get(index)?;
             if !seen.insert(index) {return None;}
-            let arg=if element_type(&p.ty).is_some() {
+            let arg=if p.ty.starts_with("Optional[") && !matches!(t.kind,TermKind::Move(_)) {
+                CollectionArgument::Optional(self.item(t,&p.ty)?)
+            } else if stored_type(&p.ty) {
                 let TermKind::Move(from)=&t.kind else {return None};
                 let b=self.scopes.last()?.get(from)?;
                 if b.ty!=p.ty || self.borrowed.contains(&b.slot) || !self.containers.borrow_mut().remove(&b.slot) {return None;}
@@ -302,11 +328,12 @@ impl Builder<'_, '_> {
 
     fn container(&mut self, stmt: &Stmt, declaration: &crate::syntax_shared::ParsedDeclaration<String, Term>) -> Option<()> {
         let initial = declaration.initializer.as_ref()?;
+        let returns_storage=|name:&str|self.lower.objects.as_ref().and_then(|o|o.function(name)).is_some_and(|(_,_,f)|stored_type(&f.result_ty));
         let value = match &initial.kind {
-            TermKind::UnresolvedZeroArgs(n)=>ContainerInit::Call(self.collection_call(n,std::iter::empty(),&declaration.ty)?),
-            TermKind::Call(c) if !c.awaited=>ContainerInit::Call(self.collection_call(&c.name,c.arguments.iter().map(|t|(None,t)),&declaration.ty)?),
-            TermKind::Construct(n,args)=>ContainerInit::Call(self.collection_call(n,args.iter().map(|(k,t)|(Some(k.as_str()),t)),&declaration.ty)?),
-            TermKind::MethodCall(m,n,args)=>ContainerInit::Call(self.collection_call(&format!("{m}.{n}"),args.iter().map(|t|(None,t)),&declaration.ty)?),
+            TermKind::UnresolvedZeroArgs(n) if returns_storage(n)=>ContainerInit::Call(self.collection_call(n,std::iter::empty(),&declaration.ty)?),
+            TermKind::Call(c) if !c.awaited && returns_storage(&c.name)=>ContainerInit::Call(self.collection_call(&c.name,c.arguments.iter().map(|t|(None,t)),&declaration.ty)?),
+            TermKind::Construct(n,args) if returns_storage(n)=>ContainerInit::Call(self.collection_call(n,args.iter().map(|(k,t)|(Some(k.as_str()),t)),&declaration.ty)?),
+            TermKind::MethodCall(m,n,args) if returns_storage(&format!("{m}.{n}"))=>ContainerInit::Call(self.collection_call(&format!("{m}.{n}"),args.iter().map(|t|(None,t)),&declaration.ty)?),
             TermKind::Container(literal) if literal.ty == declaration.ty => {
                 let mut sources = HashMap::new();
                 literal.visit_elements(&mut |ty, atom| {
@@ -323,14 +350,14 @@ impl Builder<'_, '_> {
                 ContainerInit::Literal(value)
             }
             TermKind::Move(source) => {
-                // 在同一區域內，移動必然與來源宣告沿同一路徑執行。
-                // 外層來源可能只在某一條分支移走，亦可能仍有 with 借用。
-                let owner = self.scopes.last()?.get(source)?;
-                if owner.ty != declaration.ty { return None; }
+                let owner = self.scopes[self.move_floor..].iter().rev()
+                    .find_map(|scope| scope.get(source))?;
+                if owner.ty != declaration.ty || self.borrowed.contains(&owner.slot) { return None; }
                 let slot = owner.slot.clone();
                 if !self.containers.borrow_mut().remove(&slot) { return None; }
                 ContainerInit::Move(slot)
             }
+            _ if declaration.ty.starts_with("Optional[")=>ContainerInit::Optional(self.item(initial,&declaration.ty)?),
             _ => return None,
         };
         let slot = format!("@{}", self.next_slot);
@@ -349,8 +376,14 @@ impl Builder<'_, '_> {
         if !(self.containers.borrow().contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
         let (key_type, value_type) = element_type(&binding.ty)?;
         let key = if key_type == "str" {
-            let Text::Literal(text) = self.lower.text(selector)? else { return None };
-            ContainerKey::Text(text)
+            if let TermKind::Name(n)=&selector.kind {
+                let source=self.binding(n)?;
+                if source.ty!="str" || self.views.contains(&source.slot) {return None;}
+                ContainerKey::NamedText(source.slot.clone())
+            } else {
+                let Text::Literal(text) = self.lower.text(selector)? else { return None };
+                ContainerKey::Text(text)
+            }
         } else { ContainerKey::Index(self.typed(selector,key_type)?) };
         Some((binding.slot.clone(), value_type.into(), key))
     }
@@ -401,6 +434,14 @@ impl Builder<'_, '_> {
         }
     }
     fn block(&mut self, stmts:&[Stmt], nested:bool) -> Result<bool, Diagnostic> {
+        // 迴圈、例外與元素借用各自建立移動邊界；if 的兩臂則在既有邊界內合流。
+        let floor = if nested { self.scopes.len() } else { self.scopes.len() - 1 };
+        let previous = std::mem::replace(&mut self.move_floor, floor);
+        let result = self.branch_block(stmts, nested);
+        self.move_floor = previous;
+        result
+    }
+    fn branch_block(&mut self, stmts:&[Stmt], nested:bool) -> Result<bool, Diagnostic> {
         if nested { self.scopes.push(HashMap::new()); }
         let storage_depth = self.storage.len();
         let mut closed=false;
@@ -410,18 +451,10 @@ impl Builder<'_, '_> {
             match &s.kind {
                 StmtKind::Declare(d) => {
                     if self.scopes.last().unwrap().contains_key(&d.name) { return Err(err("重複區域宣告")); }
-                    if d.ty.starts_with("Optional[") {
-                        let item=d.initializer.as_ref().and_then(|t|self.item(t,&d.ty)).ok_or_else(||err("Optional 初值不屬於宣告的候選集合"))?;
-                        let slot=format!("@{}",self.next_slot);
-                        self.next_slot+=1;
-                        self.containers.borrow_mut().insert(slot.clone());
-                        self.storage.push(Storage::Container(slot.clone()));
-                        self.step(s,Action::Container(slot.clone(),ContainerInit::Optional(item)));
-                        self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot,ty:d.ty.clone(),mutable:d.mutable});
-                        continue;
-                    }
                     if d.ty=="str" {
-                        let value=d.initializer.as_ref().and_then(|t|self.text(t)).ok_or_else(||err("需要可獨立持有的字串"))?;
+                        let value=d.initializer.as_ref().and_then(|t|if !d.mutable && matches!(t.kind,TermKind::Literal("template")) {
+                            self.formatted(t)
+                        } else {self.text(t)}).ok_or_else(||err("需要可獨立持有的字串"))?;
                         let slot=format!("@{}",self.next_slot);
                         self.next_slot+=1;
                         self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot:slot.clone(),ty:d.ty.clone(),mutable:d.mutable});
@@ -429,7 +462,7 @@ impl Builder<'_, '_> {
                         self.step(s,Action::StoreText{target:slot,declaration:Some(d.mutable),value});
                         continue;
                     }
-                    if element_type(&d.ty).is_some() {
+                    if stored_type(&d.ty) {
                         self.container(s,d).ok_or_else(|| err("容器需要具型別常值或有效的整筆移動來源"))?;
                         continue;
                     }
@@ -461,6 +494,11 @@ impl Builder<'_, '_> {
                     if !closed { self.step(s,Action::DropStorage(vec![Storage::Container(slot)])); }
                     self.scopes.pop();
                 }
+                StmtKind::GraphemeWrite(t)=>{
+                    let TermKind::StringReplace(n,i,rhs)=&t.kind else {return Err(err("需要字素寫入"))};
+                    let change=self.replacement(n,i,rhs).ok_or_else(||err("字素寫入的接收者或右值無效"))?;
+                    self.step(s,Action::ReplaceLocal(change));
+                }
                 StmtKind::Evaluate(t) => {
                     let (_,v)=self.expr(t).ok_or_else(||err("容器操作的權限或參數型別不符"))?;
                     self.step(s,Action::Evaluate(v));
@@ -471,6 +509,7 @@ impl Builder<'_, '_> {
                         let value=self.item(&a.expression,&b.ty).ok_or_else(||err("Optional 賦值型別不符"))?;
                         let slot=b.slot.clone();
                         self.invalidate();
+                        self.containers.borrow_mut().insert(slot.clone());
                         self.step(s,Action::Evaluate(Number::Edit(slot,Box::new(Edit::ReplaceOptional(value)))));
                         continue;
                     }
@@ -508,7 +547,11 @@ impl Builder<'_, '_> {
                     closed = normal_returns && handled_returns;
                     self.invalidate();
                 }
-                StmtKind::Return(r) if element_type(self.result).is_some() => {
+                StmtKind::Return(r) if self.result.starts_with("Optional[") && !matches!(r.expression.kind,TermKind::Move(_)) => {
+                    let value=self.item(&r.expression,self.result).ok_or_else(||err("Optional 返回值型別不符"))?;
+                    self.step(s,Action::ReturnOptional(value)); closed=true;
+                }
+                StmtKind::Return(r) if stored_type(self.result) => {
                     let TermKind::Move(from)=&r.expression.kind else {return Err(err("容器返回需要明確移動"));};
                     let b=self.binding(from).ok_or_else(||err("未知的容器"))?;
                     if b.ty!=self.result || self.borrowed.contains(&b.slot) || !self.containers.borrow().contains(&b.slot) {return Err(err("容器返回型別或所有權不符"));}
@@ -534,13 +577,18 @@ impl Builder<'_, '_> {
                     let entry_flags=self.flags.borrow().clone();
                     let before=self.narrowed.borrow().clone();
                     self.refine(&branch.condition,true);
-                    let yes=self.block(&branch.body.statements,true)?;
+                    let entry_owners=self.containers.borrow().clone();
+                    let yes=self.branch_block(&branch.body.statements,true)?;
+                    let yes_owners=self.containers.replace(entry_owners.clone());
                     let yes_facts=self.narrowed.replace(before.clone());
                     let end=(!yes).then(||self.step(s,Action::Jump(0)));
                     self.patch(skip,self.body.len());
                     self.flags.replace(entry_flags);
                     self.refine(&branch.condition,false);
-                    let no_closed=if let Some(other)=no { self.block(other.as_slice(),true)? } else {false};
+                    let no_closed=if let Some(other)=no { self.branch_block(other.as_slice(),true)? } else {false};
+                    let no_owners=self.containers.replace(entry_owners);
+                    self.containers.borrow_mut().retain(|slot|
+                        (yes || yes_owners.contains(slot)) && (no_closed || no_owners.contains(slot)));
                     let no_facts=self.narrowed.replace(before);
                     self.narrowed.borrow_mut().retain(|slot,ty|
                         (yes || yes_facts.get(slot)==Some(ty)) && (no_closed || no_facts.get(slot)==Some(ty)));
