@@ -99,7 +99,11 @@ s.enter(depth)?;
 if s.at_list_local()? != 0i64 {
 Ok(v_list_local(s, depth + 1)?)
 } else {
+if s.at_dict_local()? != 0i64 {
+Ok(v_dict_local(s, depth + 1)?)
+} else {
 Ok(v_struct_local(s, depth + 1)?)
+}
 }
 }
 fn v_struct_local(s: &mut Machine, depth: usize) -> R {
@@ -122,6 +126,26 @@ fn v_following_list_items(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 if s.at(",")? != 0i64 {
 Ok(s.expect(",")?.checked_add(s.list_item()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_list_items(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(0i64)
+}
+}
+fn v_dict_local(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+Ok(s.expect("var")?.checked_add(s.dict_local()?).ok_or(Fault::Overflow)?.checked_add(s.expect(":")?).ok_or(Fault::Overflow)?.checked_add(s.expect("dict")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(s.expect("str")?).ok_or(Fault::Overflow)?.checked_add(s.expect(",")?).ok_or(Fault::Overflow)?.checked_add(s.expect("int")?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.expect("=")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_dict_items(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_dict()?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?)
+}
+fn v_dict_items(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("}")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(s.dict_key()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(")")?).ok_or(Fault::Overflow)?.checked_add(v_following_dict_items(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
+fn v_following_dict_items(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at(",")? != 0i64 {
+Ok(s.expect(",")?.checked_add(s.dict_key()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(")")?).ok_or(Fault::Overflow)?.checked_add(v_following_dict_items(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 Ok(0i64)
 }

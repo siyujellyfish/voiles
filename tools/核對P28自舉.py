@@ -310,6 +310,44 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
+    dictionaries = ('fn main()->int{\nvar empty:dict{str,int} = {}\n'
+                    'var entries:dict{str,int} = {"甲":40,"乙":2}\n'
+                    'return len(empty)+len(entries)+40\n}')
+    source.write_text("import host\n" + dictionaries, encoding="utf-8")
+    generated_dicts = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_dicts[0] == generated_dicts[1] == generated_dicts[2]
+    code, generated, error = generated_dicts[2]
+    assert (code == 0 and not error and "Vec<(&'static str, i64)>" in generated
+            and '"甲"' in generated and ".len() as i64" in generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(dictionaries, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"dict-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_dicts = (
+        'fn main()->int{ var xs:dict{str,int} = {1:2} return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {"a":true} return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {"a":1,"a":2} return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {"a" 1} return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {"a":1,} return 0 }',
+    )
+    for invalid in invalid_dicts:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
     invalid_lists = (
         "fn main()->int{ var xs:list[int] = [true] return 0 }",
         "fn main()->int{ var xs:list[int] = [1,] return 0 }",
