@@ -73,6 +73,9 @@ jobs:
           python3 tools/核對M7十進位.py target/p02/voiles
           python3 tools/核對M7例外.py target/p02/voiles
 
+      - name: 自舉編譯器來源逐記號核對
+        run: python3 tools/核對自舉詞法.py target/p02/voiles
+
       - name: 公開語言缺口正反例
         run: python3 tools/核對公開語言缺口.py target/p02/voiles
 
