@@ -414,6 +414,15 @@ impl OwnedStrRuntime {
         }
     }
 
+    pub(crate) fn leave_bindings(&mut self,names:&std::collections::BTreeSet<String>) {
+        if names.is_empty() {return;}
+        let current=self.scopes.last_mut().expect("根作用域存在");
+        let (leaving,remaining)=std::mem::take(&mut current.names).into_iter()
+            .partition(|b|names.contains(&b.name));
+        current.names=remaining;
+        self.cleanup_frame(StrFrame{names:leaving});
+    }
+
     pub(crate) fn leave_scope(&mut self) -> Result<(), StrRuntimeError> {
         if self.scopes.len() == 1 { return Err(StrRuntimeError::NoInnerScope); }
         let frame = self.scopes.pop().expect("已確認內層");

@@ -62,6 +62,7 @@ jobs:
           VOILES_CLI=./target/p02/voiles ./target/p02/p02_smoke
       - name: M7 四入口純量、容器與字串正反例
         run: |
+          python3 tools/核對M7現行能力.py target/p02/voiles
           python3 tools/核對M7純量呼叫.py target/p02/voiles
           python3 tools/核對M7容器.py target/p02/voiles
           python3 tools/核對M7字串.py target/p02/voiles

@@ -39,9 +39,9 @@ struct Builder<'a,'b> {
     loops: Vec<Loop>,
     next_slot: usize,
     candidate_sites: HashMap<usize, String>,
-    containers: BTreeSet<String>,
+    containers: std::cell::RefCell<BTreeSet<String>>,
     views: BTreeSet<String>,
-    storage: Vec<String>,
+    storage: Vec<Storage>,
     borrowed: Vec<String>,
     flags: std::cell::RefCell<HashMap<String, Presence>>,
     narrowed: std::cell::RefCell<HashMap<String,String>>,
@@ -49,9 +49,11 @@ struct Builder<'a,'b> {
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: BTreeSet::new(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
+        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
     for p in &function.params {
-        if !matches!(p.ty.as_str(), "int" | "bool" | "float") {
+        if element_type(&p.ty).is_some() {
+            builder.containers.borrow_mut().insert(p.name.clone());
+        } else if !matches!(p.ty.as_str(), "int" | "bool" | "float") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
         }
         builder.scopes[0].insert(p.name.clone(), Binding { slot:p.name.clone(), ty:p.ty.clone(), mutable:false });
@@ -158,7 +160,7 @@ impl Builder<'_, '_> {
             .map(|s|s.split(',').map(str::to_owned).collect::<BTreeSet<_>>());
         let source=members(&b.ty)?;
         let target=members(expected)?;
-        ((self.views.contains(&b.slot) || self.containers.contains(&b.slot)) && !source.contains("str") && source.is_subset(&target)).then(||b.slot.clone())
+        ((self.views.contains(&b.slot) || self.containers.borrow().contains(&b.slot)) && !source.contains("str") && source.is_subset(&target)).then(||b.slot.clone())
     }
 
     fn item(&self, term:&Term, expected:&str) -> Option<ContainerItem> {
@@ -184,7 +186,7 @@ impl Builder<'_, '_> {
 
     fn edit(&self, name:&str, method:&str, args:&[Term]) -> Option<(String,Number)> {
         let b=self.binding(name)?;
-        if !b.mutable || !self.containers.contains(&b.slot) || self.borrowed.contains(&b.slot) {return None;}
+        if !b.mutable || !self.containers.borrow().contains(&b.slot) || self.borrowed.contains(&b.slot) {return None;}
         let (_,ty)=element_type(&b.ty)?;
         let (result,edit)=match (method,args) {
             ("append",[value]) if b.ty.starts_with("list[")=>("int",Edit::Append(self.item(value,ty)?)),
@@ -248,7 +250,7 @@ impl Builder<'_, '_> {
             if binding.ty=="str" && !self.views.contains(&binding.slot) {
                 return Some(("int".into(),Number::TextLength(binding.slot.clone())));
             }
-            if element_type(&binding.ty).is_none() || !(self.containers.contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
+            if element_type(&binding.ty).is_none() || !(self.containers.borrow().contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
             self.invalidate();
             return Some(("int".into(), Number::Container(binding.slot.clone(), ContainerRead::Length)));
         }
@@ -258,6 +260,10 @@ impl Builder<'_, '_> {
         }
         let (target,_,f) = objects.function(name)?;
         if f.is_async!=awaited || !matches!(f.result_ty.as_str(), "int" | "bool" | "float") { return None; }
+        if !awaited && f.params.iter().any(|p|element_type(&p.ty).is_some()) {
+            let call=self.collection_call(name,args,&f.result_ty)?;
+            return Some((f.result_ty.clone(),Number::FromCollection(call)));
+        }
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
         for (index,(label,arg)) in args.enumerate() {
@@ -271,9 +277,36 @@ impl Builder<'_, '_> {
         Some((f.result_ty.clone(), Number::ScalarCall { awaited, target:target.clone(), arguments:values }))
     }
 
+    fn collection_call<'t>(&self,name:&str,args:impl Iterator<Item=(Option<&'t str>,&'t Term)>,expected:&str)->Option<CollectionCall> {
+        if self.binding(name.split('.').next()?).is_some() {return None;}
+        let (target,_,f)=self.lower.objects.as_ref()?.function(name)?;
+        if f.is_async || f.result_ty!=expected {return None;}
+        let mut arguments=Vec::new();
+        let mut seen=BTreeSet::new();
+        for (i,(label,t)) in args.enumerate() {
+            let index=match label { Some(n)=>f.params.iter().position(|p|p.name==n)?, None=>i };
+            let p=f.params.get(index)?;
+            if !seen.insert(index) {return None;}
+            let arg=if element_type(&p.ty).is_some() {
+                let TermKind::Move(from)=&t.kind else {return None};
+                let b=self.scopes.last()?.get(from)?;
+                if b.ty!=p.ty || self.borrowed.contains(&b.slot) || !self.containers.borrow_mut().remove(&b.slot) {return None;}
+                CollectionArgument::Move(b.slot.clone())
+            } else {CollectionArgument::Scalar(self.typed(t,&p.ty)?)};
+            arguments.push((p.name.clone(),index,arg));
+        }
+        if seen.len()!=f.params.len() {return None;}
+        self.invalidate();
+        Some(CollectionCall{target:target.clone(),arguments})
+    }
+
     fn container(&mut self, stmt: &Stmt, declaration: &crate::syntax_shared::ParsedDeclaration<String, Term>) -> Option<()> {
         let initial = declaration.initializer.as_ref()?;
         let value = match &initial.kind {
+            TermKind::UnresolvedZeroArgs(n)=>ContainerInit::Call(self.collection_call(n,std::iter::empty(),&declaration.ty)?),
+            TermKind::Call(c) if !c.awaited=>ContainerInit::Call(self.collection_call(&c.name,c.arguments.iter().map(|t|(None,t)),&declaration.ty)?),
+            TermKind::Construct(n,args)=>ContainerInit::Call(self.collection_call(n,args.iter().map(|(k,t)|(Some(k.as_str()),t)),&declaration.ty)?),
+            TermKind::MethodCall(m,n,args)=>ContainerInit::Call(self.collection_call(&format!("{m}.{n}"),args.iter().map(|t|(None,t)),&declaration.ty)?),
             TermKind::Container(literal) if literal.ty == declaration.ty => {
                 let mut sources = HashMap::new();
                 literal.visit_elements(&mut |ty, atom| {
@@ -295,15 +328,15 @@ impl Builder<'_, '_> {
                 let owner = self.scopes.last()?.get(source)?;
                 if owner.ty != declaration.ty { return None; }
                 let slot = owner.slot.clone();
-                if !self.containers.remove(&slot) { return None; }
+                if !self.containers.borrow_mut().remove(&slot) { return None; }
                 ContainerInit::Move(slot)
             }
             _ => return None,
         };
         let slot = format!("@{}", self.next_slot);
         self.next_slot += 1;
-        self.containers.insert(slot.clone());
-        self.storage.push(slot.clone());
+        self.containers.borrow_mut().insert(slot.clone());
+        self.storage.push(Storage::Container(slot.clone()));
         self.step(stmt, Action::Container(slot.clone(),value));
         self.scopes.last_mut()?.insert(declaration.name.clone(), Binding {
             slot, ty: declaration.ty.clone(), mutable: declaration.mutable,
@@ -313,7 +346,7 @@ impl Builder<'_, '_> {
 
     fn element(&self, owner: &str, selector: &Term) -> Option<(String, String, ContainerKey)> {
         let binding = self.binding(owner)?;
-        if !(self.containers.contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
+        if !(self.containers.borrow().contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
         let (key_type, value_type) = element_type(&binding.ty)?;
         let key = if key_type == "str" {
             let Text::Literal(text) = self.lower.text(selector)? else { return None };
@@ -358,7 +391,7 @@ impl Builder<'_, '_> {
 
     fn step(&mut self, s:&Stmt, action:Action) -> usize {
         let at=self.body.len();
-        self.body.push(Step{active_view:!self.borrowed.is_empty(),handlers:vec![],module:self.module,span:(s.start,s.end),action});
+        self.body.push(Step{text_access:vec![],expire:vec![],active_view:!self.borrowed.is_empty(),handlers:vec![],module:self.module,span:(s.start,s.end),action});
         at
     }
     fn patch(&mut self, at:usize, to:usize) {
@@ -381,17 +414,18 @@ impl Builder<'_, '_> {
                         let item=d.initializer.as_ref().and_then(|t|self.item(t,&d.ty)).ok_or_else(||err("Optional 初值不屬於宣告的候選集合"))?;
                         let slot=format!("@{}",self.next_slot);
                         self.next_slot+=1;
-                        self.containers.insert(slot.clone());
-                        self.storage.push(slot.clone());
+                        self.containers.borrow_mut().insert(slot.clone());
+                        self.storage.push(Storage::Container(slot.clone()));
                         self.step(s,Action::Container(slot.clone(),ContainerInit::Optional(item)));
                         self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot,ty:d.ty.clone(),mutable:d.mutable});
                         continue;
                     }
-                    if d.ty=="str" && self.scopes.len()==1 {
+                    if d.ty=="str" {
                         let value=d.initializer.as_ref().and_then(|t|self.text(t)).ok_or_else(||err("需要可獨立持有的字串"))?;
                         let slot=format!("@{}",self.next_slot);
                         self.next_slot+=1;
                         self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot:slot.clone(),ty:d.ty.clone(),mutable:d.mutable});
+                        self.storage.push(Storage::Text(slot.clone()));
                         self.step(s,Action::StoreText{target:slot,declaration:Some(d.mutable),value});
                         continue;
                     }
@@ -418,13 +452,13 @@ impl Builder<'_, '_> {
                     self.borrowed.push(owner.clone());
                     self.step(s, Action::Select { alias: slot.clone(), owner, key });
                     self.views.insert(slot.clone());
-                    self.storage.push(slot.clone());
+                    self.storage.push(Storage::Container(slot.clone()));
                     self.scopes.push(HashMap::from([(alias.clone(), Binding { slot:slot.clone(), ty, mutable: false })]));
                     closed = self.block(&block.body.statements, false)?;
                     self.storage.pop();
                     self.borrowed.pop();
                     self.flags.borrow_mut().clear();
-                    if !closed { self.step(s,Action::DropContainer(slot)); }
+                    if !closed { self.step(s,Action::DropStorage(vec![Storage::Container(slot)])); }
                     self.scopes.pop();
                 }
                 StmtKind::Evaluate(t) => {
@@ -459,7 +493,8 @@ impl Builder<'_, '_> {
                     let mut cleanup = Vec::new();
                     for step in &self.body[start..end] {
                         match &step.action {
-                            Action::Container(slot,_) | Action::Select { alias:slot,.. } => cleanup.push(slot.clone()),
+                            Action::Container(slot,_) | Action::Select { alias:slot,.. } => cleanup.push(Storage::Container(slot.clone())),
+                            Action::StoreText {target,declaration:Some(_),..}=>cleanup.push(Storage::Text(target.clone())),
                             _ => (),
                         }
                     }
@@ -472,6 +507,12 @@ impl Builder<'_, '_> {
                     if let Some(jump) = jump { self.patch(jump,self.body.len()); }
                     closed = normal_returns && handled_returns;
                     self.invalidate();
+                }
+                StmtKind::Return(r) if element_type(self.result).is_some() => {
+                    let TermKind::Move(from)=&r.expression.kind else {return Err(err("容器返回需要明確移動"));};
+                    let b=self.binding(from).ok_or_else(||err("未知的容器"))?;
+                    if b.ty!=self.result || self.borrowed.contains(&b.slot) || !self.containers.borrow().contains(&b.slot) {return Err(err("容器返回型別或所有權不符"));}
+                    self.step(s,Action::ReturnCollection(b.slot.clone())); closed=true;
                 }
                 StmtKind::Return(r) => {
                     let v=self.typed(&r.expression,self.result).ok_or_else(||err("回傳型別不符"))?;
@@ -509,9 +550,7 @@ impl Builder<'_, '_> {
                 }
                 StmtKind::Break | StmtKind::Continue => {
                     let depth=self.loops.last().ok_or_else(||err("控制轉移需要所在迴圈"))?.storage_depth;
-                    for i in (depth..self.storage.len()).rev() {
-                        self.step(s,Action::DropContainer(self.storage[i].clone()));
-                    }
+                    if depth<self.storage.len() {self.step(s,Action::DropStorage(self.storage[depth..].to_vec()));}
                     let at=self.step(s,Action::Jump(0));
                     let scope=self.loops.last_mut().ok_or_else(||err("控制轉移需要所在迴圈"))?;
                     if matches!(s.kind,StmtKind::Break) { scope.breaks.push(at); } else { scope.continues.push(at); }
@@ -545,10 +584,8 @@ impl Builder<'_, '_> {
                 _ => return Err(err("控制流程中的資源操作尚待驗證")),
             }
         }
-        while self.storage.len() > storage_depth {
-            let slot = self.storage.pop().unwrap();
-            if !closed { self.step(stmts.last().unwrap(),Action::DropContainer(slot)); }
-        }
+        let leaving=self.storage.split_off(storage_depth);
+        if !closed && !leaving.is_empty() {self.step(stmts.last().unwrap(),Action::DropStorage(leaving));}
         if nested { self.scopes.pop(); }
         Ok(closed)
     }

@@ -16,16 +16,23 @@ def verify(cli, cases):
                 args = [cli, mode, source] + (["-o", exe] if mode in ["build", "pack"] else [])
                 result = subprocess.run(args, capture_output=True, encoding="utf-8", timeout=60)
                 if expected == "reject":
-                    assert result.returncode == 1 and result.stderr and not exe.exists(), (program, result)
+                    assert result.returncode == 1 and result.stderr and not result.stdout and not exe.exists(), (program, result)
+                    if reference is None:
+                        reference = result.stderr
+                    else:
+                        assert result.stderr == reference, (program, mode, result)
                     continue
                 if mode == "run" and expected == "runtime":
-                    assert result.returncode == 1 and "main.voil:" in result.stderr, (program, result)
+                    assert result.returncode == 1 and not result.stdout and "main.voil:" in result.stderr, (program, result)
                     reference = result.stderr
                     continue
-                assert result.returncode == 0, (program, result)
+                assert result.returncode == 0 and not result.stderr, (program, result)
+                if mode != "run":
+                    assert not result.stdout, (program, mode, result)
                 if mode == "run":
                     assert result.stdout == f"{expected}\n", result
                 if mode in ["build", "pack"]:
                     process = subprocess.run([exe], capture_output=True, encoding="utf-8", timeout=30)
+                    assert not process.stdout, (program, mode, process)
                     assert (process.returncode, process.stderr) == (
-                        (1, reference) if expected == "runtime" else (expected, "")), (program, process)
+                        (1, reference) if expected == "runtime" else (expected % 256, "")), (program, process)

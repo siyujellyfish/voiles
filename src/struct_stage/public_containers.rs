@@ -70,6 +70,7 @@ impl Store {
         self.owners.insert(slot.into(), value);
         Some(())
     }
+    pub(super) fn take(&mut self,slot:&str)->Option<Value> { self.owners.remove(slot) }
     pub(super) fn relocate(&mut self, from: &str, to: &str) -> Option<()> {
         let value = self.owners.remove(from)?;
         self.owners.insert(to.into(), value);

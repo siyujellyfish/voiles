@@ -3,7 +3,7 @@ use super::*;
 use crate::mixed_struct_runtime::ScalarKind;
 
 fn kind(name:&str)->Option<ScalarKind> {
-    match name { "str"=>Some(ScalarKind::Str),"int"=>Some(ScalarKind::Int),"bool"=>Some(ScalarKind::Bool),_=>None }
+    match name { "str"=>Some(ScalarKind::Str),"int"|"float"=>Some(ScalarKind::Int),"bool"=>Some(ScalarKind::Bool),_=>None }
 }
 
 fn seed(unit:&Unit,t:&Term)->Option<ApprovedSeed> {
@@ -11,6 +11,12 @@ fn seed(unit:&Unit,t:&Term)->Option<ApprovedSeed> {
         TermKind::Group(inner)=>seed(unit,inner),
         TermKind::Scalar(ScalarLiteral::Integer(n))=>Some(ApprovedSeed::Int(integer_i64(n).ok()?)),
         TermKind::Scalar(ScalarLiteral::Boolean(v))=>Some(ApprovedSeed::Bool(*v)),
+        TermKind::Literal("float")=>{
+            let i=unit.tokens.binary_search_by_key(&t.start,|t|t.start).ok()?;
+            let TokenKind::Decimal(text)=&unit.tokens[i].kind else {return None};
+            let (c,e)=decimal::parts(text)?;
+            Some(ApprovedSeed::Int(decimal::encode(c,e)))
+        }
         TermKind::Literal("str")=>{
             let i=unit.tokens.binary_search_by_key(&t.start,|t|t.start).ok()?;
             if let TokenKind::StringLiteral(value)=&unit.tokens[i].kind {Some(ApprovedSeed::Str(value.clone()))} else {None}
@@ -53,10 +59,14 @@ fn method_steps(unit:&Unit, module:usize, owner:&str, def:&StructDecl, method:&F
     Some(steps)
 }
 
+fn decimal_term(t:&Term)->bool {
+    match &t.kind {TermKind::Group(inner)=>decimal_term(inner),TermKind::Literal("float")=>true,_=>false}
+}
+
 pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleError> {
     for f in &def.fields {
         let expected=kind(&f.ty);
-        if expected.is_none() || (f.immutable && f.default.is_none()) || f.default.as_ref().is_some_and(|v|seed(unit,v).map(|s|s.kind())!=expected) {
+        if expected.is_none() || (f.immutable && f.default.is_none()) || f.default.as_ref().is_some_and(|v|(f.ty=="float")!=decimal_term(v) || seed(unit,v).map(|s|s.kind())!=expected) {
             return Err(unit.error(f.declaration_span.start,f.declaration_span.end,"結構欄位型別或預設值缺少有效證明"));
         }
     }
@@ -96,14 +106,17 @@ impl<'a> ObjectScope<'a> {
     pub(in crate::struct_stage::module_share) fn requires_argument(&self,name:&str)->bool {
         self.function(name).is_some_and(|(_,_,f)|!f.params.is_empty())
     }
-    pub(in crate::struct_stage::module_share) fn construct(&mut self,name:&str,ty:&str,start:usize,mutable:bool,t:&Term)->Option<Action> {
+    pub(in crate::struct_stage::module_share) fn named_field(&self,ty:&str,name:&str)->Option<&str> {
+        Some(&self.graph.field(self.caller,ty,name)?.ty)
+    }
+    pub(in crate::struct_stage::module_share) fn construct(&mut self,name:&str,ty:&str,start:usize,mutable:bool,t:&Term,supplied:Vec<(String,MemberValue)>)->Option<Action> {
         let (origin,def)=self.graph.resolve_struct(self.caller,ty)?;
         if let TermKind::Move(from) | TermKind::Name(from) = &t.kind {
             let source = self.variables.get(from)?;
             let (_, original) = self.graph.resolve_struct(self.caller,&source.ty)?;
             if !std::ptr::eq(original,def) || source.moved.get() || !source.missing.is_empty() { return None; }
             let moving = matches!(t.kind, TermKind::Move(_));
-            if !moving && def.fields.iter().any(|f| !matches!(f.ty.as_str(),"int" | "bool")) { return None; }
+            if !moving && def.fields.iter().any(|f| !matches!(f.ty.as_str(),"int" | "bool" | "float")) { return None; }
             if moving { source.moved.set(true); }
             self.bind(name,ty,start,mutable);
             return Some(Action::RelocateObject { source: from.clone(), target: name.into(), moving });
@@ -126,14 +139,8 @@ impl<'a> ObjectScope<'a> {
         }
         let (ctor_origin,ctor_def)=self.graph.resolve_struct(self.caller,ctor)?;
         if ctor_origin!=origin || !std::ptr::eq(ctor_def,def) {return None;}
-        let mut supplied=Vec::new();
-        let mut seen=HashSet::new();
-        for (n,v) in args {
-            let field=self.graph.field(self.caller,ty,n)?;
-            let value=seed(&self.graph.units[self.caller],v)?;
-            if !seen.insert(n.as_str()) || Some(value.kind())!=kind(&field.ty) {return None;}
-            supplied.push(PreparedNamedField{name:n.clone(),seed:value});
-        }
+        let seen:BTreeSet<_>=supplied.iter().map(|(name,_)|name.as_str()).collect();
+        if seen.len()!=args.len() {return None;}
         let mut fields=Vec::new();
         let mut missing=BTreeSet::new();
         for f in &def.fields {

@@ -69,3 +69,19 @@ verify(cli, [
     (select + 'fn main()->int{ var t:str = pick("甲",0,"")\nreturn 0 }', "runtime"),
     (select + 'fn main()->int{ var t:str = pick("甲",9223372036854775807 + 1,"*")\nreturn 0 }', "runtime"),
 ])
+
+def local(body):
+    return 'fn main()->int{\nvar owner:str = "甲"\n' + body + '\n}'
+
+
+verify(cli, [
+    (local('var edit:str = owner.borrow()\nedit[0] = "*"\nreturn owner[0][0]'),42),
+    (local('const a:str = owner.borrow()\nconst b:str = owner.borrow()\n'
+           'const n:int = a[0][0] - b[0][0]\nowner = "*"\nreturn owner[0][0] + n'),42),
+    (local('const alias:str = owner.borrow()\nowner = "*"\nreturn alias[0][0]'),"reject"),
+    (local('const alias:str = owner.borrow()\nvar bad:str = alias.move()\nreturn 0'),"reject"),
+    (local('const alias:str = owner.borrow()\nvar bad:str = owner.move()\nreturn alias[0][0]'),"reject"),
+    (local('var edit:str = owner.borrow()\nconst shared:str = owner.borrow()\nreturn edit[0][0]'),"reject"),
+    ('async fn job()->int{ return 42 }\n' + local('const a:str = owner.borrow()\nconst n:int = await job()\nreturn a[0][0]'),"reject"),
+    ('async fn job()->int{ return 42 }\n' + local('const a:str = owner.borrow()\nconst n:int = a[0][0]\nreturn await job()'),42),
+])

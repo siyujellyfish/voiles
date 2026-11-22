@@ -93,3 +93,20 @@ verify(cli, (("fn main()->int{\n" + body + "\n}", expected) for body,expected in
     ("const x:Optional[int] = none\nx = 42\nreturn 0","reject"),
     ("var x:Optional[int] = false\nreturn 0","reject"),
 ]))
+
+factory = """fn make()->list[int]{
+var a:list[int] = [40,2]
+return a.move()
+}
+fn pass(a:list[int])->list[int]{ return a.move() }
+fn read(a:list[int],n:int)->int{
+with a[0] as x { return x+n }
+}
+"""
+verify(cli, ((factory + 'fn main()->int{\n' + body + '\n}', expected) for body,expected in [
+    ("var a:list[int] = make()\nvar b:list[int] = pass(a.move())\nreturn read(n=2,a=b.move())",42),
+    ("var a:list[int] = make()\nreturn read(a,2)","reject"),
+    ("var a:list[int] = make()\nvar b:list[int] = pass(a.move())\nreturn len(a)","reject"),
+    ("var a:list[bool] = [true]\nreturn read(a.move(),2)","reject"),
+    ("var a:list[int] = []\nreturn read(a.move(),2)","runtime"),
+]))

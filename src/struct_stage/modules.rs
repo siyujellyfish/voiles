@@ -288,14 +288,15 @@ impl LinkedProgram {
                 if f.result_ty == "str" && f.params.iter().any(|p| !matches!(p.ty.as_str(), "int" | "str")) {
                     return Err(u.error(f.start,f.end,"字串返回簽章需要 int 或 str 形參"));
                 }
+                let collection_signature = element_type(&f.result_ty).is_some() || f.params.iter().any(|p|element_type(&p.ty).is_some());
                 let object_result = !f.is_async && graph.resolve_struct(id,&f.result_ty).is_some();
-                if (!object_result && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
+                if (collection_signature && f.is_async) || (!object_result && element_type(&f.result_ty).is_none() && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
                 let mut locals = HashMap::new();
                 let mut strings = HashMap::new();
-                if f.params.iter().all(|p| matches!(p.ty.as_str(), "int" | "bool" | "float")) {
+                if f.params.iter().all(|p| element_type(&p.ty).is_some() || matches!(p.ty.as_str(), "int" | "bool" | "float")) {
                     for p in &f.params {
                         if locals.insert(p.name.clone(), (false,p.ty.clone())).is_some() {
                             return Err(u.error(f.start, f.end, "函式參數重複"));
@@ -319,12 +320,12 @@ impl LinkedProgram {
                 } else {
                     return Err(u.error(f.start, f.end, "混合持有者參數尚未支援"));
                 }
-                let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
+                let mut lower = Lower { text_access:Default::default(),objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
                 let typed_signature = matches!(f.result_ty.as_str(), "bool" | "float") || f.params.iter().any(|p| matches!(p.ty.as_str(), "bool" | "float"));
                 let body = if f.result_ty == "str" || object_result {
                     lower.body(f,id)
-                } else if typed_signature {
+                } else if typed_signature || collection_signature {
                     scalar_flow::lower(&lower, f, id)
                 } else {
                     let pure = scalar_flow::lower(&lower, f, id);
