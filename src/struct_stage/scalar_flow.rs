@@ -38,6 +38,7 @@ struct Builder<'a,'b> {
     scopes: Vec<HashMap<String, Binding>>,
     loops: Vec<Loop>,
     move_floor: usize,
+    uninitialized: BTreeSet<String>,
     next_slot: usize,
     candidate_sites: HashMap<usize, String>,
     containers: std::cell::RefCell<BTreeSet<String>>,
@@ -50,7 +51,7 @@ struct Builder<'a,'b> {
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), move_floor: 0, next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
+        scopes: vec![HashMap::new()], loops: Vec::new(), move_floor: 0, uninitialized: BTreeSet::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
     for p in &function.params {
         if stored_type(&p.ty) {
             builder.containers.borrow_mut().insert(p.name.clone());
@@ -70,6 +71,16 @@ impl Builder<'_, '_> {
         self.scopes.iter().rev().find_map(|s| s.get(name))
     }
 
+    fn readable(&self, name: &str) -> Option<&Binding> {
+        self.binding(name).filter(|binding| !self.uninitialized.contains(&binding.slot))
+    }
+
+    // 只有仍可走到合流處的路徑會限制後面的讀取。
+    fn join_initialization(&mut self, first: BTreeSet<String>, first_closed: bool, second_closed: bool) {
+        if second_closed { self.uninitialized.clear(); }
+        if !first_closed { self.uninitialized.extend(first); }
+    }
+
     fn expr(&self, term: &Term) -> Option<(String, Number)> {
         let (ty, value) = match &term.kind {
             TermKind::Group(t) => return self.expr(t),
@@ -80,7 +91,7 @@ impl Builder<'_, '_> {
                 ("float", Number::Constant(decimal::encode(c,e)))
             }
             TermKind::Name(n) => {
-                let b = self.binding(n)?;
+                let b = self.readable(n)?;
                 let ty = self.narrowed.borrow().get(&b.slot).cloned().unwrap_or_else(|| b.ty.clone());
                 if !matches!(ty.as_str(), "int" | "bool" | "float") { return None; }
                 let value = if self.views.contains(&b.slot) || b.ty.starts_with("Optional[") { Number::Container(b.slot.clone(), ContainerRead::Scalar) }
@@ -149,7 +160,7 @@ impl Builder<'_, '_> {
         match offset {
             StringOffset::Constant(i) => Some(StringOffset::Constant(*i)),
             StringOffset::Named(n) => {
-                let b=self.binding(n)?;
+                let b=self.readable(n)?;
                 (b.ty=="int" && !self.views.contains(&b.slot)).then(||StringOffset::Named(b.slot.clone()))
             }
         }
@@ -247,12 +258,46 @@ impl Builder<'_, '_> {
         };
         Some(LocalReplacement{owner:b.slot.clone(),index:self.offset(index)?,rhs})
     }
+    fn text_function<'t>(&self, name: &str, args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<LocalText> {
+        if self.binding(name.split('.').next()?).is_some() { return None; }
+        let (target, _, function) = self.lower.objects.as_ref()?.function(name)?;
+        if function.is_async || function.result_ty != "str" { return None; }
+        let mut arguments = Vec::new();
+        let mut supplied = BTreeSet::new();
+        for (position, (label, term)) in args.enumerate() {
+            let slot = match label {
+                Some(n) => function.params.iter().position(|param| param.name == n)?,
+                None => position,
+            };
+            let param = function.params.get(slot)?;
+            if !supplied.insert(slot) { return None; }
+            let value = match param.ty.as_str() {
+                "str" => Argument::Text(self.text(term)?),
+                ty @ ("int" | "bool" | "float") => Argument::Integer(self.typed(term, ty)?),
+                _ => return None,
+            };
+            arguments.push((param.name.clone(), slot, value));
+        }
+        if supplied.len() != function.params.len() { return None; }
+        self.invalidate();
+        Some(LocalText::Call(TextInvocation { target: target.clone(), arguments }))
+    }
     fn text(&self,t:&Term)->Option<LocalText> {
         match &t.kind {
             TermKind::Group(inner)=>self.text(inner),
             TermKind::Literal("formatted")=>self.formatted(t),
             TermKind::StringReplace(n,i,rhs)=>Some(LocalText::Replace(self.replacement(n,i,rhs)?)),
-            TermKind::Call(c) if !c.awaited => self.standard_call(&c.name,c.arguments.iter().map(|t|(None,t)),"str").map(LocalText::Standard),
+            TermKind::UnresolvedZeroArgs(n) => self.text_function(n, std::iter::empty()),
+            TermKind::Call(c) if !c.awaited => {
+                let args = || c.arguments.iter().map(|t| (None, t));
+                if self.lower.objects.as_ref()?.function(&c.name).is_some() {
+                    self.text_function(&c.name, args())
+                } else {
+                    self.standard_call(&c.name, args(), "str").map(LocalText::Standard)
+                }
+            }
+            TermKind::Construct(n,args) => self.text_function(n,args.iter().map(|(k,t)|(Some(k.as_str()),t))),
+            TermKind::MethodCall(m,n,args) => self.text_function(&format!("{m}.{n}"),args.iter().map(|t|(None,t))),
             TermKind::StringIndex(n,i,None) => {
                 let b=self.binding(n)?;
                 if b.ty!="str" || self.views.contains(&b.slot) {return None;}
@@ -299,7 +344,7 @@ impl Builder<'_, '_> {
             if takes_text {
                 let value = match param.ty.as_str() {
                     "str" => Argument::Text(self.text(arg)?),
-                    "int" => Argument::Integer(self.typed(arg, "int")?),
+                    ty @ ("int" | "bool" | "float") => Argument::Integer(self.typed(arg, ty)?),
                     _ => return None,
                 };
                 text_arguments.push((param.name.clone(), slot, value));
@@ -482,8 +527,18 @@ impl Builder<'_, '_> {
                         self.container(s,d).ok_or_else(|| err("容器需要具型別常值或有效的整筆移動來源"))?;
                         continue;
                     }
-                    let value=d.initializer.as_ref().and_then(|t|self.typed(t,&d.ty)).ok_or_else(||err("區域純量需要型別相符的初值"))?;
                     let slot=format!("@{}",self.next_slot); self.next_slot+=1;
+                    let value = match &d.initializer {
+                        Some(t) => self.typed(t, &d.ty).ok_or_else(||err("區域純量初值型別不符"))?,
+                        None if d.mutable && matches!(d.ty.as_str(), "int" | "bool" | "float") => {
+                            self.uninitialized.insert(slot.clone());
+                            self.scopes.last_mut().unwrap().insert(d.name.clone(), Binding {
+                                slot, ty: d.ty.clone(), mutable: true,
+                            });
+                            continue;
+                        }
+                        None => return Err(err("此宣告需要初值")),
+                    };
                     if d.ty=="bool" {
                         if let Some(fact)=d.initializer.as_ref().and_then(|t|self.presence(t,false)) {
                             self.flags.borrow_mut().insert(slot.clone(),fact);
@@ -536,12 +591,16 @@ impl Builder<'_, '_> {
                     }
                     let v=self.typed(&a.expression,&b.ty).ok_or_else(||err("賦值型別不符"))?;
                     self.flags.borrow_mut().remove(&b.slot);
-                    self.step(s,Action::Bind(b.slot.clone(),v));
+                    let slot = b.slot.clone();
+                    self.uninitialized.remove(&slot);
+                    self.step(s,Action::Bind(slot,v));
                 }
                 StmtKind::Try { body, handler, category } => {
                     self.invalidate();
                     let start = self.body.len();
+                    let entry = self.uninitialized.clone();
                     let normal_returns = self.block(body,true)?;
+                    let normal = std::mem::replace(&mut self.uninitialized, entry);
                     let end = self.body.len();
                     let jump = (!normal_returns).then(||self.step(s,Action::Jump(0)));
                     let target = self.body.len();
@@ -559,9 +618,15 @@ impl Builder<'_, '_> {
                     }
                     self.invalidate();
                     let handled_returns = self.block(handler,true)?;
+                    self.join_initialization(normal, normal_returns, handled_returns);
                     if let Some(jump) = jump { self.patch(jump,self.body.len()); }
                     closed = normal_returns && handled_returns;
                     self.invalidate();
+                }
+                StmtKind::Return(r) if self.result == "str" => {
+                    let text = self.text(&r.expression).ok_or_else(||err("返回需要獨立持有的字串"))?;
+                    self.step(s, Action::ReturnText(text));
+                    closed = true;
                 }
                 StmtKind::Return(r) if self.result.starts_with("Optional[") && !matches!(r.expression.kind,TermKind::Move(_)) => {
                     let value=self.item(&r.expression,self.result).ok_or_else(||err("Optional 返回值型別不符"))?;
@@ -594,7 +659,9 @@ impl Builder<'_, '_> {
                     let before=self.narrowed.borrow().clone();
                     self.refine(&branch.condition,true);
                     let entry_owners=self.containers.borrow().clone();
+                    let entry = self.uninitialized.clone();
                     let yes=self.branch_block(&branch.body.statements,true)?;
+                    let yes_pending = std::mem::replace(&mut self.uninitialized, entry);
                     let yes_owners=self.containers.replace(entry_owners.clone());
                     let yes_facts=self.narrowed.replace(before.clone());
                     let end=(!yes).then(||self.step(s,Action::Jump(0)));
@@ -602,6 +669,7 @@ impl Builder<'_, '_> {
                     self.flags.replace(entry_flags);
                     self.refine(&branch.condition,false);
                     let no_closed=if let Some(other)=no { self.branch_block(other.as_slice(),true)? } else {false};
+                    self.join_initialization(yes_pending, yes, no_closed);
                     let no_owners=self.containers.replace(entry_owners);
                     self.containers.borrow_mut().retain(|slot|
                         (yes || yes_owners.contains(slot)) && (no_closed || no_owners.contains(slot)));
@@ -625,7 +693,9 @@ impl Builder<'_, '_> {
                     let cond=self.typed(condition,"bool").ok_or_else(||err("while 需要 bool 條件"))?;
                     let head=self.step(s,Action::Unless(cond,0));
                     self.loops.push(Loop{storage_depth:self.storage.len(),breaks:vec![head],continues:Vec::new()});
+                    let entry = self.uninitialized.clone();
                     self.block(&body.statements,true)?;
+                    self.uninitialized = entry;
                     self.step(s,Action::Jump(head));
                     self.end_loop(head);
                 }
@@ -639,7 +709,9 @@ impl Builder<'_, '_> {
                     let head=self.step(s,Action::Unless(test,0));
                     self.loops.push(Loop{storage_depth:self.storage.len(),breaks:vec![head],continues:Vec::new()});
                     self.scopes.push(HashMap::from([(iterator.clone(),Binding{slot:slot.clone(),ty:"int".into(),mutable:false})]));
+                    let entry = self.uninitialized.clone();
                     self.block(&body.statements,false)?;
+                    self.uninitialized = entry;
                     self.scopes.pop();
                     let increment=self.step(s,Action::Bind(slot.clone(),Number::Binary(Box::new(Number::Local(slot)),'+',Box::new(Number::Constant(1)))));
                     self.step(s,Action::Jump(head));
@@ -650,7 +722,11 @@ impl Builder<'_, '_> {
         }
         let leaving=self.storage.split_off(storage_depth);
         if !closed && !leaving.is_empty() {self.step(stmts.last().unwrap(),Action::DropStorage(leaving));}
-        if nested { self.scopes.pop(); }
+        if nested {
+            for binding in self.scopes.pop().unwrap().values() {
+                self.uninitialized.remove(&binding.slot);
+            }
+        }
         Ok(closed)
     }
     fn end_loop(&mut self, next:usize) {
