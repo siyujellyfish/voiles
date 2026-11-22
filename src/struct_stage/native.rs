@@ -102,28 +102,30 @@ impl Emitter<'_> {
         })
     }
 
+    fn call_code(&self,target:&str,bindings:String,arity:usize)->Option<String> {
+        let args:String=(0..arity).map(|i|format!(",arg{i}")).collect();
+        let call=format!("f{}(globals,argv,steps,depth+1,site{args})?",self.functions.get(target)?);
+        Some(if bindings.is_empty() {call} else {format!("{{ {bindings}{call} }}")})
+    }
+
     fn invocation(&self, call: &TextInvocation) -> Option<String> {
-        let mut code = String::from("{ ");
+        let mut code = String::new();
         for (_,slot,value) in &call.arguments {
             let expr = match value { Argument::Integer(n) => self.number(n)?, Argument::Text(t) => self.local_text(t)? };
             write!(code,"let arg{slot} = {expr}; ").ok()?;
         }
-        let args: String = (0..call.arguments.len()).map(|i| format!(", arg{i}")).collect();
-        write!(code, "f{}(globals, argv, steps, depth + 1, site{args})? }}",self.functions.get(call.target.as_str())?).ok()?;
-        Some(code)
+        self.call_code(&call.target,code,call.arguments.len())
     }
 
     fn collection_call(&self,call:&CollectionCall)->Option<String> {
-        let mut code=String::from("{ ");
+        let mut code=String::new();
         for (_,index,arg) in &call.arguments {
             if let CollectionArgument::Scalar(n)=arg { write!(code,"let arg{index}={}; ",self.number(n)?).ok()?; }
         }
         for (_,index,arg) in &call.arguments {
             if let CollectionArgument::Move(slot)=arg { write!(code,"let arg{index}=containers.take({slot:?}).ok_or((site,ARITH))?; ").ok()?; }
         }
-        let args:String=(0..call.arguments.len()).map(|i|format!(",arg{i}")).collect();
-        write!(code,"f{}(globals,argv,steps,depth+1,site{args})? }}",self.functions.get(call.target.as_str())?).ok()?;
-        Some(code)
+        self.call_code(&call.target,code,call.arguments.len())
     }
     fn container_item(&self, item: &ContainerItem) -> Option<String> {
         Some(match item {
@@ -157,13 +159,11 @@ impl Emitter<'_> {
                 format!("containers.get({slot:?}).and_then(containers::Value::{method}).ok_or((site, ARITH))?")
             }
             Number::ScalarCall { target, arguments,.. } => {
-                let mut expr = String::from("{ ");
+                let mut expr = String::new();
                 for (_, slot, value) in arguments {
                     write!(expr, "let arg{slot} = {}; ", self.number(value)?).ok()?;
                 }
-                let args: String = (0..arguments.len()).map(|i| format!(", arg{i}")).collect();
-                write!(expr, "f{}(globals, argv, steps, depth + 1, site{args})? }}", self.functions.get(target.as_str())?).ok()?;
-                expr
+                self.call_code(target,expr,arguments.len())?
             }
             Number::Logic(op, a, b) => {
                 let a = self.number(a)?;
