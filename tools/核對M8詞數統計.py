@@ -1,5 +1,7 @@
 """從公開入口及原生產物驗證詞數報表與專案自己的測試。"""
+import os
 from pathlib import Path
+from shutil import copy2
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -63,3 +65,18 @@ with TemporaryDirectory() as temp:
     missing = run(cli, "test", root)
     assert missing.returncode == 1 and "test.voil" in missing.stderr, missing
     assert run(cli, "test", root, root).returncode == 2
+
+    isolated = root / "隔離根目錄"
+    isolated.mkdir()
+    copy2(root / "main-pack", isolated / "word-count")
+    data = isolated / "輸入.txt"
+    data.write_text("甲乙 🪼 é", encoding="utf-8")
+    if os.environ.get("GITHUB_ACTIONS"):
+        isolate = ["sudo", "-n", "chroot", isolated]
+    else:
+        isolate = ["bwrap", "--ro-bind", isolated, "/", "--chdir", "/", "--"]
+    expect(run(*isolate, "/word-count", "/輸入.txt"), 0, "3\n")
+    for path in ("/缺檔", "/輸入.txt"):
+        data.write_bytes(bytes([255]))
+        result = run(*isolate, "/word-count", path)
+        assert (result.returncode, result.stdout) == (1, "") and "main.voil:" in result.stderr, result
