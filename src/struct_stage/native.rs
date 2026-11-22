@@ -29,6 +29,29 @@ impl Emitter<'_> {
             self.locals.get(&change.owner)?, self.offset(&change.index)?))
     }
 
+    fn local_text(&self, value: &LocalText) -> Option<String> {
+        Some(match value {
+            LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
+            LocalText::Replace(change) => self.local_replace(change)?,
+            LocalText::Move(source) => format!("v{}", self.locals.get(source)?),
+            LocalText::Grapheme(source, index) => format!("ResourceText::new(v{}.grapheme({}).ok_or((site, ARITH))?.to_owned())",
+                self.locals.get(source)?, self.offset(index)?),
+            LocalText::Call(call) => self.invocation(call)?,
+
+        })
+    }
+
+    fn invocation(&self, call: &TextInvocation) -> Option<String> {
+        let mut code = String::from("{ ");
+        for (_,slot,value) in &call.arguments {
+            let expr = match value { Argument::Integer(n) => self.number(n)?, Argument::Text(t) => self.local_text(t)? };
+            write!(code,"let arg{slot} = {expr}; ").ok()?;
+        }
+        let args: String = (0..call.arguments.len()).map(|i| format!(", arg{i}")).collect();
+        write!(code, "f{}(globals, steps, depth + 1, site{args})? }}",self.functions.get(call.target.as_str())?).ok()?;
+        Some(code)
+    }
+
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
             Number::Lookup(key, entries) => {
@@ -71,7 +94,8 @@ impl Emitter<'_> {
                 let object = self.locals.get(owner)?;
                 format!("v{object}.integer({field:?}).ok_or((site, ARITH))?")
             }
-            Number::Consume { target, from, .. } | Number::ConsumeText { target, source: from, .. } => {
+            Number::TextCall(call) => self.invocation(call)?,
+            Number::Consume { target, from, .. } => {
                 let object = self.locals.get(from)?;
                 let function = self.functions.get(target.as_str())?;
                 format!("f{function}(globals, steps, depth + 1, site, v{object})?")
@@ -100,7 +124,7 @@ impl LinkedProgram {
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
-        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::StoreText { .. })) {
+        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
             out.push_str(include_str!("native_strings.inc"));
@@ -116,7 +140,8 @@ impl LinkedProgram {
                 let ty = match p.ty.as_str() { "int" | "bool" => "i64", "str" => "ResourceText", _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
-            writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
+            let ret = if signature.result_ty == "str" { "ResourceText" } else { "i64" };
+            writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             let flow = body.iter().any(|s| matches!(s.action, Action::Jump(_) | Action::Unless(..)));
             if flow {
@@ -146,6 +171,9 @@ impl LinkedProgram {
                         let local = emitter.local_id(name);
                         writeln!(out, "{}v{local} = {expr};", if flow { "" } else { "let " }).unwrap();
                     }
+                    Action::ReturnText(value) => {
+                        writeln!(out, "return Ok({});", emitter.local_text(value).ok_or_else(unsupported)?).unwrap();
+                    }
                     Action::Return(value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
                         writeln!(out, "return Ok({expr});").unwrap();
@@ -154,14 +182,7 @@ impl LinkedProgram {
                         writeln!(out, "{};", emitter.local_replace(change).ok_or_else(unsupported)?).unwrap();
                     }
                     Action::StoreText { target, declaration, value } => {
-                        let rhs = match value {
-                            LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
-                            LocalText::Replace(change) => emitter.local_replace(change).ok_or_else(unsupported)?,
-                            LocalText::Move(source) => format!("v{}", emitter.locals.get(source).ok_or_else(unsupported)?),
-                            LocalText::Grapheme(source, index) => format!(
-                                "ResourceText::new(v{}.grapheme({}).ok_or((site, ARITH))?.to_owned())",
-                                emitter.locals.get(source).ok_or_else(unsupported)?, emitter.offset(index).ok_or_else(unsupported)?),
-                        };
+                        let rhs = emitter.local_text(value).ok_or_else(unsupported)?;
                         writeln!(out, "{}v{} = {rhs};", if declaration.is_some() { "let mut " } else { "" },
                             emitter.local_id(target)).unwrap();
                     }

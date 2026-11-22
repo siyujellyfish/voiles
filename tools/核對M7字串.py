@@ -44,3 +44,28 @@ verify(cli, ((consume + forward + "fn main()->int{\n" + body + "\n}", result) fo
     ('var s:str = "*"\nreturn read(s)', "reject"),
     ('var s:str = "*"\nreturn read(s.move()) + read(s.move())', "reject"),
 ]))
+
+make = 'fn make()->str{ return "*" }\n'
+identity = 'fn identity(arg:str)->str{ return arg.move() }\n'
+verify(cli, ((make + identity + "fn main()->int{\n" + body + "\n}", result) for body, result in [
+    ('var s:str = make()\ns = identity(arg=s.move())\nreturn s[0][0]', 42),
+    ('var s:str = make()\nvar t:str = identity(s.move())\nreturn t[1][0]', "runtime"),
+    ('var s:str = make()\nvar t:str = identity(s.move())\nreturn s[0][0]', "reject"),
+    ('var s:str = make()\nvar t:str = identity(s)\nreturn 0', "reject"),
+    ('return make()', "reject"),
+]))
+verify(cli, [
+    ('fn broken()->str{ return 42 }\nfn main()->int{ return 0 }', "reject"),
+    ('fn broken(s:str)->str{ return s }\nfn main()->int{ return 0 }', "reject"),
+    ('fn nested()->str{ var s:str = "甲*"\nreturn s[1] }\nfn relay()->str{ return nested() }'
+     '\nfn main()->int{ var s:str = relay()\nreturn s[0][0] }', 42),
+])
+
+select = 'fn pick(a:str, index:int, b:str)->str{ return b[index] }\n'
+verify(cli, [
+    (select + identity + consume + 'fn main()->int{ return read(pick(b=identity("*"),index=0,a="甲")) }', 42),
+    (select + 'fn main()->int{ var s:str = "甲"\nvar t:str = pick(s.move(),0,s.move())\nreturn 0 }', "reject"),
+    (select + 'fn main()->int{ var t:str = pick("甲",true,"*")\nreturn 0 }', "reject"),
+    (select + 'fn main()->int{ var t:str = pick("甲",0,"")\nreturn 0 }', "runtime"),
+    (select + 'fn main()->int{ var t:str = pick("甲",9223372036854775807 + 1,"*")\nreturn 0 }', "runtime"),
+])

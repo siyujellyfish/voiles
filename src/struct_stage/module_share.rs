@@ -76,7 +76,7 @@ enum Number {
     ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
     Choice(bool, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
-    ConsumeText { target: String, source: String, parameter: String },
+    TextCall(TextInvocation),
     Consume { target:String, from:String, parameter:String },
     Constant(i64),
     Local(String),
@@ -101,10 +101,34 @@ enum Text {
 }
 
 enum LocalText {
+    Call(TextInvocation),
     Literal(String),
     Grapheme(String, StringOffset),
     Move(String),
     Replace(LocalReplacement),
+}
+
+struct TextInvocation {
+    target: String,
+    arguments: Vec<(String, usize, Argument)>,
+}
+
+enum Argument {
+    Integer(Number),
+    Text(LocalText),
+}
+
+impl TextInvocation {
+    fn uses<'a>(&'a self, uses: &mut Vec<Use<'a>>) {
+        for (_, _, arg) in &self.arguments {
+            match arg {
+                Argument::Integer(n) => n.uses(uses),
+                Argument::Text(LocalText::Call(call)) => call.uses(uses),
+                _ => (),
+            }
+        }
+        uses.push(Use::Call(&self.target, false));
+    }
 }
 
 struct LocalReplacement {
@@ -131,6 +155,7 @@ enum Replacement {
 }
 
 enum Action {
+    ReturnText(LocalText),
     ReplaceLocal(LocalReplacement),
     StoreText { target: String, declaration: Option<bool>, value: LocalText },
     Jump(usize),
@@ -223,15 +248,8 @@ impl Lower<'_> {
     fn scalar_call<'t>(&self, name: &str, arguments: impl Iterator<Item = (Option<&'t str>, &'t Term)>) -> Option<Number> {
         if self.shadowed(name) { return None; }
         let (target, _, function) = self.objects.as_ref()?.function(name)?;
-        if let [param] = function.params.as_slice() {
-            if param.ty == "str" && function.result_ty == "int" && !function.is_async {
-                let mut arguments = arguments;
-                let (label, term) = arguments.next()?;
-                if arguments.next().is_some() || label.is_some_and(|name| name != param.name) { return None; }
-                let TermKind::Move(source) = &term.kind else { return None };
-                if !self.strings.get(source)?.live.replace(false) { return None; }
-                return Some(Number::ConsumeText { target: target.clone(), source: source.clone(), parameter: param.name.clone() });
-            }
+        if function.params.iter().any(|p| p.ty == "str") {
+            return self.invocation(name, arguments, "int").map(Number::TextCall);
         }
         if function.result_ty != "int" || function.is_async || function.params.is_empty() || function.params.iter().any(|p| p.ty != "int") {
             return None;
@@ -269,9 +287,40 @@ impl Lower<'_> {
         Some(LocalReplacement { owner: owner.into(), index: self.offset(index)?, rhs: rhs.clone() })
     }
 
-    fn local_text(&mut self, term: &Term, target: &str) -> Option<LocalText> {
+    fn invocation<'t>(&self, name: &str, args: impl Iterator<Item=(Option<&'t str>, &'t Term)>, result: &str)
+        -> Option<TextInvocation> {
+        if self.shadowed(name) { return None; }
+        let (target, _, function) = self.objects.as_ref()?.function(name)?;
+        if function.result_ty != result || function.is_async { return None; }
+        let mut arguments = Vec::new();
+        let mut slots = BTreeSet::new();
+        for (index, (label, term)) in args.enumerate() {
+            let slot = match label { Some(n) => function.params.iter().position(|p| p.name == n)?, None => index };
+            let p = function.params.get(slot)?;
+            if !slots.insert(slot) { return None; }
+            let value = match p.ty.as_str() {
+                "str" => Argument::Text(self.local_text(term, "")?),
+                "int" => Argument::Integer(self.number(term)?),
+                _ => return None,
+            };
+            arguments.push((p.name.clone(),slot,value));
+        }
+        if arguments.len() != function.params.len() { return None; }
+        Some(TextInvocation { target: target.clone(), arguments })
+    }
+
+    fn text_call<'t>(&self, name: &str, args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<LocalText> {
+        self.invocation(name,args,"str").map(LocalText::Call)
+    }
+
+    fn local_text(&self, term: &Term, target: &str) -> Option<LocalText> {
         match &term.kind {
             TermKind::Group(inner) => self.local_text(inner, target),
+            TermKind::UnresolvedZeroArgs(name) => self.text_call(name, std::iter::empty()),
+            TermKind::Call(c) if !c.awaited => self.text_call(&c.name, c.arguments.iter().map(|t|(None,t))),
+            TermKind::Construct(name,args) => self.text_call(name,args.iter().map(|(label,t)|(Some(label.as_str()),t))),
+            TermKind::MethodCall(module,name,args) if !self.shadowed(module) =>
+                self.text_call(&format!("{module}.{name}"),args.iter().map(|t|(None,t))),
             TermKind::Move(source) if source != target => {
                 if !self.strings.get(source)?.live.replace(false) { return None; }
                 Some(LocalText::Move(source.clone()))
@@ -374,7 +423,7 @@ impl Lower<'_> {
             if matches!(
                 steps.last(),
                 Some(Step {
-                    action: Action::Return(_),
+                    action: Action::Return(_) | Action::ReturnText(_),
                     ..
                 })
             ) {
@@ -494,7 +543,7 @@ impl Lower<'_> {
                     }
                     Action::Replace(p, self.offset(i).ok_or_else(|| err("字素索引需要 int"))?, rhs)
                 }
-                StmtKind::If { branch, no: Some(other) } => {
+                StmtKind::If { branch, no: Some(other) } if function.result_ty == "int" => {
                     let TermKind::Scalar(ScalarLiteral::Boolean(test)) = &branch.condition.kind else {
                         return Err(err("此分支需要 bool 常值條件"));
                     };
@@ -505,6 +554,8 @@ impl Lower<'_> {
                     };
                     Action::Return(Number::Choice(*test, Box::new(yes), Box::new(no)))
                 }
+                StmtKind::Return(r) if function.result_ty == "str" => Action::ReturnText(
+                    self.local_text(&r.expression, "").ok_or_else(|| err("需要獨立的 str 返回值"))?),
                 StmtKind::Return(r) => Action::Return(
                     self.number(&r.expression)
                         .ok_or_else(|| err("需要已驗證的 int 返回值"))?,
@@ -516,7 +567,7 @@ impl Lower<'_> {
         if !matches!(
             steps.last(),
             Some(Step {
-                action: Action::Return(_),
+                action: Action::Return(_) | Action::ReturnText(_),
                 ..
             })
         ) {
@@ -630,7 +681,8 @@ impl Number {
                 left.uses(list);
                 right.uses(list);
             }
-            Self::Consume{target,..} | Self::ConsumeText{target,..} => list.push(Use::Call(target,false)),
+            Self::TextCall(call) => call.uses(list),
+            Self::Consume{target,..} => list.push(Use::Call(target,false)),
             Self::Call(name, waited) => list.push(Use::Call(name, *waited)),
             _ => (),
         }
@@ -641,7 +693,10 @@ impl Action {
     fn uses(&self) -> Vec<Use<'_>> {
         let mut uses = Vec::new();
         match self {
-            Self::Jump(_) | Self::ReplaceLocal(_) | Self::StoreText { .. } => (),
+            Self::ReturnText(value) | Self::StoreText { value, .. } => {
+                if let LocalText::Call(call) = value { call.uses(&mut uses); }
+            }
+            Self::Jump(_) | Self::ReplaceLocal(_) => (),
             Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(..) => (),
@@ -852,10 +907,10 @@ impl Program {
     }
 
     fn call(&self, name: &str, state: &mut State, depth: usize) -> Result<i64, StrRuntimeError> {
-        self.call_with_owner(name,state,depth,None, HashMap::new())
+        self.call_with_owner(name,state,depth,None, HashMap::new())?.integer(&mut state.heap)
     }
 
-    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<Transfer<'_>>, locals: HashMap<String, i64>) -> Result<i64, StrRuntimeError> {
+    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<Transfer<'_>>, locals: HashMap<String, i64>) -> Result<CallResult, StrRuntimeError> {
         let budget = crate::execution::ExecutionBudget::default();
         if depth >= budget.max_call_frames {
             return Err(StrRuntimeError::ExecutionBudgetExhausted);
@@ -872,17 +927,16 @@ impl Program {
                 *frame.remaining.entry(name.clone()).or_default() += 1;
             }
         }
-        match transfer {
-            Some(Transfer::Text(source, target)) => {
-                use crate::owned_str_runtime::StrArgumentSource;
-                state.heap.enter_with_moved_arguments(&[(StrArgumentSource::Named(&format!("@{source}")),
-                    &format!("@{target}"))], &mut Vec::new())?;
+        let object = match transfer {
+            Some(Transfer::Text(args, temps)) => {
+                state.heap.enter_with_moved_arguments(args, temps)?;
+                None
             }
-            _ => state.heap.enter_scope(),
-        }
+            other => { state.heap.enter_scope(); other }
+        };
         state.mixed.enter_scope();
         let result = (|| {
-            if let Some(Transfer::Object(from,to)) = transfer {
+            if let Some(Transfer::Object(from,to)) = object {
                 state.mixed.move_whole_with_shared_ledger(&mut state.heap,from,to).map_err(|_|StrRuntimeError::EvaluationFailed)?;
             }
             self.run_body(body,&mut frame,state,depth,budget.max_steps)
@@ -901,6 +955,52 @@ impl Program {
         result
     }
 
+    fn invoke_text(&self, call: &TextInvocation, frame: &mut Frame, state: &mut State, depth: usize)
+        -> Result<CallResult, StrRuntimeError> {
+        use crate::owned_str_runtime::StrArgumentSource;
+        let mut temps = Vec::new();
+        let result = (|| {
+            let mut integers = HashMap::new();
+            let mut sources = Vec::new();
+            for (name, _, arg) in &call.arguments {
+                match arg {
+                    Argument::Integer(n) => { integers.insert(name.clone(), self.eval(n,frame,state,depth)?); }
+                    Argument::Text(LocalText::Move(owner)) =>
+                        sources.push((Some(format!("@{owner}")), 0, format!("@{name}"))),
+                    Argument::Text(t) => {
+                        let value = self.detached_text(t,frame,state,depth)?;
+                        sources.push((None, value.resource_id(), format!("@{name}")));
+                        temps.push(value);
+                    }
+                }
+            }
+            let args: Vec<_> = sources.iter().map(|(owner,id,name)| {
+                let from = match owner { Some(n) => StrArgumentSource::Named(n), None => StrArgumentSource::Temporary(*id) };
+                (from,name.as_str())
+            }).collect();
+            self.call_with_owner(&call.target, state, depth+1, Some(Transfer::Text(&args,&mut temps)), integers)
+        })();
+        for value in temps.into_iter().rev() { state.heap.release_detached(value); }
+        result
+    }
+
+    fn detached_text(&self, value: &LocalText, frame: &mut Frame, state: &mut State, depth: usize)
+        -> Result<crate::owned_str_runtime::OwnedUtf8, StrRuntimeError> {
+        match value {
+            LocalText::Literal(text) => state.heap.create_detached(text),
+            LocalText::Move(source) => state.heap.return_named(&format!("@{source}")),
+            LocalText::Grapheme(source, index) => state.heap.read_grapheme(&format!("@{source}"), index.value(frame)?)
+                .map_err(|_| StrRuntimeError::EvaluationFailed),
+            LocalText::Replace(change) => change.perform(state, frame),
+            LocalText::Call(call) => {
+                match self.invoke_text(call, frame, state, depth)? {
+                    CallResult::Text(text) => Ok(text),
+                    CallResult::Integer(_) => Err(StrRuntimeError::EvaluationFailed),
+                }
+            }
+        }
+    }
+
     fn run_body(
         &self,
         body: &Body,
@@ -908,7 +1008,7 @@ impl Program {
         state: &mut State,
         depth: usize,
         max_steps: usize,
-    ) -> Result<i64, StrRuntimeError> {
+    ) -> Result<CallResult, StrRuntimeError> {
         let mut pc = 0;
         while let Some(step) = body.get(pc) {
             pc += 1;
@@ -947,13 +1047,8 @@ impl Program {
                             Some(mutable) => state.heap.move_named_as(&format!("@{source}"), &name, *mutable)?,
                             None => state.heap.replace_from(&format!("@{source}"), &name)?,
                         },
-                        LocalText::Grapheme(..) | LocalText::Replace(_) => {
-                            let value = match value {
-                                LocalText::Grapheme(source, index) => state.heap.read_grapheme(&format!("@{source}"), index.value(frame)?)
-                                    .map_err(|_| StrRuntimeError::EvaluationFailed)?,
-                                LocalText::Replace(change) => change.perform(state, frame)?,
-                                _ => unreachable!(),
-                            };
+                        _ => {
+                            let value = self.detached_text(value, frame, state, depth)?;
                             let accepted = match declaration {
                                 Some(mutable) => state.heap.accept_return_as(&name, value, *mutable),
                                 None => state.heap.replace_return_as(&name, value),
@@ -979,7 +1074,12 @@ impl Program {
                             .map_err(|_| StrRuntimeError::OutstandingResource)?;
                     }
                 }
-                Action::Return(rhs) => return self.eval(rhs, frame, state, depth),
+                Action::Return(rhs) => return self.eval(rhs, frame, state, depth).map(CallResult::Integer),
+                Action::ReturnText(rhs) => {
+                    let text = self.detached_text(rhs, frame, state, depth)?;
+                    if !matches!(rhs, LocalText::Move(_)) { state.heap.mark_detached_return(&text); }
+                    return Ok(CallResult::Text(text));
+                }
                 Action::Replace(p, i, rhs) => {
                     let text = match rhs {
                         Replacement::Literal(s) => std::borrow::Cow::Borrowed(s.as_str()),
@@ -1060,9 +1160,8 @@ impl Program {
                 if let Some(ticket) = ticket { frame.object_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?; }
                 result
             }
-            Number::ConsumeText {target,source,parameter} =>
-                self.call_with_owner(target,state,depth+1,Some(Transfer::Text(source,parameter)),HashMap::new()),
-            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some(Transfer::Object(from,parameter)), HashMap::new()),
+            Number::TextCall(call) => self.invoke_text(call,frame,state,depth)?.integer(&mut state.heap),
+            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some(Transfer::Object(from,parameter)), HashMap::new())?.integer(&mut state.heap),
             Number::Lookup(key, entries) => {
                 let key = self.eval(key, frame, state, depth)?;
                 entries.get(&key).copied().ok_or(StrRuntimeError::EvaluationFailed)
@@ -1073,7 +1172,7 @@ impl Program {
                 for (name, _, value) in arguments {
                     bindings.insert(name.clone(), self.eval(value, frame, state, depth)?);
                 }
-                self.call_with_owner(target, state, depth + 1, None, bindings)
+                self.call_with_owner(target, state, depth + 1, None, bindings)?.integer(&mut state.heap)
             }
             Number::Logic(op,a,b) => {
                 let left = self.eval(a, frame, state, depth)?;
@@ -1126,9 +1225,25 @@ impl Program {
     }
 }
 
-#[derive(Clone, Copy)]
+enum CallResult {
+    Integer(i64),
+    Text(crate::owned_str_runtime::OwnedUtf8),
+}
+
+impl CallResult {
+    fn integer(self, heap: &mut OwnedStrRuntime) -> Result<i64, StrRuntimeError> {
+        match self {
+            Self::Integer(value) => Ok(value),
+            Self::Text(value) => {
+                heap.release_detached(value);
+                Err(StrRuntimeError::EvaluationFailed)
+            }
+        }
+    }
+}
+
 enum Transfer<'a> {
-    Text(&'a str, &'a str),
+    Text(&'a [(crate::owned_str_runtime::StrArgumentSource<'a>, &'a str)], &'a mut Vec<crate::owned_str_runtime::OwnedUtf8>),
     Object(&'a str, &'a str),
 }
 
