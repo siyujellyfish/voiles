@@ -77,7 +77,18 @@ enum ContainerKey { Text(String), Index(Number) }
 enum ContainerItem { Decimal(Number), Scalar(Number, bool), Literal(containers::Value) }
 enum Edit { ReplaceOptional(ContainerItem), Append(ContainerItem), Set(ContainerKey, ContainerItem), Pop }
 enum ContainerRead { Length, Tag, Scalar }
-enum ContainerInit { Optional(ContainerItem), Literal(ContainerLiteral), Move(String) }
+enum CollectionArgument { Move(String), Scalar(Number) }
+struct CollectionCall { target:String, arguments:Vec<(String,usize,CollectionArgument)> }
+impl CollectionCall {
+    fn uses<'a>(&'a self,uses:&mut Vec<Use<'a>>) {
+        for (_,_,arg) in &self.arguments {
+            if let CollectionArgument::Scalar(n)=arg {n.uses(uses);}
+        }
+        uses.push(Use::Call(&self.target,false));
+    }
+}
+
+enum ContainerInit { Call(CollectionCall), Optional(ContainerItem), Literal(ContainerLiteral), Move(String) }
 
 impl ContainerLiteral {
     fn runtime(&self) -> Option<containers::Value> {
@@ -135,6 +146,7 @@ struct MethodCall {
 }
 
 enum Number {
+    FromCollection(CollectionCall),
     Method(MethodCall),
     TextLength(String),
     ParseInt(String),
@@ -237,12 +249,14 @@ enum MemberValue {
 }
 
 enum Action {
+    BorrowLocal { alias:String, owner:String,kind:BorrowKind },
+    ReturnCollection(String),
     ReturnObject(String),
     ReceiveObject {target:String,owner:String},
     Evaluate(Number),
     Container(String, ContainerInit),
     Select { alias: String, owner: String, key: ContainerKey },
-    DropContainer(String),
+    DropStorage(Vec<Storage>),
     RelocateObject { source: String, target: String, moving: bool },
     WriteMember { owner: String, field: String, value: MemberValue, initializing: bool },
     ReturnText(LocalText),
@@ -250,7 +264,7 @@ enum Action {
     StoreText { target: String, declaration: Option<bool>, value: LocalText },
     Jump(usize),
     Unless(Number, usize),
-    Construct(String,Vec<PreparedField>,Vec<PreparedNamedField>),
+    Construct(String,Vec<PreparedField>,Vec<(String,MemberValue)>),
     Bind(String, Number),
     Loan(String, Place, BorrowKind),
     Write(Place, Text),
@@ -264,9 +278,22 @@ struct StepOrigin {
     span: (usize, usize),
 }
 
-struct Handler { category:String, target:usize, cleanup:Vec<String> }
+#[derive(Clone)]
+enum Storage { Container(String), Text(String) }
+impl Storage {
+    fn cleanup(slots:&[Storage],frame:&mut Frame,heap:&mut OwnedStrRuntime) {
+        let mut texts=BTreeSet::new();
+        for slot in slots {
+            match slot {Self::Container(n)=>frame.containers.drop_slot(n),Self::Text(n)=>{texts.insert(format!("@{n}"));}}
+        }
+        heap.leave_bindings(&texts);
+    }
+}
+struct Handler { category:String, target:usize, cleanup:Vec<Storage> }
 
 struct Step {
+    text_access:Vec<String>,
+    expire:Vec<String>,
     active_view:bool,
     handlers:Vec<Handler>,
     module: usize,
@@ -291,14 +318,16 @@ fn problem(source: &Source, span: (usize, usize), message: &str) -> Diagnostic {
 }
 
 struct TextBinding {
+    borrowed:Option<String>,
     mutable: bool,
     live: std::cell::Cell<bool>,
 }
 impl TextBinding {
-    fn new(mutable: bool) -> Self { Self { mutable, live: true.into() } }
+    fn new(mutable: bool) -> Self { Self { borrowed:None, mutable, live: true.into() } }
 }
 
 struct Lower<'a> {
+    text_access:std::cell::RefCell<Vec<String>>,
     objects: Option<modules::objects::ObjectScope<'a>>,
     source: &'a Source,
     tokens: &'a [Token],
@@ -312,6 +341,13 @@ struct Lower<'a> {
 }
 
 impl Lower<'_> {
+    fn text_owner(&self, name:&str, write:bool, must_be_live:bool)->Option<String> {
+        let binding=self.strings.get(name)?;
+        if write && !binding.mutable || must_be_live && !binding.live.get() {return None;}
+        self.text_access.borrow_mut().push(name.into());
+        Some(binding.borrowed.as_deref().unwrap_or(name).into())
+    }
+
     fn place(&self, name: &str) -> Option<Place> {
         if self.objects.as_ref().is_some_and(|s| s.has(name.split('.').next().unwrap_or(name))) { return None; }
         if self.strings.contains_key(name.split('.').next()?) || self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
@@ -340,8 +376,7 @@ impl Lower<'_> {
             let expected=params.get(i).copied().or_else(||standard::variadic_parameter(name))?;
             values.push(if expected=="int" { StandardArg::Int(self.number(t)?) }
                 else if let TermKind::Name(n)=&t.kind {
-                    if !self.strings.get(n)?.live.get() {return None;}
-                    StandardArg::Read(n.clone())
+                    StandardArg::Read(self.text_owner(n,false,true)?)
                 } else {StandardArg::Text(self.local_text(t,"")?)});
         }
         if values.len()<params.len() {return None;}
@@ -393,14 +428,13 @@ impl Lower<'_> {
     }
 
     fn replacement(&self, owner: &str, index: &StringOffset, rhs: &GraphemeReplacement) -> Option<LocalReplacement> {
-        let binding = self.strings.get(owner)?;
-        if !binding.mutable || !binding.live.get() { return None; }
-        match rhs {
-            GraphemeReplacement::Literal(s) if !crate::owned_str_runtime::single_grapheme(s) => return None,
-            GraphemeReplacement::Named(n) if !self.strings.get(n)?.live.get() => return None,
-            _ => (),
-        }
-        Some(LocalReplacement { owner: owner.into(), index: self.offset(index)?, rhs: rhs.clone() })
+        let owner=self.text_owner(owner,true,true)?;
+        let rhs=match rhs {
+            GraphemeReplacement::Literal(s) if crate::owned_str_runtime::single_grapheme(s)=>rhs.clone(),
+            GraphemeReplacement::Named(n)=>GraphemeReplacement::Named(self.text_owner(n,false,true)?),
+            _=>return None,
+        };
+        Some(LocalReplacement { owner, index:self.offset(index)?, rhs })
     }
 
     fn invocation<'t>(&self, name: &str, args: impl Iterator<Item=(Option<&'t str>, &'t Term)>, result: &str)
@@ -495,7 +529,7 @@ impl Lower<'_> {
                 let (name, spec) = field.split_once(':').unwrap_or((&field, ""));
                 let name=name.trim();
                 let part = if self.strings.get(name).is_some_and(|b|b.live.get()) && matches!(spec,""|"s") {
-                    FormatPart::Text(name.into())
+                    FormatPart::Text(self.text_owner(name,false,true)?)
                 } else {
                     if name.is_empty() {return None;}
                     let source=Source::new(name.as_bytes().to_vec());
@@ -535,12 +569,13 @@ impl Lower<'_> {
             TermKind::MethodCall(module,name,args) if !self.shadowed(module) =>
                 self.text_call(&format!("{module}.{name}"),args.iter().map(|t|(None,t))),
             TermKind::Move(source) if source != target => {
-                if !self.strings.get(source)?.live.replace(false) { return None; }
+                self.text_owner(source,false,true)?;
+                if self.strings[source].borrowed.is_some() || !self.strings[source].live.replace(false) { return None; }
                 Some(LocalText::Move(source.clone()))
             }
             TermKind::StringReplace(owner, index, rhs) => Some(LocalText::Replace(self.replacement(owner, index, rhs)?)),
             TermKind::StringIndex(owner, index, None) if self.strings.get(owner)?.live.get() =>
-                Some(LocalText::Grapheme(owner.clone(), self.offset(index)?)),
+                Some(LocalText::Grapheme(self.text_owner(owner,false,true)?, self.offset(index)?)),
             TermKind::LiteralIndex(text, index, None) => Some(LocalText::Literal(
                 crate::owned_str_runtime::literal_grapheme(text, *index)?.to_owned())),
             _ => match self.text(term)? {
@@ -553,6 +588,8 @@ impl Lower<'_> {
     fn floating(&self, term:&Term)->Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.floating(t),
+            TermKind::FieldRead(owner,field) if self.objects.as_ref()?.field_type(owner,field,false)?=="float" =>
+                Some(Number::Member {owner:owner.clone(),field:field.clone(),receiver:None}),
             TermKind::Name(n) if self.locals.get(n)?.1 == "float" => Some(Number::Local(n.clone())),
             TermKind::Literal("float") => {
                 let index=self.tokens.binary_search_by_key(&term.start,|t|t.start).ok()?;
@@ -573,13 +610,13 @@ impl Lower<'_> {
         if let TermKind::Call(call)=&term.kind {
             if !call.awaited && call.name=="len" && !self.shadowed("len") && !self.functions.contains_key("len") && !self.globals.contains_key("len") {
                 if let [Term {kind:TermKind::Name(name),..}]=call.arguments.as_slice() {
-                    if self.strings.get(name).is_some_and(|b|b.live.get()) {return Some(Number::TextLength(name.clone()));}
+                    if self.strings.get(name).is_some_and(|b|b.live.get()) {return Some(Number::TextLength(self.text_owner(name,false,true)?));}
                 }
             }
         }
         if let TermKind::MethodCall(name,method,args)=&term.kind {
             if method=="to_int" && args.is_empty() && self.strings.get(name).is_some_and(|b|b.live.get()) {
-                return Some(Number::ParseInt(name.clone()));
+                return Some(Number::ParseInt(self.text_owner(name,false,true)?));
             }
         }
         if let Some(objects) = &self.objects {
@@ -611,7 +648,7 @@ impl Lower<'_> {
                 Some(Number::MemberByte(owner.into(),field.into(),self.offset(i)?,self.offset(j)?))
             }
             TermKind::StringIndex(n, i, Some(j)) if self.strings.contains_key(n) =>
-                self.strings[n].live.get().then_some(Number::LocalByte(n.clone(), self.offset(i)?, self.offset(j)?)),
+                Some(Number::LocalByte(self.text_owner(n,false,true)?, self.offset(i)?, self.offset(j)?)),
             TermKind::LiteralIndex(s, i, Some(j)) =>
                 Some(Number::Constant(crate::owned_str_runtime::literal_byte(s, *i, *j)?)),
             TermKind::StringIndex(n, i, Some(j)) =>
@@ -641,6 +678,8 @@ impl Lower<'_> {
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => Some(Number::Constant(i64::from(*b))),
             TermKind::FieldRead(owner, field) if self.objects.as_ref()?.field_type(owner, field, false)? == "bool" =>
                 Some(Number::BoolMember(owner.clone(),field.clone())),
+            TermKind::Logic("!=",a,b) if self.floating(a).is_some() =>
+                Some(Number::Logic("!=",Box::new(self.floating(a)?),Box::new(self.floating(b)?))),
             TermKind::Logic(op, a, b) => Some(Number::Logic(op,Box::new(self.boolean(a)?),Box::new(self.boolean(b)?))),
             _ => None,
         }
@@ -712,6 +751,17 @@ impl Lower<'_> {
                         } else {self.local_text(init,&d.name)}.ok_or_else(||err("字串需要獨立初值，樣板需要 const"))?;
                         self.strings.insert(d.name.clone(), TextBinding::new(d.mutable));
                         Action::StoreText { target: d.name.clone(), declaration: Some(d.mutable), value }
+                    } else if d.ty=="str" && matches!(&init.kind,TermKind::Borrow(n) if self.strings.contains_key(n)) {
+                        let TermKind::Borrow(n)=&init.kind else {unreachable!()};
+                        let source=&self.strings[n];
+                        if source.borrowed.is_some() || !source.live.get() || d.mutable && !source.mutable {
+                            return Err(err("字串借用需要有效且具相應權限的持有者"));
+                        }
+                        let mut alias=TextBinding::new(d.mutable);
+                        alias.borrowed=Some(n.clone());
+                        self.strings.insert(d.name.clone(),alias);
+                        Action::BorrowLocal { alias:d.name.clone(),owner:n.clone(),
+                            kind:if d.mutable {BorrowKind::ExclusiveWrite} else {BorrowKind::SharedRead} }
                     } else if d.ty == "str" {
                         let TermKind::Borrow(n) = &init.kind else {
                             return Err(err("需要明確借用來源"));
@@ -753,7 +803,21 @@ impl Lower<'_> {
                         if root.is_some_and(|n| self.shadowed(n)) {
                             return Err(err("建構式名稱已被區域綁定遮蔽"));
                         }
-                        self.objects.as_mut().and_then(|scope| scope.construct(&d.name, &d.ty, d.start, d.mutable, init))
+                        let mut named=Vec::new();
+                        if let TermKind::Construct(_,args)=&init.kind {
+                            for (field,t) in args {
+                                let ty=self.objects.as_ref().and_then(|o|o.named_field(&d.ty,field)).ok_or_else(||err("找不到可見的建構欄位"))?;
+                                let value=match ty {
+                                    "float"=>MemberValue::Integer(self.floating(t).ok_or_else(||err("需要 decimal64 建構值"))?),
+                                    "int"=>MemberValue::Integer(self.number(t).ok_or_else(||err("需要整數建構值"))?),
+                                    "bool"=>MemberValue::Boolean(self.boolean(t).ok_or_else(||err("需要布林建構值"))?),
+                                    "str"=>match self.text(t) {Some(Text::Literal(v))=>MemberValue::Text(v),_=>return Err(err("需要獨立字串建構值"))},
+                                    _=>return Err(err("不支援的建構欄位型別")),
+                                };
+                                named.push((field.clone(),value));
+                            }
+                        }
+                        self.objects.as_mut().and_then(|scope| scope.construct(&d.name, &d.ty, d.start, d.mutable, init,named))
                             .ok_or_else(|| err("結構型別、具名欄位或建構值無效"))?
                     }
                 }
@@ -761,7 +825,7 @@ impl Lower<'_> {
                     if !self.strings[&a.name].mutable { return Err(err("const 不可重賦值")); }
                     let value = self.local_text(&a.expression, &a.name).ok_or_else(|| err("需要獨立字串值"))?;
                     self.strings[&a.name].live.set(true);
-                    Action::StoreText { target: a.name.clone(), declaration: None, value }
+                    Action::StoreText { target:self.text_owner(&a.name,true,false).ok_or_else(||err("缺少可寫字串"))?, declaration: None, value }
                 }
                 StmtKind::Assign(a) if self.locals.contains_key(&a.name) => {
                     if !self.locals[&a.name].0 {
@@ -787,6 +851,7 @@ impl Lower<'_> {
                     let ty = self.objects.as_ref().and_then(|o| o.field_type(receiver,field,true))
                         .ok_or_else(|| err("需要可見、可寫且仍由此變數持有的欄位"))?;
                     let rhs = match (ty, &value.kind) {
+                        ("float",_)=>MemberValue::Integer(self.floating(value).ok_or_else(||err("需要 decimal64 欄位值"))?),
                         ("int", _) => MemberValue::Integer(self.number(value).ok_or_else(||err("需要 int 欄位值"))?),
                         ("bool", _) => MemberValue::Boolean(self.boolean(value).ok_or_else(||err("需要 bool 欄位值"))?),
                         ("str", _) => match self.text(value) {
@@ -812,7 +877,7 @@ impl Lower<'_> {
                     if self.strings.contains_key(name) {
                         let change = self.replacement(name, i, replacement)
                             .ok_or_else(|| err("區域字串覆寫需要可寫持有者、整數索引及單一字素"))?;
-                        steps.push(Step { active_view:false,handlers:vec![], module, span, action: Action::ReplaceLocal(change) });
+                        steps.push(Step { text_access:self.text_access.take(),expire:Vec::new(),active_view:false,handlers:vec![], module, span, action: Action::ReplaceLocal(change) });
                         continue;
                     }
                     let rhs = match replacement {
@@ -851,7 +916,7 @@ impl Lower<'_> {
                 ),
                 _ => return Err(err("此模組語句缺少共享存取證明")),
             };
-            steps.push(Step { active_view:false,handlers:vec![], action, module, span });
+            steps.push(Step { text_access:self.text_access.take(),expire:Vec::new(),active_view:false,handlers:vec![], action, module, span });
         }
         if !matches!(
             steps.last(),
@@ -866,8 +931,30 @@ impl Lower<'_> {
                 "函式必須明確返回 int",
             ));
         }
+        verify_local_text_loans(&mut steps,self.source)?;
         Ok(steps)
     }
+}
+
+fn verify_local_text_loans(steps:&mut [Step],source:&Source)->Result<(),Diagnostic> {
+    let mut last=HashMap::new();
+    for (i,step) in steps.iter().enumerate() {
+        for name in &step.text_access {last.insert(name.clone(),i);}
+    }
+    let mut active:BTreeMap<String,(String,BorrowKind,usize)>=BTreeMap::new();
+    for (i,step) in steps.iter_mut().enumerate() {
+        active.retain(|alias,(_,_,end)|{
+            if *end<i {step.expire.push(alias.clone());false} else {true}
+        });
+        let conflict=||problem(source,step.span,"區域字串仍有有效借用");
+        if step.text_access.iter().any(|n|active.values().any(|(owner,_,_)|owner==n)) {return Err(conflict());}
+        step.active_view|=!active.is_empty();
+        if let Action::BorrowLocal{alias,owner,kind}=&step.action {
+            if active.values().any(|(n,k,_)|n==owner && (*k==BorrowKind::ExclusiveWrite || *kind==BorrowKind::ExclusiveWrite)) {return Err(conflict());}
+            active.insert(alias.clone(),(owner.clone(),*kind,last.get(alias).copied().unwrap_or(i)));
+        }
+    }
+    Ok(())
 }
 
 impl Program {
@@ -920,7 +1007,7 @@ impl Program {
                     "共享模組尚無此簽章或非同步安全證明",
                 ));
             }
-            let mut lower = Lower {
+            let mut lower = Lower { text_access:Default::default(),
                 source: &source,
                 tokens: &lexed.tokens,
                 objects: None, linked_names: None, readonly_slots: BTreeSet::new(),
@@ -959,6 +1046,7 @@ impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
 
+            Self::FromCollection(call)=>call.uses(list),
             Self::Method(call)=>for (_,n) in &call.arguments { n.uses(list); },
             Self::Edit(_, edit) => {
                 if let Edit::Set(ContainerKey::Index(n),_) = edit.as_ref() { n.uses(list); }
@@ -991,8 +1079,10 @@ impl Action {
         let mut uses = Vec::new();
         match self {
             Self::Select { key: ContainerKey::Index(n), .. } => n.uses(&mut uses),
+            Self::Container(_,ContainerInit::Call(call))=>call.uses(&mut uses),
+            Self::ReturnCollection(_)|Self::BorrowLocal{..}=>(),
             Self::Container(_,ContainerInit::Optional(ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n)))=>n.uses(&mut uses),
-            Self::Select { .. } | Self::Container(..) | Self::DropContainer(_) => (),
+            Self::Select { .. } | Self::Container(..) | Self::DropStorage(_) => (),
             Self::ReturnObject(_) => (),
             Self::ReceiveObject {target,..} => uses.push(Use::Call(target,false)),
             Self::ReturnText(value) | Self::StoreText { value, .. } => {
@@ -1002,7 +1092,9 @@ impl Action {
             Self::WriteMember { .. } | Self::RelocateObject { .. } | Self::Jump(_) | Self::ReplaceLocal(_) => (),
             Self::Evaluate(value) | Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
-            Self::Construct(..) => (),
+            Self::Construct(_,_,args) => for (_,value) in args {
+                if let MemberValue::Integer(n)|MemberValue::Boolean(n)=value { n.uses(&mut uses); }
+            },
             Self::Replace(p, _, rhs) => {
                 if let Replacement::Named(source) = rhs { uses.push(Use::Direct(source)); }
                 uses.push(Use::Direct(p));
@@ -1238,6 +1330,7 @@ impl Program {
                 state.heap.enter_with_moved_arguments(args, temps)?;
                 None
             }
+            Some(Transfer::Collections(values))=>{state.heap.enter_scope(); frame.containers=values; None}
             other => { state.heap.enter_scope(); other }
         };
         state.mixed.enter_scope();
@@ -1247,6 +1340,9 @@ impl Program {
             }
             self.run_body(body,&mut frame,state,depth,budget.max_steps)
         })();
+        for ticket in frame.text_tickets.into_values() {
+            frame.text_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?;
+        }
         state.mixed.leave_scope_with_shared_ledger(&mut state.heap).map_err(|_|StrRuntimeError::OutstandingResource)?;
         state.heap.leave_scope()?;
         for ticket in frame.tickets.into_values() {
@@ -1359,14 +1455,23 @@ impl Program {
             if state.steps > max_steps {
                 return Err(StrRuntimeError::ExecutionBudgetExhausted);
             }
+            for alias in &step.expire {
+                let ticket=frame.text_tickets.remove(alias).ok_or(StrRuntimeError::OutstandingResource)?;
+                frame.text_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?;
+            }
             let outcome = (|| -> Result<Option<CallResult>, StrRuntimeError> {
             match &step.action {
                 Action::Container(slot, init) => match init {
+                    ContainerInit::Call(call)=>{
+                        let result=self.invoke_collection(call,frame,state,depth)?;
+                        let CallResult::Collection(value)=result else {return Err(StrRuntimeError::EvaluationFailed)};
+                        frame.containers.put(slot,value).ok_or(StrRuntimeError::EvaluationFailed)?;
+                    }
                     ContainerInit::Optional(item)=>{let value=self.container_item(item,frame,state,depth)?; frame.containers.put(slot,value).ok_or(StrRuntimeError::EvaluationFailed)?;}
                     ContainerInit::Literal(literal) => frame.containers.put(slot,literal.runtime().ok_or(StrRuntimeError::EvaluationFailed)?).ok_or(StrRuntimeError::EvaluationFailed)?,
                     ContainerInit::Move(from) => frame.containers.relocate(from,slot).ok_or(StrRuntimeError::EvaluationFailed)?,
                 },
-                Action::DropContainer(slot) => frame.containers.drop_slot(slot),
+                Action::DropStorage(slots) => Storage::cleanup(slots,frame,&mut state.heap),
                 Action::Select { alias, owner, key } => {
                     let key = match key {
                         ContainerKey::Index(n) => containers::Key::Index(self.eval(n,frame,state,depth)?),
@@ -1385,6 +1490,13 @@ impl Program {
                         return Err(StrRuntimeError::EvaluationFailed);
                     }
                 }
+                Action::BorrowLocal{alias,owner,kind}=>{
+                    let resource=state.heap.resource_id(&format!("@{owner}"))?;
+                    let id=DeclarationId(usize::try_from(resource).map_err(|_|StrRuntimeError::ExhaustedIdentity)?);
+                    let ticket=frame.text_loans.acquire(id,*kind).map_err(|_|StrRuntimeError::OutstandingResource)?;
+                    frame.text_tickets.insert(alias.clone(),ticket);
+                }
+                Action::ReturnCollection(slot)=>return frame.containers.take(slot).map(|v|Some(CallResult::Collection(v))).ok_or(StrRuntimeError::EvaluationFailed),
                 Action::ReturnObject(name) => return state.mixed.return_with_shared_ledger(&mut state.heap,name)
                     .map(|object|Some(CallResult::Object(object))).map_err(|_|StrRuntimeError::EvaluationFailed),
                 Action::RelocateObject { source, target, moving } => {
@@ -1413,7 +1525,16 @@ impl Program {
                     use crate::mixed_struct_runtime::{MixedFieldSpec,NamedMixed};
                     let schema:Vec<_> = fields.iter().map(|f|MixedFieldSpec{name:&f.name,kind:f.kind,
                         default:f.default.as_ref().map(ApprovedSeed::runtime),immutable:f.immutable}).collect();
-                    let args:Vec<_> = named.iter().map(|f|NamedMixed{field:&f.name,value:f.seed.runtime()}).collect();
+                    let mut args=Vec::new();
+                    for (field,value) in named {
+                        use crate::mixed_struct_runtime::SeedValue;
+                        let seed=match value {
+                            MemberValue::Integer(n)=>SeedValue::Int(self.eval(n,frame,state,depth)?),
+                            MemberValue::Boolean(n)=>SeedValue::Bool(self.eval(n,frame,state,depth)?!=0),
+                            MemberValue::Text(s)=>SeedValue::Str(s),
+                        };
+                        args.push(NamedMixed{field,value:seed});
+                    }
                     state.mixed.construct_with_shared_ledger(&mut state.heap,n,&schema,&args,None)
                         .map_err(|_|StrRuntimeError::EvaluationFailed)?;
                 }
@@ -1539,7 +1660,7 @@ impl Program {
                         _ => return Err(error),
                     };
                     let Some(handler) = step.handlers.iter().find(|h| h.category == category) else { return Err(error) };
-                    for slot in &handler.cleanup { frame.containers.drop_slot(slot); }
+                    Storage::cleanup(&handler.cleanup,frame,&mut state.heap);
                     pc = handler.target;
                 }
             }
@@ -1547,6 +1668,22 @@ impl Program {
         Err(StrRuntimeError::IncompleteReturn)
     }
 
+    fn invoke_collection(&self,call:&CollectionCall,frame:&mut Frame,state:&mut State,depth:usize)->Result<CallResult,StrRuntimeError> {
+        let mut locals=HashMap::new();
+        let mut owned=containers::Store::default();
+        for (param,_,arg) in &call.arguments {
+            if let CollectionArgument::Scalar(n)=arg {
+                locals.insert(param.clone(),self.eval(n,frame,state,depth)?);
+            }
+        }
+        for (param,_,arg) in &call.arguments {
+            if let CollectionArgument::Move(slot)=arg {
+                let value=frame.containers.take(slot).ok_or(StrRuntimeError::MovedSource)?;
+                owned.put(param,value).ok_or(StrRuntimeError::EvaluationFailed)?;
+            }
+        }
+        self.call_with_owner(&call.target,state,depth+1,Some(Transfer::Collections(owned)),locals)
+    }
     fn container_item(&self,item:&ContainerItem,frame:&mut Frame,state:&mut State,depth:usize)->Result<containers::Value,StrRuntimeError> {
         Ok(match item {
             ContainerItem::Decimal(n)=>containers::Value::Decimal(self.eval(n,frame,state,depth)?),
@@ -1566,6 +1703,7 @@ impl Program {
         depth: usize,
     ) -> Result<i64, StrRuntimeError> {
         match n {
+            Number::FromCollection(call)=>self.invoke_collection(call,frame,state,depth)?.integer(&mut state.heap),
             Number::Method(call)=>{
                 let mut inner=Frame::default();
                 for (name,n) in &call.arguments {
@@ -1716,6 +1854,7 @@ impl Program {
 }
 
 enum CallResult {
+    Collection(containers::Value),
     Object(crate::mixed_struct_runtime::ReturnedMixed),
     Integer(i64),
     Text(crate::owned_str_runtime::OwnedUtf8),
@@ -1725,6 +1864,7 @@ impl CallResult {
     fn integer(self, heap: &mut OwnedStrRuntime) -> Result<i64, StrRuntimeError> {
         match self {
             Self::Integer(value) => Ok(value),
+            Self::Collection(_)=>Err(StrRuntimeError::EvaluationFailed),
             Self::Object(value) => {
                 crate::mixed_struct_runtime::MixedStructRuntime::discard_with_shared_ledger(heap,value);
                 Err(StrRuntimeError::EvaluationFailed)
@@ -1738,6 +1878,7 @@ impl CallResult {
 }
 
 enum Transfer<'a> {
+    Collections(containers::Store),
     Text(&'a [(crate::owned_str_runtime::StrArgumentSource<'a>, &'a str)], &'a mut Vec<crate::owned_str_runtime::OwnedUtf8>),
     Object(&'a str, &'a str),
 }
@@ -1745,6 +1886,8 @@ enum Transfer<'a> {
 #[derive(Default)]
 struct Frame {
     containers: containers::Store,
+    text_loans:BorrowSafety,
+    text_tickets:HashMap<String,BorrowTicket>,
     object_loans: BorrowSafety,
     locals: HashMap<String, i64>,
     tickets: HashMap<String, BorrowTicket>,

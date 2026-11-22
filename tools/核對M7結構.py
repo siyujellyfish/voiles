@@ -66,3 +66,15 @@ verify(cli, ((counter + 'fn main()->int{\n' + body + '\n}', expected) for body,e
 
 verify(cli, [('struct Constant{ fn get()->int{ return 42 } }\n'
               'fn main()->int{ const c:Constant = Constant()\nreturn c.get() }',42)])
+
+verify(cli, [(schema + "fn value()->int{ return 40 }\nfn main()->int{\n"
+              "var n:int = 2\nvar p:Pair = Pair(b=true,n=value()+n)\nreturn p.n\n}",42),
+             (schema + "fn main()->int{ var p:Pair = Pair(n=true)\nreturn 0 }","reject")])
+
+decimal_box = "struct Amount{ var n:float = 0.1 }\n"
+verify(cli, [
+    (decimal_box + "fn main()->int{ var a:Amount = Amount()\nvar b:Amount = a\n"
+     "b.n = a.n + 0.2\nif(b.n != 0.3){ return 1 }else{ return 42 } }",42),
+    (decimal_box + "fn main()->int{ var a:Amount = Amount(n=1)\nreturn 0 }","reject"),
+    ("struct Bad{ var n:int = 0.1 }\nfn main()->int{ return 0 }","reject"),
+])

@@ -29,6 +29,16 @@ fn container_source(value: &containers::Value) -> String {
 }
 
 impl Emitter<'_> {
+    fn cleanup(&self,out:&mut String,slots:&[Storage])->Option<()> {
+        for slot in slots.iter().rev() {
+            match slot {
+                Storage::Container(slot)=>writeln!(out,"containers.drop_slot({slot:?});").ok()?,
+                Storage::Text(slot)=>writeln!(out,"v{}=ResourceText::new(String::new());",self.locals.get(slot)?).ok()?,
+            }
+        }
+        Some(())
+    }
+
     fn local_id(&mut self, name: &str) -> usize {
         let next = self.locals.len();
         *self.locals.entry(name.to_string()).or_insert(next)
@@ -103,6 +113,18 @@ impl Emitter<'_> {
         Some(code)
     }
 
+    fn collection_call(&self,call:&CollectionCall)->Option<String> {
+        let mut code=String::from("{ ");
+        for (_,index,arg) in &call.arguments {
+            if let CollectionArgument::Scalar(n)=arg { write!(code,"let arg{index}={}; ",self.number(n)?).ok()?; }
+        }
+        for (_,index,arg) in &call.arguments {
+            if let CollectionArgument::Move(slot)=arg { write!(code,"let arg{index}=containers.take({slot:?}).ok_or((site,ARITH))?; ").ok()?; }
+        }
+        let args:String=(0..call.arguments.len()).map(|i|format!(",arg{i}")).collect();
+        write!(code,"f{}(globals,argv,steps,depth+1,site{args})? }}",self.functions.get(call.target.as_str())?).ok()?;
+        Some(code)
+    }
     fn container_item(&self, item: &ContainerItem) -> Option<String> {
         Some(match item {
             ContainerItem::Decimal(n)=>format!("containers::Value::Decimal({})",self.number(n)?),
@@ -121,6 +143,7 @@ impl Emitter<'_> {
 
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
+            Number::FromCollection(call)=>self.collection_call(call)?,
             Number::Standard(call)=>self.standard(call,false)?,
             Number::ViewByte(slot,i,j) => format!("{{ let Some(containers::Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
             Number::Edit(slot,edit) => match edit.as_ref() {
@@ -229,7 +252,7 @@ impl LinkedProgram {
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
         out.push_str("impl ResourceText { fn new(text:String)->Self { Self { text, starts:Default::default() } } }\n");
-        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
+        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || self.graph.units.iter().any(|u|u.functions.iter().any(|f|f.params.iter().any(|p|element_type(&p.ty).is_some()))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
             out.push_str(include_str!("native_strings.inc"));
@@ -244,14 +267,17 @@ impl LinkedProgram {
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument: String = signature.params.iter().map(|p| {
-                let ty = match p.ty.as_str() { "int" | "bool" | "float" => "i64", "str" => "ResourceText", _ => "Object" };
+                let ty = match p.ty.as_str() { ty if element_type(ty).is_some() => "containers::Value", "int" | "bool" | "float" => "i64", "str" => "ResourceText", _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
-            let ret = if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
+            let ret = if element_type(&signature.result_ty).is_some() {"containers::Value"} else if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], argv:&[std::ffi::OsString], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
-            if body.iter().any(|step| matches!(step.action, Action::Container(..))) {
+            if signature.params.iter().any(|p|element_type(&p.ty).is_some()) || body.iter().any(|step| matches!(step.action, Action::Container(..))) {
                 out.push_str("let mut containers = containers::Store::default();\n");
+                for p in &signature.params {
+                    if element_type(&p.ty).is_some() {writeln!(out,"containers.put({:?},v{}).ok_or((caller,ARITH))?;",p.name,emitter.locals[&p.name]).unwrap();}
+                }
             }
             let flow = body.iter().any(|s| !s.handlers.is_empty() || matches!(s.action, Action::Jump(_) | Action::Unless(..)));
             if flow {
@@ -278,6 +304,7 @@ impl LinkedProgram {
                 if guarded { writeln!(out, "let outcome = (|| -> Result<Option<{ret}>, Failure> {{").unwrap(); }
                 match &step.action {
                     Action::Container(slot,init) => match init {
+                        ContainerInit::Call(call)=>writeln!(out,"let result={}; containers.put({slot:?},result).ok_or((site,ARITH))?;",emitter.collection_call(call).ok_or_else(unsupported)?).unwrap(),
                         ContainerInit::Optional(item)=>writeln!(out,"let value={}; containers.put({slot:?},value).ok_or((site,ARITH))?;",emitter.container_item(item).ok_or_else(unsupported)?).unwrap(),
                         ContainerInit::Literal(v) => writeln!(out,"containers.put({slot:?},{}).ok_or((site, ARITH))?;",container_source(&v.runtime().ok_or_else(unsupported)?)).unwrap(),
                         ContainerInit::Move(from) => writeln!(out,"containers.relocate({from:?},{slot:?}).ok_or((site, ARITH))?;").unwrap(),
@@ -286,7 +313,7 @@ impl LinkedProgram {
                         let value = emitter.key(key).ok_or_else(unsupported)?;
                         writeln!(out,"let k = {value}; containers.select({alias:?},{owner:?},k).ok_or((site, ARITH))?;").unwrap();
                     }
-                    Action::DropContainer(slot) => writeln!(out,"containers.drop_slot({slot:?});").unwrap(),
+                    Action::DropStorage(slots) => emitter.cleanup(&mut out,slots).ok_or_else(unsupported)?,
                     Action::Evaluate(n) => writeln!(out,"let _ = {};",emitter.number(n).ok_or_else(unsupported)?).unwrap(),
                     Action::Jump(target) => writeln!(out, "pc = {target};").unwrap(),
                     Action::Unless(test, target) => {
@@ -300,6 +327,10 @@ impl LinkedProgram {
                     Action::ReceiveObject {target,owner} => {
                         let called = *emitter.functions.get(target.as_str()).ok_or_else(unsupported)?;
                         writeln!(out,"let mut v{} = f{called}(globals, argv, steps, depth + 1, site)?;",emitter.local_id(owner)).unwrap();
+                    }
+                    Action::ReturnCollection(slot)=>{
+                        let expr=format!("containers.take({slot:?}).ok_or((site,ARITH))?");
+                        if guarded {writeln!(out,"return Ok(Some({expr}));").unwrap();} else {writeln!(out,"return Ok({expr});").unwrap();}
                     }
                     Action::ReturnObject(owner) => {
                         writeln!(out,"return Ok(v{});",emitter.locals.get(owner).ok_or_else(unsupported)?).unwrap();
@@ -336,10 +367,17 @@ impl LinkedProgram {
                     Action::Construct(name, fields, supplied) => {
                         let id = emitter.local_id(name);
                         writeln!(out, "let mut v{id} = Object::default();").unwrap();
-                        let named = supplied.iter().map(|f|(&f.name,&f.seed));
-                        let defaults = fields.iter().filter(|f|!supplied.iter().any(|n|n.name==f.name))
+                        for (field,value) in supplied {
+                            let rhs=match value {
+                                MemberValue::Integer(n)=>format!("Field::Int({})",emitter.number(n).ok_or_else(unsupported)?),
+                                MemberValue::Boolean(n)=>format!("Field::Bool(({})!=0)",emitter.number(n).ok_or_else(unsupported)?),
+                                MemberValue::Text(s)=>format!("Field::Text(String::from({s:?}))"),
+                            };
+                            writeln!(out,"let value={rhs}; v{id}.0.insert({field:?},value);").unwrap();
+                        }
+                        let defaults = fields.iter().filter(|f|!supplied.iter().any(|(name,_)|name==&f.name))
                             .filter_map(|f|f.default.as_ref().map(|s|(&f.name,s)));
-                        for (field,seed) in named.chain(defaults) {
+                        for (field,seed) in defaults {
                             let value = match seed {
                                 ApprovedSeed::Int(n) => format!("Field::Int({n})"),
                                 ApprovedSeed::Str(s) => format!("Field::Text(String::from({s:?}))"),
@@ -350,7 +388,7 @@ impl LinkedProgram {
                         }
                     }
                     // 借用的有效期與權限已由同一模組計畫驗證；存取仍使用原 slot。
-                    Action::Loan(..) => (),
+                    Action::BorrowLocal{..} | Action::Loan(..) => (),
                     Action::Write(place, text) => {
                         let rhs = match text {
                             Text::Literal(s) => format!("String::from({s:?})"),
@@ -375,7 +413,7 @@ impl LinkedProgram {
                     for h in &step.handlers {
                         let label = if h.category=="EvaluationError" { "運算失敗" } else { "整數轉換失敗" };
                         writeln!(out,"if failure.1 == {label:?} {{").unwrap();
-                        for slot in &h.cleanup { writeln!(out,"containers.drop_slot({slot:?});").unwrap(); }
+                        emitter.cleanup(&mut out,&h.cleanup).ok_or_else(unsupported)?;
                         writeln!(out,"pc = {}; continue; }}",h.target).unwrap();
                     }
                     out.push_str("return Err(failure); } }\n");

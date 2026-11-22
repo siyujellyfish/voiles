@@ -35,3 +35,10 @@ verify(Path(sys.argv[1]).resolve(strict=True), [
     (main('const s:str = "甲é*"\nvar i:int = 0\nwhile(i != len(s)){ '
           'if(s[i][0] != 42){ i = i + 1 } else { return 42 } }\nreturn 0'),42),
 ])
+
+verify(Path(sys.argv[1]).resolve(strict=True), [
+    (main('var count:int = 0\nfor i in 0..3{ const t:str = "*"\n'
+          'try{ const bad:str = "x"\ncount = bad.to_int() } except TypeConversationError{ '
+          'count = count + t[0][0] }\ncontinue }\nreturn count'),126),
+    (main('if(true){ const t:str = "*" }\nreturn t[0][0]'),"reject"),
+])

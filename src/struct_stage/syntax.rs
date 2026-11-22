@@ -1029,7 +1029,7 @@ impl<const PUBLIC:bool> crate::syntax_shared::FunctionSyntax for LanguageParser<
             }
             self.take(':', "函式參數需要明確型別")?;
             let ty_start = self.tok().start;
-            let ty = self.qualified_type_name()?;
+            let ty = if PUBLIC { self.local_type_annotation()? } else { self.qualified_type_name()? };
             let type_span = crate::common_ir::NodeSpan::new(
                 ty_start, self.tokens[self.cursor - 1].end,
             );
@@ -1054,7 +1054,7 @@ impl<const PUBLIC:bool> crate::syntax_shared::FunctionSyntax for LanguageParser<
         crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
             .map(|_| ()).ok_or_else(|| self.syntax("函式需要回傳型別標註"))
     }
-    fn function_result_type(&mut self) -> Result<String, Diagnostic> { self.name() }
+    fn function_result_type(&mut self) -> Result<String, Diagnostic> { if PUBLIC {self.local_type_annotation()} else {self.name()} }
     fn function_body(&mut self) -> Result<crate::syntax_shared::ParsedBlock<Stmt>, Diagnostic> {
         crate::syntax_shared::parse_block(self)
     }

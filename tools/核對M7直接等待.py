@@ -30,5 +30,5 @@ verify(Path(sys.argv[1]).resolve(strict=True), [
     (program(with_argument,"await job(false)"),"reject"),
     (program(with_argument,"job(41)"),"reject"),
     (with_argument + "\nfn wrapper()->int{ return await job(41) }\n"
-     + "fn main()->int{ var xs:list[int] = [1]\nwith xs[0] as x { return wrapper() + x }\nreturn 0 }","reject"),
+     + "fn main()->int{ var xs:list[int] = [1]\nwith xs[0] as x { return wrapper() + x }\n}","reject"),
 ])
