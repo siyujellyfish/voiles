@@ -72,7 +72,7 @@ with TemporaryDirectory() as tmp:
     for cli in (stage, next_stage):
         tokens = root / "compiler.tokens"
         for lexer, success in ((scanner_dir / "main.voil", True), (entry, False)):
-            code, rows, error = invoke(cli, "run", lexer, "--", compiler)
+            code, rows, error = invoke(cli, "run", lexer, "--", compiler, "--compact")
             assert code == 0 and not error and rows.endswith("\n0\n"), (code, error)
             tokens.write_text(rows[:-2], encoding="utf-8")
             code, generated, error = invoke(cli, "bootstrap-compiler", compiler, "--tokens", tokens)
