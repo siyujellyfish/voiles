@@ -273,6 +273,12 @@ Ok(v_call(s, depth + 1)?)
 if s.at_len()? != 0i64 {
 Ok(s.list_len()?)
 } else {
+if s.at_list_append()? != 0i64 {
+Ok(s.list_append()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.finish_list_append()?).ok_or(Fault::Overflow)?)
+} else {
+if s.at_list_pop()? != 0i64 {
+Ok(s.list_pop()?)
+} else {
 if s.at_module_call()? != 0i64 {
 Ok(v_call(s, depth + 1)?)
 } else {
@@ -283,6 +289,8 @@ if s.at_field()? != 0i64 {
 Ok(s.field_value()?)
 } else {
 Ok(s.value()?)
+}
+}
 }
 }
 }
