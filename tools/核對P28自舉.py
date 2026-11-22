@@ -289,12 +289,36 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
+    mutations = "fn main()->int{\nvar xs:list[int] = [39]\nreturn xs.append(40)+xs.pop()\n}"
+    source.write_text("import host\n" + mutations, encoding="utf-8")
+    generated_mutations = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_mutations[0] == generated_mutations[1] == generated_mutations[2]
+    code, generated, error = generated_mutations[2]
+    assert code == 0 and not error and ".push(40i64)" in generated and ".pop()" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(mutations, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"list-mutation-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
     invalid_lists = (
         "fn main()->int{ var xs:list[int] = [true] return 0 }",
         "fn main()->int{ var xs:list[int] = [1,] return 0 }",
         "fn main()->int{ return len(xs) }",
         "fn main()->int{ var xs:list[int] = [1,2 return 0 }",
         "fn main()->int{ var xs:list[int] = [] var xs:list[int] = [] return 0 }",
+        "fn main()->int{ var xs:list[int] = [] return xs.append(true) }",
+        "fn main()->int{ var xs:list[int] = [] return xs.append() }",
+        "fn main()->int{ var xs:list[int] = [1] return xs.pop(1) }",
         "fn main()->int{ var xs:list[int] = [1] with missing[0] as item { return item } return 0 }",
         "fn main()->int{ var xs:list[int] = [1] with xs[0] as xs { return xs } return 0 }",
     )
@@ -325,6 +349,27 @@ fn main(){
     assert invoke(next_stage, "run", public)[0] == 1
     for mode in ("build", "pack"):
         exe = root / f"list-missing-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe)[0] == 1
+
+    empty_pop = "fn main()->int{\nvar xs:list[int] = []\nreturn xs.pop()\n}"
+    source.write_text("import host\n" + empty_pop, encoding="utf-8")
+    generated_empty = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_empty[0] == generated_empty[1] == generated_empty[2]
+    code, generated, error = generated_empty[2]
+    assert code == 0 and not error and "清單為空" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native)[0] == 1
+    public.write_text(empty_pop, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public)[0] == 1
+    for mode in ("build", "pack"):
+        exe = root / f"list-empty-{mode}"
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe)[0] == 1
 

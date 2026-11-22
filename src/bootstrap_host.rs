@@ -30,6 +30,7 @@ struct Machine {
     constructor_fields: BTreeSet<String>,
     list_items: usize,
     pending_list_borrow: Option<(String, Option<String>)>,
+    pending_list_append: Option<String>,
 }
 
 impl Machine {
@@ -94,6 +95,16 @@ impl Machine {
             && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('('))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol(')'))))
+    }
+    fn at_list_append(&self) -> R { self.at_list_method("append", false) }
+    fn at_list_pop(&self) -> R { self.at_list_method("pop", true) }
+    fn at_list_method(&self, method: &str, closed: bool) -> R {
+        let head = matches!(self.token(), TokenKind::Name(_))
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == method))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('));
+        let close = !closed || self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
+        Ok(i64::from(head && close))
     }
     fn expect(&mut self, text: &str) -> R {
         let width = self.matched_width(text);
@@ -212,6 +223,7 @@ impl Machine {
         self.constructor_fields.clear();
         self.list_items = 0;
         self.pending_list_borrow = None;
+        self.pending_list_append = None;
         Ok(0)
     }
     fn local(&mut self) -> R {
@@ -294,7 +306,7 @@ impl Machine {
         if parameter || self.locals.contains_key(&name) { return Err(Fault::Syntax(format!("重複區域名稱 {name}"))); }
         self.locals.insert(name.clone(), "list:int".into());
         self.list_items = 0;
-        self.emit(&format!("let v_{name}: Vec<i64> = vec!["))
+        self.emit(&format!("let mut v_{name}: Vec<i64> = vec!["))
     }
     fn list_item(&mut self) -> R {
         if self.list_items != 0 { self.emit(",")?; }
@@ -314,6 +326,33 @@ impl Machine {
             return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
         }
         self.emit(&format!("v_{name}.len() as i64"))
+    }
+    fn list_append(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("list:int") {
+            return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
+        }
+        self.expect(".")?;
+        self.expect("append")?;
+        self.expect("(")?;
+        self.pending_list_append = Some(name.clone());
+        self.emit(&format!("{{ v_{name}.push("))
+    }
+    fn finish_list_append(&mut self) -> R {
+        let name = self.pending_list_append.take()
+            .ok_or_else(|| Fault::Syntax("append 邊界無效".into()))?;
+        self.emit(&format!("); v_{name}.len() as i64 }}"))
+    }
+    fn list_pop(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("list:int") {
+            return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
+        }
+        self.expect(".")?;
+        self.expect("pop")?;
+        self.expect("(")?;
+        self.expect(")")?;
+        self.emit(&format!("v_{name}.pop().ok_or_else(|| Fault::Syntax(\"清單為空\".into()))?"))
     }
     fn return_start(&mut self) -> R {
         if self.pending_list_borrow.is_some() { self.emit("return Ok(") } else { self.emit("Ok(") }
@@ -408,13 +447,14 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_len" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_len" | "at_list_append" | "at_list_pop" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
                     "field_default" | "finish_structure" | "local" | "local_type" | "constructor" |
                     "constructor_field" | "finish_constructor" | "field_value" | "field_target" |
-                    "list_local" | "list_item" | "finish_list" | "list_len" | "list_owner" |
+                    "list_local" | "list_item" | "finish_list" | "list_len" | "list_append" |
+                    "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "return_start" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
@@ -591,6 +631,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
         constructor_fields: BTreeSet::new(), list_items: 0, pending_list_borrow: None,
+        pending_list_append: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
