@@ -46,3 +46,20 @@ with TemporaryDirectory() as temp:
         for exe in executables:
             actual = run(exe, missing)
             assert (actual.returncode, actual.stdout, actual.stderr) == (1, "", failure.stderr), actual
+
+    expect(run(cli, "test", project), 0, "")
+    local = subprocess.run([cli, "test"], cwd=project, capture_output=True, encoding="utf-8", timeout=60)
+    expect(local, 0, "")
+    entry = root / "test.voil"
+    for value in (1, 256, -1):
+        expression = str(value) if value >= 0 else "0 - 1"
+        entry.write_text(f"fn main()->int{{ return {expression} }}", encoding="utf-8")
+        result = run(cli, "test", root)
+        assert (result.returncode, result.stdout) == (1, "") and f"回傳 {value}" in result.stderr, result
+    entry.write_text("fn main()->int{ return false }", encoding="utf-8")
+    invalid = run(cli, "test", root)
+    assert invalid.returncode == 1 and "test.voil:" in invalid.stderr, invalid
+    entry.unlink()
+    missing = run(cli, "test", root)
+    assert missing.returncode == 1 and "test.voil" in missing.stderr, missing
+    assert run(cli, "test", root, root).returncode == 2
