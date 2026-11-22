@@ -164,10 +164,14 @@ fn atom()->int{
     if (host.at_integer() != 0) {
         return host.literal()
     } else {
-        if (host.at_call() != 0) {
+        if (host.at("host") != 0) {
             return call()
         } else {
-            return host.name()
+            if (host.at_call() != 0) {
+                return call()
+            } else {
+                return host.name()
+            }
         }
     }
 }

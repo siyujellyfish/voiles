@@ -163,10 +163,14 @@ s.enter(depth)?;
 if s.at_integer()? != 0i64 {
 Ok(s.literal()?)
 } else {
+if s.at("host")? != 0i64 {
+Ok(v_call(s, depth + 1)?)
+} else {
 if s.at_call()? != 0i64 {
 Ok(v_call(s, depth + 1)?)
 } else {
 Ok(s.name()?)
+}
 }
 }
 }
