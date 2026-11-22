@@ -3,6 +3,7 @@ import argparse
 import os
 from pathlib import Path
 import subprocess
+from tempfile import TemporaryDirectory
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -10,10 +11,34 @@ ROOT = Path(__file__).resolve().parents[1]
 def build(output, previous=None):
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
-    flags = ["rustc", "--edition=2021"]
+    try:
+        with TemporaryDirectory(dir=output) as scratch:
+            staging = Path(scratch)
+            compile_stage(staging, previous)
+            for name in ["digits.rs", "compiler.rs", "libvoiles_core.rlib", "voiles"]:
+                if (staging / name).exists():
+                    (staging / name).rename(output / name)
+    except BaseException:
+        # 目錄由本次操作獨占建立；只清理由本次建置發布的產物。
+        for name in ["digits.rs", "compiler.rs", "libvoiles_core.rlib", "voiles"]:
+            (output / name).unlink(missing_ok=True)
+        output.rmdir()
+        raise
+    return output / "voiles"
+
+
+def compile_stage(output, previous):
+    flags = ["rustc", "--edition=2021", "-C", "strip=debuginfo",
+             "--remap-path-prefix", f"{ROOT}=/voiles",
+             "--remap-path-prefix", f"{output}=/voiles-stage"]
     env = os.environ.copy()
     kernel = []
     if previous:
+        compiler_source = output / "compiler.rs"
+        compiled = subprocess.check_output([previous, "bootstrap-compiler", ROOT / "bootstrap/compiler.voil"],
+                                            cwd=ROOT, encoding="utf-8")
+        compiler_source.write_text(compiled, encoding="utf-8")
+        env["VOILES_COMPILER_RS"] = str(compiler_source)
         generated = subprocess.check_output([previous, "bootstrap-digits", ROOT / "bootstrap/digits.voil"],
                                             cwd=ROOT, encoding="utf-8")
         source = output / "digits.rs"
@@ -26,7 +51,6 @@ def build(output, previous=None):
     cli = output / "voiles"
     subprocess.run([*flags, "--crate-name", "voiles", "--extern", f"voiles_core={lib}",
                     "src/main.rs", "-o", cli], cwd=ROOT, check=True)
-    return cli
 
 
 if __name__ == "__main__":

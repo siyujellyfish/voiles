@@ -1,6 +1,8 @@
 //! voiles 最小 Rust 前端核心介面。
 //! 保留單檔檢查介面，並提供 P22 命令使用的模組程式入口。
 
+mod bootstrap_host;
+pub use bootstrap_host::compile_bootstrap_source;
 mod entry;
 pub use entry::EntryProgram;
 
