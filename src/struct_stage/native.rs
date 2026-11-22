@@ -38,6 +38,7 @@ impl Emitter<'_> {
                 match *op {
                     "and" => format!("i64::from(({a}) != 0 && ({b}) != 0)"),
                     "or" => format!("i64::from(({a}) != 0 || ({b}) != 0)"),
+                    "==" => format!("i64::from(({a}) == ({b}))"),
                     "lt" => format!("i64::from(({a}) < ({b}))"),
                     _ => format!("i64::from(({a}) != ({b}))"),
                 }

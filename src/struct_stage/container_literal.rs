@@ -607,25 +607,29 @@ impl Parser<'_> {
     }
 }
 
+fn visit_candidate_sites(name: &str, statements: &[Stmt], mut permit: impl FnMut(usize)) {
+    let mut next = statements.first();
+    while let Some(Stmt { kind: StmtKind::If { branch, no }, .. }) = next {
+        match &branch.condition.kind {
+            TermKind::OptionalCondition(target, OptionalPredicate::Candidate(_)) if target == name => {
+                permit(branch.condition.start);
+
+            }
+            TermKind::Name(_) | TermKind::Scalar(_) => {}
+            // 未知副作用的普通條件可能使非缺失證明失效。
+            _ => break,
+        }
+        next = match no {
+            Some(crate::syntax_shared::ParsedElse::ElseIf(arm)) => Some(arm.as_ref()),
+            _ => None,
+        };
+    }
+}
+
 impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn permit_candidates(vars: &mut Scopes, name: &str, statements: &[Stmt]) {
         let Some(binding) = Self::lookup_mut(vars, name) else { return; };
-        let mut next = statements.first();
-        while let Some(Stmt { kind: StmtKind::If { branch, no }, .. }) = next {
-            match &branch.condition.kind {
-                TermKind::OptionalCondition(target, OptionalPredicate::Candidate(_)) if target == name => {
-                    binding.candidate_sites.insert(branch.condition.start);
-
-                }
-                TermKind::Name(_) | TermKind::Scalar(_) => {}
-                // 未知副作用的普通條件可能使非缺失證明失效。
-                _ => break,
-            }
-            next = match no {
-                Some(crate::syntax_shared::ParsedElse::ElseIf(arm)) => Some(arm.as_ref()),
-                _ => None,
-            };
-        }
+        visit_candidate_sites(name, statements, |site| { binding.candidate_sites.insert(site); });
     }
 }
 

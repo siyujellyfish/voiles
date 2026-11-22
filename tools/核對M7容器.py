@@ -6,6 +6,23 @@ from tempfile import TemporaryDirectory
 
 cli = Path(sys.argv[1]).resolve(strict=True)
 cases = [
+    ('var d:dict{str,Optional[str,bool]} = {"甲":""}\nwith d["甲"] as x { '
+     'if(x == none){ return 1 } else { if(x is str){ return 42 } } }\nreturn 0', 42),
+    ('var a:list[Optional[int]] = [1]\nwith a[0] as x { if(x != none){ '
+     'var n:int = 1\nif(x is int){ return n } } }\nreturn 0', "reject"),
+    ('var a:list[Optional[int,bool,str]] = [0,false,"",none]\nvar n:int = 0\n'
+     'for i in 0..4 { with a[i] as x { if(x != none){ if(x is bool){ n = n + 40 } '
+     'else if(x is int){ n = n + 2 } } } }\nreturn n', 42),
+    ('var a:list[Optional[int]] = [1]\nwith a[0] as x { if(x is int){ return 1 } }\nreturn 0', "reject"),
+    ('var a:list[Optional[int]] = [1]\nwith a[0] as x { if(x != none){ '
+     'if(x is str){ return 1 } } }\nreturn 0', "reject"),
+    ("var a:list[Optional[int,bool]] = [none,0,false]\nvar n:int = 0\n"
+     "for i in 0..3 { with a[i] as x { if(x != none){ n = n + 21 } } }\nreturn n", 42),
+    ('var d:dict{str,Optional[str]} = {"甲":none}\nwith d["甲"] as x { '
+     'if(x == none){ return 42 } else { return 0 } }', 42),
+    ("var a:list[int] = [42]\nwith a[0] as x { if(x != none){ return 1 } }\nreturn 0", "reject"),
+    ("var a:list[Optional[int]] = [42]\nwith a[0] as x { return x }", "reject"),
+    ("var a:list[Optional[int]] = []\nwith a[0] as x { if(x == none){ return 0 } }\nreturn 42", "runtime"),
     ("var a:list[int] = [42]\nif(true){\nvar a:list[int] = [0,1]\n"
      "var b:list[int] = a.move()\nif(len(b) != 2){ return 0 }\n}\n"
      "with a[0] as item { return item }", 42),
