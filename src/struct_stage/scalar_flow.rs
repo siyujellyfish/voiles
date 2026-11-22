@@ -30,11 +30,12 @@ struct Builder<'a,'b> {
     scopes: Vec<HashMap<String, Binding>>,
     loops: Vec<Loop>,
     next_slot: usize,
+    containers: HashMap<String, Option<ContainerLiteral>>,
 }
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0 };
+        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, containers: HashMap::new() };
     for p in &function.params {
         if !matches!(p.ty.as_str(), "int" | "bool") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
@@ -57,6 +58,7 @@ impl Builder<'_, '_> {
             TermKind::Group(t) => return self.expr(t),
             TermKind::Name(n) => {
                 let b = self.binding(n)?;
+                if element_type(&b.ty).is_some() { return None; }
                 return Some((b.ty.clone(), Number::Local(b.slot.clone())));
             }
             TermKind::Scalar(ScalarLiteral::Integer(n)) => ("int", Number::Constant(integer_i64(n).ok()?)),
@@ -83,7 +85,21 @@ impl Builder<'_, '_> {
 
     fn call<'t>(&self,name:&str,args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<(String,Number)> {
         if self.binding(name.split('.').next()?).is_some() { return None; }
-        let (target,_,f) = self.lower.objects.as_ref()?.function(name)?;
+        let objects = self.lower.objects.as_ref()?;
+        if name == "len" && objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
+            let mut args = args;
+            let (None, term) = args.next()? else { return None };
+            let TermKind::Name(owner) = &term.kind else { return None };
+            if args.next().is_some() { return None; }
+            let binding = self.binding(owner)?;
+            let value = self.containers.get(&binding.slot)?.as_ref()?;
+            let size = match &value.items {
+                ContainerItems::List(values) => values.len(),
+                ContainerItems::Dictionary(values) => values.len(),
+            };
+            return Some(("int".into(), Number::Constant(size.try_into().ok()?)));
+        }
+        let (target,_,f) = objects.function(name)?;
         if f.is_async || !matches!(f.result_ty.as_str(), "int" | "bool") { return None; }
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
@@ -95,6 +111,70 @@ impl Builder<'_, '_> {
         }
         if values.len()!=f.params.len() { return None; }
         Some((f.result_ty.clone(), Number::ScalarCall { target:target.clone(), arguments:values }))
+    }
+
+    fn container(&mut self, declaration: &crate::syntax_shared::ParsedDeclaration<String, Term>) -> Option<()> {
+        // 常值容器只在函式最外層建立或移動，所有允許的觀察均可靜態求值。
+        if self.scopes.len() != 1 { return None; }
+        let initial = declaration.initializer.as_ref()?;
+        let value = match &initial.kind {
+            TermKind::Container(literal) if literal.ty == declaration.ty => {
+                literal.visit_elements(&mut |_, atom| match atom {
+                    ContainerAtom::ElementName(_) => Err(()),
+                    _ => Ok(()),
+                }).ok()?;
+                literal.clone()
+            }
+            TermKind::Move(source) => {
+                let owner = self.binding(source)?;
+                if owner.ty != declaration.ty { return None; }
+                let slot = owner.slot.clone();
+                self.containers.get_mut(&slot)?.take()?
+            }
+            _ => return None,
+        };
+        let slot = format!("@{}", self.next_slot);
+        self.next_slot += 1;
+        self.containers.insert(slot.clone(), Some(value));
+        self.scopes[0].insert(declaration.name.clone(), Binding {
+            slot, ty: declaration.ty.clone(), mutable: false,
+        });
+        Some(())
+    }
+
+    fn element(&self, owner: &str, key: &Term) -> Option<(String, Number)> {
+        fn scalar(atom: &ContainerAtom) -> Option<i64> {
+            match atom {
+                ContainerAtom::Integer(value) => Some(*value),
+                ContainerAtom::Boolean(value) => Some(i64::from(*value)),
+                _ => None,
+            }
+        }
+        let binding = self.binding(owner)?;
+        let value = self.containers.get(&binding.slot)?.as_ref()?;
+        let (key_type, value_type) = element_type(&value.ty)?;
+        if !matches!(value_type, "int" | "bool") { return None; }
+        let mut entries = BTreeMap::new();
+        let index = if key_type == "str" {
+            if !matches!(key.kind, TermKind::Literal("str")) { return None; }
+            let at = self.lower.tokens.binary_search_by_key(&key.start, |token| token.start).ok()?;
+            let TokenKind::StringLiteral(text) = &self.lower.tokens[at].kind else { return None };
+            if let Some(atom) = value.lookup(&ContainerAtom::Text(text.clone())) {
+                entries.insert(0, scalar(atom)?);
+            }
+            Number::Constant(0)
+        } else {
+            match &value.items {
+                ContainerItems::List(items) => {
+                    for (i, atom) in items.iter().enumerate() { entries.insert(i.try_into().ok()?, scalar(atom)?); }
+                }
+                ContainerItems::Dictionary(items) => {
+                    for (k, v) in items { entries.insert(scalar(k)?, scalar(v)?); }
+                }
+            }
+            self.typed(key, key_type)?
+        };
+        Some((value_type.into(), Number::Lookup(Box::new(index), entries)))
     }
 
     fn step(&mut self, s:&Stmt, action:Action) -> usize {
@@ -117,10 +197,25 @@ impl Builder<'_, '_> {
             match &s.kind {
                 StmtKind::Declare(d) => {
                     if self.scopes.last().unwrap().contains_key(&d.name) { return Err(err("重複區域宣告")); }
+                    if element_type(&d.ty).is_some() {
+                        self.container(d).ok_or_else(|| err("容器需要具型別常值或有效的整筆移動來源"))?;
+                        continue;
+                    }
                     let value=d.initializer.as_ref().and_then(|t|self.typed(t,&d.ty)).ok_or_else(||err("區域純量需要型別相符的初值"))?;
                     let slot=format!("@{}",self.next_slot); self.next_slot+=1;
                     self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot:slot.clone(),ty:d.ty.clone(),mutable:d.mutable});
                     self.step(s,Action::Bind(slot,value));
+                }
+                StmtKind::ReadonlyElement(block) => {
+                    let (TokenKind::Name(owner), TokenKind::Name(alias)) = (&block.owner.kind, &block.alias.kind)
+                        else { return Err(err("容器或元素名稱無效")); };
+                    let (ty, read) = self.element(owner, &block.selector).ok_or_else(|| err("此索引與容器元素型別不符"))?;
+                    let slot = format!("@{}", self.next_slot);
+                    self.next_slot += 1;
+                    self.step(s, Action::Bind(slot.clone(), read));
+                    self.scopes.push(HashMap::from([(alias.clone(), Binding { slot, ty, mutable: false })]));
+                    closed = self.block(&block.body.statements, false)?;
+                    self.scopes.pop();
                 }
                 StmtKind::Assign(a) => {
                     let b=self.binding(&a.name).filter(|b|b.mutable).ok_or_else(||err("缺少可寫區域純量"))?;

@@ -119,3 +119,10 @@ fn 跨檔純量參數與具名引數() {
         .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
     assert!(status.success());
 }
+
+#[test]
+fn 公開模組容器移動與唯讀元素() {
+    let status = Command::new("python3").arg("tools/核對M7容器.py")
+        .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
+    assert!(status.success());
+}
