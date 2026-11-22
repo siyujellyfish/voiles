@@ -28,6 +28,12 @@ impl EntryProgram {
         let (result, _) = self.0.execute_with_args(args).map_err(module_error)?;
         result.map_err(module_error)
     }
+
+    #[doc(hidden)]
+    pub fn execute_bootstrap_with_args(&self, args:&[std::ffi::OsString]) -> Result<i64, String> {
+        let (result, _) = self.0.execute_with_args_and_steps(args,250_000).map_err(module_error)?;
+        result.map_err(module_error)
+    }
 }
 
 fn source_error(path: &Path, diagnostic: Diagnostic) -> String {

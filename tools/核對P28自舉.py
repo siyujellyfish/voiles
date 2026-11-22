@@ -64,7 +64,7 @@ with TemporaryDirectory() as tmp:
     # 改變 voiles 掃描器的合法分類，真實的自舉解析結果必須跟著改變。
     scanner_dir = repo / "bootstrap/lexer"
     scanner = (scanner_dir / "scanner.voil").read_text(encoding="utf-8")
-    original = "if(keyword(key)){ kind = 1 } else { kind = 2 }"
+    original = "if(key > 0 and keyword(key)){ kind = 1 } else { kind = 2 }"
     assert scanner.count(original) == 1
     (root / "scanner.voil").write_text(scanner.replace(original, "kind = 1"), encoding="utf-8")
     entry = root / "lexer.voil"
@@ -72,7 +72,7 @@ with TemporaryDirectory() as tmp:
     for cli in (stage, next_stage):
         tokens = root / "compiler.tokens"
         for lexer, success in ((scanner_dir / "main.voil", True), (entry, False)):
-            code, rows, error = invoke(cli, "run", lexer, "--", compiler)
+            code, rows, error = invoke(cli, "bootstrap-run", lexer, "--", compiler, "--compact")
             assert code == 0 and not error and rows.endswith("\n0\n"), (code, error)
             tokens.write_text(rows[:-2], encoding="utf-8")
             code, generated, error = invoke(cli, "bootstrap-compiler", compiler, "--tokens", tokens)
@@ -155,3 +155,42 @@ fn main(){
         generated = invoke(next_stage, "bootstrap-compiler", source)
         assert (generated[0] == 0) == ok, (op, generated)
         assert (invoke(next_stage, "check", public)[0] == 0) == ok, op
+
+    # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
+    functions = "fn combine(a:int,b:int)->int{ return a*10+b }\nfn main()->int{ return combine(4,2) }"
+    source.write_text("import host\n" + functions, encoding="utf-8")
+    code, generated, error = invoke(next_stage, "bootstrap-compiler", source)
+    assert (code, error) == (0, ""), error
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(functions, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"function-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    for invalid in (
+        "fn bad(a:bool)->int{ return 0 }",
+        "fn bad(a:int,)->int{ return a }",
+        "fn bad(a:int)->int{ return a }\nfn main()->int{ return bad(1,) }",
+    ):
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+
+    # 實參個數屬後續名稱與型別階段。本批解析器保留呼叫，公開檢查器負責拒絕。
+    for invalid in (
+        "fn bad(a:int)->int{ return a }\nfn main()->int{ return bad() }",
+        "fn bad(a:int)->int{ return a }\nfn main()->int{ return bad(1,2) }",
+    ):
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        assert invoke(next_stage, "bootstrap-compiler", source)[0] == 0
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1

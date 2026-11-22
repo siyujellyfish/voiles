@@ -1272,15 +1272,16 @@ impl Program {
     pub(crate) fn execute(
         &self,
     ) -> Result<(Result<i64, StrRuntimeError>, Vec<ResourceEvent>), StrRuntimeError> {
-        self.execute_with_origin(&[],|error, _| error)
+        self.execute_with_origin(&[],crate::execution::ExecutionBudget::default().max_steps,|error, _| error)
     }
 
     fn execute_with_origin<E>(
         &self,
         args:&[std::ffi::OsString],
+        max_steps:usize,
         locate: impl FnOnce(StrRuntimeError, Option<StepOrigin>) -> E,
     ) -> Result<(Result<i64, E>, Vec<ResourceEvent>), StrRuntimeError> {
-        let mut state = self.instantiate(ModuleId(0))?;
+        let mut state = self.instantiate_with_steps(ModuleId(0),max_steps)?;
         state.args=args.to_vec();
         let result = self.call("main", &mut state, 0);
         state
@@ -1291,6 +1292,10 @@ impl Program {
     }
 
     fn instantiate(&self, owner: ModuleId) -> Result<State<'_>, StrRuntimeError> {
+        self.instantiate_with_steps(owner,crate::execution::ExecutionBudget::default().max_steps)
+    }
+
+    fn instantiate_with_steps(&self, owner: ModuleId, max_steps:usize) -> Result<State<'_>, StrRuntimeError> {
         let mut state = State {
             integers:self.globals.iter().map(|g|match g.initial {Initial::Integer(n)=>n, _=>0}).collect(),
             args:Vec::new(),
@@ -1299,6 +1304,7 @@ impl Program {
             heap: OwnedStrRuntime::new(),
             current_step: None,
             steps: 0,
+            max_steps,
             loans: BorrowSafety::new(),
             declarations: &self.globals,
             _local: Default::default(),
@@ -1343,11 +1349,12 @@ impl Program {
             other => { state.heap.enter_scope(); other }
         };
         state.mixed.enter_scope();
+        let max_steps=state.max_steps;
         let result = (|| {
             if let Some(Transfer::Object(from,to)) = object {
                 state.mixed.move_whole_with_shared_ledger(&mut state.heap,from,to).map_err(|_|StrRuntimeError::EvaluationFailed)?;
             }
-            self.run_body(body,&mut frame,state,depth,budget.max_steps)
+            self.run_body(body,&mut frame,state,depth,max_steps)
         })();
         for ticket in frame.text_tickets.into_values() {
             frame.text_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?;
@@ -1983,6 +1990,7 @@ struct State<'a> {
     heap: OwnedStrRuntime,
     current_step: Option<StepOrigin>,
     steps: usize,
+    max_steps: usize,
 }
 impl State<'_> {
     fn byte(

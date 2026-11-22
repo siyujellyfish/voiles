@@ -17,7 +17,23 @@ fn declaration()->int{
 }
 
 fn signature()->int{
-    return host.expect("(") + host.expect(")") + host.expect("->") + host.expect("int") + host.emit("(s: &mut Machine, depth: usize) -> R {\ns.enter(depth)?;\n")
+    return host.expect("(") + host.emit("(s: &mut Machine, depth: usize") + parameters() + host.expect(")") + host.expect("->") + host.expect("int") + host.emit(") -> R {\ns.enter(depth)?;\n")
+}
+
+fn parameters()->int{
+    if (host.at(")") != 0) {
+        return 0
+    } else {
+        return host.emit(", ") + host.name() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
+    }
+}
+
+fn following_parameters()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.emit(", ") + host.name() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
+    } else {
+        return 0
+    }
 }
 
 fn body()->int{
@@ -148,22 +164,46 @@ fn atom()->int{
     if (host.at_integer() != 0) {
         return host.literal()
     } else {
-        return call()
+        if (host.at("host") != 0) {
+            return call()
+        } else {
+            if (host.at_call() != 0) {
+                return call()
+            } else {
+                return host.name()
+            }
+        }
     }
 }
 
 fn call()->int{
     if (host.at("host") != 0) {
-        return host.expect("host") + host.expect(".") + host.method() + host.expect("(") + host.emit("(") + arguments() + host.expect(")") + host.emit(")?")
+        return host.expect("host") + host.expect(".") + host.method() + host.expect("(") + host.emit("(") + host_arguments() + host.expect(")") + host.emit(")?")
     } else {
-        return host.name() + host.expect("(") + host.expect(")") + host.emit("(s, depth + 1)?")
+        return host.name() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.emit(")?")
     }
 }
 
-fn arguments()->int{
+fn host_arguments()->int{
     if (host.at(")") != 0) {
         return 0
     } else {
         return host.literal()
+    }
+}
+
+fn call_arguments()->int{
+    if (host.at(")") != 0) {
+        return 0
+    } else {
+        return host.emit(", ") + expression() + following_arguments()
+    }
+}
+
+fn following_arguments()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.emit(", ") + expression() + following_arguments()
+    } else {
+        return 0
     }
 }

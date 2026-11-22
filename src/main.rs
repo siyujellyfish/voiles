@@ -37,6 +37,14 @@ fn main() -> ExitCode {
                 Err(error) => { eprintln!("{error}"); return ExitCode::FAILURE; }
             }
         }
+        Some("bootstrap-run") if args.len() >= 4 && args[2] == "--" => {
+            let result = voiles_core::EntryProgram::prepare(Path::new(&args[1]))
+                .and_then(|program| program.execute_bootstrap_with_args(&args[3..]));
+            match result {
+                Ok(value) => println!("{value}"),
+                Err(error) => { eprintln!("{error}"); return ExitCode::FAILURE; }
+            }
+        }
         Some("--help") if args.len() == 1 => println!("{HELP}"),
         Some("--version") if args.len() == 1 => println!("voiles {}", include_str!("../VERSION").trim()),
         Some("test") if args.len() <= 2 => {

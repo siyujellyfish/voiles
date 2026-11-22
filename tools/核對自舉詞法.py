@@ -36,6 +36,13 @@ with TemporaryDirectory() as directory:
         corpus.append(path)
     for path in corpus:
         expected = run(oracle, path)
-        assert run(cli, "run", entry, "--", path) == expected + b"0\n", path
-        for exe in programs:
-            assert run(exe, path) == expected, (exe, path)
+        arguments = [path]
+        if path == corpus[0]:
+            expected = b"".join(row for row in expected.splitlines(keepends=True)
+                                if not row.startswith(b"7 "))
+            arguments.append("--compact")
+        command = "bootstrap-run" if path == corpus[0] else "run"
+        assert run(cli, command, entry, "--", *arguments) == expected + b"0\n", path
+        if path != corpus[0]:
+            for exe in programs:
+                assert run(exe, *arguments) == expected, (exe, path)

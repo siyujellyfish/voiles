@@ -54,7 +54,7 @@ fn keyword(key:int)->bool{
     }
 }
 
-fn scan(data:list[int])->list[Token]{
+fn scan(data:list[int],lines:bool,stream:bool)->list[Token]{
     var tokens:list[Token] = []
     const size:int = len(data)
     var i:int = 0
@@ -76,7 +76,7 @@ fn scan(data:list[int])->list[Token]{
             }
         } else if(b == 10 or b == 13){
             if(b == 13 and next == 10){ i = i + 1 }
-            if(depth == 0){ kind = 7 } else { kind = 0 }
+            if(depth == 0 and lines){ kind = 7 } else { kind = 0 }
         } else if(letter(b)){
             var key:int = b - 96
             while(letter(next) or digit(next)){
@@ -87,7 +87,7 @@ fn scan(data:list[int])->list[Token]{
                 next = -1
                 if(i < size){ with data[i] as look{ next = look } }
             }
-            if(keyword(key)){ kind = 1 } else { kind = 2 }
+            if(key > 0 and keyword(key)){ kind = 1 } else { kind = 2 }
         } else if(digit(b)){
             kind = 3
             while(digit(next)){
@@ -140,8 +140,20 @@ fn scan(data:list[int])->list[Token]{
             }
             if(valid){ i = start + width } else { kind = 8 }
         }
-        if(kind != 0){ tokens.append(Token(kind=kind,start=start,end=i)) }
+        if(kind != 0){
+            if(stream){
+                const row:str = f"{kind} {start} {i}\n"
+                stdout(row)
+            } else {
+                tokens.append(Token(kind=kind,start=start,end=i))
+            }
+        }
     }
-    tokens.append(Token(kind=9,start=size,end=size))
+    if(stream){
+        const end:str = f"9 {size} {size}\n"
+        stdout(end)
+    } else {
+        tokens.append(Token(kind=9,start=size,end=size))
+    }
     return tokens.move()
 }
