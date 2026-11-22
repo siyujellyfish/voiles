@@ -11,7 +11,7 @@ fn main() -> ExitCode {
     let args: Vec<_> = std::env::args_os().skip(1).collect();
     const HELP: &str = "用法：voiles <檔案.voil>（單檔靜態檢查）
       voiles check <入口.voil>（模組靜態檢查）
-      voiles run <入口.voil>（執行並顯示 main 回傳值）
+      voiles run <入口.voil> [-- 程式引數…]（執行並顯示 main 回傳值）
       voiles build <入口.voil> -o <執行檔>
       voiles pack <入口.voil> -o <獨立執行檔>
       voiles --help | --version";
@@ -30,7 +30,7 @@ fn main() -> ExitCode {
         }
         Some("--help") if args.len() == 1 => println!("{HELP}"),
         Some("--version") if args.len() == 1 => println!("voiles {}", include_str!("../VERSION").trim()),
-        Some(command @ ("check" | "run")) if args.len() == 2 => {
+        Some(command @ ("check" | "run")) if args.len() == 2 || (command=="run" && args.get(2).is_some_and(|a| a=="--")) => {
             let path = Path::new(&args[1]);
             if path.extension() != Some(OsStr::new("voil")) {
                 eprintln!("用法錯誤：入口必須使用 .voil 副檔名");
@@ -38,7 +38,7 @@ fn main() -> ExitCode {
             }
             let result = voiles_core::EntryProgram::prepare(path).and_then(|program| {
                 if command == "run" {
-                    println!("{}", program.execute()?);
+                    println!("{}", program.execute_with_args(args.get(3..).unwrap_or(&[]))?);
                 }
                 Ok(())
             });

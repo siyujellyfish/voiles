@@ -1,5 +1,4 @@
 impl ResourceText {
-    fn new(text: String) -> Self { Self { text, starts: std::cell::OnceCell::new() } }
     fn range(&self, index: i64) -> Option<std::ops::Range<usize>> {
         indexed_range(self.starts.get_or_init(|| boundaries(&self.text)), index)
     }

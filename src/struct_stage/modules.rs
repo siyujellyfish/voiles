@@ -354,7 +354,11 @@ impl LinkedProgram {
     }
 
     pub(crate) fn execute(&self) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
-        self.checked_plan()?.execute_with_origin(|error, origin| match origin {
+        self.execute_with_args(&[])
+    }
+
+    pub(crate) fn execute_with_args(&self,args:&[std::ffi::OsString]) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
+        self.checked_plan()?.execute_with_origin(args,|error, origin| match origin {
             Some(step) => {
                 let unit = &self.graph.units[step.module];
                 ModuleError::RuntimeAt { path: unit.path.clone(),

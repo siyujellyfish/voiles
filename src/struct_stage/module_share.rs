@@ -101,7 +101,24 @@ impl ContainerLiteral {
     }
 }
 
+#[path = "standard.rs"]
+mod standard;
+enum StandardArg { Int(Number), Text(LocalText), Read(String) }
+struct StandardCall { name:String, args:Vec<StandardArg> }
+impl StandardCall {
+    fn uses<'a>(&'a self, uses:&mut Vec<Use<'a>>) {
+        for arg in &self.args {
+            match arg { StandardArg::Int(n)=>n.uses(uses),StandardArg::Text(t)=>t.uses(uses),StandardArg::Read(_)=>() }
+        }
+    }
+}
+impl LocalText {
+    fn uses<'a>(&'a self, uses:&mut Vec<Use<'a>>) {
+        match self { Self::Standard(call)=>call.uses(uses), Self::Call(call)=>call.uses(uses), _=>() }
+    }
+}
 enum Number {
+    Standard(StandardCall),
     Container(String, ContainerRead),
     Edit(String, Box<Edit>),
     ViewByte(String,StringOffset,StringOffset),
@@ -136,6 +153,7 @@ enum Text {
 }
 
 enum LocalText {
+    Standard(StandardCall),
     Call(TextInvocation),
     Literal(String),
     Grapheme(String, StringOffset),
@@ -158,8 +176,7 @@ impl TextInvocation {
         for (_, _, arg) in &self.arguments {
             match arg {
                 Argument::Integer(n) => n.uses(uses),
-                Argument::Text(LocalText::Call(call)) => call.uses(uses),
-                _ => (),
+                Argument::Text(t) => t.uses(uses),
             }
         }
         uses.push(Use::Call(&self.target, false));
@@ -285,7 +302,26 @@ impl Lower<'_> {
             || self.objects.as_ref().is_some_and(|scope| scope.has(root))
     }
 
+    fn standard_call<'t>(&self,name:&str,args:impl Iterator<Item=(Option<&'t str>, &'t Term)>, result:&str) -> Option<StandardCall> {
+        if self.objects.is_none() || self.shadowed(name) || self.functions.contains_key(name) || self.globals.contains_key(name) {return None;}
+        let (params,ty)=standard::signature(name)?;
+        if result!=ty {return None;}
+        let mut values=Vec::new();
+        for (i,(label,t)) in args.enumerate() {
+            if label.is_some() {return None;}
+            let expected=params.get(i).copied().or_else(||standard::variadic_parameter(name))?;
+            values.push(if expected=="int" { StandardArg::Int(self.number(t)?) }
+                else if let TermKind::Name(n)=&t.kind {
+                    if !self.strings.get(n)?.live.get() {return None;}
+                    StandardArg::Read(n.clone())
+                } else {StandardArg::Text(self.local_text(t,"")?)});
+        }
+        if values.len()<params.len() {return None;}
+        Some(StandardCall{name:name.into(),args:values})
+    }
+
     fn call_target(&self, name: &str, awaited: bool) -> Option<Number> {
+        if !awaited && standard::signature(name).is_some() && !self.functions.contains_key(name) {return self.standard_call(name,std::iter::empty(),"int").map(Number::Standard);}
         if self.objects.as_ref().and_then(|s| s.function(name)).is_some_and(|(_,_,f)| f.result_ty != "int") { return None; }
         if self.objects.as_ref().is_some_and(|s| s.requires_argument(name)) { return None; }
         if self.shadowed(name)
@@ -296,6 +332,9 @@ impl Lower<'_> {
 
     fn scalar_call<'t>(&self, name: &str, arguments: impl Iterator<Item = (Option<&'t str>, &'t Term)>) -> Option<Number> {
         if self.shadowed(name) { return None; }
+        if standard::signature(name).is_some() && !self.functions.contains_key(name) {
+            return self.standard_call(name,arguments,"int").map(Number::Standard);
+        }
         let (target, _, function) = self.objects.as_ref()?.function(name)?;
         if function.params.iter().any(|p| p.ty == "str") {
             return self.invocation(name, arguments, "int").map(Number::TextCall);
@@ -359,6 +398,9 @@ impl Lower<'_> {
     }
 
     fn text_call<'t>(&self, name: &str, args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<LocalText> {
+        if standard::signature(name).is_some() && !self.functions.contains_key(name) {
+            return self.standard_call(name,args,"str").map(LocalText::Standard);
+        }
         self.invocation(name,args,"str").map(LocalText::Call)
     }
 
@@ -595,6 +637,7 @@ impl Lower<'_> {
                         .ok_or_else(|| err("求值後接收者已經移動"))?;
                     Action::WriteMember { owner: receiver.clone(), field: field.clone(), value: rhs, initializing }
                 }
+                StmtKind::Evaluate(term) => Action::Evaluate(self.number(term).ok_or_else(||err("此呼叫需要相符的標準庫或函式簽章"))?),
                 StmtKind::GraphemeWrite(t) => {
                     let TermKind::StringReplace(
                         name,
@@ -769,6 +812,7 @@ impl Number {
                 left.uses(list);
                 right.uses(list);
             }
+            Self::Standard(call) => call.uses(list),
             Self::TextCall(call) => call.uses(list),
             Self::Consume{target,..} => list.push(Use::Call(target,false)),
             Self::Call(name, waited) => list.push(Use::Call(name, *waited)),
@@ -786,7 +830,7 @@ impl Action {
             Self::ReturnObject(_) => (),
             Self::ReceiveObject {target,..} => uses.push(Use::Call(target,false)),
             Self::ReturnText(value) | Self::StoreText { value, .. } => {
-                if let LocalText::Call(call) = value { call.uses(&mut uses); }
+                value.uses(&mut uses);
             }
             Self::WriteMember { value: MemberValue::Integer(n) | MemberValue::Boolean(n), .. } => n.uses(&mut uses),
             Self::WriteMember { .. } | Self::RelocateObject { .. } | Self::Jump(_) | Self::ReplaceLocal(_) => (),
@@ -963,14 +1007,16 @@ impl Program {
     pub(crate) fn execute(
         &self,
     ) -> Result<(Result<i64, StrRuntimeError>, Vec<ResourceEvent>), StrRuntimeError> {
-        self.execute_with_origin(|error, _| error)
+        self.execute_with_origin(&[],|error, _| error)
     }
 
     fn execute_with_origin<E>(
         &self,
+        args:&[std::ffi::OsString],
         locate: impl FnOnce(StrRuntimeError, Option<StepOrigin>) -> E,
     ) -> Result<(Result<i64, E>, Vec<ResourceEvent>), StrRuntimeError> {
         let mut state = self.instantiate(ModuleId(0))?;
+        state.args=args.to_vec();
         let result = self.call("main", &mut state, 0);
         state
             .loans
@@ -981,6 +1027,7 @@ impl Program {
 
     fn instantiate(&self, owner: ModuleId) -> Result<State<'_>, StrRuntimeError> {
         let mut state = State {
+            args:Vec::new(),
             owner,
             mixed: crate::mixed_struct_runtime::MixedStructRuntime::new(),
             heap: OwnedStrRuntime::new(),
@@ -1077,9 +1124,28 @@ impl Program {
         result
     }
 
+    fn standard_value(&self,call:&StandardCall,frame:&mut Frame,state:&mut State,depth:usize) -> Result<standard::Value,StrRuntimeError> {
+        let mut args=Vec::new();
+        for arg in &call.args {
+            args.push(match arg {
+                StandardArg::Int(n)=>standard::Value::Int(self.eval(n,frame,state,depth)?),
+                StandardArg::Read(name)=>standard::Value::Text(state.heap.read(&format!("@{name}"))?.into()),
+                StandardArg::Text(t)=>{
+                    let value=self.detached_text(t,frame,state,depth)?;
+                    let text=value.text().to_owned(); state.heap.release_detached(value);
+                    standard::Value::Text(text)
+                }
+            });
+        }
+        standard::invoke(&call.name,&args,&state.args).ok_or(StrRuntimeError::EvaluationFailed)
+    }
+
     fn detached_text(&self, value: &LocalText, frame: &mut Frame, state: &mut State, depth: usize)
         -> Result<crate::owned_str_runtime::OwnedUtf8, StrRuntimeError> {
         match value {
+            LocalText::Standard(call) => match self.standard_value(call,frame,state,depth)? {
+                standard::Value::Text(s)=>state.heap.create_detached(&s), _=>Err(StrRuntimeError::EvaluationFailed),
+            },
             LocalText::Literal(text) => state.heap.create_detached(text),
             LocalText::Move(source) => state.heap.return_named(&format!("@{source}")),
             LocalText::Grapheme(source, index) => state.heap.read_grapheme(&format!("@{source}"), index.value(frame)?)
@@ -1298,6 +1364,9 @@ impl Program {
                 if let Some(ticket) = ticket { frame.object_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?; }
                 result
             }
+            Number::Standard(call) => match self.standard_value(call,frame,state,depth)? {
+                standard::Value::Int(n)=>Ok(n), _=>Err(StrRuntimeError::EvaluationFailed),
+            },
             Number::TextCall(call) => self.invoke_text(call,frame,state,depth)?.integer(&mut state.heap),
             Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some(Transfer::Object(from,parameter)), HashMap::new())?.integer(&mut state.heap),
             Number::ViewByte(slot,i,j) => {
@@ -1480,6 +1549,7 @@ impl Frame {
 }
 
 struct State<'a> {
+    args:Vec<std::ffi::OsString>,
     mixed: crate::mixed_struct_runtime::MixedStructRuntime,
     declarations: &'a [Declaration],
     _local: std::marker::PhantomData<Rc<()>>,

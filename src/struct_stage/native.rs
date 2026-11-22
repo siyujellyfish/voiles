@@ -49,8 +49,22 @@ impl Emitter<'_> {
             self.locals.get(&change.owner)?, self.offset(&change.index)?))
     }
 
+    fn standard(&self,call:&StandardCall,text:bool)->Option<String> {
+        let mut values=Vec::new();
+        for arg in &call.args {
+            values.push(match arg {
+                StandardArg::Int(n)=>format!("standard::Value::Int({})",self.number(n)?),
+                StandardArg::Read(name)=>format!("standard::Value::Text(v{}.text.clone())",self.locals.get(name)?),
+                StandardArg::Text(t)=>format!("standard::Value::Text(({}).text)",self.local_text(t)?),
+            });
+        }
+        let (variant,expr)=if text {("Text","ResourceText::new(value)")} else {("Int","value")};
+        Some(format!("(match standard::invoke({:?}, &[{}], argv) {{ Some(standard::Value::{variant}(value)) => {expr}, _ => return Err((site,ARITH)) }})",call.name,values.join(",")))
+    }
+
     fn local_text(&self, value: &LocalText) -> Option<String> {
         Some(match value {
+            LocalText::Standard(call) => self.standard(call,true)?,
             LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
             LocalText::Replace(change) => self.local_replace(change)?,
             LocalText::Move(source) => format!("v{}", self.locals.get(source)?),
@@ -68,7 +82,7 @@ impl Emitter<'_> {
             write!(code,"let arg{slot} = {expr}; ").ok()?;
         }
         let args: String = (0..call.arguments.len()).map(|i| format!(", arg{i}")).collect();
-        write!(code, "f{}(globals, steps, depth + 1, site{args})? }}",self.functions.get(call.target.as_str())?).ok()?;
+        write!(code, "f{}(globals, argv, steps, depth + 1, site{args})? }}",self.functions.get(call.target.as_str())?).ok()?;
         Some(code)
     }
 
@@ -89,6 +103,7 @@ impl Emitter<'_> {
 
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
+            Number::Standard(call)=>self.standard(call,false)?,
             Number::ViewByte(slot,i,j) => format!("{{ let Some(containers::Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
             Number::Edit(slot,edit) => match edit.as_ref() {
                 Edit::Append(item) => format!("{{ let item = {}; containers.append({slot:?},item).ok_or((site,ARITH))? }}",self.container_item(item)?),
@@ -105,7 +120,7 @@ impl Emitter<'_> {
                     write!(expr, "let arg{slot} = {}; ", self.number(value)?).ok()?;
                 }
                 let args: String = (0..arguments.len()).map(|i| format!(", arg{i}")).collect();
-                write!(expr, "f{}(globals, steps, depth + 1, site{args})? }}", self.functions.get(target.as_str())?).ok()?;
+                write!(expr, "f{}(globals, argv, steps, depth + 1, site{args})? }}", self.functions.get(target.as_str())?).ok()?;
                 expr
             }
             Number::Logic(op, a, b) => {
@@ -135,7 +150,7 @@ impl Emitter<'_> {
             Number::Consume { target, from, .. } => {
                 let object = self.locals.get(from)?;
                 let function = self.functions.get(target.as_str())?;
-                format!("f{function}(globals, steps, depth + 1, site, v{object})?")
+                format!("f{function}(globals, argv, steps, depth + 1, site, v{object})?")
             }
             Number::BoolMember(owner, field) => format!("v{}.boolean({field:?}).ok_or((site, ARITH))?", self.locals.get(owner)?),
             Number::MemberByte(owner, field, i, j) => format!(
@@ -145,7 +160,7 @@ impl Emitter<'_> {
             Number::Byte(place, i, j) => format!(
                 "globals[{}].byte({}, {}).ok_or((site, ARITH))?", place.slot, self.offset(i)?, self.offset(j)?),
             Number::Call(name, false) =>
-                format!("f{}(globals, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
+                format!("f{}(globals, argv, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
             _ => return None,
         })
     }
@@ -162,11 +177,15 @@ impl LinkedProgram {
         let budget = crate::execution::ExecutionBudget::default();
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
+        out.push_str("mod standard {\n");
+        out.push_str(include_str!("standard.rs"));
+        out.push_str("}\n");
         out.push_str("mod containers {\n");
         out.push_str(include_str!("public_containers.rs"));
         out.push_str("}\n");
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
+        out.push_str("impl ResourceText { fn new(text:String)->Self { Self { text, starts:Default::default() } } }\n");
         if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
@@ -186,7 +205,7 @@ impl LinkedProgram {
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
             let ret = if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
-            writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
+            writeln!(out, "fn f{id}(globals: &mut [ResourceText], argv:&[std::ffi::OsString], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             if body.iter().any(|step| matches!(step.action, Action::Container(..))) {
                 out.push_str("let mut containers = containers::Store::default();\n");
@@ -231,7 +250,7 @@ impl LinkedProgram {
                     }
                     Action::ReceiveObject {target,owner} => {
                         let called = *emitter.functions.get(target.as_str()).ok_or_else(unsupported)?;
-                        writeln!(out,"let mut v{} = f{called}(globals, steps, depth + 1, site)?;",emitter.local_id(owner)).unwrap();
+                        writeln!(out,"let mut v{} = f{called}(globals, argv, steps, depth + 1, site)?;",emitter.local_id(owner)).unwrap();
                     }
                     Action::ReturnObject(owner) => {
                         writeln!(out,"return Ok(v{});",emitter.locals.get(owner).ok_or_else(unsupported)?).unwrap();
@@ -309,7 +328,7 @@ impl LinkedProgram {
         let main = emitter.functions["main"];
         let globals = plan.globals.iter().map(|g| format!("ResourceText::new(String::from({:?}))", g.initial))
             .collect::<Vec<_>>().join(", ");
-        writeln!(out, "fn main() -> std::process::ExitCode {{ match f{main}(&mut [{globals}], &mut 0, 0, \"\") {{").unwrap();
+        writeln!(out, "fn main() -> std::process::ExitCode {{ match f{main}(&mut [{globals}], &std::env::args_os().skip(1).collect::<Vec<_>>(), &mut 0, 0, \"\") {{").unwrap();
         out.push_str("Ok(n) => std::process::ExitCode::from(n as u8),\nErr((s, e)) => { eprintln!(\"{s}: 執行期錯誤：{e}\"); std::process::ExitCode::FAILURE } } }\n");
         Ok(out)
     }

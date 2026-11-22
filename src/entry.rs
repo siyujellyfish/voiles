@@ -21,7 +21,11 @@ impl EntryProgram {
     }
 
     pub fn execute(&self) -> Result<i64, String> {
-        let (result, _) = self.0.execute().map_err(module_error)?;
+        self.execute_with_args(&[])
+    }
+
+    pub fn execute_with_args(&self, args:&[std::ffi::OsString]) -> Result<i64, String> {
+        let (result, _) = self.0.execute_with_args(args).map_err(module_error)?;
         result.map_err(module_error)
     }
 }

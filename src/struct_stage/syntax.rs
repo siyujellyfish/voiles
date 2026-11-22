@@ -528,6 +528,11 @@ impl Parser<'_> {
             let term=self.term()?;
             if !matches!(term.kind,TermKind::MethodCall(..)) { return Err(self.syntax("此語句需要完整的容器方法呼叫")); }
             StmtKind::Evaluate(term)
+        } else if matches!(&self.tok().kind, TokenKind::Name(n) if matches!(n.as_str(),"stdout"|"stderr"|"write_utf8"|"write_bytes"|"process_run"))
+            && crate::syntax_shared::symbol(self.tokens,self.cursor+1,'(') {
+            let term=self.term()?;
+            if !matches!(term.kind,TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)) { return Err(self.syntax("需要獨立呼叫語句")); }
+            StmtKind::Evaluate(term)
         } else if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare(parsed)
