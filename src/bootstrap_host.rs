@@ -51,7 +51,7 @@ impl Machine {
     fn enter(&mut self, depth: usize) -> Result<(), Fault> {
         let budget = crate::execution::ExecutionBudget::default();
         self.steps += 1;
-        if depth >= budget.max_call_frames || self.steps > budget.max_steps {
+        if depth >= budget.max_call_frames || self.steps > 400_000 {
             return Err(Fault::Limit);
         }
         Ok(())
