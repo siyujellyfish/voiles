@@ -1,8 +1,8 @@
 //! 私有自舉編譯器的宿主 ABI。沿用正式 lexer，宿主提供有界的記號與輸出緩衝區。
 use crate::lexer::{self, Token, TokenKind};
 use crate::source::Source;
-use std::collections::BTreeMap;
-use std::path::Path;
+use std::collections::{BTreeMap, BTreeSet};
+use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
 enum Fault { Syntax(String), Overflow, Limit }
@@ -15,8 +15,12 @@ struct Machine {
     steps: usize,
     functions: BTreeMap<String, Vec<String>>,
     current_function: Option<String>,
-    calls: Vec<(String, usize)>,
+    calls: Vec<(Option<String>, String, usize)>,
     call_stack: Vec<usize>,
+    module: Option<String>,
+    imports: BTreeSet<String>,
+    allowed_imports: BTreeSet<String>,
+    external_functions: BTreeMap<(String, String), usize>,
 }
 
 impl Machine {
@@ -52,6 +56,12 @@ impl Machine {
             && self.tokens.get(self.cursor + 1).is_some_and(|token|
                 token.kind == TokenKind::Symbol('('))))
     }
+    fn at_module_call(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(_))
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))))
+    }
     fn expect(&mut self, text: &str) -> R {
         let width = self.matched_width(text);
         if width == 0 { return Err(Fault::Syntax(format!("預期 {text}"))); }
@@ -74,7 +84,25 @@ impl Machine {
         self.cursor += 1;
         Ok(name)
     }
-    fn emit_name(&mut self, name: &str) -> R { self.emit(&format!("v_{name}")) }
+    fn emit_name(&mut self, name: &str) -> R {
+        let ident = match &self.module {
+            Some(module) => format!("v_{module}_{name}"),
+            None => format!("v_{name}"),
+        };
+        self.emit(&ident)
+    }
+    fn module_import(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.module.is_none() {
+            if name != "host" { return Err(Fault::Syntax("種子來源只能匯入 host".into())); }
+        } else if !self.allowed_imports.contains(&name) {
+            return Err(Fault::Syntax(format!("未知模組 {name}")));
+        }
+        if !self.imports.insert(name.clone()) {
+            return Err(Fault::Syntax(format!("重複匯入 {name}")));
+        }
+        Ok(0)
+    }
     fn function(&mut self) -> R {
         let name = self.take_name()?;
         if self.functions.contains_key(&name) {
@@ -111,15 +139,24 @@ impl Machine {
     fn call(&mut self) -> R {
         let name = self.take_name()?;
         let index = self.calls.len();
-        self.calls.push((name.clone(), 0));
+        self.calls.push((None, name.clone(), 0));
         self.call_stack.push(index);
         self.emit_name(&name)
+    }
+    fn module_call(&mut self) -> R {
+        let module = self.take_name()?;
+        self.expect(".")?;
+        let name = self.take_name()?;
+        let index = self.calls.len();
+        self.calls.push((Some(module.clone()), name.clone(), 0));
+        self.call_stack.push(index);
+        self.emit(&format!("v_{module}_{name}"))
     }
     fn argument(&mut self) -> R {
         let Some(index) = self.call_stack.last().copied() else {
             return Err(Fault::Syntax("實參不在呼叫中".into()));
         };
-        self.calls[index].1 += 1;
+        self.calls[index].2 += 1;
         Ok(0)
     }
     fn finish_call(&mut self) -> R {
@@ -130,12 +167,21 @@ impl Machine {
         if self.current_function.is_some() || !self.call_stack.is_empty() {
             return Err(Fault::Syntax("名稱解析邊界無效".into()));
         }
-        for (name, actual) in &self.calls {
-            let Some(parameters) = self.functions.get(name) else {
-                return Err(Fault::Syntax(format!("未知函式 {name}")));
+        for (module, name, actual) in &self.calls {
+            let expected = if let Some(module) = module {
+                if !self.imports.contains(module) {
+                    return Err(Fault::Syntax(format!("未匯入模組 {module}")));
+                }
+                self.external_functions.get(&(module.clone(), name.clone())).copied()
+            } else {
+                self.functions.get(name).map(Vec::len)
             };
-            if *actual != parameters.len() {
-                return Err(Fault::Syntax(format!("函式 {name} 預期 {} 個實參，收到 {actual} 個", parameters.len())));
+            let Some(expected) = expected else {
+                let qualified = module.as_ref().map_or_else(|| name.clone(), |m| format!("{m}.{name}"));
+                return Err(Fault::Syntax(format!("未知函式 {qualified}")));
+            };
+            if *actual != expected {
+                return Err(Fault::Syntax(format!("函式 {name} 預期 {expected} 個實參，收到 {actual} 個")));
             }
         }
         Ok(0)
@@ -144,10 +190,11 @@ impl Machine {
         let TokenKind::Name(name) = self.token() else {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "expect" |
+        if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
-                    "finish_names" | "method" | "literal") {
+                    "finish_names" | "module_import" | "module_call" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -184,6 +231,71 @@ pub fn compile_bootstrap_source(path: &Path) -> Result<String, String> {
         return Err(format!("{}：{}", path.display(), d.message));
     }
     compile_tokens(path, &source, scanned.tokens)
+}
+
+/// 以自舉解析器編譯入口及其直接／間接匯入，供種子與兩代產物交叉驗證。
+/// 一般公開專案仍由 `EntryProgram` 與既有四個命令處理。
+pub fn compile_bootstrap_project(entry: &Path) -> Result<String, String> {
+    fn visit(path: PathBuf, root: &Path, visiting: &mut Vec<PathBuf>, done: &mut BTreeSet<PathBuf>,
+        signatures: &mut BTreeMap<(String, String), usize>, output: &mut String) -> Result<(), String> {
+        let path = path.canonicalize().map_err(|e| format!("{}：{e}", path.display()))?;
+        if done.contains(&path) { return Ok(()); }
+        if let Some(start) = visiting.iter().position(|p| p == &path) {
+            let mut cycle: Vec<_> = visiting[start..].iter().map(|p| p.display().to_string()).collect();
+            cycle.push(path.display().to_string());
+            return Err(format!("模組循環：{}", cycle.join(" -> ")));
+        }
+        visiting.push(path.clone());
+        let module = path.file_stem().and_then(|s| s.to_str())
+            .filter(|s| is_module_name(s)).ok_or_else(|| format!("{}：模組名稱無效", path.display()))?.to_string();
+        let source = Source::new(std::fs::read(&path).map_err(|e| format!("{}：{e}", path.display()))?);
+        if let Some(d) = source.lexical_diagnostics().first() { return Err(format!("{}：{}", path.display(), d.message)); }
+        let scanned = lexer::scan(&source);
+        if let Some(d) = scanned.diagnostics.first() { return Err(format!("{}：{}", path.display(), d.message)); }
+        let imports = module_imports(&path, &scanned.tokens)?;
+        for imported in &imports {
+            visit(root.join(format!("{imported}.voil")), root, visiting, done, signatures, output)?;
+        }
+        let (generated, local) = compile_tokens_in_module(&path, &source, scanned.tokens,
+            module.clone(), imports.into_iter().collect(), signatures.clone())?;
+        output.push_str(&generated);
+        for (name, parameters) in local {
+            if !name.starts_with('_') { signatures.insert((module.clone(), name), parameters.len()); }
+        }
+        visiting.pop();
+        done.insert(path);
+        Ok(())
+    }
+
+    let root = entry.parent().unwrap_or_else(|| Path::new(".")).canonicalize()
+        .map_err(|e| format!("{}：{e}", entry.display()))?;
+    let entry_module = entry.file_stem().and_then(|s| s.to_str())
+        .filter(|s| is_module_name(s)).ok_or_else(|| format!("{}：模組名稱無效", entry.display()))?.to_string();
+    let mut output = String::new();
+    visit(entry.to_path_buf(), &root, &mut Vec::new(), &mut BTreeSet::new(),
+        &mut BTreeMap::new(), &mut output)?;
+    output.push_str(&format!("fn v_main(s: &mut Machine, depth: usize) -> R {{ v_{entry_module}_main(s, depth) }}\n"));
+    Ok(output)
+}
+
+fn is_module_name(name: &str) -> bool {
+    name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+fn module_imports(path: &Path, tokens: &[Token]) -> Result<Vec<String>, String> {
+    let filtered: Vec<_> = tokens.iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect();
+    let mut cursor = 0;
+    let mut imports = Vec::new();
+    while filtered.get(cursor).is_some_and(|t| matches!(&t.kind, TokenKind::Keyword(k) if k == "import")) {
+        cursor += 1;
+        let Some(Token {kind: TokenKind::Name(name), ..}) = filtered.get(cursor).map(|t| *t) else {
+            return Err(format!("{}：import 後需要模組名稱", path.display()));
+        };
+        imports.push(name.clone());
+        cursor += 1;
+    }
+    Ok(imports)
 }
 
 /// 自舉時由上一代的公開 run 入口執行 scanner.voil。Rust 只從已定位的
@@ -237,10 +349,24 @@ pub fn compile_bootstrap_tokens(path: &Path, rows: &str) -> Result<String, Strin
 }
 
 fn compile_tokens(path: &Path, source: &Source, tokens: Vec<Token>) -> Result<String,String> {
+    compile_tokens_with_context(path, source, tokens, None, BTreeSet::new(), BTreeMap::new())
+        .map(|(output, _)| output)
+}
+
+fn compile_tokens_in_module(path: &Path, source: &Source, tokens: Vec<Token>, module: String,
+    imports: BTreeSet<String>, external_functions: BTreeMap<(String, String), usize>)
+    -> Result<(String, BTreeMap<String, Vec<String>>), String> {
+    compile_tokens_with_context(path, source, tokens, Some(module), imports, external_functions)
+}
+
+fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>, module: Option<String>,
+    allowed_imports: BTreeSet<String>, external_functions: BTreeMap<(String, String), usize>)
+    -> Result<(String, BTreeMap<String, Vec<String>>), String> {
     let mut machine = Machine {
         tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
         cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
         current_function: None, calls: Vec::new(), call_stack: Vec::new(),
+        module, imports: BTreeSet::new(), allowed_imports, external_functions,
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
@@ -248,5 +374,5 @@ fn compile_tokens(path: &Path, source: &Source, tokens: Vec<Token>) -> Result<St
             Fault::Overflow => "自舉編譯整數溢位".into() };
         format!("{}:{}:{}: {message}", path.display(), pos.line, pos.column)
     })?;
-    Ok(machine.output)
+    Ok((machine.output, machine.functions))
 }

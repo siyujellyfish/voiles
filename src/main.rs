@@ -31,6 +31,12 @@ fn main() -> ExitCode {
                 Err(error) => { eprintln!("{error}"); return ExitCode::FAILURE; }
             }
         }
+        Some("bootstrap-project") if args.len() == 2 => {
+            match voiles_core::compile_bootstrap_project(Path::new(&args[1])) {
+                Ok(source) => print!("{source}"),
+                Err(error) => { eprintln!("{error}"); return ExitCode::FAILURE; }
+            }
+        }
         Some("bootstrap-digits") if args.len() == 2 => {
             match voiles_core::EntryProgram::prepare(Path::new(&args[1])).and_then(|p| p.bootstrap_digits()) {
                 Ok(source) => print!("{source}"),

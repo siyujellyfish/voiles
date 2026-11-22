@@ -61,6 +61,53 @@ with TemporaryDirectory() as tmp:
             assert invoke(cli, action, multi, "-o", exe)[0] == 0
             assert invoke(exe) == (42, "", "")
 
+    # 自舉解析器真正載入相依模組、解析限定呼叫並產生可連結的模組身分名稱。
+    rust_source = root / "expression.rs"
+    native = root / "expression"
+    project = root / "project"
+    project.mkdir()
+    module = project / "math.voil"
+    entry_module = project / "main.voil"
+    module.write_text("fn combine(a:int,b:int)->int{ return a*10+b }\n", encoding="utf-8")
+    entry_module.write_text("import math\nfn main()->int{ return math.combine(4,2) }\n", encoding="utf-8")
+    generated_projects = [invoke(cli, "bootstrap-project", entry_module) for cli in (seed, stage, next_stage)]
+    assert generated_projects[0] == generated_projects[1] == generated_projects[2]
+    code, generated, error = generated_projects[2]
+    assert code == 0 and not error and "v_math_combine" in generated and "v_main_main" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Limit} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    assert invoke(next_stage, "check", entry_module) == (0, "", "")
+    assert invoke(next_stage, "run", entry_module) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"module-{mode}"
+        assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_projects = (
+        ("import missing\nfn main()->int{ return 0 }", None),
+        ("import math\nfn main()->int{ return math.unknown() }", None),
+        ("import math\nfn main()->int{ return math.combine(1) }", None),
+        ("import math\nfn main()->int{ return math._hidden() }", "fn _hidden()->int{ return 1 }\n"),
+    )
+    for entry_text, module_text in invalid_projects:
+        entry_module.write_text(entry_text, encoding="utf-8")
+        if module_text is not None:
+            module.write_text(module_text, encoding="utf-8")
+        elif "missing" not in entry_text:
+            module.write_text("fn combine(a:int,b:int)->int{ return a*10+b }\n", encoding="utf-8")
+        results = [invoke(cli, "bootstrap-project", entry_module) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        assert invoke(next_stage, "check", entry_module)[0] == 1
+    entry_module.write_text("import math\nfn main()->int{ return 0 }", encoding="utf-8")
+    module.write_text("import main\nfn value()->int{ return 1 }", encoding="utf-8")
+    results = [invoke(cli, "bootstrap-project", entry_module) for cli in (seed, stage, next_stage)]
+    assert all(code == 1 and "模組循環" in diagnostic for code, output, diagnostic in results), results
+
     # 改變 voiles 掃描器的合法分類，真實的自舉解析結果必須跟著改變。
     scanner_dir = repo / "bootstrap/lexer"
     scanner = (scanner_dir / "scanner.voil").read_text(encoding="utf-8")

@@ -1,6 +1,14 @@
 fn v_main(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-Ok(s.expect("import")?.checked_add(s.expect("host")?).ok_or(Fault::Overflow)?.checked_add(v_declarations(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.finish_names()?).ok_or(Fault::Overflow)?)
+Ok(v_imports(s, depth + 1)?.checked_add(v_declarations(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.finish_names()?).ok_or(Fault::Overflow)?)
+}
+fn v_imports(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("import")? != 0i64 {
+Ok(s.expect("import")?.checked_add(s.module_import()?).ok_or(Fault::Overflow)?.checked_add(v_imports(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(0i64)
+}
 }
 fn v_declarations(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
@@ -166,10 +174,14 @@ Ok(s.literal()?)
 if s.at("host")? != 0i64 {
 Ok(v_call(s, depth + 1)?)
 } else {
+if s.at_module_call()? != 0i64 {
+Ok(v_call(s, depth + 1)?)
+} else {
 if s.at_call()? != 0i64 {
 Ok(v_call(s, depth + 1)?)
 } else {
 Ok(s.value()?)
+}
 }
 }
 }
@@ -179,7 +191,11 @@ s.enter(depth)?;
 if s.at("host")? != 0i64 {
 Ok(s.expect("host")?.checked_add(s.expect(".")?).ok_or(Fault::Overflow)?.checked_add(s.method()?).ok_or(Fault::Overflow)?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(s.emit("(")?).ok_or(Fault::Overflow)?.checked_add(v_host_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.emit(")?")?).ok_or(Fault::Overflow)?)
 } else {
+if s.at_module_call()? != 0i64 {
+Ok(s.module_call()?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(s.emit("(s, depth + 1")?).ok_or(Fault::Overflow)?.checked_add(v_call_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.finish_call()?).ok_or(Fault::Overflow)?.checked_add(s.emit(")?")?).ok_or(Fault::Overflow)?)
+} else {
 Ok(s.call()?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(s.emit("(s, depth + 1")?).ok_or(Fault::Overflow)?.checked_add(v_call_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.finish_call()?).ok_or(Fault::Overflow)?.checked_add(s.emit(")?")?).ok_or(Fault::Overflow)?)
+}
 }
 }
 fn v_host_arguments(s: &mut Machine, depth: usize) -> R {
