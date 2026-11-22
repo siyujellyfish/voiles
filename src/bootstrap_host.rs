@@ -41,7 +41,7 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize)>,
-    pending_tries: Vec<bool>,
+    pending_tries: Vec<(bool, Option<(String, Option<String>)>)>,
 }
 
 impl Machine {
@@ -281,21 +281,36 @@ impl Machine {
         Ok(0)
     }
     fn try_start(&mut self) -> R {
-        self.pending_tries.push(false);
+        self.pending_tries.push((false, None));
         self.emit("match (|| -> R {\n")
     }
     fn try_handler(&mut self) -> R {
-        let Some(handler) = self.pending_tries.last_mut() else {
+        let Some((handler, _)) = self.pending_tries.last_mut() else {
             return Err(Fault::Syntax("try 邊界無效".into()));
         };
         if *handler { return Err(Fault::Syntax("try 處理區塊重複".into())); }
         *handler = true;
         self.emit("})() {\nOk(value) => return Ok(value),\nErr(Fault::Overflow) => {\n")
     }
+    fn exception_binding(&mut self) -> R {
+        let name = self.take_name()?;
+        let Some((handler, binding)) = self.pending_tries.last_mut() else {
+            return Err(Fault::Syntax("except 綁定不在處理區塊中".into()));
+        };
+        if !*handler { return Err(Fault::Syntax("except 綁定邊界無效".into())); }
+        if binding.is_some() { return Err(Fault::Syntax("except 綁定重複".into())); }
+        let previous = self.locals.insert(name.clone(), "error:str".into());
+        *binding = Some((name.clone(), previous));
+        self.emit(&format!("let v_{name}: &'static str = \"運算失敗\";\n"))
+    }
     fn finish_try(&mut self) -> R {
-        let handler = self.pending_tries.pop()
+        let (handler, binding) = self.pending_tries.pop()
             .ok_or_else(|| Fault::Syntax("try 邊界無效".into()))?;
         if !handler { return Err(Fault::Syntax("try 缺少具型別的 except".into())); }
+        if let Some((name, previous)) = binding {
+            self.locals.remove(&name);
+            if let Some(previous) = previous { self.locals.insert(name, previous); }
+        }
         self.emit("},\nErr(error) => return Err(error),\n}\n")
     }
     fn match_start(&mut self) -> R {
@@ -585,6 +600,9 @@ impl Machine {
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
+        if self.locals.get(&name).map(String::as_str) == Some("error:str") {
+            return self.emit(&format!("(v_{name}.chars().count() as i64)"));
+        }
         if !matches!(self.locals.get(&name).map(String::as_str),
             Some("list:int" | "borrow:list:int" | "list:list:int" | "dict:str:int" | "dict:str:list:int")) {
             return Err(Fault::Syntax(format!("{name} 不是已支援的容器")));
@@ -836,7 +854,8 @@ impl Machine {
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
-                    "finish_dict_set" | "return_start" | "try_start" | "try_handler" | "finish_try" |
+                    "finish_dict_set" | "return_start" | "try_start" | "try_handler" |
+                    "exception_binding" | "finish_try" |
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" | "literal") {
