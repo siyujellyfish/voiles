@@ -103,3 +103,12 @@ fn 自舉數字核心與種子差異驗收() {
         .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
     assert!(status.success());
 }
+
+#[test]
+fn 發行包兩代位元組與乾淨安裝驗收() {
+    let output = std::env::temp_dir().join(format!("voiles-release-{}", std::process::id()));
+    let status = Command::new("python3").arg("tools/release.py").arg(&output)
+        .arg("--seed").arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
+    assert!(status.success());
+    std::fs::remove_dir_all(output).unwrap();
+}

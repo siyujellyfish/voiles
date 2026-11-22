@@ -8,13 +8,13 @@ from tempfile import TemporaryDirectory
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def build(output, previous=None):
+def build(output, previous=None, *, standalone=False):
     output = output.resolve()
     output.mkdir(parents=True, exist_ok=False)
     try:
         with TemporaryDirectory(dir=output) as scratch:
             staging = Path(scratch)
-            compile_stage(staging, previous)
+            compile_stage(staging, previous, standalone)
             for name in ["digits.rs", "compiler.rs", "libvoiles_core.rlib", "voiles"]:
                 if (staging / name).exists():
                     (staging / name).rename(output / name)
@@ -27,10 +27,12 @@ def build(output, previous=None):
     return output / "voiles"
 
 
-def compile_stage(output, previous):
+def compile_stage(output, previous, standalone):
     flags = ["rustc", "--edition=2021", "-C", "strip=debuginfo",
              "--remap-path-prefix", f"{ROOT}=/voiles",
              "--remap-path-prefix", f"{output}=/voiles-stage"]
+    if standalone:
+        flags.extend(["-C", "target-feature=+crt-static", "--target", "x86_64-unknown-linux-gnu"])
     env = os.environ.copy()
     kernel = []
     if previous:
