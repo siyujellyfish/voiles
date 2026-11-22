@@ -10,19 +10,19 @@ struct Emitter<'a> {
 fn container_source(value: &containers::Value) -> String {
     use containers::{Key, Value};
     match value {
-        Value::CopyFrom(slot) => format!("Value::CopyFrom(String::from({slot:?}))"),
-        Value::Missing => "Value::Missing".into(),
-        Value::Integer(n) => format!("Value::Integer({n})"),
-        Value::Boolean(b) => format!("Value::Boolean({b})"),
-        Value::Text(s) => format!("Value::Text(String::from({s:?}))"),
-        Value::Decimal(c,e) => format!("Value::Decimal({c},{e})"),
-        Value::List(xs) => format!("Value::List(vec![{}])",xs.iter().map(container_source).collect::<Vec<_>>().join(",")),
+        Value::CopyFrom(slot) => format!("containers::Value::CopyFrom(String::from({slot:?}))"),
+        Value::Missing => "containers::Value::Missing".into(),
+        Value::Integer(n) => format!("containers::Value::Integer({n})"),
+        Value::Boolean(b) => format!("containers::Value::Boolean({b})"),
+        Value::Text(s) => format!("containers::Value::Text(String::from({s:?}))"),
+        Value::Decimal(c,e) => format!("containers::Value::Decimal({c},{e})"),
+        Value::List(xs) => format!("containers::Value::List(vec![{}])",xs.iter().map(container_source).collect::<Vec<_>>().join(",")),
         Value::Dict(xs) => {
             let entries = xs.iter().map(|(k,v)| {
-                let key = match k { Key::Index(n) => format!("Key::Index({n})"), Key::Text(s) => format!("Key::Text(String::from({s:?}))") };
+                let key = match k { Key::Index(n) => format!("containers::Key::Index({n})"), Key::Text(s) => format!("containers::Key::Text(String::from({s:?}))") };
                 format!("({key},{})",container_source(v))
             }).collect::<Vec<_>>().join(",");
-            format!("Value::Dict(std::collections::BTreeMap::from([{entries}]))")
+            format!("containers::Value::Dict(std::collections::BTreeMap::from([{entries}]))")
         }
     }
 }
@@ -74,22 +74,22 @@ impl Emitter<'_> {
 
     fn container_item(&self, item: &ContainerItem) -> Option<String> {
         Some(match item {
-            ContainerItem::Scalar(n,true) => format!("Value::Boolean(({}) != 0)",self.number(n)?),
-            ContainerItem::Scalar(n,false) => format!("Value::Integer({})",self.number(n)?),
+            ContainerItem::Scalar(n,true) => format!("containers::Value::Boolean(({}) != 0)",self.number(n)?),
+            ContainerItem::Scalar(n,false) => format!("containers::Value::Integer({})",self.number(n)?),
             ContainerItem::Literal(v) => container_source(v),
         })
     }
 
     fn key(&self, key:&ContainerKey) -> Option<String> {
         Some(match key {
-            ContainerKey::Text(s) => format!("Key::Text(String::from({s:?}))"),
-            ContainerKey::Index(n) => format!("Key::Index({})",self.number(n)?),
+            ContainerKey::Text(s) => format!("containers::Key::Text(String::from({s:?}))"),
+            ContainerKey::Index(n) => format!("containers::Key::Index({})",self.number(n)?),
         })
     }
 
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
-            Number::ViewByte(slot,i,j) => format!("{{ let Some(Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
+            Number::ViewByte(slot,i,j) => format!("{{ let Some(containers::Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
             Number::Edit(slot,edit) => match edit.as_ref() {
                 Edit::Append(item) => format!("{{ let item = {}; containers.append({slot:?},item).ok_or((site,ARITH))? }}",self.container_item(item)?),
                 Edit::Set(key,item) => format!("{{ let key = {}; let item = {}; containers.set({slot:?},key,item).ok_or((site,ARITH))? }}",self.key(key)?,self.container_item(item)?),
@@ -97,7 +97,7 @@ impl Emitter<'_> {
             },
             Number::Container(slot,read) => {
                 let method = match read { ContainerRead::Length => "length", ContainerRead::Tag => "tag", ContainerRead::Scalar => "scalar" };
-                format!("containers.get({slot:?}).and_then(Value::{method}).ok_or((site, ARITH))?")
+                format!("containers.get({slot:?}).and_then(containers::Value::{method}).ok_or((site, ARITH))?")
             }
             Number::ScalarCall { target, arguments } => {
                 let mut expr = String::from("{ ");
@@ -164,7 +164,7 @@ impl LinkedProgram {
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
         out.push_str("mod containers {\n");
         out.push_str(include_str!("public_containers.rs"));
-        out.push_str("}\nuse containers::{Key, Value};\n");
+        out.push_str("}\n");
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
         if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
