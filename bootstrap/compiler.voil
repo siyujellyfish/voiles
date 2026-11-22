@@ -30,7 +30,7 @@ fn parameters()->int{
 
 fn following_parameters()->int{
     if (host.at(",") != 0) {
-        return host.expect(",") + parameters()
+        return host.expect(",") + host.emit(", ") + host.name() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
     } else {
         return 0
     }
@@ -202,7 +202,7 @@ fn call_arguments()->int{
 
 fn following_arguments()->int{
     if (host.at(",") != 0) {
-        return host.expect(",") + call_arguments()
+        return host.expect(",") + host.emit(", ") + expression() + following_arguments()
     } else {
         return 0
     }

@@ -179,6 +179,7 @@ fn main(){
     for invalid in (
         "fn bad(a:bool)->int{ return 0 }",
         "fn bad(a:int,)->int{ return a }",
+        "fn bad(a:int)->int{ return a }\nfn main()->int{ return bad(1,) }",
     ):
         source.write_text("import host\n" + invalid, encoding="utf-8")
         results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
