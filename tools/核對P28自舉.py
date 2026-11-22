@@ -80,3 +80,42 @@ with TemporaryDirectory() as tmp:
                 assert code == 0 and not error and generated == (repo / "bootstrap/compiler_seed.inc").read_text(encoding="utf-8")
             else:
                 assert code == 1 and not generated and "預期函式名稱" in error, (code, error)
+
+    # 編譯並執行 voiles 產生的 Rust，與公開四入口交叉核對。
+    public = root / "public.voil"
+    rust_source = root / "expression.rs"
+    native = root / "expression"
+    for expr, expected in [("2 + 5 * 8", 42), ("(2 + 5) * 6", 42),
+                           ("95 - 8 - 45", 42), ("252 / 2 / 3", 42),
+                           ("(0 - 7) / 3 + 44", 42), ("1 / 0", None),
+                           ("9223372036854775807 * 2", None)]:
+        body = f"fn main()->int{{ return {expr} }}"
+        public.write_text(body, encoding="utf-8")
+        source.write_text("import host\n" + body, encoding="utf-8")
+        result = invoke(next_stage, "bootstrap-compiler", source)
+        assert result[0] == 0 and not result[2], result
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + result[1] + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        status = 1 if expected is None else expected
+        assert invoke(native) == (status, "", "")
+        assert invoke(next_stage, "check", public) == (0, "", "")
+        interpreted = invoke(next_stage, "run", public)
+        if expected is None:
+            assert interpreted[0] == 1 and "運算失敗" in interpreted[2], interpreted
+        else:
+            assert interpreted == (0, f"{expected}\n", ""), interpreted
+        for mode in ("build", "pack"):
+            exe = root / f"public-{mode}"
+            assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+            execution = invoke(exe)
+            assert execution == (status, "", interpreted[2]), execution
+            exe.unlink()
+    for expr in ("1 + )", "(2 + 3", "4 * / 2"):
+        source.write_text("import host\nfn main()->int{ return " + expr + " }", encoding="utf-8")
+        for cli in (seed, stage, next_stage):
+            code, generated, diagnostic = invoke(cli, "bootstrap-compiler", source)
+            assert code == 1 and not generated and diagnostic, (expr, code, diagnostic)
