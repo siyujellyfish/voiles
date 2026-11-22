@@ -7488,7 +7488,3 @@ mod g18_private_scalar_call_tests {
 
 
 }
-
-
-/// R06：跨各個原 Checker 已核准執行器的**真動態結果**整合回歸。
-/// 不假設各路徑已共享同一 runtime，亦不把 int 離域等同 OwnedStr Release。
