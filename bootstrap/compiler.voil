@@ -37,14 +37,50 @@ fn condition()->int{
 }
 
 fn expression()->int{
-    return atom() + additions()
+    return product() + additions()
 }
 
 fn additions()->int{
     if (host.at("+") != 0) {
-        return host.expect("+") + host.emit(".checked_add(") + atom() + host.emit(").ok_or(Fault::Overflow)?") + additions()
+        return host.expect("+") + host.emit(".checked_add(") + product() + host.emit(").ok_or(Fault::Overflow)?") + additions()
+    } else {
+        return subtractions()
+    }
+}
+
+fn subtractions()->int{
+    if (host.at("-") != 0) {
+        return host.expect("-") + host.emit(".checked_sub(") + product() + host.emit(").ok_or(Fault::Overflow)?") + additions()
     } else {
         return 0
+    }
+}
+
+fn product()->int{
+    return primary() + factors()
+}
+
+fn factors()->int{
+    if (host.at("*") != 0) {
+        return host.expect("*") + host.emit(".checked_mul(") + primary() + host.emit(").ok_or(Fault::Overflow)?") + factors()
+    } else {
+        return divisions()
+    }
+}
+
+fn divisions()->int{
+    if (host.at("/") != 0) {
+        return host.expect("/") + host.emit(".checked_div(") + primary() + host.emit(").ok_or(Fault::Overflow)?") + factors()
+    } else {
+        return 0
+    }
+}
+
+fn primary()->int{
+    if (host.at("(") != 0) {
+        return host.expect("(") + host.emit("(") + expression() + host.expect(")") + host.emit(")")
+    } else {
+        return atom()
     }
 }
 

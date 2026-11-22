@@ -36,14 +36,50 @@ Ok(s.expect("if")?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_a
 }
 fn v_expression(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-Ok(v_atom(s, depth + 1)?.checked_add(v_additions(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(v_product(s, depth + 1)?.checked_add(v_additions(s, depth + 1)?).ok_or(Fault::Overflow)?)
 }
 fn v_additions(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 if s.at("+")? != 0i64 {
-Ok(s.expect("+")?.checked_add(s.emit(".checked_add(")?).ok_or(Fault::Overflow)?.checked_add(v_atom(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(").ok_or(Fault::Overflow)?")?).ok_or(Fault::Overflow)?.checked_add(v_additions(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.expect("+")?.checked_add(s.emit(".checked_add(")?).ok_or(Fault::Overflow)?.checked_add(v_product(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(").ok_or(Fault::Overflow)?")?).ok_or(Fault::Overflow)?.checked_add(v_additions(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(v_subtractions(s, depth + 1)?)
+}
+}
+fn v_subtractions(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("-")? != 0i64 {
+Ok(s.expect("-")?.checked_add(s.emit(".checked_sub(")?).ok_or(Fault::Overflow)?.checked_add(v_product(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(").ok_or(Fault::Overflow)?")?).ok_or(Fault::Overflow)?.checked_add(v_additions(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 Ok(0i64)
+}
+}
+fn v_product(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+Ok(v_primary(s, depth + 1)?.checked_add(v_factors(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_factors(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("*")? != 0i64 {
+Ok(s.expect("*")?.checked_add(s.emit(".checked_mul(")?).ok_or(Fault::Overflow)?.checked_add(v_primary(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(").ok_or(Fault::Overflow)?")?).ok_or(Fault::Overflow)?.checked_add(v_factors(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(v_divisions(s, depth + 1)?)
+}
+}
+fn v_divisions(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("/")? != 0i64 {
+Ok(s.expect("/")?.checked_add(s.emit(".checked_div(")?).ok_or(Fault::Overflow)?.checked_add(v_primary(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(").ok_or(Fault::Overflow)?")?).ok_or(Fault::Overflow)?.checked_add(v_factors(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(0i64)
+}
+}
+fn v_primary(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("(")? != 0i64 {
+Ok(s.expect("(")?.checked_add(s.emit("(")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.emit(")")?).ok_or(Fault::Overflow)?)
+} else {
+Ok(v_atom(s, depth + 1)?)
 }
 }
 fn v_atom(s: &mut Machine, depth: usize) -> R {
