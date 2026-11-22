@@ -20,6 +20,15 @@ impl Emitter<'_> {
         }
     }
 
+    fn local_replace(&self, change: &LocalReplacement) -> Option<String> {
+        let text = match &change.rhs {
+            GraphemeReplacement::Literal(s) => format!("String::from({s:?})"),
+            GraphemeReplacement::Named(n) => format!("v{}.text.clone()", self.locals.get(n)?),
+        };
+        Some(format!("{{ let rhs = {text}; v{}.replace({}, &rhs).ok_or((site, ARITH))?; ResourceText::new(rhs) }}",
+            self.locals.get(&change.owner)?, self.offset(&change.index)?))
+    }
+
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
             Number::Lookup(key, entries) => {
@@ -62,11 +71,13 @@ impl Emitter<'_> {
                 let object = self.locals.get(owner)?;
                 format!("v{object}.integer({field:?}).ok_or((site, ARITH))?")
             }
-            Number::Consume { target, from, .. } => {
+            Number::Consume { target, from, .. } | Number::ConsumeText { target, source: from, .. } => {
                 let object = self.locals.get(from)?;
                 let function = self.functions.get(target.as_str())?;
                 format!("f{function}(globals, steps, depth + 1, site, v{object})?")
             }
+            Number::LocalByte(owner, i, j) => format!("v{}.byte({}, {}).ok_or((site, ARITH))?",
+                self.locals.get(owner)?, self.offset(i)?, self.offset(j)?),
             Number::Byte(place, i, j) => format!(
                 "globals[{}].byte({}, {}).ok_or((site, ARITH))?", place.slot, self.offset(i)?, self.offset(j)?),
             Number::Call(name, false) =>
@@ -89,7 +100,7 @@ impl LinkedProgram {
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
-        if !plan.globals.is_empty() {
+        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
             out.push_str(include_str!("native_strings.inc"));
@@ -102,7 +113,7 @@ impl LinkedProgram {
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument: String = signature.params.iter().map(|p| {
-                let ty = if matches!(p.ty.as_str(),"int" | "bool") { "i64" } else { "Object" };
+                let ty = match p.ty.as_str() { "int" | "bool" => "i64", "str" => "ResourceText", _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
@@ -138,6 +149,21 @@ impl LinkedProgram {
                     Action::Return(value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
                         writeln!(out, "return Ok({expr});").unwrap();
+                    }
+                    Action::ReplaceLocal(change) => {
+                        writeln!(out, "{};", emitter.local_replace(change).ok_or_else(unsupported)?).unwrap();
+                    }
+                    Action::StoreText { target, declaration, value } => {
+                        let rhs = match value {
+                            LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
+                            LocalText::Replace(change) => emitter.local_replace(change).ok_or_else(unsupported)?,
+                            LocalText::Move(source) => format!("v{}", emitter.locals.get(source).ok_or_else(unsupported)?),
+                            LocalText::Grapheme(source, index) => format!(
+                                "ResourceText::new(v{}.grapheme({}).ok_or((site, ARITH))?.to_owned())",
+                                emitter.locals.get(source).ok_or_else(unsupported)?, emitter.offset(index).ok_or_else(unsupported)?),
+                        };
+                        writeln!(out, "{}v{} = {rhs};", if declaration.is_some() { "let mut " } else { "" },
+                            emitter.local_id(target)).unwrap();
                     }
                     Action::Construct(name, fields, supplied) => {
                         let id = emitter.local_id(name);

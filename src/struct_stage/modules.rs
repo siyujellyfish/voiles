@@ -290,6 +290,7 @@ impl LinkedProgram {
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
                 let mut locals = HashMap::new();
+                let mut strings = HashMap::new();
                 if f.params.iter().all(|p| matches!(p.ty.as_str(), "int" | "bool")) {
                     for p in &f.params {
                         if locals.insert(p.name.clone(), false).is_some() {
@@ -298,15 +299,18 @@ impl LinkedProgram {
                     }
                     if !locals.is_empty() && f.is_async { return Err(u.error(f.start, f.end, "純量參數目前需要同步函式")); }
                 } else if let [p] = f.params.as_slice() {
-                    if f.is_async || graph.resolve_struct(id,&p.ty).is_none() {
+                    if p.ty == "str" && !f.is_async && f.result_ty == "int" {
+                        strings.insert(p.name.clone(), TextBinding::new(false));
+                    } else if !f.is_async && graph.resolve_struct(id,&p.ty).is_some() {
+                        objects.bind(&p.name,&p.ty,p.declaration_start);
+                    } else {
                         return Err(u.error(f.start,f.end,"跨檔持有者參數需要同步函式與可見結構型別"));
                     }
-                    objects.bind(&p.name,&p.ty,p.declaration_start);
                 } else {
                     return Err(u.error(f.start, f.end, "混合持有者參數尚未支援"));
                 }
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
-                    linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,aliases:HashMap::new() };
+                    linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
                 let typed_signature = f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool");
                 let body = if typed_signature {
                     scalar_flow::lower(&lower, f, id)
@@ -451,6 +455,22 @@ mod tests {
     }
 
     const MODEL:&str = "struct Box{\nvar _code:int = 7\nvar count:int = 3\nvar text:str = \"甲\"\nfn read()->int{\nreturn self._code\n}\nfn _hidden()->int{\nreturn self.count\n}\n}";
+
+    #[test]
+    fn moved_text_reaches_imported_function_and_unwinds_once() {
+        use ResourceEvent::*;
+        for index in [0, 2] {
+            let consumer = format!("fn read(s:str)->int{{ return s[{index}][0] }}");
+            let files = Files::new(&[
+                ("main.voil", "import consumer\nfn main()->int{\nvar s:str = \"*\"\nvar t:str = s.move()\nreturn consumer.read(t.move())\n}"),
+                ("consumer.voil", &consumer),
+            ]);
+            let (result, events) = LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+            assert_eq!(events, [Created(1), Moved(1), Moved(1), Released(1)]);
+            if index == 0 { assert_eq!(result.unwrap(), 42); }
+            else { assert!(matches!(result, Err(ModuleError::RuntimeAt { path, .. }) if path == files.0.join("consumer.voil"))); }
+        }
+    }
 
     #[test]
     fn moved_struct_reaches_imported_method_and_cleans_original_resource() {
