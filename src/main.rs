@@ -12,6 +12,7 @@ fn main() -> ExitCode {
     const HELP: &str = "用法：voiles <檔案.voil>（單檔靜態檢查）
       voiles check <入口.voil>（模組靜態檢查）
       voiles run <入口.voil> [-- 程式引數…]（執行並顯示 main 回傳值）
+      voiles test [專案目錄]（執行 test.voil）
       voiles build <入口.voil> -o <執行檔>
       voiles pack <入口.voil> -o <獨立執行檔>
       voiles --help | --version";
@@ -30,6 +31,23 @@ fn main() -> ExitCode {
         }
         Some("--help") if args.len() == 1 => println!("{HELP}"),
         Some("--version") if args.len() == 1 => println!("voiles {}", include_str!("../VERSION").trim()),
+        Some("test") if args.len() <= 2 => {
+            let root = args.get(1).map(Path::new).unwrap_or_else(|| Path::new("."));
+            let entry = root.join("test.voil");
+            match voiles_core::EntryProgram::prepare(&entry)
+                .and_then(|program| program.execute_with_args(&[]))
+            {
+                Ok(0) => (),
+                Ok(value) => {
+                    eprintln!("{}：測試失敗（回傳 {value}）", entry.display());
+                    return ExitCode::FAILURE;
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
         Some(command @ ("check" | "run")) if args.len() == 2 || (command=="run" && args.get(2).is_some_and(|a| a=="--")) => {
             let path = Path::new(&args[1]);
             if path.extension() != Some(OsStr::new("voil")) {
@@ -53,7 +71,7 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
-        Some("check" | "run" | "build" | "pack") => {
+        Some("check" | "run" | "test" | "build" | "pack") => {
             eprintln!("{HELP}");
             return ExitCode::from(2);
         }

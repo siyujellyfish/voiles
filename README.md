@@ -66,6 +66,8 @@ echo "$?"
 
 範例的程序結束狀態為 42。僅需將 pack 產生的單一 ELF 複製到相容的 Linux x86-64 機器；來源、voiles、rustc、動態載入器與動態函式庫均無須隨附。原生程式以結果的低八位作退出碼，執行錯誤退出 1 並寫入 stderr。目的檔已存在時建置失敗並保留舊檔。
 
+在詞數統計專案執行 `voiles test examples/詞數統計` 可直接核對純 voiles 測試。專案內執行 `voiles test` 會自動使用當前目錄的 test.voil。
+
 目前 main 的 check、run、build、pack 支援具名純量呼叫、控制流程、結構與資源移交、容器、Optional、字素索引與替換，以及有限 decimal64、字串格式化、具型別例外與直接 await。語法、相容決策及各項正反例見 [M7 公開語言施工](AI-build/M7公開語言施工.md)。
 
 ## 已驗收範圍
