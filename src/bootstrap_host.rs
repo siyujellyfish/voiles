@@ -93,8 +93,62 @@ pub fn compile_bootstrap_source(path: &Path) -> Result<String, String> {
     if let Some(d) = scanned.diagnostics.first() {
         return Err(format!("{}：{}", path.display(), d.message));
     }
+    compile_tokens(path, &source, scanned.tokens)
+}
+
+/// 自舉時由上一代的公開 run 入口執行 scanner.voil。Rust 只從已定位的
+/// 原始切片取得詞值，並拒絕順序、字元邊界或種類不相容的記號資料。
+pub fn compile_bootstrap_tokens(path: &Path, rows: &str) -> Result<String, String> {
+    let bytes = std::fs::read(path).map_err(|e| format!("{}：{e}", path.display()))?;
+    let source = Source::new(bytes);
+    if let Some(d) = source.lexical_diagnostics().first() {
+        return Err(format!("{}：{}", path.display(), d.message));
+    }
+    let input = std::str::from_utf8(&source.bytes).map_err(|e| e.to_string())?;
+    let mut tokens = Vec::new();
+    let mut previous = 0;
+    let mut ended = false;
+    for row in rows.lines() {
+        let invalid = || format!("{}：自舉記號資料無效", path.display());
+        let mut fields = row.split_ascii_whitespace();
+        let mut number = || fields.next().and_then(|s| s.parse::<usize>().ok()).ok_or_else(invalid);
+        let (code, start, end) = (number()?, number()?, number()?);
+        if fields.next().is_some() || ended || start < previous { return Err(invalid()); }
+        let gap = input.get(previous..start).ok_or_else(invalid)?;
+        if !gap.bytes().all(|c| matches!(c, b' ' | b'\t' | b'\n' | b'\r')) { return Err(invalid()); }
+        let raw = input.get(start..end).ok_or_else(invalid)?;
+        let kind = match code {
+            1 | 2 if raw.starts_with(|c:char| c.is_ascii_alphabetic() || c == '_')
+                && raw.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_') => {
+                if code == 1 { TokenKind::Keyword(raw.into()) } else { TokenKind::Name(raw.into()) }
+            }
+            3 if !raw.is_empty() && raw.bytes().all(|b| b.is_ascii_digit()) => TokenKind::Integer(raw.into()),
+            4 if raw.starts_with('"') => {
+                // 字串跳脫仍由正式字串解碼器處理，只讀取此一記號的切片。
+                let literal = lexer::scan(&Source::new(raw.as_bytes().to_vec()));
+                if let Some(d) = literal.diagnostics.first() {return Err(format!("{}：{}",path.display(),d.message));}
+                match literal.tokens.as_slice() {
+                    [Token {kind: TokenKind::StringLiteral(value),end:len,..}, Token {kind:TokenKind::End,..}] if *len == raw.len() =>
+                        TokenKind::StringLiteral(value.clone()),
+                    _ => return Err(invalid()),
+                }
+            }
+            5 if raw.chars().count() == 1 => TokenKind::Symbol(raw.chars().next().unwrap()),
+            6 if raw == "->" => TokenKind::Arrow,
+            7 if matches!(raw, "\r" | "\n" | "\r\n") => TokenKind::Newline,
+            9 if start == input.len() && raw.is_empty() => { ended = true; TokenKind::End }
+            _ => return Err(invalid()),
+        };
+        previous = end;
+        tokens.push(Token { kind, start, end });
+    }
+    if !ended { return Err(format!("{}：自舉記號缺少檔尾", path.display())); }
+    compile_tokens(path, &source, tokens)
+}
+
+fn compile_tokens(path: &Path, source: &Source, tokens: Vec<Token>) -> Result<String,String> {
     let mut machine = Machine {
-        tokens: scanned.tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
+        tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
         cursor: 0, steps: 0, output: String::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {

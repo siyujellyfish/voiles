@@ -60,3 +60,23 @@ with TemporaryDirectory() as tmp:
             exe = root / f"{action}-{idx}"
             assert invoke(cli, action, multi, "-o", exe)[0] == 0
             assert invoke(exe) == (42, "", "")
+
+    # 改變 voiles 掃描器的合法分類，真實的自舉解析結果必須跟著改變。
+    scanner_dir = repo / "bootstrap/lexer"
+    scanner = (scanner_dir / "scanner.voil").read_text(encoding="utf-8")
+    original = "if(keyword(key)){ kind = 1 } else { kind = 2 }"
+    assert scanner.count(original) == 1
+    (root / "scanner.voil").write_text(scanner.replace(original, "kind = 1"), encoding="utf-8")
+    entry = root / "lexer.voil"
+    entry.write_text((scanner_dir / "main.voil").read_text(encoding="utf-8"), encoding="utf-8")
+    for cli in (stage, next_stage):
+        tokens = root / "compiler.tokens"
+        for lexer, success in ((scanner_dir / "main.voil", True), (entry, False)):
+            code, rows, error = invoke(cli, "run", lexer, "--", compiler)
+            assert code == 0 and not error and rows.endswith("\n0\n"), (code, error)
+            tokens.write_text(rows[:-2], encoding="utf-8")
+            code, generated, error = invoke(cli, "bootstrap-compiler", compiler, "--tokens", tokens)
+            if success:
+                assert code == 0 and not error and generated == (repo / "bootstrap/compiler_seed.inc").read_text(encoding="utf-8")
+            else:
+                assert code == 1 and not generated and "預期函式名稱" in error, (code, error)

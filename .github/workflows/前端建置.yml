@@ -37,6 +37,16 @@ jobs:
           test -s target/p02/libvoiles_core.rlib
           test -x target/p02/voiles
 
+  bootstrap:
+    name: 詞法記號驅動的兩代重建
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - run: python3 tools/bootstrap.py target/seed
+      - run: python3 tools/核對P28自舉.py target/seed/voiles
+
   test:
     name: Rust 獨立架構測試
     needs: build
