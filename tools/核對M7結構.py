@@ -63,3 +63,6 @@ verify(cli, ((counter + 'fn main()->int{\n' + body + '\n}', expected) for body,e
     ("var a:Counter = Counter()\nreturn a.add(true)","reject"),
     ("var a:Counter = Counter(n=9223372036854775807)\nreturn a.add(1)","runtime"),
 ]))
+
+verify(cli, [('struct Constant{ fn get()->int{ return 42 } }\n'
+              'fn main()->int{ const c:Constant = Constant()\nreturn c.get() }',42)])
