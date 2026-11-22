@@ -101,6 +101,7 @@ type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 #[derive(Debug, Clone)]
 enum StmtKind {
     ReadonlyElement(Box<ReadonlyElementBlock>),
+    Evaluate(Term),
     GraphemeWrite(Term),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
@@ -827,7 +828,7 @@ impl VerifiedDeclarationFacts {
                         visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
                     StmtKind::ReadonlyElement(block) => visit(&block.body, direct_targets, borrow_targets, named_returns, field_writes),
-                    StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
+                    StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
             }
         }

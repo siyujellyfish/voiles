@@ -5,6 +5,24 @@ import sys
 
 cli = Path(sys.argv[1]).resolve(strict=True)
 cases = [
+    ('var a:list[int] = [1]\na.append(2) + 3\nreturn 0', "reject"),
+    ('var a:list[int] = [42]\nfor i in 0..2 { with a[0] as x { if(i != 1){ continue } '
+     'else { break } } }\na.append(0)\nwith a[0] as x { return x }', 42),
+    ('var a:list[int] = []\nfor i in 0..3 { a.append(i + 40) }\nreturn a.pop()', 42),
+    ('var d:dict{str,int} = {}\nd.set("x",1)\nd.set("x",42)\nwith d["x"] as x { return x }', 42),
+    ('var a:list[Optional[int,str]] = []\na.append(none)\na.append(42)\n'
+     'with a[1] as x { if(x != none){ if(x is int){ return x } } }\nreturn 0', 42),
+    ('var a:list[Optional[str]] = ["*"]\nwith a[0] as x { if(x == none){ return 0 } '
+     'else { return x[0][0] } }', 42),
+    ('var a:list[list[int]] = [[42]]\nwith a[0] as row { with row[0] as n { return n } }', 42),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { var b:list[Optional[int,bool]] = [x]\n'
+     'with b[0] as y { if(y != none){ if(y is int){ return y } } } }\nreturn 0', 42),
+    ('var a:list[Optional[int,str]] = [42]\nwith a[0] as x { var b:list[Optional[int,str]] = [x] }\nreturn 0', "reject"),
+    ('var a:list[int] = [1]\nwith a[0] as x { a.append(2) }\nreturn 0', "reject"),
+    ('const a:list[int] = []\na.append(2)\nreturn 0', "reject"),
+    ('var a:list[int] = []\nreturn a.pop()', "runtime"),
+    ('var a:list[int] = []\na.append(true)\nreturn 0', "reject"),
+    ('var d:dict{int,int} = {}\nd.set(true,42)\nreturn 0', "reject"),
     ('var d:dict{str,Optional[str,bool]} = {"甲":""}\nwith d["甲"] as x { '
      'if(x == none){ return 1 } else { if(x is str){ return 42 } } }\nreturn 0', 42),
     ('var a:list[Optional[int]] = [1]\nwith a[0] as x { if(x != none){ '
