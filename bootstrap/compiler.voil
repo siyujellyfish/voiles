@@ -93,7 +93,19 @@ fn statement()->int{
 }
 
 fn match_statement()->int{
-    return host.expect("match") + host.match_start() + host.expect("(") + expression() + host.expect(")") + host.emit(" {\n") + host.expect("{") + match_arms() + host.expect("}") + host.finish_match() + after_match()
+    return host.expect("match") + host.match_start() + host.expect("(") + match_subject() + host.expect(")") + host.emit(" {\n") + host.expect("{") + match_arms() + host.expect("}") + host.finish_match() + after_match()
+}
+
+fn match_subject()->int{
+    if (host.at("true") != 0) {
+        return host.match_boolean_subject()
+    } else {
+        if (host.at("false") != 0) {
+            return host.match_boolean_subject()
+        } else {
+            return host.match_integer_subject() + expression()
+        }
+    }
 }
 
 fn match_arms()->int{

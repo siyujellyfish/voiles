@@ -8,6 +8,9 @@ use std::path::{Path, PathBuf};
 enum Fault { Syntax(String), Overflow, Limit }
 type R = Result<i64, Fault>;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum MatchKind { Integer, Boolean }
+
 struct Machine {
     tokens: Vec<Token>,
     cursor: usize,
@@ -37,7 +40,7 @@ struct Machine {
     pending_dict_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
-    pending_matches: Vec<(BTreeSet<i64>, bool, usize)>,
+    pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize)>,
 }
 
 impl Machine {
@@ -276,56 +279,93 @@ impl Machine {
         Ok(0)
     }
     fn match_start(&mut self) -> R {
-        self.pending_matches.push((BTreeSet::new(), false, 0));
+        self.pending_matches.push((None, BTreeSet::new(), false, 0));
         self.emit("match ")
     }
-    fn match_pattern(&mut self) -> R {
-        let (negative, raw) = if self.matched_width("-") != 0 {
-            self.cursor += 1;
-            let TokenKind::Integer(raw) = self.token() else {
-                return Err(Fault::Syntax("case 需要整數常值".into()));
-            };
-            (true, raw.clone())
-        } else {
-            let TokenKind::Integer(raw) = self.token() else {
-                return Err(Fault::Syntax("case 需要整數常值".into()));
-            };
-            (false, raw.clone())
+    fn match_integer_subject(&mut self) -> R {
+        let Some((kind, _, _, _)) = self.pending_matches.last_mut() else {
+            return Err(Fault::Syntax("match 邊界無效".into()));
         };
-        let value = if negative {
-            crate::syntax_shared::negative_integer_i64(&raw)
-        } else {
-            crate::syntax_shared::integer_i64(&raw)
-        }.map_err(|_| Fault::Syntax("case 整數常值無效".into()))?;
+        *kind = Some(MatchKind::Integer);
+        Ok(0)
+    }
+    fn match_boolean_subject(&mut self) -> R {
+        let value = if self.matched_width("true") != 0 { "true" }
+            else if self.matched_width("false") != 0 { "false" }
+            else { return Err(Fault::Syntax("match 需要布林常值".into())); };
+        let Some((kind, _, _, _)) = self.pending_matches.last_mut() else {
+            return Err(Fault::Syntax("match 邊界無效".into()));
+        };
+        *kind = Some(MatchKind::Boolean);
         self.cursor += 1;
-        let Some((seen, wildcard, _)) = self.pending_matches.last_mut() else {
+        self.emit(value)
+    }
+    fn match_pattern(&mut self) -> R {
+        let Some(kind) = self.pending_matches.last().and_then(|(kind, _, _, _)| *kind) else {
+            return Err(Fault::Syntax("match 邊界無效".into()));
+        };
+        let (value, emitted) = match kind {
+            MatchKind::Integer => {
+                let (negative, raw) = if self.matched_width("-") != 0 {
+                    self.cursor += 1;
+                    let TokenKind::Integer(raw) = self.token() else {
+                        return Err(Fault::Syntax("case 需要整數常值".into()));
+                    };
+                    (true, raw.clone())
+                } else {
+                    let TokenKind::Integer(raw) = self.token() else {
+                        return Err(Fault::Syntax("case 需要整數常值".into()));
+                    };
+                    (false, raw.clone())
+                };
+                let value = if negative {
+                    crate::syntax_shared::negative_integer_i64(&raw)
+                } else {
+                    crate::syntax_shared::integer_i64(&raw)
+                }.map_err(|_| Fault::Syntax("case 整數常值無效".into()))?;
+                (value, format!("{value}i64"))
+            }
+            MatchKind::Boolean => {
+                let value = if self.matched_width("true") != 0 { 1 }
+                    else if self.matched_width("false") != 0 { 0 }
+                    else { return Err(Fault::Syntax("case 需要布林常值".into())); };
+                (value, if value == 1 { "true".into() } else { "false".into() })
+            }
+        };
+        self.cursor += 1;
+        let Some((_, seen, wildcard, _)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         if *wildcard { return Err(Fault::Syntax("預設分支只能位於末尾".into())); }
         if !seen.insert(value) { return Err(Fault::Syntax("case 常值重複".into())); }
-        self.emit(&format!("{value}i64 => {{\n"))
+        self.emit(&format!("{emitted} => {{\n"))
     }
     fn match_wildcard(&mut self) -> R {
         self.expect("_")?;
-        let Some((_, wildcard, _)) = self.pending_matches.last_mut() else {
+        let Some((kind, seen, wildcard, _)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         if *wildcard { return Err(Fault::Syntax("預設分支重複".into())); }
+        if *kind == Some(MatchKind::Boolean) && seen.len() == 2 {
+            return Err(Fault::Syntax("所有布林值都已有分支".into()));
+        }
         *wildcard = true;
         self.emit("_ => {\n")
     }
     fn finish_match_arm(&mut self) -> R {
-        let Some((_, _, arms)) = self.pending_matches.last_mut() else {
+        let Some((_, _, _, arms)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         *arms += 1;
         self.emit("},\n")
     }
     fn finish_match(&mut self) -> R {
-        let (_, wildcard, arms) = self.pending_matches.pop()
+        let (kind, seen, wildcard, arms) = self.pending_matches.pop()
             .ok_or_else(|| Fault::Syntax("match 邊界無效".into()))?;
+        if kind.is_none() { return Err(Fault::Syntax("match 缺少比對值".into())); }
         if arms == 0 { return Err(Fault::Syntax("match 需要至少一個 case".into())); }
-        if !wildcard { self.emit("_ => {},\n")?; }
+        let exhaustive_boolean = kind == Some(MatchKind::Boolean) && seen.len() == 2;
+        if !wildcard && !exhaustive_boolean { self.emit("_ => {},\n")?; }
         self.emit("}\n")
     }
     fn local(&mut self) -> R {
@@ -776,7 +816,8 @@ impl Machine {
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
-                    "finish_dict_set" | "return_start" | "match_start" | "match_pattern" |
+                    "finish_dict_set" | "return_start" | "match_start" | "match_integer_subject" |
+                    "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }

@@ -92,7 +92,19 @@ Ok(v_control(s, depth + 1)?)
 }
 fn v_match_statement(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-Ok(s.expect("match")?.checked_add(s.match_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.emit(" {\n")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_match_arms(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_match()?).ok_or(Fault::Overflow)?.checked_add(v_after_match(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.expect("match")?.checked_add(s.match_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(v_match_subject(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.emit(" {\n")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_match_arms(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_match()?).ok_or(Fault::Overflow)?.checked_add(v_after_match(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_match_subject(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("true")? != 0i64 {
+Ok(s.match_boolean_subject()?)
+} else {
+if s.at("false")? != 0i64 {
+Ok(s.match_boolean_subject()?)
+} else {
+Ok(s.match_integer_subject()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
 }
 fn v_match_arms(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;

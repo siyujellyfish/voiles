@@ -650,10 +650,57 @@ fn main(){
     assert invoke(next_stage, "check", public) == (0, "", "")
     assert invoke(next_stage, "run", public) == (0, "42\n", "")
 
+    boolean_match = ('fn main()->int{\nmatch(true){\ncase false{ return 1 }\n'
+                     'case true{ return 42 }\n}\n}')
+    source.write_text("import host\n" + boolean_match, encoding="utf-8")
+    generated_boolean_matches = [invoke(cli, "bootstrap-compiler", source)
+                                 for cli in (seed, stage, next_stage)]
+    assert generated_boolean_matches[0] == generated_boolean_matches[1] == generated_boolean_matches[2]
+    code, generated, error = generated_boolean_matches[2]
+    assert (code == 0 and not error and "match true" in generated
+            and "false =>" in generated and "true =>" in generated
+            and "_ => {}," not in generated and generated.count("match true") == 1)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(boolean_match, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"boolean-match-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    boolean_fallthrough = ('fn main()->int{\nmatch(false){\ncase true{ return 1 }\n}\n'
+                           'return 42\n}')
+    source.write_text("import host\n" + boolean_fallthrough, encoding="utf-8")
+    generated_boolean_fallthrough = [invoke(cli, "bootstrap-compiler", source)
+                                     for cli in (seed, stage, next_stage)]
+    assert generated_boolean_fallthrough[0] == generated_boolean_fallthrough[1] == generated_boolean_fallthrough[2]
+    code, generated, error = generated_boolean_fallthrough[2]
+    assert code == 0 and not error and "_ => {}," in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(boolean_fallthrough, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+
     invalid_matches = (
         "fn main()->int{ match(1){} return 0 }",
         "fn main()->int{ match(1){ case 1{ return 0 } case 0x1{ return 1 } } return 0 }",
         "fn main()->int{ match(1){ case true{ return 1 } } return 0 }",
+        "fn main()->int{ match(true){ case 1{ return 1 } } return 0 }",
+        "fn main()->int{ match(true){ case true{ return 1 } case true{ return 0 } } }",
+        "fn main()->int{ match(true){ case true{ return 1 } case false{ return 0 } case _{ return 2 } } }",
         "fn main()->int{ match(1){ case 1+0{ return 1 } } return 0 }",
         "fn main()->int{ match(1){ case _{ return 0 } case 1{ return 1 } } }",
     )
