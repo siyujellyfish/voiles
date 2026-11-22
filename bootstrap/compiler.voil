@@ -100,7 +100,11 @@ fn local()->int{
     if (host.at_list_local() != 0) {
         return list_local()
     } else {
-        return struct_local()
+        if (host.at_dict_local() != 0) {
+            return dict_local()
+        } else {
+            return struct_local()
+        }
     }
 }
 
@@ -123,6 +127,26 @@ fn list_items()->int{
 fn following_list_items()->int{
     if (host.at(",") != 0) {
         return host.expect(",") + host.list_item() + expression() + following_list_items()
+    } else {
+        return 0
+    }
+}
+
+fn dict_local()->int{
+    return host.expect("var") + host.dict_local() + host.expect(":") + host.expect("dict") + host.expect("{") + host.expect("str") + host.expect(",") + host.expect("int") + host.expect("}") + host.expect("=") + host.expect("{") + dict_items() + host.expect("}") + host.finish_dict() + host.emit(";\n")
+}
+
+fn dict_items()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        return host.dict_key() + expression() + host.emit(")") + following_dict_items()
+    }
+}
+
+fn following_dict_items()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.dict_key() + expression() + host.emit(")") + following_dict_items()
     } else {
         return 0
     }

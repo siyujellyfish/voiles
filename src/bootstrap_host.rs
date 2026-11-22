@@ -29,6 +29,8 @@ struct Machine {
     pending_constructor: Option<String>,
     constructor_fields: BTreeSet<String>,
     list_items: usize,
+    dict_items: usize,
+    dict_keys: BTreeSet<String>,
     pending_list_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
 }
@@ -89,6 +91,12 @@ impl Machine {
             && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "list"))))
+    }
+    fn at_dict_local(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Keyword(k) if k == "var")
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "dict"))))
     }
     fn at_len(&self) -> R {
         Ok(i64::from(self.matched_width("len") != 0
@@ -222,6 +230,8 @@ impl Machine {
         self.pending_constructor = None;
         self.constructor_fields.clear();
         self.list_items = 0;
+        self.dict_items = 0;
+        self.dict_keys.clear();
         self.pending_list_borrow = None;
         self.pending_list_append = None;
         Ok(0)
@@ -317,15 +327,47 @@ impl Machine {
         self.list_items = 0;
         self.emit("]")
     }
+    fn dict_local(&mut self) -> R {
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {name}")));
+        }
+        self.locals.insert(name.clone(), "dict:str:int".into());
+        self.dict_items = 0;
+        self.dict_keys.clear();
+        self.emit(&format!("let mut v_{name}: Vec<(&'static str, i64)> = vec!["))
+    }
+    fn dict_key(&mut self) -> R {
+        let TokenKind::StringLiteral(key) = self.token() else {
+            return Err(Fault::Syntax("dict{str,int} 的鍵必須是 str 常值".into()));
+        };
+        let key = key.clone();
+        if !self.dict_keys.insert(key.clone()) {
+            return Err(Fault::Syntax(format!("字典常值的鍵重複：{key}")));
+        }
+        self.cursor += 1;
+        self.expect(":")?;
+        let comma = if self.dict_items == 0 { "" } else { "," };
+        self.dict_items += 1;
+        self.emit(&format!("{comma}({key:?},"))
+    }
+    fn finish_dict(&mut self) -> R {
+        self.dict_items = 0;
+        self.dict_keys.clear();
+        self.emit("]")
+    }
     fn list_len(&mut self) -> R {
         self.expect("len")?;
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
-        if self.locals.get(&name).map(String::as_str) != Some("list:int") {
-            return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
+        if !matches!(self.locals.get(&name).map(String::as_str),
+            Some("list:int" | "dict:str:int")) {
+            return Err(Fault::Syntax(format!("{name} 不是已支援的容器")));
         }
-        self.emit(&format!("v_{name}.len() as i64"))
+        self.emit(&format!("(v_{name}.len() as i64)"))
     }
     fn list_append(&mut self) -> R {
         let name = self.take_name()?;
@@ -447,13 +489,14 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_len" | "at_list_append" | "at_list_pop" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_dict_local" | "at_len" | "at_list_append" | "at_list_pop" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
                     "field_default" | "finish_structure" | "local" | "local_type" | "constructor" |
                     "constructor_field" | "finish_constructor" | "field_value" | "field_target" |
-                    "list_local" | "list_item" | "finish_list" | "list_len" | "list_append" |
+                    "list_local" | "list_item" | "finish_list" | "dict_local" | "dict_key" |
+                    "finish_dict" | "list_len" | "list_append" |
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "return_start" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
@@ -630,7 +673,8 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
-        constructor_fields: BTreeSet::new(), list_items: 0, pending_list_borrow: None,
+        constructor_fields: BTreeSet::new(), list_items: 0, dict_items: 0,
+        dict_keys: BTreeSet::new(), pending_list_borrow: None,
         pending_list_append: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
