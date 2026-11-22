@@ -265,6 +265,42 @@ fn main(){
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
 
+    # list[int] 常值逐項走受檢運算式，len 由已解析的區域容器身分產生。
+    lists = "fn main()->int{\nvar xs:list[int] = [40,2]\nreturn 40+len(xs)\n}"
+    source.write_text("import host\n" + lists, encoding="utf-8")
+    generated_lists = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_lists[0] == generated_lists[1] == generated_lists[2]
+    code, generated, error = generated_lists[2]
+    assert code == 0 and not error and "Vec<i64> = vec![" in generated and ".len() as i64" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(lists, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"list-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_lists = (
+        "fn main()->int{ var xs:list[int] = [true] return 0 }",
+        "fn main()->int{ var xs:list[int] = [1,] return 0 }",
+        "fn main()->int{ return len(xs) }",
+        "fn main()->int{ var xs:list[int] = [1,2 return 0 }",
+        "fn main()->int{ var xs:list[int] = [] var xs:list[int] = [] return 0 }",
+    )
+    for invalid in invalid_lists:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
     for invalid in (
         "fn bad(a:bool)->int{ return 0 }",
         "fn bad(a:int,)->int{ return a }",

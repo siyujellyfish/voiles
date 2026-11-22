@@ -28,6 +28,7 @@ struct Machine {
     pending_local: Option<(String, String)>,
     pending_constructor: Option<String>,
     constructor_fields: BTreeSet<String>,
+    list_items: usize,
 }
 
 impl Machine {
@@ -80,6 +81,18 @@ impl Machine {
             && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('='))))
+    }
+    fn at_list_local(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Keyword(k) if k == "var")
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "list"))))
+    }
+    fn at_len(&self) -> R {
+        Ok(i64::from(self.matched_width("len") != 0
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol(')'))))
     }
     fn expect(&mut self, text: &str) -> R {
         let width = self.matched_width(text);
@@ -195,6 +208,7 @@ impl Machine {
         self.pending_local = None;
         self.pending_constructor = None;
         self.constructor_fields.clear();
+        self.list_items = 0;
         Ok(0)
     }
     fn local(&mut self) -> R {
@@ -213,7 +227,7 @@ impl Machine {
             *pending = kind.clone();
             name.clone()
         };
-        self.locals.insert(name, kind.clone());
+        self.locals.insert(name, format!("struct:{kind}"));
         let ident = self.struct_ident(&kind);
         self.emit(&format!(": {ident}"))
     }
@@ -252,7 +266,8 @@ impl Machine {
         let local = self.take_name()?;
         self.expect(".")?;
         let field = self.take_name()?;
-        let kind = self.locals.get(&local).ok_or_else(|| Fault::Syntax(format!("未知區域名稱 {local}")))?;
+        let kind = self.locals.get(&local).and_then(|kind| kind.strip_prefix("struct:"))
+            .ok_or_else(|| Fault::Syntax(format!("{local} 不是結構")))?;
         if !self.structures.get(kind).expect("區域結構已驗證").iter().any(|(name, _)| name == &field) {
             return Err(Fault::Syntax(format!("未知欄位 {field}")));
         }
@@ -262,11 +277,40 @@ impl Machine {
         let local = self.take_name()?;
         self.expect(".")?;
         let field = self.take_name()?;
-        let kind = self.locals.get(&local).ok_or_else(|| Fault::Syntax(format!("未知區域名稱 {local}")))?;
+        let kind = self.locals.get(&local).and_then(|kind| kind.strip_prefix("struct:"))
+            .ok_or_else(|| Fault::Syntax(format!("{local} 不是結構")))?;
         if !self.structures.get(kind).expect("區域結構已驗證").iter().any(|(name, _)| name == &field) {
             return Err(Fault::Syntax(format!("未知欄位 {field}")));
         }
         self.emit(&format!("v_{local}.f_{field} = "))
+    }
+    fn list_local(&mut self) -> R {
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) { return Err(Fault::Syntax(format!("重複區域名稱 {name}"))); }
+        self.locals.insert(name.clone(), "list:int".into());
+        self.list_items = 0;
+        self.emit(&format!("let v_{name}: Vec<i64> = vec!["))
+    }
+    fn list_item(&mut self) -> R {
+        if self.list_items != 0 { self.emit(",")?; }
+        self.list_items += 1;
+        Ok(0)
+    }
+    fn finish_list(&mut self) -> R {
+        self.list_items = 0;
+        self.emit("]")
+    }
+    fn list_len(&mut self) -> R {
+        self.expect("len")?;
+        self.expect("(")?;
+        let name = self.take_name()?;
+        self.expect(")")?;
+        if self.locals.get(&name).map(String::as_str) != Some("list:int") {
+            return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
+        }
+        self.emit(&format!("v_{name}.len() as i64"))
     }
     fn call(&mut self) -> R {
         let name = self.take_name()?;
@@ -323,13 +367,13 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_len" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
                     "field_default" | "finish_structure" | "local" | "local_type" | "constructor" |
                     "constructor_field" | "finish_constructor" | "field_value" | "field_target" |
-                    "method" | "literal") {
+                    "list_local" | "list_item" | "finish_list" | "list_len" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -504,7 +548,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
-        constructor_fields: BTreeSet::new(),
+        constructor_fields: BTreeSet::new(), list_items: 0,
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);

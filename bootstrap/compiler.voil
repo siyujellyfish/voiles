@@ -81,7 +81,35 @@ fn statement()->int{
 }
 
 fn local()->int{
+    if (host.at_list_local() != 0) {
+        return list_local()
+    } else {
+        return struct_local()
+    }
+}
+
+fn struct_local()->int{
     return host.expect("var") + host.local() + host.expect(":") + host.local_type() + host.expect("=") + host.constructor() + host.expect("(") + constructor_arguments() + host.expect(")") + host.finish_constructor() + host.emit(";\n")
+}
+
+fn list_local()->int{
+    return host.expect("var") + host.list_local() + host.expect(":") + host.expect("list") + host.expect("[") + host.expect("int") + host.expect("]") + host.expect("=") + host.expect("[") + list_items() + host.expect("]") + host.finish_list() + host.emit(";\n")
+}
+
+fn list_items()->int{
+    if (host.at("]") != 0) {
+        return 0
+    } else {
+        return host.list_item() + expression() + following_list_items()
+    }
+}
+
+fn following_list_items()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.list_item() + expression() + following_list_items()
+    } else {
+        return 0
+    }
 }
 
 fn constructor_arguments()->int{
@@ -227,16 +255,20 @@ fn atom()->int{
         if (host.at("host") != 0) {
             return call()
         } else {
-            if (host.at_module_call() != 0) {
-                return call()
+            if (host.at_len() != 0) {
+                return host.list_len()
             } else {
-                if (host.at_call() != 0) {
+                if (host.at_module_call() != 0) {
                     return call()
                 } else {
-                    if (host.at_field() != 0) {
-                        return host.field_value()
+                    if (host.at_call() != 0) {
+                        return call()
                     } else {
-                        return host.value()
+                        if (host.at_field() != 0) {
+                            return host.field_value()
+                        } else {
+                            return host.value()
+                        }
                     }
                 }
             }
