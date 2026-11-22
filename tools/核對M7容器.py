@@ -130,3 +130,13 @@ verify(cli, [
 verify(cli, [('fn main()->int{ var d:dict{str,int} = {}\nvar key:str = "甲"\n'
               'd.set(key,42)\nkey = "乙"\nd.set(key,2)\n'
               'with d["甲"] as a { with d[key] as b { return a + b - 2 } } }',42)])
+
+branch_owner = "fn main()->int{ var a:list[int] = [42]\n"
+verify(cli, [(branch_owner + body + " }",expected) for body,expected in [
+    ("if(true){ var b:list[int] = a.move()\nreturn len(b) }\nreturn len(a)",1),
+    ("if(false){ var b:list[int] = a.move()\nreturn len(b) }\nreturn len(a)",1),
+    ("if(true){ var b:list[int] = a.move() }\nreturn len(a)","reject"),
+    ("if(false){ var b:list[int] = a.move()\nreturn len(b) } else { var c:list[int] = a.move()\nreturn len(c) }",1),
+    ("while(false){ var b:list[int] = a.move() }\nreturn len(a)","reject"),
+    ("with a[0] as x { if(true){ var b:list[int] = a.move() } }\nreturn 0","reject"),
+]])

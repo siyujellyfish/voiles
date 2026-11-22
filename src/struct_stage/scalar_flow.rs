@@ -37,6 +37,7 @@ struct Builder<'a,'b> {
     body: Body,
     scopes: Vec<HashMap<String, Binding>>,
     loops: Vec<Loop>,
+    move_floor: usize,
     next_slot: usize,
     candidate_sites: HashMap<usize, String>,
     containers: std::cell::RefCell<BTreeSet<String>>,
@@ -49,7 +50,7 @@ struct Builder<'a,'b> {
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
+        scopes: vec![HashMap::new()], loops: Vec::new(), move_floor: 0, next_slot: 0, candidate_sites: HashMap::new(), containers: Default::default(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
     for p in &function.params {
         if stored_type(&p.ty) {
             builder.containers.borrow_mut().insert(p.name.clone());
@@ -349,10 +350,9 @@ impl Builder<'_, '_> {
                 ContainerInit::Literal(value)
             }
             TermKind::Move(source) => {
-                // 在同一區域內，移動必然與來源宣告沿同一路徑執行。
-                // 外層來源可能只在某一條分支移走，亦可能仍有 with 借用。
-                let owner = self.scopes.last()?.get(source)?;
-                if owner.ty != declaration.ty { return None; }
+                let owner = self.scopes[self.move_floor..].iter().rev()
+                    .find_map(|scope| scope.get(source))?;
+                if owner.ty != declaration.ty || self.borrowed.contains(&owner.slot) { return None; }
                 let slot = owner.slot.clone();
                 if !self.containers.borrow_mut().remove(&slot) { return None; }
                 ContainerInit::Move(slot)
@@ -434,6 +434,14 @@ impl Builder<'_, '_> {
         }
     }
     fn block(&mut self, stmts:&[Stmt], nested:bool) -> Result<bool, Diagnostic> {
+        // 迴圈、例外與元素借用各自建立移動邊界；if 的兩臂則在既有邊界內合流。
+        let floor = if nested { self.scopes.len() } else { self.scopes.len() - 1 };
+        let previous = std::mem::replace(&mut self.move_floor, floor);
+        let result = self.branch_block(stmts, nested);
+        self.move_floor = previous;
+        result
+    }
+    fn branch_block(&mut self, stmts:&[Stmt], nested:bool) -> Result<bool, Diagnostic> {
         if nested { self.scopes.push(HashMap::new()); }
         let storage_depth = self.storage.len();
         let mut closed=false;
@@ -569,13 +577,18 @@ impl Builder<'_, '_> {
                     let entry_flags=self.flags.borrow().clone();
                     let before=self.narrowed.borrow().clone();
                     self.refine(&branch.condition,true);
-                    let yes=self.block(&branch.body.statements,true)?;
+                    let entry_owners=self.containers.borrow().clone();
+                    let yes=self.branch_block(&branch.body.statements,true)?;
+                    let yes_owners=self.containers.replace(entry_owners.clone());
                     let yes_facts=self.narrowed.replace(before.clone());
                     let end=(!yes).then(||self.step(s,Action::Jump(0)));
                     self.patch(skip,self.body.len());
                     self.flags.replace(entry_flags);
                     self.refine(&branch.condition,false);
-                    let no_closed=if let Some(other)=no { self.block(other.as_slice(),true)? } else {false};
+                    let no_closed=if let Some(other)=no { self.branch_block(other.as_slice(),true)? } else {false};
+                    let no_owners=self.containers.replace(entry_owners);
+                    self.containers.borrow_mut().retain(|slot|
+                        (yes || yes_owners.contains(slot)) && (no_closed || no_owners.contains(slot)));
                     let no_facts=self.narrowed.replace(before);
                     self.narrowed.borrow_mut().retain(|slot,ty|
                         (yes || yes_facts.get(slot)==Some(ty)) && (no_closed || no_facts.get(slot)==Some(ty)));
