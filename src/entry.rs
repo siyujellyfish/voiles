@@ -5,6 +5,8 @@ use crate::Diagnostic;
 use crate::owned_str_runtime::StrRuntimeError;
 use std::path::Path;
 
+const BOOTSTRAP_MAX_STEPS: usize = 400_000;
+
 pub struct EntryProgram(LinkedProgram);
 
 impl EntryProgram {
@@ -31,7 +33,7 @@ impl EntryProgram {
 
     #[doc(hidden)]
     pub fn execute_bootstrap_with_args(&self, args:&[std::ffi::OsString]) -> Result<i64, String> {
-        let (result, _) = self.0.execute_with_args_and_steps(args,250_000).map_err(module_error)?;
+        let (result, _) = self.0.execute_with_args_and_steps(args,BOOTSTRAP_MAX_STEPS).map_err(module_error)?;
         result.map_err(module_error)
     }
 }
