@@ -185,7 +185,7 @@ impl LinkedProgram {
                 let ty = match p.ty.as_str() { "int" | "bool" => "i64", "str" => "ResourceText", _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
-            let ret = if signature.result_ty == "str" { "ResourceText" } else { "i64" };
+            let ret = if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             if body.iter().any(|step| matches!(step.action, Action::Container(..))) {
@@ -228,6 +228,13 @@ impl LinkedProgram {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
                         let local = emitter.local_id(name);
                         writeln!(out, "{}v{local} = {expr};", if flow { "" } else { "let " }).unwrap();
+                    }
+                    Action::ReceiveObject {target,owner} => {
+                        let called = *emitter.functions.get(target.as_str()).ok_or_else(unsupported)?;
+                        writeln!(out,"let mut v{} = f{called}(globals, steps, depth + 1, site)?;",emitter.local_id(owner)).unwrap();
+                    }
+                    Action::ReturnObject(owner) => {
+                        writeln!(out,"return Ok(v{});",emitter.locals.get(owner).ok_or_else(unsupported)?).unwrap();
                     }
                     Action::ReturnText(value) => {
                         writeln!(out, "return Ok({});", emitter.local_text(value).ok_or_else(unsupported)?).unwrap();
