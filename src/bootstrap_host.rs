@@ -5,11 +5,14 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 #[derive(Debug)]
-enum Fault { Syntax(String), Overflow, Limit }
+enum Fault { Syntax(String), Overflow, Conversion, Limit }
 type R = Result<i64, Fault>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum MatchKind { Integer, Boolean }
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExceptionKind { Evaluation, Conversion }
 
 struct Machine {
     tokens: Vec<Token>,
@@ -41,14 +44,13 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize)>,
-    pending_tries: Vec<(bool, Option<(String, Option<String>)>)>,
+    pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>)>,
 }
 
 impl Machine {
     fn enter(&mut self, depth: usize) -> Result<(), Fault> {
-        let budget = crate::execution::ExecutionBudget::default();
         self.steps += 1;
-        if depth >= budget.max_call_frames || self.steps > budget.max_steps {
+        if depth >= 192 || self.steps > 400_000 {
             return Err(Fault::Limit);
         }
         Ok(())
@@ -72,6 +74,22 @@ impl Machine {
     fn at(&self, text: &str) -> R { Ok(i64::from(self.matched_width(text) != 0)) }
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
+    fn at_str_local(&self) -> R {
+        Ok(i64::from(self.matched_width("const") != 0
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "str"))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('='))
+            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)))))
+    }
+    fn at_conversion(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(ref name)
+                if self.locals.get(name).map(String::as_str) == Some("str"))
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "to_int"))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol(')'))))
+    }
     fn at_call(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Name(_))
             && self.tokens.get(self.cursor + 1).is_some_and(|token|
@@ -281,37 +299,90 @@ impl Machine {
         Ok(0)
     }
     fn try_start(&mut self) -> R {
-        self.pending_tries.push((false, None));
+        self.pending_tries.push((false, None, None));
         self.emit("match (|| -> R {\n")
     }
     fn try_handler(&mut self) -> R {
-        let Some((handler, _)) = self.pending_tries.last_mut() else {
+        let Some((handler, _, _)) = self.pending_tries.last_mut() else {
             return Err(Fault::Syntax("try 邊界無效".into()));
         };
         if *handler { return Err(Fault::Syntax("try 處理區塊重複".into())); }
         *handler = true;
-        self.emit("})() {\nOk(value) => return Ok(value),\nErr(Fault::Overflow) => {\n")
+        self.emit("})() {\nOk(value) => return Ok(value),\n")
+    }
+    fn exception_category(&mut self) -> R {
+        let (kind, fault) = if self.matched_width("EvaluationError") != 0 {
+            (ExceptionKind::Evaluation, "Overflow")
+        } else if self.matched_width("TypeConversationError") != 0 {
+            (ExceptionKind::Conversion, "Conversion")
+        } else {
+            return Err(Fault::Syntax("未知的例外型別".into()));
+        };
+        let Some((handler, category, _)) = self.pending_tries.last_mut() else {
+            return Err(Fault::Syntax("except 型別不在處理區塊中".into()));
+        };
+        if !*handler { return Err(Fault::Syntax("except 型別邊界無效".into())); }
+        if category.is_some() { return Err(Fault::Syntax("except 型別重複".into())); }
+        *category = Some(kind);
+        self.cursor += 1;
+        self.emit(&format!("Err(Fault::{fault}) => {{\n"))
     }
     fn exception_binding(&mut self) -> R {
         let name = self.take_name()?;
-        let Some((handler, binding)) = self.pending_tries.last_mut() else {
+        let Some((handler, category, binding)) = self.pending_tries.last_mut() else {
             return Err(Fault::Syntax("except 綁定不在處理區塊中".into()));
         };
         if !*handler { return Err(Fault::Syntax("except 綁定邊界無效".into())); }
+        let message = match category {
+            Some(ExceptionKind::Evaluation) => "運算失敗",
+            Some(ExceptionKind::Conversion) => "整數轉換失敗",
+            None => return Err(Fault::Syntax("except 綁定缺少例外型別".into())),
+        };
         if binding.is_some() { return Err(Fault::Syntax("except 綁定重複".into())); }
         let previous = self.locals.insert(name.clone(), "error:str".into());
         *binding = Some((name.clone(), previous));
-        self.emit(&format!("let v_{name}: &'static str = \"運算失敗\";\n"))
+        self.emit(&format!("let v_{name}: &'static str = {message:?};\n"))
     }
     fn finish_try(&mut self) -> R {
-        let (handler, binding) = self.pending_tries.pop()
+        let (handler, category, binding) = self.pending_tries.pop()
             .ok_or_else(|| Fault::Syntax("try 邊界無效".into()))?;
         if !handler { return Err(Fault::Syntax("try 缺少具型別的 except".into())); }
+        if category.is_none() { return Err(Fault::Syntax("try 缺少例外型別".into())); }
         if let Some((name, previous)) = binding {
             self.locals.remove(&name);
             if let Some(previous) = previous { self.locals.insert(name, previous); }
         }
         self.emit("},\nErr(error) => return Err(error),\n}\n")
+    }
+    fn conversion(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("str") {
+            return Err(Fault::Syntax("to_int 需要 str 區域名稱".into()));
+        }
+        self.expect(".")?;
+        self.expect("to_int")?;
+        self.expect("(")?;
+        self.expect(")")?;
+        self.emit(&format!("v_{name}.parse::<i64>().map_err(|_| Fault::Conversion)?"))
+    }
+    fn str_local(&mut self) -> R {
+        self.expect("const")?;
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {name}")));
+        }
+        self.expect(":")?;
+        self.expect("str")?;
+        self.expect("=")?;
+        let TokenKind::StringLiteral(value) = self.token() else {
+            return Err(Fault::Syntax("const str 需要字串常值".into()));
+        };
+        let value = value.clone();
+        self.cursor += 1;
+        self.locals.insert(name.clone(), "str".into());
+        self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
     }
     fn match_start(&mut self) -> R {
         self.pending_matches.push((None, BTreeSet::new(), false, 0));
@@ -600,7 +671,7 @@ impl Machine {
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
-        if self.locals.get(&name).map(String::as_str) == Some("error:str") {
+        if matches!(self.locals.get(&name).map(String::as_str), Some("str" | "error:str")) {
             return self.emit(&format!("(v_{name}.chars().count() as i64)"));
         }
         if !matches!(self.locals.get(&name).map(String::as_str),
@@ -855,10 +926,11 @@ impl Machine {
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
                     "finish_dict_set" | "return_start" | "try_start" | "try_handler" |
-                    "exception_binding" | "finish_try" |
+                    "exception_category" | "exception_binding" | "finish_try" |
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
-                    "match_wildcard" | "finish_match_arm" | "finish_match" | "method" | "literal") {
+                    "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
+                    "literal" | "at_str_local" | "str_local" | "at_conversion" | "conversion") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -1042,7 +1114,8 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
         let message = match e { Fault::Syntax(s) => s, Fault::Limit => "自舉編譯預算耗盡".into(),
-            Fault::Overflow => "自舉編譯整數溢位".into() };
+            Fault::Overflow => "自舉編譯整數溢位".into(),
+            Fault::Conversion => "自舉編譯轉換失敗".into() };
         format!("{}:{}:{}: {message}", path.display(), pos.line, pos.column)
     })?;
     Ok((machine.output, machine.functions))

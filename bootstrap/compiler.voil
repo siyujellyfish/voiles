@@ -65,29 +65,33 @@ fn body()->int{
 }
 
 fn statement()->int{
-    if (host.at("var") != 0) {
-        return local() + statement()
+    if (host.at_str_local() != 0) {
+        return host.str_local() + statement()
     } else {
-        if (host.at_field_write() != 0) {
-            return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
+        if (host.at("var") != 0) {
+            return local() + statement()
         } else {
-            if (host.at("with") != 0) {
-                if (host.at_dict_borrow() != 0) {
-                    return dict_borrow()
-                } else {
-                    return list_borrow()
-                }
+            if (host.at_field_write() != 0) {
+                return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
             } else {
-                if (host.at("try") != 0) {
-                    return try_statement()
-                } else {
-                    if (host.at("match") != 0) {
-                        return match_statement()
+                if (host.at("with") != 0) {
+                    if (host.at_dict_borrow() != 0) {
+                        return dict_borrow()
                     } else {
-                        if (host.at("return") != 0) {
-                            return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                        return list_borrow()
+                    }
+                } else {
+                    if (host.at("try") != 0) {
+                        return try_statement()
+                    } else {
+                        if (host.at("match") != 0) {
+                            return match_statement()
                         } else {
-                            return control()
+                            if (host.at("return") != 0) {
+                                return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                            } else {
+                                return control()
+                            }
                         }
                     }
                 }
@@ -97,7 +101,7 @@ fn statement()->int{
 }
 
 fn try_statement()->int{
-    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.expect("EvaluationError") + exception_binding() + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
+    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.exception_category() + exception_binding() + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
 }
 
 fn exception_binding()->int{
@@ -429,34 +433,38 @@ fn primary()->int{
 }
 
 fn atom()->int{
-    if (host.at_integer() != 0) {
-        return host.literal()
+    if (host.at_conversion() != 0) {
+        return host.conversion()
     } else {
-        if (host.at("host") != 0) {
-            return call()
+        if (host.at_integer() != 0) {
+            return host.literal()
         } else {
-            if (host.at_len() != 0) {
-                return host.list_len()
+            if (host.at("host") != 0) {
+                return call()
             } else {
-                if (host.at_dict_set() != 0) {
-                    return host.dict_set() + host.dict_set_key() + host.expect(",") + expression() + host.expect(")") + host.finish_dict_set()
+                if (host.at_len() != 0) {
+                    return host.list_len()
                 } else {
-                    if (host.at_list_append() != 0) {
-                        return host.list_append() + expression() + host.expect(")") + host.finish_list_append()
+                    if (host.at_dict_set() != 0) {
+                        return host.dict_set() + host.dict_set_key() + host.expect(",") + expression() + host.expect(")") + host.finish_dict_set()
                     } else {
-                        if (host.at_list_pop() != 0) {
-                            return host.list_pop()
+                        if (host.at_list_append() != 0) {
+                            return host.list_append() + expression() + host.expect(")") + host.finish_list_append()
                         } else {
-                            if (host.at_module_call() != 0) {
-                                return call()
+                            if (host.at_list_pop() != 0) {
+                                return host.list_pop()
                             } else {
-                                if (host.at_call() != 0) {
+                                if (host.at_module_call() != 0) {
                                     return call()
                                 } else {
-                                    if (host.at_field() != 0) {
-                                        return host.field_value()
+                                    if (host.at_call() != 0) {
+                                        return call()
                                     } else {
-                                        return host.value()
+                                        if (host.at_field() != 0) {
+                                            return host.field_value()
+                                        } else {
+                                            return host.value()
+                                        }
                                     }
                                 }
                             }
