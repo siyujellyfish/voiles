@@ -76,9 +76,11 @@ enum Number {
     ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
     Choice(bool, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
+    ConsumeText { target: String, source: String, parameter: String },
     Consume { target:String, from:String, parameter:String },
     Constant(i64),
     Local(String),
+    LocalByte(String, StringOffset, StringOffset),
     Byte(Place, StringOffset, StringOffset),
     Call(String, bool),
     Binary(Box<Number>, char, Box<Number>),
@@ -98,12 +100,39 @@ enum Text {
     Grapheme(Place, StringOffset),
 }
 
+enum LocalText {
+    Literal(String),
+    Grapheme(String, StringOffset),
+    Move(String),
+    Replace(LocalReplacement),
+}
+
+struct LocalReplacement {
+    owner: String,
+    index: StringOffset,
+    rhs: GraphemeReplacement,
+}
+
+impl LocalReplacement {
+    fn perform(&self, state: &mut State, frame: &Frame) -> Result<crate::owned_str_runtime::OwnedUtf8, StrRuntimeError> {
+        let text = match &self.rhs {
+            GraphemeReplacement::Literal(text) => std::borrow::Cow::Borrowed(text.as_str()),
+            GraphemeReplacement::Named(source) =>
+                std::borrow::Cow::Owned(state.heap.read(&format!("@{source}"))?.to_owned()),
+        };
+        state.heap.replace_grapheme(&format!("@{}", self.owner), self.index.value(frame)?, &text)
+            .map_err(|_| StrRuntimeError::EvaluationFailed)
+    }
+}
+
 enum Replacement {
     Literal(String),
     Named(Place),
 }
 
 enum Action {
+    ReplaceLocal(LocalReplacement),
+    StoreText { target: String, declaration: Option<bool>, value: LocalText },
     Jump(usize),
     Unless(Number, usize),
     Construct(String,Vec<PreparedField>,Vec<PreparedNamedField>),
@@ -142,6 +171,14 @@ fn problem(source: &Source, span: (usize, usize), message: &str) -> Diagnostic {
     }
 }
 
+struct TextBinding {
+    mutable: bool,
+    live: std::cell::Cell<bool>,
+}
+impl TextBinding {
+    fn new(mutable: bool) -> Self { Self { mutable, live: true.into() } }
+}
+
 struct Lower<'a> {
     objects: Option<modules::objects::ObjectScope<'a>>,
     source: &'a Source,
@@ -151,13 +188,14 @@ struct Lower<'a> {
     linked_names: Option<&'a BTreeMap<String,String>>,
     readonly_slots: BTreeSet<usize>,
     locals: HashMap<String, bool>,
+    strings: HashMap<String, TextBinding>,
     aliases: HashMap<String, Place>,
 }
 
 impl Lower<'_> {
     fn place(&self, name: &str) -> Option<Place> {
         if self.objects.as_ref().is_some_and(|s| s.has(name.split('.').next().unwrap_or(name))) { return None; }
-        if self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
+        if self.strings.contains_key(name.split('.').next()?) || self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
             return None;
         }
         self.aliases.get(name).cloned().or_else(|| {
@@ -169,7 +207,7 @@ impl Lower<'_> {
 
     fn shadowed(&self, name: &str) -> bool {
         let root = name.split_once('.').map_or(name, |(root, _)| root);
-        self.locals.contains_key(root) || self.aliases.contains_key(root)
+        self.strings.contains_key(root) || self.locals.contains_key(root) || self.aliases.contains_key(root)
             || self.objects.as_ref().is_some_and(|scope| scope.has(root))
     }
 
@@ -185,6 +223,16 @@ impl Lower<'_> {
     fn scalar_call<'t>(&self, name: &str, arguments: impl Iterator<Item = (Option<&'t str>, &'t Term)>) -> Option<Number> {
         if self.shadowed(name) { return None; }
         let (target, _, function) = self.objects.as_ref()?.function(name)?;
+        if let [param] = function.params.as_slice() {
+            if param.ty == "str" && function.result_ty == "int" && !function.is_async {
+                let mut arguments = arguments;
+                let (label, term) = arguments.next()?;
+                if arguments.next().is_some() || label.is_some_and(|name| name != param.name) { return None; }
+                let TermKind::Move(source) = &term.kind else { return None };
+                if !self.strings.get(source)?.live.replace(false) { return None; }
+                return Some(Number::ConsumeText { target: target.clone(), source: source.clone(), parameter: param.name.clone() });
+            }
+        }
         if function.result_ty != "int" || function.is_async || function.params.is_empty() || function.params.iter().any(|p| p.ty != "int") {
             return None;
         }
@@ -210,6 +258,36 @@ impl Lower<'_> {
         }
     }
 
+    fn replacement(&self, owner: &str, index: &StringOffset, rhs: &GraphemeReplacement) -> Option<LocalReplacement> {
+        let binding = self.strings.get(owner)?;
+        if !binding.mutable || !binding.live.get() { return None; }
+        match rhs {
+            GraphemeReplacement::Literal(s) if !crate::owned_str_runtime::single_grapheme(s) => return None,
+            GraphemeReplacement::Named(n) if !self.strings.get(n)?.live.get() => return None,
+            _ => (),
+        }
+        Some(LocalReplacement { owner: owner.into(), index: self.offset(index)?, rhs: rhs.clone() })
+    }
+
+    fn local_text(&mut self, term: &Term, target: &str) -> Option<LocalText> {
+        match &term.kind {
+            TermKind::Group(inner) => self.local_text(inner, target),
+            TermKind::Move(source) if source != target => {
+                if !self.strings.get(source)?.live.replace(false) { return None; }
+                Some(LocalText::Move(source.clone()))
+            }
+            TermKind::StringReplace(owner, index, rhs) => Some(LocalText::Replace(self.replacement(owner, index, rhs)?)),
+            TermKind::StringIndex(owner, index, None) if self.strings.get(owner)?.live.get() =>
+                Some(LocalText::Grapheme(owner.clone(), self.offset(index)?)),
+            TermKind::LiteralIndex(text, index, None) => Some(LocalText::Literal(
+                crate::owned_str_runtime::literal_grapheme(text, *index)?.to_owned())),
+            _ => match self.text(term)? {
+                Text::Literal(s) => Some(LocalText::Literal(s)),
+                _ => None,
+            },
+        }
+    }
+
     fn number(&self, term: &Term) -> Option<Number> {
         if let Some(objects) = &self.objects {
             let callee = match &term.kind {
@@ -228,6 +306,10 @@ impl Lower<'_> {
             TermKind::Scalar(ScalarLiteral::Integer(value)) => {
                 Some(Number::Constant(integer_i64(value).ok()?))
             }
+            TermKind::StringIndex(n, i, Some(j)) if self.strings.contains_key(n) =>
+                self.strings[n].live.get().then_some(Number::LocalByte(n.clone(), self.offset(i)?, self.offset(j)?)),
+            TermKind::LiteralIndex(s, i, Some(j)) =>
+                Some(Number::Constant(crate::owned_str_runtime::literal_byte(s, *i, *j)?)),
             TermKind::StringIndex(n, i, Some(j)) =>
                 Some(Number::Byte(self.place(n)?, self.offset(i)?, self.offset(j)?)),
             TermKind::Name(n) if self.locals.contains_key(n) => Some(Number::Local(n.clone())),
@@ -300,14 +382,18 @@ impl Lower<'_> {
             }
             let action = match &stmt.kind {
                 StmtKind::Declare(d) => {
-                    if self.locals.contains_key(&d.name) || self.aliases.contains_key(&d.name) || self.objects.as_ref().is_some_and(|s|s.has(&d.name)) {
+                    if self.strings.contains_key(&d.name) || self.locals.contains_key(&d.name) || self.aliases.contains_key(&d.name) || self.objects.as_ref().is_some_and(|s|s.has(&d.name)) {
                         return Err(err("重複區域宣告"));
                     }
                     let init = d
                         .initializer
                         .as_ref()
                         .ok_or_else(|| err("此執行路徑需要初值"))?;
-                    if d.ty == "str" {
+                    if d.ty == "str" && !matches!(init.kind, TermKind::Borrow(_)) {
+                        let value = self.local_text(init, &d.name).ok_or_else(|| err("區域字串需要獨立初值或明確移動"))?;
+                        self.strings.insert(d.name.clone(), TextBinding::new(d.mutable));
+                        Action::StoreText { target: d.name.clone(), declaration: Some(d.mutable), value }
+                    } else if d.ty == "str" {
                         let TermKind::Borrow(n) = &init.kind else {
                             return Err(err("需要明確借用來源"));
                         };
@@ -351,6 +437,12 @@ impl Lower<'_> {
                             .ok_or_else(|| err("結構型別、具名欄位或建構值無效"))?
                     }
                 }
+                StmtKind::Assign(a) if self.strings.contains_key(&a.name) => {
+                    if !self.strings[&a.name].mutable { return Err(err("const 不可重賦值")); }
+                    let value = self.local_text(&a.expression, &a.name).ok_or_else(|| err("需要獨立字串值"))?;
+                    self.strings[&a.name].live.set(true);
+                    Action::StoreText { target: a.name.clone(), declaration: None, value }
+                }
                 StmtKind::Assign(a) if self.locals.contains_key(&a.name) => {
                     if !self.locals[&a.name] {
                         return Err(err("const 不可重賦值"));
@@ -380,6 +472,12 @@ impl Lower<'_> {
                     else {
                         return Err(err("字素覆寫需要已驗證的索引與替換值"));
                     };
+                    if self.strings.contains_key(name) {
+                        let change = self.replacement(name, i, replacement)
+                            .ok_or_else(|| err("區域字串覆寫需要可寫持有者、整數索引及單一字素"))?;
+                        steps.push(Step { module, span, action: Action::ReplaceLocal(change) });
+                        continue;
+                    }
                     let rhs = match replacement {
                         GraphemeReplacement::Literal(text) => {
                             if !crate::owned_str_runtime::single_grapheme(text) {
@@ -489,7 +587,7 @@ impl Program {
                 globals: &slots,
                 functions: &names,
                 locals: HashMap::new(),
-                aliases: HashMap::new(),
+                strings: HashMap::new(), aliases: HashMap::new(),
             };
             bodies.insert(f.name.clone(), lower.body(&f, 0)?);
         }
@@ -532,7 +630,7 @@ impl Number {
                 left.uses(list);
                 right.uses(list);
             }
-            Self::Consume{target,..} => list.push(Use::Call(target,false)),
+            Self::Consume{target,..} | Self::ConsumeText{target,..} => list.push(Use::Call(target,false)),
             Self::Call(name, waited) => list.push(Use::Call(name, *waited)),
             _ => (),
         }
@@ -543,7 +641,7 @@ impl Action {
     fn uses(&self) -> Vec<Use<'_>> {
         let mut uses = Vec::new();
         match self {
-            Self::Jump(_) => (),
+            Self::Jump(_) | Self::ReplaceLocal(_) | Self::StoreText { .. } => (),
             Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(..) => (),
@@ -757,7 +855,7 @@ impl Program {
         self.call_with_owner(name,state,depth,None, HashMap::new())
     }
 
-    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<(&str,&str)>, locals: HashMap<String, i64>) -> Result<i64, StrRuntimeError> {
+    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<Transfer<'_>>, locals: HashMap<String, i64>) -> Result<i64, StrRuntimeError> {
         let budget = crate::execution::ExecutionBudget::default();
         if depth >= budget.max_call_frames {
             return Err(StrRuntimeError::ExecutionBudgetExhausted);
@@ -774,14 +872,23 @@ impl Program {
                 *frame.remaining.entry(name.clone()).or_default() += 1;
             }
         }
+        match transfer {
+            Some(Transfer::Text(source, target)) => {
+                use crate::owned_str_runtime::StrArgumentSource;
+                state.heap.enter_with_moved_arguments(&[(StrArgumentSource::Named(&format!("@{source}")),
+                    &format!("@{target}"))], &mut Vec::new())?;
+            }
+            _ => state.heap.enter_scope(),
+        }
         state.mixed.enter_scope();
         let result = (|| {
-            if let Some((from,to)) = transfer {
+            if let Some(Transfer::Object(from,to)) = transfer {
                 state.mixed.move_whole_with_shared_ledger(&mut state.heap,from,to).map_err(|_|StrRuntimeError::EvaluationFailed)?;
             }
             self.run_body(body,&mut frame,state,depth,budget.max_steps)
         })();
         state.mixed.leave_scope_with_shared_ledger(&mut state.heap).map_err(|_|StrRuntimeError::OutstandingResource)?;
+        state.heap.leave_scope()?;
         for ticket in frame.tickets.into_values() {
             state
                 .loans
@@ -824,6 +931,39 @@ impl Program {
                 Action::Bind(n, rhs) => {
                     let value = self.eval(rhs, frame, state, depth)?;
                     frame.locals.insert(n.clone(), value);
+                }
+                Action::ReplaceLocal(change) => {
+                    let value = change.perform(state, frame)?;
+                    state.heap.release_detached(value);
+                }
+                Action::StoreText { target, declaration, value } => {
+                    let name = format!("@{target}");
+                    match value {
+                        LocalText::Literal(text) => match declaration {
+                            Some(mutable) => state.heap.declare(&name, *mutable, text)?,
+                            None => state.heap.assign(&name, text)?,
+                        },
+                        LocalText::Move(source) => match declaration {
+                            Some(mutable) => state.heap.move_named_as(&format!("@{source}"), &name, *mutable)?,
+                            None => state.heap.replace_from(&format!("@{source}"), &name)?,
+                        },
+                        LocalText::Grapheme(..) | LocalText::Replace(_) => {
+                            let value = match value {
+                                LocalText::Grapheme(source, index) => state.heap.read_grapheme(&format!("@{source}"), index.value(frame)?)
+                                    .map_err(|_| StrRuntimeError::EvaluationFailed)?,
+                                LocalText::Replace(change) => change.perform(state, frame)?,
+                                _ => unreachable!(),
+                            };
+                            let accepted = match declaration {
+                                Some(mutable) => state.heap.accept_return_as(&name, value, *mutable),
+                                None => state.heap.replace_return_as(&name, value),
+                            };
+                            if let Err((error, value)) = accepted {
+                                state.heap.release_detached(value);
+                                return Err(error);
+                            }
+                        }
+                    }
                 }
                 Action::Loan(alias, p, kind) => {
                     let ticket = state
@@ -920,7 +1060,9 @@ impl Program {
                 if let Some(ticket) = ticket { frame.object_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?; }
                 result
             }
-            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some((from,parameter)), HashMap::new()),
+            Number::ConsumeText {target,source,parameter} =>
+                self.call_with_owner(target,state,depth+1,Some(Transfer::Text(source,parameter)),HashMap::new()),
+            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some(Transfer::Object(from,parameter)), HashMap::new()),
             Number::Lookup(key, entries) => {
                 let key = self.eval(key, frame, state, depth)?;
                 entries.get(&key).copied().ok_or(StrRuntimeError::EvaluationFailed)
@@ -959,6 +1101,8 @@ impl Program {
                 }
                 self.call(n, state, depth + 1)
             }
+            Number::LocalByte(owner, i, j) => state.heap.read_grapheme_byte(&format!("@{owner}"),
+                i.value(frame)?, j.value(frame)?).map_err(|_| StrRuntimeError::EvaluationFailed),
             Number::Byte(p, i, j) => {
                 frame.authorize(
                     &mut state.loans,
@@ -980,6 +1124,12 @@ impl Program {
             }
         }
     }
+}
+
+#[derive(Clone, Copy)]
+enum Transfer<'a> {
+    Text(&'a str, &'a str),
+    Object(&'a str, &'a str),
 }
 
 #[derive(Default)]
