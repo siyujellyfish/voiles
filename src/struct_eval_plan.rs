@@ -126,6 +126,13 @@ mod tests {
         assert_eq!(plan(&fields,&["id"]),Err(PlanError::MissingConstDefault("id".into())));
     }
 
+}
+
+// F00 逐名凍結原始案例；新增回歸由全量 Rust 測試執行。
+#[cfg(test)]
+mod construction_order_regressions {
+    use super::*;
+
     #[test]
     fn vb16_所有具名欄位排列均維持來源先行與預設宣告順序() {
         let fields=[
