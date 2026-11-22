@@ -285,8 +285,8 @@ impl LinkedProgram {
                 }
             }
             for f in &u.functions {
-                if f.result_ty == "str" && f.params.iter().any(|p| !matches!(p.ty.as_str(), "int" | "str")) {
-                    return Err(u.error(f.start,f.end,"字串返回簽章需要 int 或 str 形參"));
+                if f.result_ty == "str" && f.params.iter().any(|p| !matches!(p.ty.as_str(), "int" | "str" | "bool" | "float")) {
+                    return Err(u.error(f.start,f.end,"字串返回簽章需要純量或 str 形參"));
                 }
                 let collection_signature = stored_type(&f.result_ty) || f.params.iter().any(|p|stored_type(&p.ty));
                 let object_result = !f.is_async && graph.resolve_struct(id,&f.result_ty).is_some();
@@ -303,7 +303,7 @@ impl LinkedProgram {
                         }
                     }
                 } else if !f.is_async && matches!(f.result_ty.as_str(),"int" | "str")
-                    && f.params.iter().all(|p| matches!(p.ty.as_str(),"int" | "str")) {
+                    && f.params.iter().all(|p| matches!(p.ty.as_str(),"int" | "str" | "bool" | "float")) {
                     for p in &f.params {
                         if strings.contains_key(&p.name) || locals.contains_key(&p.name) {
                             return Err(u.error(f.start,f.end,"函式參數重複"));
@@ -323,7 +323,9 @@ impl LinkedProgram {
                 let mut lower = Lower { text_access:Default::default(),objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
                 let typed_signature = matches!(f.result_ty.as_str(), "bool" | "float") || f.params.iter().any(|p| matches!(p.ty.as_str(), "bool" | "float"));
-                let body = if f.result_ty == "str" || object_result {
+                let body = if f.result_ty == "str" {
+                    lower.body(f,id).or_else(|_| scalar_flow::lower(&lower,f,id))
+                } else if object_result {
                     lower.body(f,id)
                 } else if typed_signature || collection_signature {
                     scalar_flow::lower(&lower, f, id)

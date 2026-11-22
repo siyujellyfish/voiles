@@ -457,7 +457,7 @@ impl Lower<'_> {
             if !slots.insert(slot) { return None; }
             let value = match p.ty.as_str() {
                 "str" => Argument::Text(self.local_text(term, "")?),
-                "int" => Argument::Integer(self.number(term)?),
+                ty @ ("int" | "bool" | "float") => Argument::Integer(self.scalar_value(ty,term)?),
                 _ => return None,
             };
             arguments.push((p.name.clone(),slot,value));

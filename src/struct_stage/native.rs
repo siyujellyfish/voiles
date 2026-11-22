@@ -347,7 +347,9 @@ impl LinkedProgram {
                         writeln!(out,"return Ok(v{});",emitter.locals.get(owner).ok_or_else(unsupported)?).unwrap();
                     }
                     Action::ReturnText(value) => {
-                        writeln!(out, "return Ok({});", emitter.local_text(value).ok_or_else(unsupported)?).unwrap();
+                        let expr = emitter.local_text(value).ok_or_else(unsupported)?;
+                        if guarded { writeln!(out,"return Ok(Some({expr}));").unwrap(); }
+                        else { writeln!(out,"return Ok({expr});").unwrap(); }
                     }
                     Action::Return(value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
