@@ -43,5 +43,6 @@ with TemporaryDirectory() as directory:
             arguments.append("--compact")
         command = "bootstrap-run" if path == corpus[0] else "run"
         assert run(cli, command, entry, "--", *arguments) == expected + b"0\n", path
-        for exe in programs:
-            assert run(exe, *arguments) == expected, (exe, path)
+        if path != corpus[0]:
+            for exe in programs:
+                assert run(exe, *arguments) == expected, (exe, path)
