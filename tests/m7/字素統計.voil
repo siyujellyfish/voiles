@@ -1,0 +1,13 @@
+fn main()->int{
+    const path:str = arg(0)
+    const text:str = read_utf8(path)
+    var i:int = 0
+    var count:int = 0
+    while(i != len(text)){
+        if(text[i][0] != 32){
+            count = count + 1
+        }
+        i = i + 1
+    }
+    return count
+}

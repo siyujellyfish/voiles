@@ -12,7 +12,7 @@ pub(super) struct Declaration {
     id: DeclarationId,
 }
 
-pub(super) fn parse(parser: &mut Parser<'_>) -> Result<Declaration, Diagnostic> {
+pub(super) fn parse<const PUBLIC:bool>(parser: &mut LanguageParser<'_,PUBLIC>) -> Result<Declaration, Diagnostic> {
     parser.cursor += 1;
     let id = DeclarationId(parser.tok().start);
     let name = parser.name()?;
@@ -74,10 +74,10 @@ mod scalar_flow;
 mod containers;
 
 enum ContainerKey { Text(String), Index(Number) }
-enum ContainerItem { Scalar(Number, bool), Literal(containers::Value) }
-enum Edit { Append(ContainerItem), Set(ContainerKey, ContainerItem), Pop }
+enum ContainerItem { Decimal(Number), Scalar(Number, bool), Literal(containers::Value) }
+enum Edit { ReplaceOptional(ContainerItem), Append(ContainerItem), Set(ContainerKey, ContainerItem), Pop }
 enum ContainerRead { Length, Tag, Scalar }
-enum ContainerInit { Literal(ContainerLiteral), Move(String) }
+enum ContainerInit { Optional(ContainerItem), Literal(ContainerLiteral), Move(String) }
 
 impl ContainerLiteral {
     fn runtime(&self) -> Option<containers::Value> {
@@ -86,7 +86,7 @@ impl ContainerLiteral {
             Some(match a {
                 ContainerAtom::Integer(n) => Value::Integer(*n), ContainerAtom::Boolean(b) => Value::Boolean(*b),
                 ContainerAtom::Text(s) => Value::Text(s.clone()), ContainerAtom::Missing => Value::Missing,
-                ContainerAtom::Decimal(c,e) => Value::Decimal(*c,*e), ContainerAtom::Nested(v) => v.runtime()?,
+                ContainerAtom::Decimal(c,e) => Value::Decimal(decimal::encode(*c,*e)), ContainerAtom::Nested(v) => v.runtime()?,
                 ContainerAtom::ElementName(slot) => Value::CopyFrom(slot.clone()),
             })
         }
@@ -119,7 +119,23 @@ impl LocalText {
         }, Self::Standard(call)=>call.uses(uses), Self::Call(call)=>call.uses(uses), _=>() }
     }
 }
+struct MethodStep {
+    write: Option<String>,
+    value: Number,
+    origin: StepOrigin,
+    site: String,
+}
+
+struct MethodCall {
+    owner:String,
+    id:DeclarationId,
+    writes:bool,
+    arguments:Vec<(String,Number)>,
+    steps:Vec<MethodStep>,
+}
+
 enum Number {
+    Method(MethodCall),
     TextLength(String),
     ParseInt(String),
     Decimal(Box<Number>, char, Box<Number>),
@@ -128,7 +144,7 @@ enum Number {
     Edit(String, Box<Edit>),
     ViewByte(String,StringOffset,StringOffset),
     Logic(&'static str, Box<Number>, Box<Number>),
-    ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
+    ScalarCall { awaited:bool, target: String, arguments: Vec<(String, usize, Number)> },
     Choice(Box<Number>, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
     TextCall(TextInvocation),
@@ -251,6 +267,7 @@ struct StepOrigin {
 struct Handler { category:String, target:usize, cleanup:Vec<String> }
 
 struct Step {
+    active_view:bool,
     handlers:Vec<Handler>,
     module: usize,
     action: Action,
@@ -365,7 +382,7 @@ impl Lower<'_> {
             values.push((param.name.clone(), slot, self.number(term)?));
         }
         if values.len() != function.params.len() { return None; }
-        Some(Number::ScalarCall { target: target.clone(), arguments: values })
+        Some(Number::ScalarCall { awaited:false, target: target.clone(), arguments: values })
     }
 
     fn offset(&self, offset: &StringOffset) -> Option<StringOffset> {
@@ -484,7 +501,7 @@ impl Lower<'_> {
                     let source=Source::new(name.as_bytes().to_vec());
                     let scan=lexer::scan(&source);
                     if !scan.diagnostics.is_empty() {return None;}
-                    let mut parser=Parser {source:&source,tokens:&scan.tokens,cursor:0};
+                    let mut parser=LanguageParser::<true> {source:&source,tokens:&scan.tokens,cursor:0};
                     let expression=parser.term().ok()?;
                     if !parser.eof() {return None;}
                     let (ty,value)=self.format_scalar(&expression,&scan.tokens)?;
@@ -573,6 +590,12 @@ impl Lower<'_> {
             };
             if callee.is_some_and(|n| self.shadowed(n)) {
                 return None;
+            }
+            if let TermKind::MethodCall(owner,method,arguments)=&term.kind {
+                if objects.has(owner) {
+                    let values=arguments.iter().map(|t|self.number(t)).collect::<Option<Vec<_>>>()?;
+                    return objects.method(owner,method,values).map(Number::Method);
+                }
             }
             if let Some(value) = objects.expression(term) { return Some(value); }
             if matches!(&term.kind,TermKind::MethodCall(owner,_,_) if objects.has(owner)) { return None; }
@@ -789,7 +812,7 @@ impl Lower<'_> {
                     if self.strings.contains_key(name) {
                         let change = self.replacement(name, i, replacement)
                             .ok_or_else(|| err("區域字串覆寫需要可寫持有者、整數索引及單一字素"))?;
-                        steps.push(Step { handlers:vec![], module, span, action: Action::ReplaceLocal(change) });
+                        steps.push(Step { active_view:false,handlers:vec![], module, span, action: Action::ReplaceLocal(change) });
                         continue;
                     }
                     let rhs = match replacement {
@@ -828,7 +851,7 @@ impl Lower<'_> {
                 ),
                 _ => return Err(err("此模組語句缺少共享存取證明")),
             };
-            steps.push(Step { handlers:vec![], action, module, span });
+            steps.push(Step { active_view:false,handlers:vec![], action, module, span });
         }
         if !matches!(
             steps.last(),
@@ -936,14 +959,17 @@ impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
 
+            Self::Method(call)=>for (_,n) in &call.arguments { n.uses(list); },
             Self::Edit(_, edit) => {
                 if let Edit::Set(ContainerKey::Index(n),_) = edit.as_ref() { n.uses(list); }
-                if let Edit::Set(_,ContainerItem::Scalar(n,_)) | Edit::Append(ContainerItem::Scalar(n,_)) = edit.as_ref() { n.uses(list); }
+                if let Edit::Set(_,item) | Edit::Append(item) | Edit::ReplaceOptional(item)=edit.as_ref() {
+                    if let ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n)=item { n.uses(list); }
+                }
             }
             Self::Logic(_,a,b) => { a.uses(list); b.uses(list); }
-            Self::ScalarCall { target, arguments } => {
+            Self::ScalarCall { target, arguments, awaited } => {
                 for (_, _, value) in arguments { value.uses(list); }
-                list.push(Use::Call(target, false));
+                list.push(Use::Call(target, *awaited));
             }
             Self::Choice(test, yes, no) => { test.uses(list); yes.uses(list); no.uses(list); }
             Self::Byte(p, ..) => list.push(Use::Direct(p)),
@@ -965,6 +991,7 @@ impl Action {
         let mut uses = Vec::new();
         match self {
             Self::Select { key: ContainerKey::Index(n), .. } => n.uses(&mut uses),
+            Self::Container(_,ContainerInit::Optional(ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n)))=>n.uses(&mut uses),
             Self::Select { .. } | Self::Container(..) | Self::DropContainer(_) => (),
             Self::ReturnObject(_) => (),
             Self::ReceiveObject {target,..} => uses.push(Use::Call(target,false)),
@@ -1050,10 +1077,10 @@ impl Program {
             let check = || -> Result<(),Diagnostic> {
             let uses: Vec<_> = body
                 .iter()
-                .flat_map(|s| s.action.uses().into_iter().map(move |u| (u, s.span)))
+                .flat_map(|s| s.action.uses().into_iter().map(move |u| (u, s.span,s.active_view)))
                 .collect();
             let mut last = HashMap::new();
-            for (i, (site, _)) in uses.iter().enumerate() {
+            for (i, (site, _, _)) in uses.iter().enumerate() {
                 if let Use::Direct(Place {
                     alias: Some((name, _)),
                     ..
@@ -1063,7 +1090,7 @@ impl Program {
                 }
             }
             let mut active = HashMap::<&str, SafetyState>::new();
-            for (i, (site, span)) in uses.into_iter().enumerate() {
+            for (i, (site, span,active_view)) in uses.into_iter().enumerate() {
                 let conflict = || problem(source, span, "模組持有者仍有有效借用");
                 for (name, state) in &mut active {
                     if last.get(name).is_none_or(|end| *end < i) {
@@ -1113,7 +1140,7 @@ impl Program {
                         }
                     }
                     Use::Call(n, waited) => {
-                        if (waited || effects[n].2) && !snapshot.facts().is_empty() {
+                        if (waited || effects[n].2) && (active_view || !snapshot.facts().is_empty()) {
                             return Err(problem(
                                 source,
                                 span,
@@ -1335,6 +1362,7 @@ impl Program {
             let outcome = (|| -> Result<Option<CallResult>, StrRuntimeError> {
             match &step.action {
                 Action::Container(slot, init) => match init {
+                    ContainerInit::Optional(item)=>{let value=self.container_item(item,frame,state,depth)?; frame.containers.put(slot,value).ok_or(StrRuntimeError::EvaluationFailed)?;}
                     ContainerInit::Literal(literal) => frame.containers.put(slot,literal.runtime().ok_or(StrRuntimeError::EvaluationFailed)?).ok_or(StrRuntimeError::EvaluationFailed)?,
                     ContainerInit::Move(from) => frame.containers.relocate(from,slot).ok_or(StrRuntimeError::EvaluationFailed)?,
                 },
@@ -1519,6 +1547,17 @@ impl Program {
         Err(StrRuntimeError::IncompleteReturn)
     }
 
+    fn container_item(&self,item:&ContainerItem,frame:&mut Frame,state:&mut State,depth:usize)->Result<containers::Value,StrRuntimeError> {
+        Ok(match item {
+            ContainerItem::Decimal(n)=>containers::Value::Decimal(self.eval(n,frame,state,depth)?),
+            ContainerItem::Scalar(n,boolean)=>{
+                let v=self.eval(n,frame,state,depth)?;
+                if *boolean {containers::Value::Boolean(v!=0)} else {containers::Value::Integer(v)}
+            }
+            ContainerItem::Literal(v)=>v.clone(),
+        })
+    }
+
     fn eval(
         &self,
         n: &Number,
@@ -1527,6 +1566,32 @@ impl Program {
         depth: usize,
     ) -> Result<i64, StrRuntimeError> {
         match n {
+            Number::Method(call)=>{
+                let mut inner=Frame::default();
+                for (name,n) in &call.arguments {
+                    inner.locals.insert(name.clone(),self.eval(n,frame,state,depth)?);
+                }
+                let mode=if call.writes {BorrowKind::ExclusiveWrite} else {BorrowKind::SharedRead};
+                let ticket=frame.object_loans.acquire(call.id,mode).map_err(|_|StrRuntimeError::OutstandingResource)?;
+                let outer=state.current_step;
+                let result=(|| {
+                    let budget=crate::execution::ExecutionBudget::default();
+                    if depth+1>=budget.max_call_frames {return Err(StrRuntimeError::ExecutionBudgetExhausted);}
+                    for step in &call.steps {
+                        state.current_step=Some(step.origin);
+                        state.steps+=1;
+                        if state.steps>budget.max_steps {return Err(StrRuntimeError::ExecutionBudgetExhausted);}
+                        let n=self.eval(&step.value,&mut inner,state,depth+1)?;
+                        if let Some(field)=&step.write {
+                            state.mixed.write_int_field(&call.owner,field,n,true).map_err(|_|StrRuntimeError::EvaluationFailed)?;
+                        } else {return Ok(n);}
+                    }
+                    Err(StrRuntimeError::IncompleteReturn)
+                })();
+                frame.object_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?;
+                if result.is_ok() {state.current_step=outer;}
+                result
+            }
             Number::Member { owner,field,receiver } => {
                 let ticket = receiver.map(|id|frame.object_loans.acquire(id,BorrowKind::SharedRead)).transpose()
                     .map_err(|_|StrRuntimeError::OutstandingResource)?;
@@ -1547,24 +1612,16 @@ impl Program {
                 crate::owned_str_runtime::literal_byte(text,i.value(frame)?,j.value(frame)?).ok_or(StrRuntimeError::EvaluationFailed)
             }
             Number::Edit(slot, edit) => {
-                let item = |value: &ContainerItem, frame: &mut Frame, state: &mut State| -> Result<containers::Value, StrRuntimeError> {
-                    Ok(match value {
-                        ContainerItem::Scalar(n, boolean) => {
-                            let v=self.eval(n,frame,state,depth)?;
-                            if *boolean {containers::Value::Boolean(v!=0)} else {containers::Value::Integer(v)}
-                        }
-                        ContainerItem::Literal(v) => v.clone(),
-                    })
-                };
                 match edit.as_ref() {
+                    Edit::ReplaceOptional(value)=>{let v=self.container_item(value,frame,state,depth)?; frame.containers.put(slot,v).map(|_|0)}
                     Edit::Append(value) => {
-                        let v=item(value,frame,state)?;
+                        let v=self.container_item(value,frame,state,depth)?;
                         frame.containers.append(slot,v)
                     }
                     Edit::Set(key,value) => {
                         let k=match key { ContainerKey::Text(s)=>containers::Key::Text(s.clone()),
                             ContainerKey::Index(n)=>containers::Key::Index(self.eval(n,frame,state,depth)?) };
-                        let v=item(value,frame,state)?;
+                        let v=self.container_item(value,frame,state,depth)?;
                         frame.containers.set(slot,k,v)
                     }
                     Edit::Pop => frame.containers.pop(slot),
@@ -1583,11 +1640,12 @@ impl Program {
                 Ok(crate::mixed_struct_runtime::Observed::Bool(b)) => Ok(i64::from(b)),
                 _ => Err(StrRuntimeError::EvaluationFailed),
             },
-            Number::ScalarCall { target, arguments } => {
+            Number::ScalarCall { target, arguments, awaited } => {
                 let mut bindings = HashMap::new();
                 for (name, _, value) in arguments {
                     bindings.insert(name.clone(), self.eval(value, frame, state, depth)?);
                 }
+                if *awaited { state.loans.verify_static_snapshot(std::iter::empty()).map_err(|_|StrRuntimeError::OutstandingResource)?; }
                 self.call_with_owner(target, state, depth + 1, None, bindings)?.integer(&mut state.heap)
             }
             Number::Logic(op,a,b) => {

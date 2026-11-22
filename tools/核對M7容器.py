@@ -82,3 +82,14 @@ verify(cli, [
     ('fn main()->int{ var a:list[Optional[int]] = [42]\nwith a[0] as x { const flag:bool = x != none\n'
      'if(true){ var n:int = 1 }\nif(flag){ return x } }\nreturn 0 }', "reject"),
 ])
+
+verify(cli, (("fn main()->int{\n" + body + "\n}", expected) for body,expected in [
+    ("var x:Optional[int] = none\nx = 42\nif(x != none){ return x }\nreturn 0",42),
+    ("var x:Optional[int] = 42\nconst y:Optional[int,bool] = x\nx = none\n"
+     "if(y != none){ if(y is int){ return y } }\nreturn 0",42),
+    ('const x:Optional[str,int] = "*"\nif(x != none){ if(x is str){ return x[0][0] } }\nreturn 0',42),
+    ("var x:Optional[float] = 0.1 + 0.2\nif(x != none){ if(x != 0.3){ return 1 } else { return 42 } }\nreturn 0",42),
+    ("var x:Optional[int] = 42\nconst flag:bool = x != none\nx = none\nif(flag){ return x }\nreturn 0","reject"),
+    ("const x:Optional[int] = none\nx = 42\nreturn 0","reject"),
+    ("var x:Optional[int] = false\nreturn 0","reject"),
+]))

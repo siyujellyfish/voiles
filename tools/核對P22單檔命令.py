@@ -82,7 +82,7 @@ def main():
                     verify(["check", path.name], 0)
                     verify(["run", path.name], 0, "8\n")
 
-        invalid = "struct {name}{{\nfn getter()->int{{\nreturn 9\n}}\n}}\n"
+        invalid = "struct {name}{{\nfn getter()->int{{\nreturn missing\n}}\n}}\n"
         model.write_text(invalid.format(name="Zed") + invalid.format(name="Alpha"), encoding="utf-8")
         path.write_text("import model\nfn main()->int{\nreturn 0\n}\n", encoding="utf-8")
         for _ in range(8):

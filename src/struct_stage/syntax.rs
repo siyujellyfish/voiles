@@ -1,5 +1,5 @@
 // 對應 P16.6-R01 無語意變更之實作拆檔。
-impl Parser<'_> {
+impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
     fn tok(&self) -> &Token {
         &self.tokens[self.cursor.min(self.tokens.len() - 1)]
     }
@@ -33,6 +33,10 @@ impl Parser<'_> {
     /// P19-A 首批只解析區域容器宣告的 Optional 元素／值標註。
     /// 型別標註可解析並不授予容器建立、存取或複製能力。
     fn local_type_annotation(&mut self) -> Result<String, Diagnostic> {
+        if PUBLIC && matches!(&self.tok().kind,TokenKind::Name(n) if n=="Optional")
+            && self.tokens.get(self.cursor+1).is_some_and(|t|t.kind==TokenKind::Symbol('[')) {
+            return self.optional_annotation();
+        }
         let outer = self.qualified_type_name()?;
         let key = match outer.as_str() {
             "list" if self.symbol('[') => {
@@ -307,7 +311,7 @@ impl Parser<'_> {
                 kind: TermKind::Call(call), start, end,
             });
         }
-        if matches!(&self.tok().kind, TokenKind::Name(n) if n == "f" || n == "t")
+        if PUBLIC && matches!(&self.tok().kind, TokenKind::Name(n) if n == "f" || n == "t")
             && self.tokens.get(self.cursor + 1).is_some_and(|next|
                 next.start == self.tok().end && matches!(next.kind, TokenKind::StringLiteral(_))) {
             let start = self.tok().start;
@@ -344,7 +348,10 @@ impl Parser<'_> {
                 (TermKind::Literal("none"),end)
             }
             TokenKind::Decimal(ref text) => {
-                if decimal::parts(text).is_none() {
+                if !PUBLIC && Self::decimal64_checked_subset(text).is_none() {
+                    return Err(self.syntax("P13 decimal64 常值超出已驗證的有限安全子集；下溢、超界與特殊值仍待正式規格"));
+                }
+                if PUBLIC && decimal::parts(text).is_none() {
                     return Err(self.syntax(
                         "decimal64 常值超出有限數值範圍"
                     ));
@@ -522,14 +529,12 @@ impl Parser<'_> {
         let head = crate::syntax_shared::statement_head(
             self.tokens, self.cursor, crate::common_ir::FrontendMode::PrivateVerified,
         );
-        let kind = if self.keyword("try") {
-            let opening = self.cursor;
+        let kind = if PUBLIC && self.keyword("try") {
             self.cursor += 1;
             let body = self.body()?.statements;
             self.lines();
             if !self.keyword("except") {
-                self.cursor = opening;
-                return Err(self.syntax("需要合法的名稱或型別名稱"));
+                return Err(self.syntax("try 區塊需要具型別的 except"));
             }
             self.cursor += 1;
             let category = self.name()?;
@@ -705,14 +710,6 @@ impl Parser<'_> {
     }
 
     fn module_items(mut self, mut shares: Option<&mut Vec<module_share::Declaration>>, mut imports: Option<&mut Vec<modules::Import>>) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
-        if imports.is_none() {
-            if let Some(token) = self.tokens.iter().find(|token| matches!(&token.kind,
-                TokenKind::Decimal(text) if Self::decimal64_checked_subset(text).is_none())) {
-                return Err(Diagnostic { kind: DiagnosticKind::Syntax,
-                    message: "P13 decimal64 常值超出已驗證的有限安全子集；下溢、超界與特殊值仍待正式規格".into(),
-                    span: Some(self.source.span(token.start,token.end)) });
-            }
-        }
         let mut structs = HashMap::new();
         let mut funcs = Vec::new();
         let mut function_names = HashSet::new();
@@ -749,13 +746,13 @@ impl Parser<'_> {
 /// 結構欄位也使用公私 var／const 正式共同宣告解析核心。
 /// 欄位缺預設值、重複名稱及型別標註有獨立歷史診斷；
 /// 使用輕量 adapter 避免將語句宣告的診斷／安全權限錯套至欄位。
-struct StructFieldDeclaration<'p, 'src> {
-    parser: &'p mut Parser<'src>,
+struct StructFieldDeclaration<'p, 'src,const PUBLIC:bool> {
+    parser: &'p mut LanguageParser<'src,PUBLIC>,
     declared_names: &'p mut HashSet<String>,
     name_span: Option<crate::common_ir::NodeSpan>,
     type_span: Option<crate::common_ir::NodeSpan>,
 }
-impl crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_> {
+impl<const PUBLIC:bool> crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_,PUBLIC> {
     type Type = String;
     type Expression = Term;
 
@@ -808,7 +805,7 @@ impl crate::syntax_shared::DeclarationSyntax for StructFieldDeclaration<'_, '_> 
 }
 
 /// 私有安全子集使用共同區塊走訪核心，語句分隔由原 statement 消耗。
-impl crate::syntax_shared::BlockSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::BlockSyntax for LanguageParser<'_,PUBLIC> {
     type Statement = Stmt;
     fn begin_block(&mut self) -> Result<usize, Diagnostic> {
         let start = self.tok().start;
@@ -833,8 +830,8 @@ impl crate::syntax_shared::BlockSyntax for Parser<'_> {
 /// 已核准的私有括號運算式沿用原節點，並由共同核心擴展來源跨度。
 /// 公私函式呼叫與私有方法呼叫消費相同的 CallSyntax 序列，
 /// 但方法尾段歷史診斷與一般函式不同，必須留在專用 adapter。
-struct MethodCallSyntax<'p, 'src> { parser: &'p mut Parser<'src> }
-impl crate::syntax_shared::CallSyntax for MethodCallSyntax<'_, '_> {
+struct MethodCallSyntax<'p, 'src,const PUBLIC:bool> { parser: &'p mut LanguageParser<'src,PUBLIC> }
+impl<const PUBLIC:bool> crate::syntax_shared::CallSyntax for MethodCallSyntax<'_, '_,PUBLIC> {
     type Arguments = Vec<Term>;
     fn call_arguments(&mut self) -> Result<Vec<Term>, Diagnostic> {
         let mut args = Vec::new();
@@ -853,7 +850,7 @@ impl crate::syntax_shared::CallSyntax for MethodCallSyntax<'_, '_> {
     }
 }
 
-impl crate::syntax_shared::CallSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::CallSyntax for LanguageParser<'_,PUBLIC> {
     type Arguments = Vec<Term>;
     fn call_arguments(&mut self) -> Result<Vec<Term>, Diagnostic> {
         let mut args = Vec::new();
@@ -873,7 +870,7 @@ impl crate::syntax_shared::CallSyntax for Parser<'_> {
     }
 }
 
-impl crate::syntax_shared::GroupSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::GroupSyntax for LanguageParser<'_,PUBLIC> {
     type Expression = Term;
     fn group_expression(&mut self) -> Result<Term, Diagnostic> { self.term() }
     fn group_right_paren(&mut self) -> Result<usize, Diagnostic> {
@@ -890,7 +887,7 @@ impl crate::syntax_shared::GroupSyntax for Parser<'_> {
 
 /// 正式私有受限 Parser 與公開 Parser 實作同一條 if/else-if 核心文法。
 /// 條件、區塊、診斷與允許的所有權行為仍完全由本入口負責。
-impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::DeclarationSyntax for LanguageParser<'_,PUBLIC> {
     type Type = String;
     type Expression = Term;
     fn declaration_start(&self) -> usize { self.tok().start }
@@ -929,11 +926,11 @@ impl crate::syntax_shared::DeclarationSyntax for Parser<'_> {
     }
 }
 
-impl crate::syntax_shared::NamedAssignmentSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::NamedAssignmentSyntax for LanguageParser<'_,PUBLIC> {
     fn named_assignment_name(&mut self) -> Result<String, Diagnostic> { self.name() }
 }
 
-impl crate::syntax_shared::AssignmentSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::AssignmentSyntax for LanguageParser<'_,PUBLIC> {
     type Expression = Term;
     fn assignment_equals(&mut self) -> Result<(), Diagnostic> {
         self.take('=', "此階段具名語句必須為賦值")
@@ -942,7 +939,7 @@ impl crate::syntax_shared::AssignmentSyntax for Parser<'_> {
     fn validate_assignment(&self, _expression: &Term) -> Result<(), Diagnostic> { Ok(()) }
 }
 
-impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::ReturnSyntax for LanguageParser<'_,PUBLIC> {
     type Expression = Term;
     fn begin_return(&mut self) -> Result<(), Diagnostic> {
         if !self.keyword("return") { return Err(self.syntax("缺少 return")); }
@@ -953,7 +950,7 @@ impl crate::syntax_shared::ReturnSyntax for Parser<'_> {
     fn validate_return(&self, _expression: &Term) -> Result<(), Diagnostic> { Ok(()) }
 }
 
-impl crate::syntax_shared::IfSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::IfSyntax for LanguageParser<'_,PUBLIC> {
     type Condition = Term;
     type Body = crate::syntax_shared::ParsedBlock<Stmt>;
 
@@ -994,7 +991,7 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
 }
 
 /// 私有已核准參數與型別仍由本解析器獨立驗證；只有語法組構順序共用。
-impl crate::syntax_shared::FunctionSyntax for Parser<'_> {
+impl<const PUBLIC:bool> crate::syntax_shared::FunctionSyntax for LanguageParser<'_,PUBLIC> {
     type Params = Vec<Parameter>;
     type ResultType = String;
     type Body = crate::syntax_shared::ParsedBlock<Stmt>;
