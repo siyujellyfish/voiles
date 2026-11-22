@@ -1,7 +1,15 @@
 import host
 
 fn main()->int{
-    return host.expect("import") + host.expect("host") + declarations() + host.finish_names()
+    return imports() + declarations() + host.finish_names()
+}
+
+fn imports()->int{
+    if (host.at("import") != 0) {
+        return host.expect("import") + host.module_import() + imports()
+    } else {
+        return 0
+    }
 }
 
 fn declarations()->int{
@@ -167,10 +175,14 @@ fn atom()->int{
         if (host.at("host") != 0) {
             return call()
         } else {
-            if (host.at_call() != 0) {
+            if (host.at_module_call() != 0) {
                 return call()
             } else {
-                return host.value()
+                if (host.at_call() != 0) {
+                    return call()
+                } else {
+                    return host.value()
+                }
             }
         }
     }
@@ -180,7 +192,11 @@ fn call()->int{
     if (host.at("host") != 0) {
         return host.expect("host") + host.expect(".") + host.method() + host.expect("(") + host.emit("(") + host_arguments() + host.expect(")") + host.emit(")?")
     } else {
-        return host.call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
+        if (host.at_module_call() != 0) {
+            return host.module_call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
+        } else {
+            return host.call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
+        }
     }
 }
 
