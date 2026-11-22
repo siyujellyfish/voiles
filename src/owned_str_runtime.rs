@@ -445,7 +445,7 @@ impl OwnedStrRuntime {
         let (leaving,remaining)=std::mem::take(&mut current.names).into_iter()
             .partition(|b|names.contains(&b.name));
         current.names=remaining;
-        self.cleanup_frame(StrFrame{names:leaving});
+        self.cleanup_frame(StrFrame{names:leaving,..StrFrame::default()});
     }
 
     pub(crate) fn leave_scope(&mut self) -> Result<(), StrRuntimeError> {
