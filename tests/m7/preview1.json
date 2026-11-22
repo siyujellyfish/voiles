@@ -1,0 +1,130 @@
+[
+  {
+    "id": "整數加法",
+    "source": "fn main()->int{\nreturn 40 + 2\n}",
+    "legacy": true,
+    "module": true,
+    "value": 42
+  },
+  {
+    "id": "常值分支",
+    "source": "fn main()->int{\nif (true) { return 5 } else { return 9 }\n}",
+    "legacy": false,
+    "module": true,
+    "value": 5
+  },
+  {
+    "id": "資料分支",
+    "source": "fn main()->int{\nconst b:bool = true\nvar x:int = 9\nif (b) { x = 5 }\nreturn x\n}",
+    "legacy": true,
+    "module": false,
+    "value": 5
+  },
+  {
+    "id": "整數參數",
+    "source": "fn add(x:int)->int{ return x + 1 }\nfn main()->int{\nreturn add(4)\n}",
+    "legacy": false,
+    "module": false,
+    "value": 5
+  },
+  {
+    "id": "具名參數",
+    "source": "fn add(x:int)->int{ return x + 1 }\nfn main()->int{\nreturn add(x=4)\n}",
+    "legacy": false,
+    "module": false,
+    "value": 5
+  },
+  {
+    "id": "迴圈",
+    "source": "fn main()->int{\nvar n:int = 0\nwhile (false) { n = n + 1 }\nreturn n\n}",
+    "legacy": false,
+    "module": false,
+    "value": 0
+  },
+  {
+    "id": "結構欄位",
+    "source": "struct Box{ var value:int = 8 }\nfn main()->int{\nvar b:Box = Box()\nreturn b.value\n}",
+    "legacy": false,
+    "module": true,
+    "value": 8
+  },
+  {
+    "id": "字素位元組",
+    "source": "share s:str = \"甲\"\nfn main()->int{\nreturn s[0][0]\n}",
+    "legacy": false,
+    "module": true,
+    "value": 231
+  },
+  {
+    "id": "借用衝突",
+    "source": "share s:str = \"A\"\nfn main()->int{\nconst a:str = s.borrow()\ns = \"B\"\nreturn a[0][0]\n}",
+    "legacy": false,
+    "module": false,
+    "value": null
+  },
+  {
+    "id": "回傳型別錯誤",
+    "source": "fn main()->int{\nreturn true\n}",
+    "legacy": false,
+    "module": false,
+    "value": null
+  },
+  {
+    "id": "清單",
+    "source": "fn main()->int{\nvar xs:list[int] = [4]\nreturn len(xs)\n}",
+    "legacy": false,
+    "module": false,
+    "value": 1
+  },
+  {
+    "id": "字典",
+    "source": "fn main()->int{\nvar xs:dict{str,int} = {\"one\":4}\nreturn len(xs)\n}",
+    "legacy": false,
+    "module": false,
+    "value": 1
+  },
+  {
+    "id": "十進位浮點",
+    "source": "fn main()->int{\nvar x:float = 1.5\nreturn 0\n}",
+    "legacy": false,
+    "module": false,
+    "value": 0
+  },
+  {
+    "id": "直接等待",
+    "source": "async fn answer()->int{ return 42 }\nfn main()->int{\nreturn await answer()\n}",
+    "legacy": false,
+    "module": true,
+    "value": 42,
+    "build": false,
+    "pack": false
+  },
+  {
+    "id": "Optional元素",
+    "source": "fn main()->int{\nvar xs:list[Optional[int]] = [none,7]\nreturn len(xs)\n}",
+    "legacy": false,
+    "module": false,
+    "value": null
+  },
+  {
+    "id": "字串插值",
+    "source": "fn main()->int{\nconst x:int = 4\nconst s:str = f\"{x}\"\nreturn 0\n}",
+    "legacy": false,
+    "module": false,
+    "value": null
+  },
+  {
+    "id": "例外",
+    "source": "fn main()->int{\ntry{ return 7 }\nreturn 0\n}",
+    "legacy": false,
+    "module": false,
+    "value": null
+  },
+  {
+    "id": "命令列與檔案",
+    "source": "fn main()->int{\nreturn argc()\n}",
+    "legacy": false,
+    "module": false,
+    "value": null
+  }
+]
