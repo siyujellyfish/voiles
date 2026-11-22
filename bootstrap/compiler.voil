@@ -68,16 +68,44 @@ fn statement()->int{
     if (host.at("var") != 0) {
         return local() + statement()
     } else {
-        if (host.at("return") != 0) {
-            return host.expect("return") + host.emit("Ok(") + expression() + host.emit(")\n")
+        if (host.at_field_write() != 0) {
+            return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
         } else {
-            return control()
+            if (host.at("return") != 0) {
+                return host.expect("return") + host.emit("Ok(") + expression() + host.emit(")\n")
+            } else {
+                return control()
+            }
         }
     }
 }
 
 fn local()->int{
-    return host.expect("var") + host.local() + host.expect(":") + host.local_type() + host.expect("=") + host.constructor() + host.expect("(") + host.expect(")") + host.emit(";\n")
+    return host.expect("var") + host.local() + host.expect(":") + host.local_type() + host.expect("=") + host.constructor() + host.expect("(") + constructor_arguments() + host.expect(")") + host.finish_constructor() + host.emit(";\n")
+}
+
+fn constructor_arguments()->int{
+    if (host.at(")") != 0) {
+        return 0
+    } else {
+        return host.constructor_field() + host.expect("=") + expression() + following_constructor_arguments()
+    }
+}
+
+fn following_constructor_arguments()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + constructor_tail()
+    } else {
+        return 0
+    }
+}
+
+fn constructor_tail()->int{
+    if (host.at(")") != 0) {
+        return 0
+    } else {
+        return host.constructor_field() + host.expect("=") + expression() + following_constructor_arguments()
+    }
 }
 
 fn control()->int{

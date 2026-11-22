@@ -226,12 +226,13 @@ fn main(){
 
     # 具 int 預設欄位的結構由自舉來源宣告、空建立並讀取，生成真 Rust 結構。
     structures = ("struct Box{\nvar value:int = 40\nvar extra:int = 2\n}\n"
-                  "fn main()->int{\nvar b:Box = Box()\nreturn b.value+b.extra\n}")
+                  "fn main()->int{\nvar b:Box = Box(extra=1,value=39,)\n"
+                  "b.value = b.value+1\nb.extra = b.extra+1\nreturn b.value+b.extra\n}")
     source.write_text("import host\n" + structures, encoding="utf-8")
     generated_structs = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
     assert generated_structs[0] == generated_structs[1] == generated_structs[2]
     code, generated, error = generated_structs[2]
-    assert code == 0 and not error and "struct S_Box" in generated and "v_b.f_value" in generated
+    assert code == 0 and not error and "struct S_Box" in generated and "v_b.f_value = " in generated
     rust_source.write_text(
         "type R=Result<i64,Fault>; enum Fault{Overflow} struct Machine; "
         "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
@@ -254,6 +255,8 @@ fn main(){
         "fn main()->int{ var b:Missing = Missing() return 0 }",
         "struct Box{ var value:int = 1 } struct Other{ var value:int = 2 } fn main()->int{ var b:Box = Other() return 0 }",
         "struct Box{ var value:int = 1 } fn main()->int{ var b:Box = Box() return b.missing }",
+        "struct Box{ var value:int = 1 } fn main()->int{ var b:Box = Box(value=1,value=2) return 0 }",
+        "struct Box{ var value:int = 1 } fn main()->int{ var b:Box = Box(missing=1) return 0 }",
     )
     for invalid in invalid_structures:
         source.write_text("import host\n" + invalid, encoding="utf-8")
