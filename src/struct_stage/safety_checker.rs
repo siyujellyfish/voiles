@@ -583,7 +583,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 }
                 StmtKind::Return(term) =>
                     Self::scan_resolved_term_uses(term, visible, used, kind),
-                StmtKind::Evaluate(value) | StmtKind::GraphemeWrite(value) => Self::scan_resolved_term_uses(value, visible, used, kind),
+                StmtKind::ProcedureCall(value) | StmtKind::Evaluate(value) | StmtKind::GraphemeWrite(value) => Self::scan_resolved_term_uses(value, visible, used, kind),
                 StmtKind::ReadonlyElement(binding) => {
                     if let TokenKind::Name(owner) = &binding.owner.kind {
                         Self::record_named_future_use(visible, used, owner);
@@ -2487,7 +2487,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             match &statement.kind {
                 StmtKind::Try { .. } => return Err(Diagnostic {kind:DiagnosticKind::Static,
                     message:"此例外處理需要公開執行計畫".into(),span:Some(self.source.span(statement.start,statement.end))}),
-                StmtKind::Evaluate(value) => return Err(self.error("此操作需要公開容器執行計畫",value)),
+                StmtKind::ProcedureCall(value) | StmtKind::Evaluate(value) => return Err(self.error("此操作需要公開容器執行計畫",value)),
                 StmtKind::GraphemeWrite(value) => { self.evaluate(value, vars)?; }
                 StmtKind::ReadonlyElement(block) => {
                     let alias = self.scoped_element_binding(block, vars)?;
@@ -3145,7 +3145,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
                 StmtKind::While { condition, .. } => {
                     return Err(self.error("P15：方法中的 while 借用重入尚未完成安全證明", condition));
                 }
-                StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::ReadonlyElement(_) | StmtKind::ForRange { .. } => {
+                StmtKind::ProcedureCall(_) | StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::ReadonlyElement(_) | StmtKind::ForRange { .. } => {
                     return Err(Diagnostic { kind: DiagnosticKind::Static,
                         message: "P15：方法中的 for 借用重入尚未完成安全證明".into(),
                         span: Some(self.source.span(stmt.start, stmt.end)) });

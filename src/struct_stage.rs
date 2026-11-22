@@ -119,6 +119,7 @@ enum StmtKind {
     Try { body: Vec<Stmt>, handler: Vec<Stmt>, category: String },
     ReadonlyElement(Box<ReadonlyElementBlock>),
     Evaluate(Term),
+    ProcedureCall(Term),
     GraphemeWrite(Term),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
