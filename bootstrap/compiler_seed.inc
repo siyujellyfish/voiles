@@ -84,7 +84,15 @@ Ok(v_control(s, depth + 1)?)
 }
 fn v_list_borrow(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-Ok(s.expect("with")?.checked_add(s.list_owner()?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.expect("as")?).ok_or(Fault::Overflow)?.checked_add(s.list_alias()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_list_borrow()?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.expect("with")?.checked_add(s.list_owner()?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.expect("as")?).ok_or(Fault::Overflow)?.checked_add(s.list_alias()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_list_borrow()?).ok_or(Fault::Overflow)?.checked_add(v_after_list_borrow(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_after_list_borrow(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("}")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(v_statement(s, depth + 1)?)
+}
 }
 fn v_local(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;

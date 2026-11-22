@@ -4,7 +4,8 @@ use super::*;
 pub(super) fn needed(f: &Function) -> bool {
     f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool")
         || f.body.statements.iter().any(|s| match &s.kind {
-            StmtKind::Declare(d) => d.ty == "bool",
+            StmtKind::Declare(d) => d.ty == "bool" || stored_type(&d.ty),
+            StmtKind::ReadonlyElement(_) => true,
             StmtKind::Try { .. } | StmtKind::If { .. } | StmtKind::While { .. } | StmtKind::ForRange { .. } => true,
             _ => false,
         })
@@ -903,5 +904,30 @@ impl Builder<'_, '_> {
         let scope=self.loops.pop().unwrap();
         for at in scope.breaks { self.patch(at,self.body.len()); }
         for at in scope.continues { self.patch(at,next); }
+    }
+}
+
+#[cfg(test)]
+mod routing_tests {
+    use super::*;
+
+    fn parsed_main(text: &str) -> Function {
+        let source = Source::new(text.as_bytes().to_vec());
+        let scanned = lexer::scan(&source);
+        assert!(scanned.diagnostics.is_empty());
+        let (_, functions) = LanguageParser::<true> {
+            source: &source, tokens: &scanned.tokens, cursor: 0,
+        }.module_items(None, None).unwrap();
+        functions.into_iter().find(|f| f.name == "main").unwrap()
+    }
+
+    #[test]
+    fn 公開清單宣告與唯讀元素必須走容器降階() {
+        for text in [
+            "fn main()->int{\nvar xs:list[int] = [1]\nreturn len(xs)\n}",
+            "fn main()->int{\nvar xs:list[int] = [1]\nwith xs[0] as item {\nreturn item\n}\n}",
+        ] {
+            assert!(needed(&parsed_main(text)), "{text}");
+        }
     }
 }
