@@ -56,34 +56,42 @@ Ok(s.expect("(")?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow
 }
 fn v_relation(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-if s.at("!")? != 0i64 {
-Ok(s.expect("!")?.checked_add(s.expect("=")?).ok_or(Fault::Overflow)?.checked_add(s.emit(" != ")?).ok_or(Fault::Overflow)?)
+if s.at("!=")? != 0i64 {
+Ok(s.expect("!=")?.checked_add(s.emit(" != ")?).ok_or(Fault::Overflow)?)
 } else {
 Ok(v_equality(s, depth + 1)?)
 }
 }
 fn v_equality(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-if s.at("=")? != 0i64 {
-Ok(s.expect("=")?.checked_add(s.expect("=")?).ok_or(Fault::Overflow)?.checked_add(s.emit(" == ")?).ok_or(Fault::Overflow)?)
+if s.at("==")? != 0i64 {
+Ok(s.expect("==")?.checked_add(s.emit(" == ")?).ok_or(Fault::Overflow)?)
 } else {
 Ok(v_ordering(s, depth + 1)?)
 }
 }
 fn v_ordering(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-if s.at("<")? != 0i64 {
-Ok(s.expect("<")?.checked_add(s.emit(" <")?).ok_or(Fault::Overflow)?.checked_add(v_inclusive(s, depth + 1)?).ok_or(Fault::Overflow)?)
+if s.at("<=")? != 0i64 {
+Ok(s.expect("<=")?.checked_add(s.emit(" <= ")?).ok_or(Fault::Overflow)?)
 } else {
-Ok(s.expect(">")?.checked_add(s.emit(" >")?).ok_or(Fault::Overflow)?.checked_add(v_inclusive(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(v_upper(s, depth + 1)?)
 }
 }
-fn v_inclusive(s: &mut Machine, depth: usize) -> R {
+fn v_upper(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-if s.at("=")? != 0i64 {
-Ok(s.expect("=")?.checked_add(s.emit("= ")?).ok_or(Fault::Overflow)?)
+if s.at(">=")? != 0i64 {
+Ok(s.expect(">=")?.checked_add(s.emit(" >= ")?).ok_or(Fault::Overflow)?)
 } else {
-Ok(s.emit(" ")?)
+Ok(v_strict(s, depth + 1)?)
+}
+}
+fn v_strict(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("<")? != 0i64 {
+Ok(s.expect("<")?.checked_add(s.emit(" < ")?).ok_or(Fault::Overflow)?)
+} else {
+Ok(s.expect(">")?.checked_add(s.emit(" > ")?).ok_or(Fault::Overflow)?)
 }
 }
 fn v_expression(s: &mut Machine, depth: usize) -> R {

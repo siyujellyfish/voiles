@@ -146,3 +146,12 @@ fn main(){
     rust_source.write_text(harness + generated, encoding="utf-8")
     subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
     assert invoke(native) == (0, "", "")
+
+    for op, ok in [("!=",True),("==",True),("<",True),(">",True),
+                   ("<=",True),(">=",True),("! =",False),("< =",False)]:
+        body = f"fn main()->int{{ if(1 {op} 2){{ return 42 }} else {{ return 0 }} }}"
+        public.write_text(body, encoding="utf-8")
+        source.write_text("import host\n" + body, encoding="utf-8")
+        generated = invoke(next_stage, "bootstrap-compiler", source)
+        assert (generated[0] == 0) == ok, (op, generated)
+        assert (invoke(next_stage, "check", public)[0] == 0) == ok, op

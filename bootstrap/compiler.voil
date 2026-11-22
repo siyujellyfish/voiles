@@ -57,34 +57,42 @@ fn comparison()->int{
 }
 
 fn relation()->int{
-    if (host.at("!") != 0) {
-        return host.expect("!") + host.expect("=") + host.emit(" != ")
+    if (host.at("!=") != 0) {
+        return host.expect("!=") + host.emit(" != ")
     } else {
         return equality()
     }
 }
 
 fn equality()->int{
-    if (host.at("=") != 0) {
-        return host.expect("=") + host.expect("=") + host.emit(" == ")
+    if (host.at("==") != 0) {
+        return host.expect("==") + host.emit(" == ")
     } else {
         return ordering()
     }
 }
 
 fn ordering()->int{
-    if (host.at("<") != 0) {
-        return host.expect("<") + host.emit(" <") + inclusive()
+    if (host.at("<=") != 0) {
+        return host.expect("<=") + host.emit(" <= ")
     } else {
-        return host.expect(">") + host.emit(" >") + inclusive()
+        return upper()
     }
 }
 
-fn inclusive()->int{
-    if (host.at("=") != 0) {
-        return host.expect("=") + host.emit("= ")
+fn upper()->int{
+    if (host.at(">=") != 0) {
+        return host.expect(">=") + host.emit(" >= ")
     } else {
-        return host.emit(" ")
+        return strict()
+    }
+}
+
+fn strict()->int{
+    if (host.at("<") != 0) {
+        return host.expect("<") + host.emit(" < ")
+    } else {
+        return host.expect(">") + host.emit(" > ")
     }
 }
 
