@@ -6,6 +6,14 @@ from tempfile import TemporaryDirectory
 
 cli = Path(sys.argv[1]).resolve(strict=True)
 cases = [
+    ("var a:list[int] = [42]\nif(true){\nvar a:list[int] = [0,1]\n"
+     "var b:list[int] = a.move()\nif(len(b) != 2){ return 0 }\n}\n"
+     "with a[0] as item { return item }", 42),
+    ("var n:int = 0\nfor i in 0..3 {\nvar a:list[int] = [10,12,20]\n"
+     "var b:list[int] = a.move()\nwith b[i] as item { n = n + item }\n}\nreturn n", 42),
+    ("if(true){ var a:list[int] = [0] }\nreturn len(a)", "reject"),
+    ("if(true){\nvar a:list[int] = [0]\nvar b:list[int] = a.move()\n"
+     "return len(a)\n}\nreturn 42", "reject"),
     ("var a:list[int] = [10,32]\nvar b:list[int] = a.move()\n"
      "var n:int = 10\nwith b[len(b) - 1] as item { n = n + item }\nreturn n", 42),
     ('var d:dict{str,int} = {"甲":42}\nwith d["甲"] as item { return item }', 42),

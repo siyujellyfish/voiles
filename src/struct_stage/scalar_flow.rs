@@ -114,8 +114,6 @@ impl Builder<'_, '_> {
     }
 
     fn container(&mut self, declaration: &crate::syntax_shared::ParsedDeclaration<String, Term>) -> Option<()> {
-        // 常值容器只在函式最外層建立或移動，所有允許的觀察均可靜態求值。
-        if self.scopes.len() != 1 { return None; }
         let initial = declaration.initializer.as_ref()?;
         let value = match &initial.kind {
             TermKind::Container(literal) if literal.ty == declaration.ty => {
@@ -126,7 +124,9 @@ impl Builder<'_, '_> {
                 literal.clone()
             }
             TermKind::Move(source) => {
-                let owner = self.binding(source)?;
+                // 在同一區域內，移動必然與來源宣告沿同一路徑執行。
+                // 外層來源可能只在某一條分支移走，亦可能仍有 with 借用。
+                let owner = self.scopes.last()?.get(source)?;
                 if owner.ty != declaration.ty { return None; }
                 let slot = owner.slot.clone();
                 self.containers.get_mut(&slot)?.take()?
@@ -136,7 +136,7 @@ impl Builder<'_, '_> {
         let slot = format!("@{}", self.next_slot);
         self.next_slot += 1;
         self.containers.insert(slot.clone(), Some(value));
-        self.scopes[0].insert(declaration.name.clone(), Binding {
+        self.scopes.last_mut()?.insert(declaration.name.clone(), Binding {
             slot, ty: declaration.ty.clone(), mutable: false,
         });
         Some(())
