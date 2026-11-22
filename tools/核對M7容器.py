@@ -5,6 +5,17 @@ import sys
 
 cli = Path(sys.argv[1]).resolve(strict=True)
 cases = [
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { const flag:bool = x == none\n'
+     'if(not flag){ return x } }\nreturn 0', 42),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { if(not (x == none)){ return x } }\nreturn 0', 42),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { var flag:bool = x != none\nflag = true\n'
+     'if(flag){ return x } }\nreturn 0', "reject"),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { const flag:bool = x != none\n'
+     'const copy:bool = flag\nif(copy){ return x } }\nreturn 0', "reject"),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { const flag:bool = x != none\n'
+     'var k:int = len(a)\nif(flag){ return x } }\nreturn 0', "reject"),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { if(x != none and x != 0){ return 42 } }\nreturn 0', "reject"),
+    ('var a:list[Optional[int]] = [42]\nwith a[0] as x { while(x != none){ return x } }\nreturn 0', "reject"),
     ('var a:list[int] = [1]\na.append(2) + 3\nreturn 0', "reject"),
     ('var a:list[int] = [42]\nfor i in 0..2 { with a[0] as x { if(i != 1){ continue } '
      'else { break } } }\na.append(0)\nwith a[0] as x { return x }', 42),
@@ -62,3 +73,12 @@ cases = [
     ("var a:list[int] = [true]\nreturn len(a)", "reject"),
 ]
 verify(cli, (("fn main()->int{\n" + body + "\n}", expected) for body, expected in cases))
+
+verify(cli, [
+    ('fn id(n:int)->int{ return n }\nfn main()->int{ var a:list[Optional[int]] = [42]\n'
+     'with a[0] as x { if(x != none){ var k:int = id(0)\nreturn x } }\nreturn 0 }', "reject"),
+    ('fn id(n:int)->int{ return n }\nfn main()->int{ var a:list[Optional[int]] = [42]\n'
+     'with a[0] as x { if(x != none){ var k:int = id(0)\nif(x != none){ return x } } }\nreturn 0 }', 42),
+    ('fn main()->int{ var a:list[Optional[int]] = [42]\nwith a[0] as x { const flag:bool = x != none\n'
+     'if(true){ var n:int = 1 }\nif(flag){ return x } }\nreturn 0 }', "reject"),
+])

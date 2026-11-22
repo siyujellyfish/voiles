@@ -21,6 +21,7 @@ fn verified_private_syntax_roles(
             return false;
         }
         match &value.kind {
+            TermKind::Not(t) => term(t,span,audit),
             TermKind::Logic(_,a,b) => term(a,span,audit) && term(b,span,audit),
             TermKind::Group(inner) => term(inner, span, audit),
             TermKind::BinaryInt(binary) =>

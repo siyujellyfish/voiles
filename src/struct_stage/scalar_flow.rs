@@ -17,6 +17,13 @@ struct Binding {
     mutable: bool,
 }
 
+#[derive(Clone)]
+struct Presence {
+    slot: String,
+    candidate: String,
+    present_when_true: bool,
+}
+
 struct Loop {
     storage_depth: usize,
     breaks: Vec<usize>,
@@ -36,12 +43,13 @@ struct Builder<'a,'b> {
     views: BTreeSet<String>,
     storage: Vec<String>,
     borrowed: Vec<String>,
+    flags: std::cell::RefCell<HashMap<String, Presence>>,
     narrowed: std::cell::RefCell<HashMap<String,String>>,
 }
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: BTreeSet::new(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), narrowed: Default::default() };
+        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: BTreeSet::new(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
     for p in &function.params {
         if !matches!(p.ty.as_str(), "int" | "bool") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
@@ -100,6 +108,7 @@ impl Builder<'_, '_> {
                 return self.edit(owner,method,args),
             TermKind::BinaryInt(n) => ("int", Number::Binary(Box::new(self.typed(&n.left,"int")?),
                 n.operator, Box::new(self.typed(&n.right,"int")?))),
+            TermKind::Not(inner) => ("bool",Number::Logic("==",Box::new(self.typed(inner,"bool")?),Box::new(Number::Constant(0)))),
             TermKind::Logic(op,a,b) => {
                 let (ty,left) = self.expr(a)?;
                 if *op != "!=" && ty != "bool" { return None; }
@@ -166,7 +175,7 @@ impl Builder<'_, '_> {
             }
             _=>return None,
         };
-        self.narrowed.borrow_mut().clear();
+        self.invalidate();
         Some((result.into(),Number::Edit(b.slot.clone(),Box::new(edit))))
     }
 
@@ -184,6 +193,7 @@ impl Builder<'_, '_> {
             if args.next().is_some() { return None; }
             let binding = self.binding(owner)?;
             if element_type(&binding.ty).is_none() || !(self.containers.contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
+            self.invalidate();
             return Some(("int".into(), Number::Container(binding.slot.clone(), ContainerRead::Length)));
         }
         let (target,_,f) = objects.function(name)?;
@@ -197,7 +207,7 @@ impl Builder<'_, '_> {
             values.push((param.name.clone(),slot,self.typed(arg,&param.ty)?));
         }
         if values.len()!=f.params.len() { return None; }
-        self.narrowed.borrow_mut().clear();
+        self.invalidate();
         Some((f.result_ty.clone(), Number::ScalarCall { target:target.clone(), arguments:values }))
     }
 
@@ -252,15 +262,38 @@ impl Builder<'_, '_> {
         Some((binding.slot.clone(), value_type.into(), key))
     }
 
-    fn refine(&self, condition:&Term, truth:bool) {
-        let TermKind::OptionalCondition(name,predicate)=&condition.kind else {return};
-        let Some(b)=self.binding(name) else {return};
-        let candidate=match predicate {
-            OptionalPredicate::Candidate(Some(ty)) if truth=>Some(ty.as_str()),
-            OptionalPredicate::IsMissing(equal) if *equal!=truth=>b.ty.strip_prefix("Optional[").and_then(|t|t.strip_suffix(']')).filter(|t|!t.contains(',')),
+    fn invalidate(&self) {
+        self.flags.borrow_mut().clear();
+        self.narrowed.borrow_mut().clear();
+    }
+
+    fn presence(&self, term: &Term, flags: bool) -> Option<Presence> {
+        match &term.kind {
+            TermKind::Group(t) => self.presence(t, flags),
+            TermKind::Not(t) => {
+                let mut fact=self.presence(t,flags)?;
+                fact.present_when_true=!fact.present_when_true;
+                Some(fact)
+            }
+            TermKind::Name(n) if flags => self.flags.borrow().get(&self.binding(n)?.slot).cloned(),
+            TermKind::OptionalCondition(n,OptionalPredicate::IsMissing(equal)) => {
+                let b=self.binding(n)?;
+                let ty=b.ty.strip_prefix("Optional[")?.strip_suffix(']')?;
+                if ty.contains(',') {return None;}
+                Some(Presence { slot:b.slot.clone(), candidate:ty.into(), present_when_true:!*equal })
+            }
             _=>None,
-        };
-        if let Some(ty)=candidate {self.narrowed.borrow_mut().insert(b.slot.clone(),ty.into());}
+        }
+    }
+
+    fn refine(&self, condition:&Term, truth:bool) {
+        if let Some(f)=self.presence(condition,true) {
+            if f.present_when_true==truth {self.narrowed.borrow_mut().insert(f.slot,f.candidate);}
+        } else if let TermKind::OptionalCondition(n,OptionalPredicate::Candidate(Some(ty)))=&condition.kind {
+            if truth {
+                if let Some(b)=self.binding(n) {self.narrowed.borrow_mut().insert(b.slot.clone(),ty.clone());}
+            }
+        }
     }
 
     fn step(&mut self, s:&Stmt, action:Action) -> usize {
@@ -290,6 +323,11 @@ impl Builder<'_, '_> {
                     }
                     let value=d.initializer.as_ref().and_then(|t|self.typed(t,&d.ty)).ok_or_else(||err("區域純量需要型別相符的初值"))?;
                     let slot=format!("@{}",self.next_slot); self.next_slot+=1;
+                    if d.ty=="bool" {
+                        if let Some(fact)=d.initializer.as_ref().and_then(|t|self.presence(t,false)) {
+                            self.flags.borrow_mut().insert(slot.clone(),fact);
+                        }
+                    }
                     self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot:slot.clone(),ty:d.ty.clone(),mutable:d.mutable});
                     self.step(s,Action::Bind(slot,value));
                 }
@@ -307,6 +345,7 @@ impl Builder<'_, '_> {
                     closed = self.block(&block.body.statements, false)?;
                     self.storage.pop();
                     self.borrowed.pop();
+                    self.flags.borrow_mut().clear();
                     if !closed { self.step(s,Action::DropContainer(slot)); }
                     self.scopes.pop();
                 }
@@ -317,6 +356,7 @@ impl Builder<'_, '_> {
                 StmtKind::Assign(a) => {
                     let b=self.binding(&a.name).filter(|b|b.mutable).ok_or_else(||err("缺少可寫區域純量"))?;
                     let v=self.typed(&a.expression,&b.ty).ok_or_else(||err("賦值型別不符"))?;
+                    self.flags.borrow_mut().remove(&b.slot);
                     self.step(s,Action::Bind(b.slot.clone(),v));
                 }
                 StmtKind::Return(r) => {
@@ -336,17 +376,20 @@ impl Builder<'_, '_> {
                         }
                     }
                     let skip=self.step(s,Action::Unless(test,0));
+                    let entry_flags=self.flags.borrow().clone();
                     let before=self.narrowed.borrow().clone();
                     self.refine(&branch.condition,true);
                     let yes=self.block(&branch.body.statements,true)?;
                     let yes_facts=self.narrowed.replace(before.clone());
                     let end=(!yes).then(||self.step(s,Action::Jump(0)));
                     self.patch(skip,self.body.len());
+                    self.flags.replace(entry_flags);
                     self.refine(&branch.condition,false);
                     let no_closed=if let Some(other)=no { self.block(other.as_slice(),true)? } else {false};
                     let no_facts=self.narrowed.replace(before);
                     self.narrowed.borrow_mut().retain(|slot,ty|
                         (yes || yes_facts.get(slot)==Some(ty)) && (no_closed || no_facts.get(slot)==Some(ty)));
+                    self.flags.borrow_mut().clear();
                     closed=yes && no_closed;
                     if let Some(at)=end { self.patch(at,self.body.len()); }
                 }
@@ -361,7 +404,7 @@ impl Builder<'_, '_> {
                     closed=true;
                 }
                 StmtKind::While{condition,body} => {
-                    self.narrowed.borrow_mut().clear();
+                    self.invalidate();
                     let cond=self.typed(condition,"bool").ok_or_else(||err("while 需要 bool 條件"))?;
                     let head=self.step(s,Action::Unless(cond,0));
                     self.loops.push(Loop{storage_depth:self.storage.len(),breaks:vec![head],continues:Vec::new()});
@@ -370,7 +413,7 @@ impl Builder<'_, '_> {
                     self.end_loop(head);
                 }
                 StmtKind::ForRange{iterator,lower,upper,body,..} => {
-                    self.narrowed.borrow_mut().clear();
+                    self.invalidate();
                     let start=integer_i64(lower).map_err(|_|err("區間下界無效"))?;
                     let end=integer_i64(upper).map_err(|_|err("區間上界無效"))?;
                     let slot=format!("@{}",self.next_slot); self.next_slot+=1;
