@@ -34,7 +34,7 @@ def main():
         for entry, value in [(example, 5), (multi, 42)]:
             verify(["check", entry], 0)
             verify(["run", entry], 0, f"{value}\n")
-        verify(["--version"], 0, "voiles P22\n")
+        verify(["--version"], 0, "voiles " + (example.parents[2] / "VERSION").read_text(encoding="utf-8"))
         help_result = subprocess.run([cli, "--help"], cwd=directory, capture_output=True,
                                      encoding="utf-8")
         if (help_result.returncode or help_result.stderr or

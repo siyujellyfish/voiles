@@ -29,7 +29,7 @@ fn main() -> ExitCode {
             }
         }
         Some("--help") if args.len() == 1 => println!("{HELP}"),
-        Some("--version") if args.len() == 1 => println!("voiles P22"),
+        Some("--version") if args.len() == 1 => println!("voiles {}", include_str!("../VERSION").trim()),
         Some(command @ ("check" | "run")) if args.len() == 2 => {
             let path = Path::new(&args[1]);
             if path.extension() != Some(OsStr::new("voil")) {
