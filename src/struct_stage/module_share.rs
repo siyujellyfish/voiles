@@ -76,9 +76,9 @@ mod scalar_flow;
 mod containers;
 
 enum ContainerKey { NamedText(String), Text(String), Index(Number) }
-enum ContainerItem { Decimal(Number), Scalar(Number, bool), Literal(containers::Value) }
+enum ContainerItem { Record(Vec<(String,ContainerItem)>), Decimal(Number), Scalar(Number, bool), Literal(containers::Value) }
 enum Edit { ReplaceOptional(ContainerItem), Append(ContainerItem), Set(ContainerKey, ContainerItem), Pop }
-enum ContainerRead { Length, Tag, Scalar }
+enum ContainerRead { Field(String), Length, Tag, Scalar }
 fn stored_type(ty:&str)->bool { element_type(ty).is_some() || ty.starts_with("Optional[") }
 enum CollectionArgument { Optional(ContainerItem), Move(String), Scalar(Number) }
 struct CollectionCall { target:String, arguments:Vec<(String,usize,CollectionArgument)> }
@@ -94,7 +94,7 @@ impl CollectionCall {
     }
 }
 
-enum ContainerInit { Call(CollectionCall), Optional(ContainerItem), Literal(ContainerLiteral), Move(String) }
+enum ContainerInit { ReadBytes(StandardCall), Call(CollectionCall), Optional(ContainerItem), Literal(ContainerLiteral), Move(String) }
 
 impl ContainerLiteral {
     fn runtime(&self) -> Option<containers::Value> {
@@ -209,6 +209,7 @@ struct TextInvocation {
 }
 
 enum Argument {
+    SharedText(String),
     Integer(Number),
     Text(LocalText),
 }
@@ -217,6 +218,7 @@ impl TextInvocation {
     fn uses<'a>(&'a self, uses: &mut Vec<Use<'a>>) {
         for (_, _, arg) in &self.arguments {
             match arg {
+                Argument::SharedText(_) => (),
                 Argument::Integer(n) => n.uses(uses),
                 Argument::Text(t) => t.uses(uses),
             }
@@ -456,13 +458,19 @@ impl Lower<'_> {
             let p = function.params.get(slot)?;
             if !slots.insert(slot) { return None; }
             let value = match p.ty.as_str() {
-                "str" => Argument::Text(self.local_text(term, "")?),
+                "str" => if let TermKind::Name(owner) = &term.kind {
+                    if !self.objects.as_ref()?.allows_shared(name,&p.name) || self.strings.get(owner)?.borrowed.is_some() { return None; }
+                    Argument::SharedText(self.text_owner(owner,false,true)?)
+                } else { Argument::Text(self.local_text(term, "")?) },
                 ty @ ("int" | "bool" | "float") => Argument::Integer(self.scalar_value(ty,term)?),
                 _ => return None,
             };
             arguments.push((p.name.clone(),slot,value));
         }
-        if arguments.len() != function.params.len() { return None; }
+        if arguments.len() != function.params.len() || arguments.iter().any(|(_,_,a)| match a {
+            Argument::SharedText(n) => !self.strings.get(n).is_some_and(|b| b.live.get()),
+            _ => false,
+        }) { return None; }
         Some(TextInvocation { target: target.clone(), arguments })
     }
 
@@ -969,6 +977,16 @@ enum Use<'a> {
     Call(&'a str, bool),
 }
 
+impl ContainerItem {
+    fn uses<'a>(&'a self,list:&mut Vec<Use<'a>>) {
+        match self {
+            Self::Record(fields)=>for (_,value) in fields {value.uses(list);},
+            Self::Scalar(n,_)|Self::Decimal(n)=>n.uses(list),
+            Self::Literal(_)=>(),
+        }
+    }
+}
+
 impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
@@ -978,7 +996,7 @@ impl Number {
             Self::Edit(_, edit) => {
                 if let Edit::Set(ContainerKey::Index(n),_) = edit.as_ref() { n.uses(list); }
                 if let Edit::Set(_,item) | Edit::Append(item) | Edit::ReplaceOptional(item)=edit.as_ref() {
-                    if let ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n)=item { n.uses(list); }
+                    item.uses(list);
                 }
             }
             Self::Logic(_,a,b) => { a.uses(list); b.uses(list); }
@@ -1006,6 +1024,7 @@ impl Action {
         let mut uses = Vec::new();
         match self {
             Self::Select { key: ContainerKey::Index(n), .. } => n.uses(&mut uses),
+            Self::Container(_,ContainerInit::ReadBytes(call)) => call.uses(&mut uses),
             Self::Container(_,ContainerInit::Call(call))=>call.uses(&mut uses),
             Self::ReturnOptional(ContainerItem::Scalar(n,_)|ContainerItem::Decimal(n))=>n.uses(&mut uses),
             Self::ReturnOptional(_)|Self::ReturnCollection(_)|Self::BorrowLocal{..}=>(),
@@ -1288,6 +1307,7 @@ impl Program {
     fn invoke_text(&self, call: &TextInvocation, frame: &mut Frame, state: &mut State, depth: usize)
         -> Result<CallResult, StrRuntimeError> {
         use crate::owned_str_runtime::StrArgumentSource;
+        enum Source { Shared(String), Moved(String), Temporary(u64) }
         let mut temps = Vec::new();
         let result = (|| {
             let mut integers = HashMap::new();
@@ -1295,17 +1315,19 @@ impl Program {
             for (name, _, arg) in &call.arguments {
                 match arg {
                     Argument::Integer(n) => { integers.insert(name.clone(), self.eval(n,frame,state,depth)?); }
+                    Argument::SharedText(owner) =>
+                        sources.push((Source::Shared(format!("@{owner}")), format!("@{name}"))),
                     Argument::Text(LocalText::Move(owner)) =>
-                        sources.push((Some(format!("@{owner}")), 0, format!("@{name}"))),
+                        sources.push((Source::Moved(format!("@{owner}")), format!("@{name}"))),
                     Argument::Text(t) => {
                         let value = self.detached_text(t,frame,state,depth)?;
-                        sources.push((None, value.resource_id(), format!("@{name}")));
+                        sources.push((Source::Temporary(value.resource_id()), format!("@{name}")));
                         temps.push(value);
                     }
                 }
             }
-            let args: Vec<_> = sources.iter().map(|(owner,id,name)| {
-                let from = match owner { Some(n) => StrArgumentSource::Named(n), None => StrArgumentSource::Temporary(*id) };
+            let args: Vec<_> = sources.iter().map(|(source,name)| {
+                let from = match source { Source::Shared(n) => StrArgumentSource::Shared(n), Source::Moved(n) => StrArgumentSource::Named(n), Source::Temporary(id) => StrArgumentSource::Temporary(*id) };
                 (from,name.as_str())
             }).collect();
             self.call_with_owner(&call.target, state, depth+1, Some(Transfer::Text(&args,&mut temps)), integers)
@@ -1390,6 +1412,12 @@ impl Program {
             let outcome = (|| -> Result<Option<CallResult>, StrRuntimeError> {
             match &step.action {
                 Action::Container(slot, init) => match init {
+                    ContainerInit::ReadBytes(call) => {
+                        let standard::Value::Bytes(bytes) = self.standard_value(call,frame,state,depth)? else {
+                            return Err(StrRuntimeError::EvaluationFailed);
+                        };
+                        frame.containers.put(slot,containers::Value::from_bytes(bytes)).ok_or(StrRuntimeError::EvaluationFailed)?;
+                    }
                     ContainerInit::Call(call)=>{
                         let result=self.invoke_collection(call,frame,state,depth)?;
                         let CallResult::Collection(value)=result else {return Err(StrRuntimeError::EvaluationFailed)};
@@ -1624,6 +1652,13 @@ impl Program {
     }
     fn container_item(&self,item:&ContainerItem,frame:&mut Frame,state:&mut State,depth:usize)->Result<containers::Value,StrRuntimeError> {
         Ok(match item {
+            ContainerItem::Record(fields)=>{
+                let mut values=BTreeMap::new();
+                for (name,field) in fields {
+                    values.insert(containers::Key::Text(name.clone()),self.container_item(field,frame,state,depth)?);
+                }
+                containers::Value::Dict(values)
+            }
             ContainerItem::Decimal(n)=>containers::Value::Decimal(self.eval(n,frame,state,depth)?),
             ContainerItem::Scalar(n,boolean)=>{
                 let v=self.eval(n,frame,state,depth)?;
@@ -1706,7 +1741,7 @@ impl Program {
             }
             Number::Container(slot, read) => {
                 let value = frame.containers.get(slot).ok_or(StrRuntimeError::EvaluationFailed)?;
-                match read { ContainerRead::Length => value.length(), ContainerRead::Tag => value.tag(),
+                match read { ContainerRead::Field(field) => value.field(field).and_then(containers::Value::scalar), ContainerRead::Length => value.length(), ContainerRead::Tag => value.tag(),
                     ContainerRead::Scalar => value.scalar() }.ok_or(StrRuntimeError::EvaluationFailed)
             }
             Number::Choice(test, yes, no) => {

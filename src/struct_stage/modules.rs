@@ -294,6 +294,10 @@ impl LinkedProgram {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
+                if std::iter::once(&f.result_ty).chain(f.params.iter().map(|p|&p.ty))
+                    .any(|ty|stored_type(ty) && !objects.valid_storage(ty)) {
+                    return Err(u.error(f.start,f.end,"容器簽章引用不可見或未宣告的元素型別"));
+                }
                 let mut locals = HashMap::new();
                 let mut strings = HashMap::new();
                 if f.params.iter().all(|p| stored_type(&p.ty) || matches!(p.ty.as_str(), "int" | "bool" | "float")) {

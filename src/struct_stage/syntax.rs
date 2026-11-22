@@ -61,8 +61,8 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
             if element_type(&nested).is_none() { return Err(self.syntax("巢狀容器需要完整型別")); }
             nested
         } else {
-            let name = self.name()?;
-            if !matches!(name.as_str(), "int" | "bool" | "str" | "float") {
+            let name = if PUBLIC && outer == "list" { self.qualified_type_name()? } else { self.name()? };
+            if !(PUBLIC && outer == "list") && !matches!(name.as_str(), "int" | "bool" | "str" | "float") {
                 return Err(self.syntax("此階段需要已支援的元素型別"));
             }
             name

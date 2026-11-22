@@ -41,7 +41,9 @@ verify(cli, ((consume + forward + "fn main()->int{\n" + body + "\n}", result) fo
     ('var value:str = "*"\nreturn forward(value=value.move())', 42),
     ('var s:str = ""\nreturn forward(s.move())', "runtime"),
     ('var s:str = "*"\nvar n:int = read(s.move())\nreturn s[0][0]', "reject"),
-    ('var s:str = "*"\nreturn read(s)', "reject"),
+    ('var s:str = "*"\nreturn read(s)', 42),
+    ('var s:str = "*"\nvar n:int = read(s)\nreturn s[0][0] + n - 42', 42),
+    ('var s:str = "*"\nreturn forward(s)', "reject"),
     ('var s:str = "*"\nreturn read(s.move()) + read(s.move())', "reject"),
 ]))
 

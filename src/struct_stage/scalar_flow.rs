@@ -90,6 +90,13 @@ impl Builder<'_, '_> {
                 let (c,e) = decimal::parts(text)?;
                 ("float", Number::Constant(decimal::encode(c,e)))
             }
+            TermKind::FieldRead(owner,field) => {
+                let b=self.readable(owner)?;
+                if !self.views.contains(&b.slot) {return None;}
+                let ty=self.lower.objects.as_ref()?.named_field(&b.ty,field)?;
+                if !matches!(ty,"int"|"bool"|"float") {return None;}
+                return Some((ty.to_owned(),Number::Container(b.slot.clone(),ContainerRead::Field(field.clone()))));
+            }
             TermKind::Name(n) => {
                 let b = self.readable(n)?;
                 let ty = self.narrowed.borrow().get(&b.slot).cloned().unwrap_or_else(|| b.ty.clone());
@@ -177,6 +184,26 @@ impl Builder<'_, '_> {
 
     fn item(&self, term:&Term, expected:&str) -> Option<ContainerItem> {
         use containers::Value;
+        let constructor = match &term.kind {
+            TermKind::Construct(n,args) => Some((n.as_str(),args.as_slice())),
+            TermKind::UnresolvedZeroArgs(n) => Some((n.as_str(),&[][..])),
+            _ => None,
+        };
+        if let Some((ctor,args))=constructor {
+            let objects=self.lower.objects.as_ref()?;
+            if let Some(defaults)=objects.record_defaults(expected,ctor) {
+                let mut provided=BTreeSet::new();
+                let mut fields=Vec::new();
+                for (field,arg) in args {
+                    if !provided.insert(field.as_str()) {return None;}
+                    fields.push((field.clone(),self.item(arg,objects.named_field(expected,field)?)?));
+                }
+                for (field,default) in defaults {
+                    if !provided.contains(field.as_str()) { fields.push((field,ContainerItem::Literal(default?))); }
+                }
+                return Some(ContainerItem::Record(fields));
+            }
+        }
         let candidates=expected.strip_prefix("Optional[").and_then(|v|v.strip_suffix(']'));
         if let TermKind::Name(n)=&term.kind {
             if let Some(slot)=self.copy_source(n,expected) { return Some(ContainerItem::Literal(Value::CopyFrom(slot))); }
@@ -258,6 +285,16 @@ impl Builder<'_, '_> {
         };
         Some(LocalReplacement{owner:b.slot.clone(),index:self.offset(index)?,rhs})
     }
+    fn text_argument(&self,callee:&str,param:&Parameter,term:&Term)->Option<Argument> {
+        if let TermKind::Name(owner)=&term.kind {
+            let binding=self.readable(owner)?;
+            if binding.ty!="str" || self.views.contains(&binding.slot) ||
+                !self.lower.objects.as_ref()?.allows_shared(callee,&param.name) {return None;}
+            return Some(Argument::SharedText(binding.slot.clone()));
+        }
+        Some(Argument::Text(self.text(term)?))
+    }
+
     fn text_function<'t>(&self, name: &str, args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<LocalText> {
         if self.binding(name.split('.').next()?).is_some() { return None; }
         let (target, _, function) = self.lower.objects.as_ref()?.function(name)?;
@@ -272,7 +309,7 @@ impl Builder<'_, '_> {
             let param = function.params.get(slot)?;
             if !supplied.insert(slot) { return None; }
             let value = match param.ty.as_str() {
-                "str" => Argument::Text(self.text(term)?),
+                "str" => self.text_argument(name,param,term)?,
                 ty @ ("int" | "bool" | "float") => Argument::Integer(self.typed(term, ty)?),
                 _ => return None,
             };
@@ -343,7 +380,7 @@ impl Builder<'_, '_> {
             if !slots.insert(slot) { return None; }
             if takes_text {
                 let value = match param.ty.as_str() {
-                    "str" => Argument::Text(self.text(arg)?),
+                    "str" => self.text_argument(name,param,arg)?,
                     ty @ ("int" | "bool" | "float") => Argument::Integer(self.typed(arg, ty)?),
                     _ => return None,
                 };
@@ -364,8 +401,9 @@ impl Builder<'_, '_> {
 
     fn collection_call<'t>(&self,name:&str,args:impl Iterator<Item=(Option<&'t str>,&'t Term)>,expected:&str)->Option<CollectionCall> {
         if self.binding(name.split('.').next()?).is_some() {return None;}
-        let (target,_,f)=self.lower.objects.as_ref()?.function(name)?;
-        if f.is_async || f.result_ty!=expected {return None;}
+        let objects=self.lower.objects.as_ref()?;
+        let (target,origin,f)=objects.function(name)?;
+        if f.is_async || !objects.same_type(expected,origin,&f.result_ty) {return None;}
         let mut arguments=Vec::new();
         let mut seen=BTreeSet::new();
         for (i,(label,t)) in args.enumerate() {
@@ -377,7 +415,7 @@ impl Builder<'_, '_> {
             } else if stored_type(&p.ty) {
                 let TermKind::Move(from)=&t.kind else {return None};
                 let b=self.scopes.last()?.get(from)?;
-                if b.ty!=p.ty || self.borrowed.contains(&b.slot) || !self.containers.borrow_mut().remove(&b.slot) {return None;}
+                if !objects.same_type(&b.ty,origin,&p.ty) || self.borrowed.contains(&b.slot) || !self.containers.borrow_mut().remove(&b.slot) {return None;}
                 CollectionArgument::Move(b.slot.clone())
             } else {CollectionArgument::Scalar(self.typed(t,&p.ty)?)};
             arguments.push((p.name.clone(),index,arg));
@@ -388,6 +426,7 @@ impl Builder<'_, '_> {
     }
 
     fn container(&mut self, stmt: &Stmt, declaration: &crate::syntax_shared::ParsedDeclaration<String, Term>) -> Option<()> {
+        if !self.lower.objects.as_ref()?.valid_storage(&declaration.ty) { return None; }
         let initial = declaration.initializer.as_ref()?;
         let returns_storage=|name:&str|self.lower.objects.as_ref().and_then(|o|o.function(name)).is_some_and(|(_,_,f)|stored_type(&f.result_ty));
         let value = match &initial.kind {
@@ -395,6 +434,8 @@ impl Builder<'_, '_> {
             TermKind::Call(c) if !c.awaited && returns_storage(&c.name)=>ContainerInit::Call(self.collection_call(&c.name,c.arguments.iter().map(|t|(None,t)),&declaration.ty)?),
             TermKind::Construct(n,args) if returns_storage(n)=>ContainerInit::Call(self.collection_call(n,args.iter().map(|(k,t)|(Some(k.as_str()),t)),&declaration.ty)?),
             TermKind::MethodCall(m,n,args) if returns_storage(&format!("{m}.{n}"))=>ContainerInit::Call(self.collection_call(&format!("{m}.{n}"),args.iter().map(|t|(None,t)),&declaration.ty)?),
+            TermKind::Call(c) if !c.awaited && c.name == "read_bytes" && declaration.ty == "list[int]" =>
+                ContainerInit::ReadBytes(self.standard_call(&c.name,c.arguments.iter().map(|v|(None,v)),&declaration.ty)?),
             TermKind::Container(literal) if literal.ty == declaration.ty => {
                 let mut sources = HashMap::new();
                 literal.visit_elements(&mut |ty, atom| {

@@ -44,6 +44,9 @@ return status + argc() + file_len(path)
     raw = root / "raw.bin"
     raw.write_bytes(bytes([255, 42]))
     verify(cli, [
+        (f'fn main()->int{{ const data:list[int] = read_bytes("{raw}")\nwith data[1] as b{{ return b }} }}',42),
+        (f'fn main()->int{{ const data:list[int] = read_bytes("{raw}")\nwith data[20] as b{{ return b }} }}',"runtime"),
+        ('fn main()->int{ const data:list[int] = read_bytes(2)\nreturn 0 }',"reject"),
         (f'fn main()->int{{ return file_byte("{raw}",1) }}',42),
         (f'fn main()->int{{ const text:str = read_utf8("{raw}")\nreturn 0 }}',"runtime"),
         (f'fn main()->int{{ return file_byte("{raw}",9) }}',"runtime"),
@@ -54,6 +57,24 @@ return status + argc() + file_len(path)
         ('fn argc()->int{ return 42 }\nfn main()->int{ return argc() }',42),
     ])
 
+    scanner = """struct Token{ var offset:int
+var byte:int }
+fn scan(data:list[int])->list[Token]{
+    var tokens:list[Token] = []
+    for i in 0..len(data){
+        with data[i] as b{ tokens.append(Token(offset=i,byte=b)) }
+    }
+    return tokens.move()
+}"""
+    entry = f"""import scanner
+fn main()->int{{
+    write_bytes("{raw}",255,41)
+    const data:list[int] = read_bytes("{raw}")
+    write_bytes("{raw}",0)
+    var tokens:list[scanner.Token] = scanner.scan(data.move())
+    with tokens[1] as t{{ return t.byte + t.offset }}
+}}"""
+    verify(cli, [(entry, 42)], {"scanner.voil": scanner})
     binary = root / "輸出.bin"
     verify(cli, [
         (f'fn main()->int{{ write_bytes("{binary}",0,255,42)\nreturn file_byte("{binary}",2) }}',42),

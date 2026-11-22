@@ -1,12 +1,13 @@
 //! 公開直譯與獨立執行檔共用的 UTF-8 與作業系統接口。
 use std::io::Write;
 
-pub(super) enum Value { Int(i64), Text(String) }
+pub(super) enum Value { Int(i64), Text(String), Bytes(Vec<u8>) }
 
 pub(super) fn signature(name:&str) -> Option<(&'static [&'static str], &'static str)> {
     Some(match name {
         "argc" => (&[], "int"),
         "arg" => (&["int"], "str"),
+        "read_bytes" => (&["str"], "list[int]"),
         "read_utf8" => (&["str"], "str"),
         "write_utf8" => (&["str","str"], "int"),
         "write_bytes" => (&["str"], "int"),
@@ -32,12 +33,13 @@ pub(super) fn invoke(name:&str, values:&[Value], args:&[std::ffi::OsString]) -> 
     Some(match (name,values) {
         ("argc",[]) => Int(args.len().try_into().ok()?),
         ("arg",[Int(i)]) => Text(args.get(usize::try_from(*i).ok()?)?.to_str()?.into()),
+        ("read_bytes",[Text(path)]) => Value::Bytes(std::fs::read(path).ok()?),
         ("read_utf8",[Text(path)]) => Text(std::fs::read_to_string(path).ok()?),
         ("write_utf8",[Text(path),Text(s)]) => { std::fs::write(path,s.as_bytes()).ok()?; Int(0) }
         ("write_bytes",[Text(path),values @ ..]) => {
             let bytes: Option<Vec<u8>> = values.iter().map(|v| match v {
                 Int(n) => u8::try_from(*n).ok(),
-                Text(_) => None,
+                _ => None,
             }).collect();
             std::fs::write(path,bytes?).ok()?;
             Int(0)

@@ -57,6 +57,7 @@ pub(crate) fn event_trace_balanced(events: &[ResourceEvent]) -> bool {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum StrArgumentSource<'a> {
     Named(&'a str),
+    Shared(&'a str),
     Temporary(u64),
 }
 
@@ -84,6 +85,7 @@ struct StrBinding {
 
 #[derive(Debug, Default)]
 struct StrFrame {
+    shared: std::collections::HashMap<String,(usize,usize)>,
     names: Vec<StrBinding>,
 }
 
@@ -151,13 +153,24 @@ impl OwnedStrRuntime {
     }
 
     fn location(&self, name: &str) -> Result<(usize, usize), StrRuntimeError> {
-        self.scopes.iter().enumerate().rev().find_map(|(i, frame)| {
-            frame.names.iter().position(|slot| slot.name == name).map(|j| (i,j))
-        }).ok_or(StrRuntimeError::MissingOwner)
+        self.find_binding(name, false)
+    }
+
+    fn find_binding(&self, name: &str, read: bool) -> Result<(usize,usize),StrRuntimeError> {
+        for (i,frame) in self.scopes.iter().enumerate().rev() {
+            if let Some(&slot) = frame.shared.get(name) {
+                return if read { Ok(slot) } else { Err(StrRuntimeError::ImmutableBinding) };
+            }
+            if let Some(j) = frame.names.iter().position(|entry| entry.name == name) {
+                return Ok((i,j));
+            }
+        }
+        Err(StrRuntimeError::MissingOwner)
     }
 
     fn current_name_free(&self, name: &str) -> Result<(), StrRuntimeError> {
-        if self.scopes.last().expect("根作用域存在").names.iter().any(|x| x.name == name) {
+        let frame = self.scopes.last().expect("根作用域存在");
+        if frame.shared.contains_key(name) || frame.names.iter().any(|x| x.name == name) {
             Err(StrRuntimeError::DuplicateBinding)
         } else { Ok(()) }
     }
@@ -198,7 +211,7 @@ impl OwnedStrRuntime {
     }
 
     pub(crate) fn read(&self, name: &str) -> Result<&str, StrRuntimeError> {
-        let (i,j) = self.location(name)?;
+        let (i,j) = self.find_binding(name, true)?;
         self.scopes[i].names[j].owned.as_ref()
             .map(|v| v.text.as_str()).ok_or(StrRuntimeError::MovedSource)
     }
@@ -206,7 +219,7 @@ impl OwnedStrRuntime {
     /// R05：只觀測已存在的唯一 UTF-8 資源身分，供真 BorrowTicket
     /// 與 ResourceId 同序驗收；不複製持有者、不產生新資源事件。
     pub(crate) fn resource_id(&self, name: &str) -> Result<u64, StrRuntimeError> {
-        let (i, j) = self.location(name)?;
+        let (i, j) = self.find_binding(name, true)?;
         self.scopes[i].names[j].owned.as_ref()
             .map(|value| value.id).ok_or(StrRuntimeError::MovedSource)
     }
@@ -219,6 +232,7 @@ impl OwnedStrRuntime {
         let mut slots = Vec::with_capacity(arguments.len());
         let mut sources = std::collections::HashSet::new();
         let mut targets = std::collections::HashSet::new();
+        let mut shared = std::collections::HashMap::new();
         let mut temporary_ids = Vec::new();
         for &(source, target) in arguments {
             let slot = match source {
@@ -229,6 +243,12 @@ impl OwnedStrRuntime {
                     }
                     Some(slot)
                 }
+                StrArgumentSource::Shared(name) => {
+                    let location = self.find_binding(name, true)?;
+                    self.resource_id(name)?;
+                    shared.insert(target.to_owned(), location);
+                    None
+                }
                 StrArgumentSource::Temporary(id) => {
                     temporary_ids.push(id);
                     None
@@ -237,15 +257,20 @@ impl OwnedStrRuntime {
             if !targets.insert(target) { return Err(StrRuntimeError::DuplicateBinding); }
             slots.push(slot);
         }
+        if shared.values().any(|slot| sources.contains(slot)) { return Err(StrRuntimeError::OutstandingResource); }
         let start = temporaries.len().checked_sub(temporary_ids.len()).ok_or(StrRuntimeError::MissingOwner)?;
         if temporaries[start..].iter().map(OwnedUtf8::resource_id).ne(temporary_ids) {
             return Err(StrRuntimeError::MissingOwner);
         }
         let end = self.next_order.checked_add(arguments.len() as u64).ok_or(StrRuntimeError::ExhaustedIdentity)?;
-        let mut frame = StrFrame::default();
+        let mut frame = StrFrame { shared, ..StrFrame::default() };
         let mut ids = Vec::with_capacity(slots.len());
         let mut detached = temporaries.drain(start..);
         for (index, (slot, &(_, target))) in slots.into_iter().zip(arguments).enumerate() {
+            if let Some(&(i,j)) = frame.shared.get(target) {
+                ids.push(self.scopes[i].names[j].owned.as_ref().expect("已驗證借用來源").id);
+                continue;
+            }
             let value = match slot {
                 Some((scope, slot)) => self.scopes[scope].names[slot].owned.take(),
                 None => detached.next(),
