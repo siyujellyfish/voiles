@@ -1,0 +1,11 @@
+import count from words as count_words
+import separator from words as separator_byte
+fn main()->int{
+    if(not separator_byte(9) or separator_byte(65)){
+        return 1
+    }
+    if(count_words() != 3){
+        return 2
+    }
+    return 0
+}

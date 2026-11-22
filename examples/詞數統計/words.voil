@@ -1,0 +1,24 @@
+fn separator(first:int)->bool{
+    return not (first != 32 and first != 9 and first != 10 and first != 13)
+}
+
+fn count()->int{
+    const path:str = arg(0)
+    const text:str = read_utf8(path)
+    const size:int = len(text)
+    var i:int = 0
+    var words:int = 0
+    var inside:bool = false
+    while(i != size){
+        if(separator(text[i][0])){
+            inside = false
+        } else {
+            if(not inside){
+                words = words + 1
+            }
+            inside = true
+        }
+        i = i + 1
+    }
+    return words
+}

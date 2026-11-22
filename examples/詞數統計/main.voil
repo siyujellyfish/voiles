@@ -1,0 +1,6 @@
+import count from words as count_words
+fn main()->int{
+    const total:int = count_words()
+    const report:str = f"{total}\n"
+    return stdout(report)
+}
