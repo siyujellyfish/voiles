@@ -178,16 +178,32 @@ impl Parser<'_> {
 
     fn logic_level(&mut self, level: usize) -> Result<Term, Diagnostic> {
         if level == 3 { return self.sum(); }
+        if level == 2 && self.keyword("not") {
+            let start=self.tok().start;
+            self.cursor+=1;
+            let inner=self.logic_level(level)?;
+            return Ok(Term { start,end:inner.end,kind:TermKind::Not(Box::new(inner)) });
+        }
         let mut left = self.logic_level(level + 1)?;
         loop {
             let op = match level {
                 0 if self.keyword("or") => "or",
                 1 if self.keyword("and") => "and",
+                2 if self.symbol('=') && self.tokens.get(self.cursor+1).is_some_and(|t|
+                    t.kind == TokenKind::Symbol('=') && self.tok().end == t.start)
+                    && self.tokens.get(self.cursor+2).is_some_and(|t|matches!(&t.kind, TokenKind::Keyword(k) if k=="none")) => "==",
                 2 if self.symbol('!') && self.tokens.get(self.cursor+1).is_some_and(|t|
                     t.kind == TokenKind::Symbol('=') && self.tok().end == t.start) => "!=",
                 _ => break,
             };
-            self.cursor += if op == "!=" { 2 } else { 1 };
+            self.cursor += if matches!(op,"!="|"==") { 2 } else { 1 };
+            if matches!(op,"!="|"==") && self.keyword("none") {
+                let TermKind::Name(name)=left.kind else {return Err(self.syntax("缺失比較需要具名 Optional"))};
+                let end=self.tok().end;
+                self.cursor+=1;
+                left=Term { start:left.start,end,kind:TermKind::OptionalCondition(name,OptionalPredicate::IsMissing(op=="==")) };
+                continue;
+            }
             let right = self.logic_level(level + 1)?;
             left = Term { start:left.start, end:right.end,
                 kind:TermKind::Logic(op, Box::new(left), Box::new(right)) };
@@ -913,7 +929,11 @@ impl crate::syntax_shared::IfSyntax for Parser<'_> {
     }
     fn if_condition(&mut self) -> Result<Term, Diagnostic> {
         self.take('(', "if 條件需要左括號")?;
-        let condition = match self.optional_condition()? { Some(test) => test, None => self.term()? };
+        let start=self.cursor;
+        let condition=match self.optional_condition()? {
+            Some(test) if !matches!(test.kind,TermKind::OptionalCondition(_,OptionalPredicate::IsMissing(_))) => test,
+            _=>{ self.cursor=start; self.term()? }
+        };
         self.take(')', "if 條件需要右括號")?;
         Ok(condition)
     }

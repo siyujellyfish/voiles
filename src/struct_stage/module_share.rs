@@ -433,6 +433,7 @@ impl Lower<'_> {
     fn boolean(&self, term: &Term) -> Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.boolean(t),
+            TermKind::Not(t) => Some(Number::Logic("==",Box::new(self.boolean(t)?),Box::new(Number::Constant(0)))) ,
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => Some(Number::Constant(i64::from(*b))),
             TermKind::FieldRead(owner, field) if self.objects.as_ref()?.field_type(owner, field, false)? == "bool" =>
                 Some(Number::BoolMember(owner.clone(),field.clone())),
