@@ -71,6 +71,7 @@ struct Place {
 #[path = "scalar_flow.rs"]
 mod scalar_flow;
 enum Number {
+    Lookup(Box<Number>, BTreeMap<i64, i64>),
     Logic(&'static str, Box<Number>, Box<Number>),
     ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
     Choice(bool, Box<Number>, Box<Number>),
@@ -494,6 +495,7 @@ enum Use<'a> {
 impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
+            Self::Lookup(key, _) => key.uses(list),
             Self::Logic(_,a,b) => { a.uses(list); b.uses(list); }
             Self::ScalarCall { target, arguments } => {
                 for (_, _, value) in arguments { value.uses(list); }
@@ -883,6 +885,10 @@ impl Program {
                 result
             }
             Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some((from,parameter)), HashMap::new()),
+            Number::Lookup(key, entries) => {
+                let key = self.eval(key, frame, state, depth)?;
+                entries.get(&key).copied().ok_or(StrRuntimeError::EvaluationFailed)
+            }
             Number::Choice(test, yes, no) => self.eval(if *test { yes } else { no }, frame, state, depth),
             Number::ScalarCall { target, arguments } => {
                 let mut bindings = HashMap::new();

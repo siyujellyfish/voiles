@@ -15,6 +15,14 @@ impl Emitter<'_> {
 
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
+            Number::Lookup(key, entries) => {
+                let mut expr = format!("(match {} {{ ", self.number(key)?);
+                for (key, value) in entries {
+                    write!(expr, "{key}i64 => {value}i64, ").ok()?;
+                }
+                expr.push_str("_ => return Err((site, ARITH)), })");
+                expr
+            }
             Number::ScalarCall { target, arguments } => {
                 let mut expr = String::from("{ ");
                 for (_, slot, value) in arguments {
