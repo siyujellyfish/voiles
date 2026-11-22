@@ -285,11 +285,7 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
             let minus = self.tok().clone();
             self.cursor += 1;
             if let TokenKind::Integer(text)=&self.tok().kind {
-                let (radix,digits)=if let Some(s)=text.strip_prefix("0x"){(16,s)}
-                    else if let Some(s)=text.strip_prefix("0o"){(8,s)}
-                    else if let Some(s)=text.strip_prefix("0b"){(2,s)}
-                    else {(10,text.as_str())};
-                if u64::from_str_radix(&digits.replace('_',""),radix)==Ok(1u64<<63) {
+                if crate::syntax_shared::negative_integer_i64(text) == Ok(i64::MIN) {
                     let end=self.tok().end;
                     self.cursor+=1;
                     if self.repeated_symbol('*') {return Err(self.syntax("次方底數超出整數範圍"));}

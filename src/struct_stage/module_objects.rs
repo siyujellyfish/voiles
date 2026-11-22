@@ -131,6 +131,10 @@ impl<'a> ObjectScope<'a> {
         self.variables.insert(name.to_owned(),Object{ty:ty.to_owned(),id:DeclarationId(site),mutable,missing:BTreeSet::new(),moved:false.into()});
     }
     pub(in crate::struct_stage::module_share) fn has(&self,n:&str)->bool {self.variables.contains_key(n)}
+    pub(in crate::struct_stage::module_share) fn names_module_item(&self, name: &str) -> bool {
+        let unit = &self.graph.units[self.caller];
+        unit.declares(name) || unit.imports.iter().any(|import| import.local == name)
+    }
     pub(in crate::struct_stage::module_share) fn function(&self,n:&str)->Option<(&String,usize,&Function)> {
         let target=self.targets.get(n)?;
         let origin=*self.owners.get(target)?;

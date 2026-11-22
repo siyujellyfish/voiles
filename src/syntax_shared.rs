@@ -868,6 +868,28 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
     }
 }
 
+/// 單一負整數常值；最小值的絕對值比 i64::MAX 大一。
+pub(crate) fn negative_integer_i64(literal: &str) -> Result<i64, IntegerError> {
+    match integer_i64(literal) {
+        Ok(n) => Ok(-n),
+        Err(IntegerError::OutOfRange) => {
+            let digits = literal.replace('_', "");
+            let (radix, magnitude) = match digits.get(..2) {
+                Some("0x") => (16, &digits[2..]),
+                Some("0o") => (8, &digits[2..]),
+                Some("0b") => (2, &digits[2..]),
+                _ => (10, digits.as_str()),
+            };
+            if u64::from_str_radix(magnitude, radix) == Ok(1u64 << 63) {
+                Ok(i64::MIN)
+            } else {
+                Err(IntegerError::OutOfRange)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

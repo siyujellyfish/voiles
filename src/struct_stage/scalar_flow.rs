@@ -766,9 +766,17 @@ impl Builder<'_, '_> {
                         let test=if let Some(p)=pattern {
                             let key=match (&p.kind,ty.as_str()) {
                                 (TermKind::Scalar(ScalarLiteral::Integer(n)),"int")=>integer_i64(n).ok(),
-                                (TermKind::BinaryInt(n),"int") if unary_minus(n,self.lower.tokens) => match &n.right.kind {
-                                    TermKind::Scalar(ScalarLiteral::Integer(v))=>integer_i64(v).ok().and_then(i64::checked_neg),
-                                    _=>None,
+                                (TermKind::BinaryInt(_),"int") => {
+                                    let tokens = self.lower.tokens;
+                                    let first = tokens.partition_point(|token| token.start < p.start);
+                                    match tokens.get(first..first + 2) {
+                                        Some([minus, literal]) if minus.kind == TokenKind::Symbol('-') && literal.end == p.end =>
+                                            match &literal.kind {
+                                                TokenKind::Integer(raw) => crate::syntax_shared::negative_integer_i64(raw).ok(),
+                                                _ => None,
+                                            },
+                                        _ => None,
+                                    }
                                 },
                                 (TermKind::Scalar(ScalarLiteral::Boolean(b)),"bool")=>Some(i64::from(*b)),
                                 _=>None,

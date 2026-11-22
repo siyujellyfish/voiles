@@ -30,9 +30,11 @@ pub(super) fn parse<const PUBLIC:bool>(parser: &mut LanguageParser<'_,PUBLIC>) -
         ));
     }
     parser.take('=', "share 必須立即初始化")?;
+    let negative = kind == "int" && parser.symbol('-');
+    if negative { parser.cursor += 1; }
     let initial=match (&parser.tok().kind,kind.as_str()) {
         (TokenKind::StringLiteral(text),"str")=>Initial::Text(text.clone()),
-        (TokenKind::Integer(n),"int")=>Initial::Integer(integer_i64(n).map_err(|_|parser.syntax("整數初值超出範圍"))?),
+        (TokenKind::Integer(n),"int")=>Initial::Integer((if negative { crate::syntax_shared::negative_integer_i64(n) } else { integer_i64(n) }).map_err(|_|parser.syntax("整數初值超出範圍"))?),
         _ if kind=="str"=>return Err(parser.syntax("模組初始化需要已驗證的字串常值")),
         _=>return Err(parser.syntax("整數 share 需要 int 常值")),
     };
@@ -553,7 +555,7 @@ impl Lower<'_> {
 
     fn float_special(&self,owner:&str,method:&str,args:&[Term])->Option<Number> {
         if owner!="float" || !args.is_empty() || self.shadowed(owner) ||
-            self.objects.as_ref()?.function(&format!("{owner}.{method}")).is_some() {return None;}
+            self.objects.as_ref()?.names_module_item(owner) {return None;}
         decimal::special(method).map(Number::Constant)
     }
 
