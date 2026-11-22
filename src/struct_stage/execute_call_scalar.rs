@@ -1357,10 +1357,10 @@ impl PrivateScalarReturnExpr {
         }
     }
 
-    fn definitely_empty_range(lower: &str, upper: &str) -> bool {
+    fn definitely_empty_range(lower: &RangeBound, upper: &RangeBound) -> bool {
         match (
-            crate::syntax_shared::integer_i64(lower),
-            crate::syntax_shared::integer_i64(upper),
+            lower.constant(),
+            upper.constant(),
         ) {
             (Ok(start), Ok(end)) => start >= end,
             _ => false,
@@ -3465,12 +3465,12 @@ impl PreparedPrivateScalarCall {
                         "for 迭代器缺少原 Checker const int 宣告身份",
                     ));
                 }
-                let start = crate::syntax_shared::integer_i64(lower).map_err(|_|
+                let start = lower.constant().map_err(|_|
                     PrivateScalarCallPrepareError::Unsupported(
                         "for 半開左端點缺少合法 i64 來源",
                     ),
                 )?;
-                let end = crate::syntax_shared::integer_i64(upper).map_err(|_|
+                let end = upper.constant().map_err(|_|
                     PrivateScalarCallPrepareError::Unsupported(
                         "for 半開右端點缺少合法 i64 來源",
                     ),

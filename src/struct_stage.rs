@@ -99,6 +99,22 @@ struct ReadonlyElementBlock {
 type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
+enum RangeBound {
+    Literal(String),
+    Expression(Box<Term>),
+}
+
+impl RangeBound {
+    fn literal(&self) -> Option<&str> {
+        match self { Self::Literal(s) => Some(s), Self::Expression(_) => None }
+    }
+
+    fn constant(&self) -> Result<i64, crate::syntax_shared::IntegerError> {
+        crate::syntax_shared::integer_i64(self.literal().ok_or(crate::syntax_shared::IntegerError::InvalidDigits)?)
+    }
+}
+
+#[derive(Debug, Clone)]
 enum StmtKind {
     Try { body: Vec<Stmt>, handler: Vec<Stmt>, category: String },
     ReadonlyElement(Box<ReadonlyElementBlock>),
@@ -118,7 +134,7 @@ enum StmtKind {
     },
     /// D04 右端點不含的整數常值區間；P15 僅建構靜態借用證據。
     ForRange { iterator: String, iterator_start: usize,
-        lower: String, upper: String,
+        lower: RangeBound, upper: RangeBound,
         body: crate::syntax_shared::ParsedBlock<Stmt>,
     },
     Return(crate::syntax_shared::ParsedReturn<Term>),

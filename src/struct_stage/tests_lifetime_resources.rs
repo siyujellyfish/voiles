@@ -2336,7 +2336,7 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
     fn 迭代變數遮蔽不應誤延長別名但退出迴圈後須恢復原身分() {
         let looping = stmt(StmtKind::ForRange {
             iterator: "alias".into(), iterator_start: 80,
-            lower: "0".into(), upper: "2".into(),
+            lower: RangeBound::Literal("0".into()), upper: RangeBound::Literal("2".into()),
             body: crate::syntax_shared::ParsedBlock {
                 statements: vec![read("alias")], start: 91, end: 110,
             },
@@ -2351,7 +2351,7 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
         let old = Some(DeclarationId(10));
         let zero = stmt(StmtKind::ForRange {
             iterator: "i".into(), iterator_start: 80,
-            lower: "0x2".into(), upper: "2".into(),
+            lower: RangeBound::Literal("0x2".into()), upper: RangeBound::Literal("2".into()),
             body: crate::syntax_shared::ParsedBlock {
                 statements: vec![read("alias")], start: 91, end: 110,
             },
@@ -2361,7 +2361,7 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
 
         let once = stmt(StmtKind::ForRange {
             iterator: "i".into(), iterator_start: 80,
-            lower: "2".into(), upper: "3".into(),
+            lower: RangeBound::Literal("2".into()), upper: RangeBound::Literal("3".into()),
             body: crate::syntax_shared::ParsedBlock {
                 statements: vec![read("alias")], start: 91, end: 110,
             },
@@ -2370,7 +2370,7 @@ mod p16_6_f07_以宣告身分確認最後使用點 {
 
         let conservative = stmt(StmtKind::ForRange {
             iterator: "i".into(), iterator_start: 80,
-            lower: "3".into(), upper: "1".into(),
+            lower: RangeBound::Literal("3".into()), upper: RangeBound::Literal("1".into()),
             body: crate::syntax_shared::ParsedBlock {
                 statements: vec![read("alias")], start: 91, end: 110,
             },
