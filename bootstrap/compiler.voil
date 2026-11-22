@@ -1,7 +1,7 @@
 import host
 
 fn main()->int{
-    return host.expect("import") + host.expect("host") + declarations()
+    return host.expect("import") + host.expect("host") + declarations() + host.finish_names()
 }
 
 fn declarations()->int{
@@ -13,7 +13,7 @@ fn declarations()->int{
 }
 
 fn declaration()->int{
-    return host.expect("fn") + host.emit("fn ") + host.name() + signature() + body() + host.emit("}\n")
+    return host.expect("fn") + host.emit("fn ") + host.function() + signature() + body() + host.finish_function() + host.emit("}\n")
 }
 
 fn signature()->int{
@@ -24,13 +24,13 @@ fn parameters()->int{
     if (host.at(")") != 0) {
         return 0
     } else {
-        return host.emit(", ") + host.name() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
+        return host.emit(", ") + host.parameter() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
     }
 }
 
 fn following_parameters()->int{
     if (host.at(",") != 0) {
-        return host.expect(",") + host.emit(", ") + host.name() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
+        return host.expect(",") + host.emit(", ") + host.parameter() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
     } else {
         return 0
     }
@@ -170,7 +170,7 @@ fn atom()->int{
             if (host.at_call() != 0) {
                 return call()
             } else {
-                return host.name()
+                return host.value()
             }
         }
     }
@@ -180,7 +180,7 @@ fn call()->int{
     if (host.at("host") != 0) {
         return host.expect("host") + host.expect(".") + host.method() + host.expect("(") + host.emit("(") + host_arguments() + host.expect(")") + host.emit(")?")
     } else {
-        return host.name() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.emit(")?")
+        return host.call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
     }
 }
 
@@ -196,13 +196,13 @@ fn call_arguments()->int{
     if (host.at(")") != 0) {
         return 0
     } else {
-        return host.emit(", ") + expression() + following_arguments()
+        return host.argument() + host.emit(", ") + expression() + following_arguments()
     }
 }
 
 fn following_arguments()->int{
     if (host.at(",") != 0) {
-        return host.expect(",") + host.emit(", ") + expression() + following_arguments()
+        return host.expect(",") + host.argument() + host.emit(", ") + expression() + following_arguments()
     } else {
         return 0
     }

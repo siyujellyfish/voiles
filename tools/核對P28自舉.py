@@ -157,7 +157,8 @@ fn main(){
         assert (invoke(next_stage, "check", public)[0] == 0) == ok, op
 
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
-    functions = "fn combine(a:int,b:int)->int{ return a*10+b }\nfn main()->int{ return combine(4,2) }"
+    # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
+    functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
     source.write_text("import host\n" + functions, encoding="utf-8")
     code, generated, error = invoke(next_stage, "bootstrap-compiler", source)
     assert (code, error) == (0, ""), error
@@ -185,12 +186,17 @@ fn main(){
         results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
         assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
 
-    # 實參個數屬後續名稱與型別階段。本批解析器保留呼叫，公開檢查器負責拒絕。
+    # 名稱階段在整份宣告完成後核對，允許前向及遞迴呼叫，同時拒絕名稱與簽章錯誤。
     for invalid in (
         "fn bad(a:int)->int{ return a }\nfn main()->int{ return bad() }",
         "fn bad(a:int)->int{ return a }\nfn main()->int{ return bad(1,2) }",
+        "fn main()->int{ return missing(1) }",
+        "fn main(a:int,a:int)->int{ return a }",
+        "fn main()->int{ return missing }",
+        "fn same()->int{ return 1 }\nfn same()->int{ return 2 }",
     ):
         source.write_text("import host\n" + invalid, encoding="utf-8")
-        assert invoke(next_stage, "bootstrap-compiler", source)[0] == 0
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
