@@ -87,7 +87,7 @@ fn scan(data:list[int])->list[Token]{
                 next = -1
                 if(i < size){ with data[i] as look{ next = look } }
             }
-            if(keyword(key)){ kind = 1 } else { kind = 2 }
+            if(key > 0 and keyword(key)){ kind = 1 } else { kind = 2 }
         } else if(digit(b)){
             kind = 3
             while(digit(next)){

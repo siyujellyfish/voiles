@@ -64,7 +64,7 @@ with TemporaryDirectory() as tmp:
     # 改變 voiles 掃描器的合法分類，真實的自舉解析結果必須跟著改變。
     scanner_dir = repo / "bootstrap/lexer"
     scanner = (scanner_dir / "scanner.voil").read_text(encoding="utf-8")
-    original = "if(keyword(key)){ kind = 1 } else { kind = 2 }"
+    original = "if(key > 0 and keyword(key)){ kind = 1 } else { kind = 2 }"
     assert scanner.count(original) == 1
     (root / "scanner.voil").write_text(scanner.replace(original, "kind = 1"), encoding="utf-8")
     entry = root / "lexer.voil"
