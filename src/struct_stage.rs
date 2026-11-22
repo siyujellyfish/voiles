@@ -161,6 +161,7 @@ crate::common_ir::define_shared_expression_kind!(
     TermKind, Term, Vec<Term>, [Debug, Clone], {
         /// 保留私有 decimal64、str 與既有 Rust 內部 AST 相容入口。
         Literal(&'static str),
+        Logic(&'static str, Box<Term>, Box<Term>),
         Container(ContainerLiteral),
         LiteralIndex(String, i64, Option<i64>),
         StringIndex(String, StringOffset, Option<StringOffset>),

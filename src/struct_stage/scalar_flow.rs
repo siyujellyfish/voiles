@@ -1,0 +1,183 @@
+//! 僅以 Copyable 的 int/bool 建構控制流程；資源操作繼續走具所有權證據的路徑。
+use super::*;
+
+pub(super) fn needed(f: &Function) -> bool {
+    f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool")
+        || f.body.statements.iter().any(|s| match &s.kind {
+            StmtKind::Declare(d) => d.ty == "bool",
+            StmtKind::If { .. } | StmtKind::While { .. } | StmtKind::ForRange { .. } => true,
+            _ => false,
+        })
+}
+
+#[derive(Clone)]
+struct Binding {
+    slot: String,
+    ty: String,
+    mutable: bool,
+}
+
+struct Loop {
+    breaks: Vec<usize>,
+    continues: Vec<usize>,
+}
+
+struct Builder<'a,'b> {
+    lower: &'a Lower<'b>,
+    module: usize,
+    result: &'a str,
+    body: Body,
+    scopes: Vec<HashMap<String, Binding>>,
+    loops: Vec<Loop>,
+    next_slot: usize,
+}
+
+pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
+    let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
+        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0 };
+    for p in &function.params {
+        if !matches!(p.ty.as_str(), "int" | "bool") {
+            return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
+        }
+        builder.scopes[0].insert(p.name.clone(), Binding { slot:p.name.clone(), ty:p.ty.clone(), mutable:false });
+    }
+    if !builder.block(&function.body.statements, false)? {
+        return Err(problem(lower.source,(function.start,function.end),"函式並非所有路徑皆明確返回"));
+    }
+    Ok(builder.body)
+}
+
+impl Builder<'_, '_> {
+    fn binding(&self, name: &str) -> Option<&Binding> {
+        self.scopes.iter().rev().find_map(|s| s.get(name))
+    }
+
+    fn expr(&self, term: &Term) -> Option<(String, Number)> {
+        let (ty, value) = match &term.kind {
+            TermKind::Group(t) => return self.expr(t),
+            TermKind::Name(n) => {
+                let b = self.binding(n)?;
+                return Some((b.ty.clone(), Number::Local(b.slot.clone())));
+            }
+            TermKind::Scalar(ScalarLiteral::Integer(n)) => ("int", Number::Constant(integer_i64(n).ok()?)),
+            TermKind::Scalar(ScalarLiteral::Boolean(b)) => ("bool", Number::Constant(i64::from(*b))),
+            TermKind::BinaryInt(n) => ("int", Number::Binary(Box::new(self.typed(&n.left,"int")?),
+                n.operator, Box::new(self.typed(&n.right,"int")?))),
+            TermKind::Logic(op,a,b) => {
+                let (ty,left) = self.expr(a)?;
+                if *op != "!=" && ty != "bool" { return None; }
+                ("bool", Number::Logic(op, Box::new(left), Box::new(self.typed(b,&ty)?)))
+            }
+            TermKind::UnresolvedZeroArgs(n) => return self.call(n,std::iter::empty()),
+            TermKind::Call(c) if !c.awaited => return self.call(&c.name,c.arguments.iter().map(|v|(None,v))),
+            TermKind::Construct(n,args) => return self.call(n,args.iter().map(|(n,v)|(Some(n.as_str()),v))),
+            TermKind::MethodCall(m,n,args) => return self.call(&format!("{m}.{n}"),args.iter().map(|v|(None,v))),
+            _ => return None,
+        };
+        Some((ty.to_owned(),value))
+    }
+
+    fn typed(&self, t: &Term, expected: &str) -> Option<Number> {
+        self.expr(t).and_then(|(ty,n)| (ty==expected).then_some(n))
+    }
+
+    fn call<'t>(&self,name:&str,args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<(String,Number)> {
+        if self.binding(name.split('.').next()?).is_some() { return None; }
+        let (target,_,f) = self.lower.objects.as_ref()?.function(name)?;
+        if f.is_async || !matches!(f.result_ty.as_str(), "int" | "bool") { return None; }
+        let mut values = Vec::new();
+        let mut slots = BTreeSet::new();
+        for (index,(label,arg)) in args.enumerate() {
+            let slot = match label { Some(n) => f.params.iter().position(|p| p.name==n)?, None => index };
+            let param = f.params.get(slot)?;
+            if !slots.insert(slot) { return None; }
+            values.push((param.name.clone(),slot,self.typed(arg,&param.ty)?));
+        }
+        if values.len()!=f.params.len() { return None; }
+        Some((f.result_ty.clone(), Number::ScalarCall { target:target.clone(), arguments:values }))
+    }
+
+    fn step(&mut self, s:&Stmt, action:Action) -> usize {
+        let at=self.body.len();
+        self.body.push(Step{module:self.module,span:(s.start,s.end),action});
+        at
+    }
+    fn patch(&mut self, at:usize, to:usize) {
+        match &mut self.body[at].action {
+            Action::Unless(_,v) | Action::Jump(v) => *v=to,
+            _ => unreachable!(),
+        }
+    }
+    fn block(&mut self, stmts:&[Stmt], nested:bool) -> Result<bool, Diagnostic> {
+        if nested { self.scopes.push(HashMap::new()); }
+        let mut closed=false;
+        for s in stmts {
+            let err=|msg| problem(self.lower.source,(s.start,s.end),msg);
+            if closed { return Err(err("控制轉移後不可再有語句")); }
+            match &s.kind {
+                StmtKind::Declare(d) => {
+                    if self.scopes.last().unwrap().contains_key(&d.name) { return Err(err("重複區域宣告")); }
+                    let value=d.initializer.as_ref().and_then(|t|self.typed(t,&d.ty)).ok_or_else(||err("區域純量需要型別相符的初值"))?;
+                    let slot=format!("@{}",self.next_slot); self.next_slot+=1;
+                    self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot:slot.clone(),ty:d.ty.clone(),mutable:d.mutable});
+                    self.step(s,Action::Bind(slot,value));
+                }
+                StmtKind::Assign(a) => {
+                    let b=self.binding(&a.name).filter(|b|b.mutable).ok_or_else(||err("缺少可寫區域純量"))?;
+                    let v=self.typed(&a.expression,&b.ty).ok_or_else(||err("賦值型別不符"))?;
+                    self.step(s,Action::Bind(b.slot.clone(),v));
+                }
+                StmtKind::Return(r) => {
+                    let v=self.typed(&r.expression,self.result).ok_or_else(||err("回傳型別不符"))?;
+                    self.step(s,Action::Return(v)); closed=true;
+                }
+                StmtKind::If{branch,no} => {
+                    let test=self.typed(&branch.condition,"bool").ok_or_else(||err("分支需要 bool 條件"))?;
+                    let skip=self.step(s,Action::Unless(test,0));
+                    let yes=self.block(&branch.body.statements,true)?;
+                    let end=(!yes).then(||self.step(s,Action::Jump(0)));
+                    self.patch(skip,self.body.len());
+                    if let Some(other)=no { closed=self.block(other.as_slice(),true)? && yes; }
+                    if let Some(at)=end { self.patch(at,self.body.len()); }
+                }
+                StmtKind::Break | StmtKind::Continue => {
+                    let at=self.step(s,Action::Jump(0));
+                    let scope=self.loops.last_mut().ok_or_else(||err("控制轉移需要所在迴圈"))?;
+                    if matches!(s.kind,StmtKind::Break) { scope.breaks.push(at); } else { scope.continues.push(at); }
+                    closed=true;
+                }
+                StmtKind::While{condition,body} => {
+                    let cond=self.typed(condition,"bool").ok_or_else(||err("while 需要 bool 條件"))?;
+                    let head=self.step(s,Action::Unless(cond,0));
+                    self.loops.push(Loop{breaks:vec![head],continues:Vec::new()});
+                    self.block(&body.statements,true)?;
+                    self.step(s,Action::Jump(head));
+                    self.end_loop(head);
+                }
+                StmtKind::ForRange{iterator,lower,upper,body,..} => {
+                    let start=integer_i64(lower).map_err(|_|err("區間下界無效"))?;
+                    let end=integer_i64(upper).map_err(|_|err("區間上界無效"))?;
+                    let slot=format!("@{}",self.next_slot); self.next_slot+=1;
+                    self.step(s,Action::Bind(slot.clone(),Number::Constant(start)));
+                    let test=Number::Logic("lt",Box::new(Number::Local(slot.clone())),Box::new(Number::Constant(end)));
+                    let head=self.step(s,Action::Unless(test,0));
+                    self.loops.push(Loop{breaks:vec![head],continues:Vec::new()});
+                    self.scopes.push(HashMap::from([(iterator.clone(),Binding{slot:slot.clone(),ty:"int".into(),mutable:false})]));
+                    self.block(&body.statements,false)?;
+                    self.scopes.pop();
+                    let increment=self.step(s,Action::Bind(slot.clone(),Number::Binary(Box::new(Number::Local(slot)),'+',Box::new(Number::Constant(1)))));
+                    self.step(s,Action::Jump(head));
+                    self.end_loop(increment);
+                }
+                _ => return Err(err("控制流程中的資源操作尚待驗證")),
+            }
+        }
+        if nested { self.scopes.pop(); }
+        Ok(closed)
+    }
+    fn end_loop(&mut self, next:usize) {
+        let scope=self.loops.pop().unwrap();
+        for at in scope.breaks { self.patch(at,self.body.len()); }
+        for at in scope.continues { self.patch(at,next); }
+    }
+}

@@ -68,7 +68,10 @@ struct Place {
     alias: Option<(String, BorrowKind)>,
 }
 
+#[path = "scalar_flow.rs"]
+mod scalar_flow;
 enum Number {
+    Logic(&'static str, Box<Number>, Box<Number>),
     ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
     Choice(bool, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
@@ -86,6 +89,8 @@ enum Text {
 }
 
 enum Action {
+    Jump(usize),
+    Unless(Number, usize),
     Construct(String,Vec<PreparedField>,Vec<PreparedNamedField>),
     Bind(String, Number),
     Loan(String, Place, BorrowKind),
@@ -154,6 +159,7 @@ impl Lower<'_> {
     }
 
     fn call_target(&self, name: &str, awaited: bool) -> Option<Number> {
+        if self.objects.as_ref().and_then(|s| s.function(name)).is_some_and(|(_,_,f)| f.result_ty != "int") { return None; }
         if self.objects.as_ref().is_some_and(|s| s.requires_argument(name)) { return None; }
         if self.shadowed(name)
             || self.functions.get(name) != Some(&awaited) { return None; }
@@ -164,7 +170,7 @@ impl Lower<'_> {
     fn scalar_call<'t>(&self, name: &str, arguments: impl Iterator<Item = (Option<&'t str>, &'t Term)>) -> Option<Number> {
         if self.shadowed(name) { return None; }
         let (target, _, function) = self.objects.as_ref()?.function(name)?;
-        if function.is_async || function.params.is_empty() || function.params.iter().any(|p| p.ty != "int") {
+        if function.result_ty != "int" || function.is_async || function.params.is_empty() || function.params.iter().any(|p| p.ty != "int") {
             return None;
         }
         let mut values = Vec::new();
@@ -488,6 +494,7 @@ enum Use<'a> {
 impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
+            Self::Logic(_,a,b) => { a.uses(list); b.uses(list); }
             Self::ScalarCall { target, arguments } => {
                 for (_, _, value) in arguments { value.uses(list); }
                 list.push(Use::Call(target, false));
@@ -509,7 +516,8 @@ impl Action {
     fn uses(&self) -> Vec<Use<'_>> {
         let mut uses = Vec::new();
         match self {
-            Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
+            Self::Jump(_) => (),
+            Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(..) => (),
             Self::Replace(p, ..) => uses.push(Use::Direct(p)),
@@ -764,13 +772,17 @@ impl Program {
         depth: usize,
         max_steps: usize,
     ) -> Result<i64, StrRuntimeError> {
-        for step in body {
+        let mut pc = 0;
+        while let Some(step) = body.get(pc) {
+            pc += 1;
             state.current_step = Some(StepOrigin { module: step.module, span: step.span });
             state.steps += 1;
             if state.steps > max_steps {
                 return Err(StrRuntimeError::ExecutionBudgetExhausted);
             }
             match &step.action {
+                Action::Jump(target) => pc = *target,
+                Action::Unless(test,target) => if self.eval(test, frame, state, depth)? == 0 { pc = *target; },
                 Action::Construct(n,fields,named) => {
                     use crate::mixed_struct_runtime::{MixedFieldSpec,NamedMixed};
                     let schema:Vec<_> = fields.iter().map(|f|MixedFieldSpec{name:&f.name,kind:f.kind,
@@ -878,6 +890,16 @@ impl Program {
                     bindings.insert(name.clone(), self.eval(value, frame, state, depth)?);
                 }
                 self.call_with_owner(target, state, depth + 1, None, bindings)
+            }
+            Number::Logic(op,a,b) => {
+                let left = self.eval(a, frame, state, depth)?;
+                let result = match *op {
+                    "and" => left != 0 && self.eval(b, frame, state, depth)? != 0,
+                    "or" => left != 0 || self.eval(b, frame, state, depth)? != 0,
+                    "lt" => left < self.eval(b, frame, state, depth)?,
+                    _ => left != self.eval(b, frame, state, depth)?,
+                };
+                Ok(i64::from(result))
             }
             Number::Constant(v) => Ok(*v),
             Number::Local(n) => frame

@@ -285,12 +285,12 @@ impl LinkedProgram {
                 }
             }
             for f in &u.functions {
-                if f.result_ty!="int" || (id==0 && f.name=="main" && (f.is_async || !f.params.is_empty())) {
+                if !matches!(f.result_ty.as_str(), "bool" | "int") || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
                 let mut locals = HashMap::new();
-                if f.params.iter().all(|p| p.ty == "int") {
+                if f.params.iter().all(|p| matches!(p.ty.as_str(), "int" | "bool")) {
                     for p in &f.params {
                         if locals.insert(p.name.clone(), false).is_some() {
                             return Err(u.error(f.start, f.end, "函式參數重複"));
@@ -307,7 +307,17 @@ impl LinkedProgram {
                 }
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,aliases:HashMap::new() };
-                let body = lower.body(f, id).map_err(|diagnostic|ModuleError::Source{path:u.path.clone(),diagnostic})?;
+                let typed_signature = f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool");
+                let body = if typed_signature {
+                    scalar_flow::lower(&lower, f, id)
+                } else {
+                    let pure = scalar_flow::lower(&lower, f, id);
+                    if scalar_flow::needed(f) {
+                        pure.or_else(|flow_error| lower.body(f, id).map_err(|_| flow_error))
+                    } else {
+                        lower.body(f, id).or_else(|original| pure.map_err(|_| original))
+                    }
+                }.map_err(|diagnostic|ModuleError::Source{path:u.path.clone(),diagnostic})?;
                 let name = key(id,&f.name);
 
                 bodies.insert(name,body);

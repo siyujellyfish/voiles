@@ -360,6 +360,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 漏掉未來引用造成提前解鎖；完整詞彙來源精細度留待 P15 驗收。
     fn term_mentions(term: &Term, name: &str) -> bool {
         match &term.kind {
+            TermKind::Logic(_,a,b) => Self::term_mentions(a,name) || Self::term_mentions(b,name),
             TermKind::Group(inner) => Self::term_mentions(inner, name),
             TermKind::StringReplace(id, offset, rhs) => id == name || offset.name() == Some(name) || matches!(rhs, GraphemeReplacement::Named(n) if n == name),
             TermKind::StringIndex(id, first, second) => id == name || first.name() == Some(name) || second.as_ref().and_then(StringOffset::name) == Some(name),
@@ -387,6 +388,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         match &term.kind {
             TermKind::Call(call) => call.awaited
                 || call.arguments.iter().any(Self::term_contains_direct_await),
+            TermKind::Logic(_,a,b) => Self::term_contains_direct_await(a) || Self::term_contains_direct_await(b),
             TermKind::Group(inner) => Self::term_contains_direct_await(inner),
             TermKind::BinaryInt(binary) =>
                 Self::term_contains_direct_await(&binary.left)
@@ -420,6 +422,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         used: &mut BTreeSet<DeclarationId>, kind: ResolvedUseKind,
     ) {
         match &term.kind {
+            TermKind::Logic(_,a,b) => { Self::scan_resolved_term_uses(a,visible,used,kind); Self::scan_resolved_term_uses(b,visible,used,kind); }
             TermKind::Group(inner) =>
                 Self::scan_resolved_term_uses(inner, visible, used, kind),
             TermKind::Move(name) =>
@@ -1761,6 +1764,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn evaluate_inner(&self, term: &Term, vars: &mut Scopes)
         -> Result<(String, bool), Diagnostic> {
         match &term.kind {
+            TermKind::Logic(..) => Err(self.error("此入口尚未驗證邏輯運算式", term)),
             TermKind::Group(inner) => self.evaluate(inner, vars),
             TermKind::Scalar(atom) => Ok((atom.type_name().to_owned(), true)),
             TermKind::Literal(ty) => Ok(((*ty).to_string(), true)),
