@@ -249,7 +249,7 @@ impl LinkedProgram {
                         let rhs = if *moving { format!("v{from}") } else { format!("v{from}.copy_scalars().ok_or((site, ARITH))?") };
                         writeln!(out, "let mut v{} = {rhs};", emitter.local_id(target)).unwrap();
                     }
-                    Action::WriteMember { owner, field, value } => {
+                    Action::WriteMember { owner, field, value, .. } => {
                         let rhs = match value {
                             MemberValue::Integer(n) => format!("Field::Int({})", emitter.number(n).ok_or_else(unsupported)?),
                             MemberValue::Boolean(n) => format!("Field::Bool(({}) != 0)", emitter.number(n).ok_or_else(unsupported)?),
@@ -260,16 +260,17 @@ impl LinkedProgram {
                     Action::Construct(name, fields, supplied) => {
                         let id = emitter.local_id(name);
                         writeln!(out, "let mut v{id} = Object::default();").unwrap();
-                        for field in fields {
-                            let seed = supplied.iter().find(|f| f.name == field.name)
-                                .map(|f| &f.seed).or(field.default.as_ref()).ok_or_else(unsupported)?;
+                        let named = supplied.iter().map(|f|(&f.name,&f.seed));
+                        let defaults = fields.iter().filter(|f|!supplied.iter().any(|n|n.name==f.name))
+                            .filter_map(|f|f.default.as_ref().map(|s|(&f.name,s)));
+                        for (field,seed) in named.chain(defaults) {
                             let value = match seed {
                                 ApprovedSeed::Int(n) => format!("Field::Int({n})"),
                                 ApprovedSeed::Str(s) => format!("Field::Text(String::from({s:?}))"),
                                 ApprovedSeed::Bool(b) => format!("Field::Bool({b})"),
                                 _ => return Err(unsupported()),
                             };
-                            writeln!(out, "v{id}.0.insert({:?}, {value});", field.name).unwrap();
+                            writeln!(out, "v{id}.0.insert({:?}, {value});", field).unwrap();
                         }
                     }
                     // 借用的有效期與權限已由同一模組計畫驗證；存取仍使用原 slot。

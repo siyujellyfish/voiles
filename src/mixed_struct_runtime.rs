@@ -99,7 +99,7 @@ struct StoredField { name:String, value:StoredValue, immutable:bool }
 struct MixedOwned {
     // 真正完成求值的順序，不能用 struct 宣告順序代替。
     fields:Vec<StoredField>,
-    missing:Vec<String>,
+    missing:Vec<(String,ScalarKind)>,
 }
 #[derive(Debug)]
 struct OwnedSlot { name:String, owned:Option<MixedOwned> }
@@ -191,7 +191,10 @@ impl MixedStructRuntime {
             return Err(MixedError::UnknownFailurePoint);
         }
         let mut pending=MixedOwned {
-            fields:Vec::new(),missing:plan.missing_mutable_fields,
+            fields:Vec::new(),missing:plan.missing_mutable_fields.into_iter().map(|name| {
+                let kind=fields.iter().find(|f|f.name==name).expect("建構計畫欄位已檢查").kind;
+                (name,kind)
+            }).collect(),
         };
         for step in plan.steps {
             let seed=match step.origin {
@@ -311,6 +314,23 @@ impl MixedStructRuntime {
         let replacement=ledger.create_detached(text).map_err(MixedError::Resource)?;
         let former=std::mem::replace(old,replacement);
         ledger.release_detached(former);
+        Ok(())
+    }
+
+    pub(crate) fn initialize_field_with_shared_ledger(&mut self, ledger:&mut OwnedStrRuntime,
+        owner:&str, field:&str, seed:SeedValue<'_>) -> Result<(),MixedError> {
+        let (scope,slot)=self.locate(owner)?;
+        let object=self.scopes[scope][slot].owned.as_mut().ok_or(MixedError::MovedBinding)?;
+        let pos=object.missing.iter().position(|(name,_)|name==field).ok_or(MixedError::MissingField)?;
+        if object.missing[pos].1!=seed.kind() { return Err(MixedError::TypeMismatch(field.into())); }
+        let value=match seed {
+            SeedValue::Int(n)=>StoredValue::Int(n),
+            SeedValue::Bool(b)=>StoredValue::Bool(b),
+            SeedValue::Str(text)=>StoredValue::Str(ledger.create_detached(text).map_err(MixedError::Resource)?),
+            _=>return Err(MixedError::EvaluationFailed(field.into())),
+        };
+        object.fields.push(StoredField { name:field.into(), immutable:false, value });
+        object.missing.remove(pos);
         Ok(())
     }
 

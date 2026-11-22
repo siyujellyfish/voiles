@@ -22,3 +22,14 @@ cases = [
     ('var a:Box = Box()\nreturn a.s[1][0]', "runtime"),
 ]
 verify(cli, ((schema + 'fn main()->int{\n' + body + '\n}', value) for body, value in cases))
+
+pending = 'struct Later{\nvar n:int\nvar s:str\nvar active:bool = true\n}\n'
+verify(cli, ((pending + 'fn main()->int{\n' + body + '\n}', value) for body, value in [
+    ('var v:Later = Later()\nv.s = "*"\nv.n = 0\nvar done:Later = v.move()\nreturn done.s[0][0]',42),
+    ('var v:Later = Later(n=40)\nv.s = "乙"\nv.n = v.n + 2\nreturn v.n',42),
+    ('var v:Later = Later()\nv.n = 42\nreturn v.n',"reject"),
+    ('var v:Later = Later()\nv.n = 1\nv.n = 42\nreturn 0',"reject"),
+    ('var v:Later = Later()\nv.s = "*"\nvar bad:Later = v.move()\nreturn 0',"reject"),
+    ('var v:Later = Later()\nv.s = 42\nreturn 0',"reject"),
+    ('var v:Later = Later()\nv.s = "*"\nv.n = 9223372036854775807+1\nreturn 0',"runtime"),
+]))
