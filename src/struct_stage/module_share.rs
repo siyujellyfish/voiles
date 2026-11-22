@@ -201,7 +201,7 @@ enum Action {
     Select { alias: String, owner: String, key: ContainerKey },
     DropContainer(String),
     RelocateObject { source: String, target: String, moving: bool },
-    WriteMember { owner: String, field: String, value: MemberValue },
+    WriteMember { owner: String, field: String, value: MemberValue, initializing: bool },
     ReturnText(LocalText),
     ReplaceLocal(LocalReplacement),
     StoreText { target: String, declaration: Option<bool>, value: LocalText },
@@ -589,10 +589,9 @@ impl Lower<'_> {
                         },
                         _ => return Err(err("欄位賦值型別不符")),
                     };
-                    if self.objects.as_ref().and_then(|o|o.field_type(receiver,field,true)).is_none() {
-                        return Err(err("求值後接收者已經移動"));
-                    }
-                    Action::WriteMember { owner: receiver.clone(), field: field.clone(), value: rhs }
+                    let initializing=self.objects.as_mut().and_then(|o|o.commit_write(receiver,field))
+                        .ok_or_else(|| err("求值後接收者已經移動"))?;
+                    Action::WriteMember { owner: receiver.clone(), field: field.clone(), value: rhs, initializing }
                 }
                 StmtKind::GraphemeWrite(t) => {
                     let TermKind::StringReplace(
@@ -1125,18 +1124,21 @@ impl Program {
                         else { state.mixed.copy_whole(source,target) };
                     result.map_err(|_| StrRuntimeError::EvaluationFailed)?;
                 }
-                Action::WriteMember { owner, field, value } => {
-                    let result = match value {
-                        MemberValue::Integer(n) => {
-                            let v = self.eval(n, frame, state, depth)?;
-                            state.mixed.write_int_field(owner,field,v,true)
-                        }
-                        MemberValue::Boolean(n) => {
-                            let b = self.eval(n, frame, state, depth)? != 0;
-                            state.mixed.write_bool_field(owner,field,b,true)
-                        }
-                        MemberValue::Text(s) => state.mixed.write_str_field_with_shared_ledger(&mut state.heap,owner,field,s,true),
+                Action::WriteMember { owner, field, value, initializing } => {
+                    use crate::mixed_struct_runtime::SeedValue;
+                    let seed = match value {
+                        MemberValue::Integer(n) => SeedValue::Int(self.eval(n,frame,state,depth)?),
+                        MemberValue::Boolean(n) => SeedValue::Bool(self.eval(n,frame,state,depth)? != 0),
+                        MemberValue::Text(s) => SeedValue::Str(s),
                     };
+                    let result = if *initializing {
+                        state.mixed.initialize_field_with_shared_ledger(&mut state.heap,owner,field,seed)
+                    } else { match seed {
+                        SeedValue::Int(n) => state.mixed.write_int_field(owner,field,n,true),
+                        SeedValue::Bool(b) => state.mixed.write_bool_field(owner,field,b,true),
+                        SeedValue::Str(s) => state.mixed.write_str_field_with_shared_ledger(&mut state.heap,owner,field,s,true),
+                        _ => unreachable!(),
+                    }};
                     result.map_err(|_| StrRuntimeError::EvaluationFailed)?;
                 }
                 Action::Construct(n,fields,named) => {

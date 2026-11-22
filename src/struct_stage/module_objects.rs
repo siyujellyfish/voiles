@@ -46,7 +46,7 @@ pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleErro
     Ok(())
 }
 
-struct Object { ty:String, id:DeclarationId, mutable:bool, moved:std::cell::Cell<bool> }
+struct Object { ty:String, id:DeclarationId, mutable:bool, missing:BTreeSet<String>, moved:std::cell::Cell<bool> }
 
 pub(in crate::struct_stage::module_share) struct ObjectScope<'a> {
     graph:&'a ModuleGraph,
@@ -60,7 +60,7 @@ impl<'a> ObjectScope<'a> {
         Self{graph,caller,targets,owners,variables:HashMap::new()}
     }
     pub(super) fn bind(&mut self,name:&str,ty:&str,site:usize,mutable:bool) {
-        self.variables.insert(name.to_owned(),Object{ty:ty.to_owned(),id:DeclarationId(site),mutable,moved:false.into()});
+        self.variables.insert(name.to_owned(),Object{ty:ty.to_owned(),id:DeclarationId(site),mutable,missing:BTreeSet::new(),moved:false.into()});
     }
     pub(in crate::struct_stage::module_share) fn has(&self,n:&str)->bool {self.variables.contains_key(n)}
     pub(in crate::struct_stage::module_share) fn function(&self,n:&str)->Option<(&String,usize,&Function)> {
@@ -78,7 +78,7 @@ impl<'a> ObjectScope<'a> {
         if let TermKind::Move(from) | TermKind::Name(from) = &t.kind {
             let source = self.variables.get(from)?;
             let (_, original) = self.graph.resolve_struct(self.caller,&source.ty)?;
-            if !std::ptr::eq(original,def) || source.moved.get() { return None; }
+            if !std::ptr::eq(original,def) || source.moved.get() || !source.missing.is_empty() { return None; }
             let moving = matches!(t.kind, TermKind::Move(_));
             if !moving && def.fields.iter().any(|f| !matches!(f.ty.as_str(),"int" | "bool")) { return None; }
             if moving { source.moved.set(true); }
@@ -105,20 +105,28 @@ impl<'a> ObjectScope<'a> {
             supplied.push(PreparedNamedField{name:n.clone(),seed:value});
         }
         let mut fields=Vec::new();
+        let mut missing=BTreeSet::new();
         for f in &def.fields {
-            if f.default.is_none() && !seen.contains(f.name.as_str()) {return None;}
+            if f.default.is_none() && !seen.contains(f.name.as_str()) {missing.insert(f.name.clone());}
             fields.push(PreparedField{name:f.name.clone(),kind:kind(&f.ty)?,immutable:f.immutable,
                 default:f.default.as_ref().and_then(|t|seed(&self.graph.units[origin],t))});
         }
         self.bind(name,ty,start,mutable);
+        self.variables.get_mut(name)?.missing=missing;
         Some(Action::Construct(name.to_owned(),fields,supplied))
     }
     pub(in crate::struct_stage::module_share) fn field_type(&self, owner:&str, name:&str, write:bool) -> Option<&str> {
         let object = self.variables.get(owner)?;
-        if object.moved.get() || (write && !object.mutable) { return None; }
+        if object.moved.get() || (write && !object.mutable)
+            || (!object.missing.is_empty() && !(write && object.missing.contains(name))) { return None; }
         let field = self.graph.field(self.caller,&object.ty,name)?;
         if write && field.immutable { return None; }
         Some(&field.ty)
+    }
+
+    pub(in crate::struct_stage::module_share) fn commit_write(&mut self, owner:&str, field:&str) -> Option<bool> {
+        self.field_type(owner,field,true)?;
+        Some(self.variables.get_mut(owner)?.missing.remove(field))
     }
 
     pub(in crate::struct_stage::module_share) fn expression(&self,t:&Term)->Option<Number> {
@@ -130,7 +138,7 @@ impl<'a> ObjectScope<'a> {
             _=>return None,
         };
         let object=self.variables.get(owner)?;
-        if object.moved.get(){return None;}
+        if object.moved.get() || !object.missing.is_empty(){return None;}
         let selected=if method {
             let methods=self.graph.methods(self.caller,&object.ty,field);
             let [m]=methods.as_slice() else{return None;};
@@ -151,7 +159,7 @@ impl<'a> ObjectScope<'a> {
         let object=self.variables.get(from)?;
         let (_,actual)=self.graph.resolve_struct(self.caller,&object.ty)?;
         let (_,expected)=self.graph.resolve_struct(origin,&p.ty)?;
-        if !std::ptr::eq(actual,expected) || object.moved.replace(true){return None;}
+        if !std::ptr::eq(actual,expected) || !object.missing.is_empty() || object.moved.replace(true){return None;}
         Some(Number::Consume{target:target.clone(),from:from.clone(),parameter:p.name.clone()})
     }
 }
