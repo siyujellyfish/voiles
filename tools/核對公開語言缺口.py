@@ -33,3 +33,11 @@ verify(cli, [(choose + main(body), expected) for body, expected in [
     ('const s:str = choose(1,0.5)\nreturn 0', "reject"),
     ('const s:str = choose(true,1)\nreturn 0', "reject"),
 ]])
+
+verify(cli, [(main(body), expected) for body, expected in [
+    ("var n:int = 4\nvar sum:int = 0\nfor i in 1..n{ sum = sum + i\nn = 1 }\nreturn sum", 6),
+    ("var n:int = 4\nfor i in n + 1..n{ return 1 }\nreturn 42", 42),
+    ("var n:int\nfor i in 0..n{ return i }\nreturn 0", "reject"),
+    ("for i in true..3{ return i }\nreturn 0", "reject"),
+    ("for i in 0..0.5{ return i }\nreturn 0", "reject"),
+]])

@@ -196,10 +196,10 @@ impl PreparedPrivateLoop {
                             "for 迭代宣告缺少原 Checker 完整身份",
                         ));
                     }
-                    let start = crate::syntax_shared::integer_i64(lower).map_err(|_|
+                    let start = lower.constant().map_err(|_|
                         PrivateLoopPrepareError::Unsupported("for 左端點無合法 i64 證據"),
                     )?;
-                    let end = crate::syntax_shared::integer_i64(upper).map_err(|_|
+                    let end = upper.constant().map_err(|_|
                         PrivateLoopPrepareError::Unsupported("for 右端點無合法 i64 證據"),
                     )?;
                     let count = i128::from(end).saturating_sub(i128::from(start)).max(0);

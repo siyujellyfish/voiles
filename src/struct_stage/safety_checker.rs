@@ -1704,7 +1704,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     /// 整筆 .move() 在這裡不能視為可重複使用的安全來源。
     /// D04-A 對來源整數常值的半開遞增區間：僅在端點相差一且
     /// 可確定只迭代一次時消除不必要的反向邊。其他範圍仍保守驗證。
-    fn known_range_iterations(lower: &str, upper: &str) -> Option<u8> {
+    fn known_range_iterations(lower: &RangeBound, upper: &RangeBound) -> Option<u8> {
         fn read_positive_int(text: &str) -> Option<u128> {
             let (radix, digits) = if let Some(rest) = text.strip_prefix("0x") {
                 (16, rest)
@@ -1718,7 +1718,7 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
             let normalized: String = digits.chars().filter(|ch| *ch != '_').collect();
             u128::from_str_radix(&normalized, radix).ok()
         }
-        match (read_positive_int(lower), read_positive_int(upper)) {
+        match (read_positive_int(lower.literal()?), read_positive_int(upper.literal()?)) {
             (Some(start), Some(end)) if start == end => Some(0),
             (Some(start), Some(end)) if start.checked_add(1) == Some(end) => Some(1),
             _ => None,

@@ -701,11 +701,17 @@ impl Builder<'_, '_> {
                 }
                 StmtKind::ForRange{iterator,lower,upper,body,..} => {
                     self.invalidate();
-                    let start=integer_i64(lower).map_err(|_|err("區間下界無效"))?;
-                    let end=integer_i64(upper).map_err(|_|err("區間上界無效"))?;
+                    let endpoint = |bound: &RangeBound| match bound {
+                        RangeBound::Literal(_) => bound.constant().ok().map(Number::Constant),
+                        RangeBound::Expression(t) => self.typed(t, "int"),
+                    };
+                    let start=endpoint(lower).ok_or_else(||err("區間下界需要 int"))?;
+                    let end=endpoint(upper).ok_or_else(||err("區間上界需要 int"))?;
                     let slot=format!("@{}",self.next_slot); self.next_slot+=1;
-                    self.step(s,Action::Bind(slot.clone(),Number::Constant(start)));
-                    let test=Number::Logic("lt",Box::new(Number::Local(slot.clone())),Box::new(Number::Constant(end)));
+                    self.step(s,Action::Bind(slot.clone(),start));
+                    let limit=format!("@{}",self.next_slot); self.next_slot+=1;
+                    self.step(s,Action::Bind(limit.clone(),end));
+                    let test=Number::Logic("lt",Box::new(Number::Local(slot.clone())),Box::new(Number::Local(limit)));
                     let head=self.step(s,Action::Unless(test,0));
                     self.loops.push(Loop{storage_depth:self.storage.len(),breaks:vec![head],continues:Vec::new()});
                     self.scopes.push(HashMap::from([(iterator.clone(),Binding{slot:slot.clone(),ty:"int".into(),mutable:false})]));

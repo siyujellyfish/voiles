@@ -176,6 +176,20 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
         Some((coefficient, (adjusted - 15) as i32))
     }
 
+    fn range_bound(&mut self, side: &str) -> Result<RangeBound, Diagnostic> {
+        if PUBLIC {
+            return Ok(RangeBound::Expression(Box::new(self.term()?)));
+        }
+        if let TokenKind::Integer(n) = &self.tok().kind {
+            if Self::valid_integer(n) {
+                let bound = RangeBound::Literal(n.clone());
+                self.cursor += 1;
+                return Ok(bound);
+            }
+        }
+        Err(self.syntax(&format!("此子集 for {side}端點必須是合法整數常值")))
+    }
+
     fn term(&mut self) -> Result<Term, Diagnostic> {
         self.logic_level(0)
     }
@@ -576,20 +590,12 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
                 return Err(self.syntax("for 區間迭代變數後需要 in"));
             }
             self.cursor += 1;
-            let lower = match self.tok().kind.clone() {
-                TokenKind::Integer(number) if Self::valid_integer(&number) => number,
-                _ => return Err(self.syntax("此子集 for 左端點必須是合法整數常值")),
-            };
-            self.cursor += 1;
+            let lower = self.range_bound("左")?;
             if !matches!(self.tok().kind, TokenKind::Range) {
                 return Err(self.syntax("for 半開區間缺少 .. 範圍記號"));
             }
             self.cursor += 1;
-            let upper = match self.tok().kind.clone() {
-                TokenKind::Integer(number) if Self::valid_integer(&number) => number,
-                _ => return Err(self.syntax("此子集 for 右端點必須是合法整數常值")),
-            };
-            self.cursor += 1;
+            let upper = self.range_bound("右")?;
             let body = self.body()?;
             StmtKind::ForRange { iterator, iterator_start, lower, upper, body }
         } else if head == Some(crate::syntax_shared::StatementHead::WhileLoop) {
