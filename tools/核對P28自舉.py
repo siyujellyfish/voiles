@@ -694,6 +694,73 @@ fn main(){
     assert invoke(next_stage, "check", public) == (0, "", "")
     assert invoke(next_stage, "run", public) == (0, "42\n", "")
 
+    evaluation_exception = ('fn main()->int{\ntry{\nreturn 1/0\n}\n'
+                            'except EvaluationError{\nreturn 42\n}\n}')
+    source.write_text("import host\n" + evaluation_exception, encoding="utf-8")
+    generated_exceptions = [invoke(cli, "bootstrap-compiler", source)
+                            for cli in (seed, stage, next_stage)]
+    assert generated_exceptions[0] == generated_exceptions[1] == generated_exceptions[2]
+    code, generated, error = generated_exceptions[2]
+    assert (code == 0 and not error and "match (|| -> R" in generated
+            and "Err(Fault::Overflow)" in generated
+            and "Err(error) => return Err(error)" in generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(evaluation_exception, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"evaluation-exception-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    successful_try = ('fn main()->int{\ntry{\nreturn 42\n}\n'
+                      'except EvaluationError{\nreturn 1\n}\n}')
+    nested_exception = ('fn main()->int{\ntry{\ntry{\nreturn 9223372036854775807+1\n}\n'
+                        'except EvaluationError{\nreturn 42\n}\n}\n'
+                        'except EvaluationError{\nreturn 1\n}\n}')
+    for program in (successful_try, nested_exception):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert results[0] == results[1] == results[2]
+        code, generated, error = results[2]
+        assert code == 0 and not error
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", "")
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public) == (0, "", "")
+        assert invoke(next_stage, "run", public) == (0, "42\n", "")
+
+    invalid_exceptions = (
+        "fn main()->int{ try{ return 1 } return 0 }",
+        "fn main()->int{ try{ return 1 } except Unknown{ return 2 } }",
+    )
+    for invalid in invalid_exceptions:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
+    # 轉換例外與處理訊息尚未進入自舉子集；公開前端既有支援面保持不變。
+    for deferred in (
+        "fn main()->int{ try{ return 1 } except TypeConversationError{ return 2 } }",
+        "fn main()->int{ try{ return 1/0 } except EvaluationError as msg{ return 2 } }",
+    ):
+        source.write_text("import host\n" + deferred, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+
     invalid_matches = (
         "fn main()->int{ match(1){} return 0 }",
         "fn main()->int{ match(1){ case 1{ return 0 } case 0x1{ return 1 } } return 0 }",
