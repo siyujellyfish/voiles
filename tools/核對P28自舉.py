@@ -265,21 +265,24 @@ fn main(){
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
 
-    # list[int] 常值逐項走受檢運算式，len 由已解析的區域容器身分產生。
-    lists = "fn main()->int{\nvar xs:list[int] = [40,2]\nreturn 40+len(xs)\n}"
+    # list[int] 常值與公開 with 唯讀索引共用已解析的區域容器身分。
+    lists = ("fn main()->int{\nvar xs:list[int] = [3,42]\n"
+             "with xs[1] as item {\nreturn item\n}\nreturn 0\n}")
     source.write_text("import host\n" + lists, encoding="utf-8")
     generated_lists = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
     assert generated_lists[0] == generated_lists[1] == generated_lists[2]
     code, generated, error = generated_lists[2]
-    assert code == 0 and not error and "Vec<i64> = vec![" in generated and ".len() as i64" in generated
+    assert (code == 0 and not error and "Vec<i64> = vec![" in generated
+            and "v_xs.get(i)" in generated)
     rust_source.write_text(
-        "type R=Result<i64,Fault>; enum Fault{Overflow} struct Machine; "
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
         "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
         + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
         encoding="utf-8")
     subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
     assert invoke(native) == (42, "", "")
-    public.write_text(lists, encoding="utf-8")
+    public_lists = "fn main()->int{\nvar xs:list[int] = [40,2]\nreturn 40+len(xs)\n}"
+    public.write_text(public_lists, encoding="utf-8")
     assert invoke(next_stage, "check", public) == (0, "", "")
     assert invoke(next_stage, "run", public) == (0, "42\n", "")
     for mode in ("build", "pack"):
@@ -293,6 +296,8 @@ fn main(){
         "fn main()->int{ return len(xs) }",
         "fn main()->int{ var xs:list[int] = [1,2 return 0 }",
         "fn main()->int{ var xs:list[int] = [] var xs:list[int] = [] return 0 }",
+        "fn main()->int{ var xs:list[int] = [1] with missing[0] as item { return item } return 0 }",
+        "fn main()->int{ var xs:list[int] = [1] with xs[0] as xs { return xs } return 0 }",
     )
     for invalid in invalid_lists:
         source.write_text("import host\n" + invalid, encoding="utf-8")
@@ -300,6 +305,22 @@ fn main(){
         assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
+
+    # 越界是已通過靜態檢查後的執行期錯誤，三代生成物與公開兩種產物都必須失敗。
+    missing_item = ("fn main()->int{\nvar xs:list[int] = [1]\n"
+                    "with xs[2] as item {\nreturn item\n}\nreturn 0\n}")
+    source.write_text("import host\n" + missing_item, encoding="utf-8")
+    generated_missing = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_missing[0] == generated_missing[1] == generated_missing[2]
+    code, generated, error = generated_missing[2]
+    assert code == 0 and not error and "清單索引越界" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native)[0] == 1
 
     for invalid in (
         "fn bad(a:bool)->int{ return 0 }",

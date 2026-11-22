@@ -29,6 +29,7 @@ struct Machine {
     pending_constructor: Option<String>,
     constructor_fields: BTreeSet<String>,
     list_items: usize,
+    pending_list_borrow: Option<(String, Option<String>)>,
 }
 
 impl Machine {
@@ -196,11 +197,12 @@ impl Machine {
     }
     fn value(&mut self) -> R {
         let name = self.take_name()?;
-        let known = self.current_function.as_ref()
+        let parameter = self.current_function.as_ref()
             .and_then(|function| self.functions.get(function))
             .is_some_and(|parameters| parameters.contains(&name));
-        if !known { return Err(Fault::Syntax(format!("未知名稱 {name}"))); }
-        self.emit_name(&name)
+        let local_int = self.locals.get(&name).is_some_and(|kind| kind == "int");
+        if !parameter && !local_int { return Err(Fault::Syntax(format!("未知名稱 {name}"))); }
+        if parameter { self.emit_name(&name) } else { self.emit(&format!("v_{name}")) }
     }
     fn finish_function(&mut self) -> R {
         self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
@@ -209,6 +211,7 @@ impl Machine {
         self.pending_constructor = None;
         self.constructor_fields.clear();
         self.list_items = 0;
+        self.pending_list_borrow = None;
         Ok(0)
     }
     fn local(&mut self) -> R {
@@ -312,6 +315,44 @@ impl Machine {
         }
         self.emit(&format!("v_{name}.len() as i64"))
     }
+    fn return_start(&mut self) -> R {
+        if self.pending_list_borrow.is_some() { self.emit("return Ok(") } else { self.emit("Ok(") }
+    }
+    fn list_owner(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("list:int") {
+            return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
+        }
+        if self.pending_list_borrow.is_some() {
+            return Err(Fault::Syntax("清單借用邊界無效".into()));
+        }
+        self.pending_list_borrow = Some((name.clone(), None));
+        self.emit("match usize::try_from(")
+    }
+    fn list_alias(&mut self) -> R {
+        let alias = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&alias));
+        if parameter || self.locals.contains_key(&alias) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {alias}")));
+        }
+        let owner = {
+            let Some((owner, pending_alias)) = self.pending_list_borrow.as_mut() else {
+                return Err(Fault::Syntax("清單借用邊界無效".into()));
+            };
+            *pending_alias = Some(alias.clone());
+            owner.clone()
+        };
+        self.locals.insert(alias.clone(), "int".into());
+        self.emit(&format!(").ok().and_then(|i| v_{owner}.get(i)) {{\nSome(v_{alias}) => {{\nlet v_{alias}: i64 = *v_{alias};\n"))
+    }
+    fn finish_list_borrow(&mut self) -> R {
+        let (_, alias) = self.pending_list_borrow.take()
+            .ok_or_else(|| Fault::Syntax("清單借用邊界無效".into()))?;
+        let alias = alias.ok_or_else(|| Fault::Syntax("清單借用缺少元素名稱".into()))?;
+        self.locals.remove(&alias);
+        self.emit("}\nNone => return Err(Fault::Syntax(\"清單索引越界\".into()))\n};\n")
+    }
     fn call(&mut self) -> R {
         let name = self.take_name()?;
         let index = self.calls.len();
@@ -373,7 +414,8 @@ impl Machine {
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
                     "field_default" | "finish_structure" | "local" | "local_type" | "constructor" |
                     "constructor_field" | "finish_constructor" | "field_value" | "field_target" |
-                    "list_local" | "list_item" | "finish_list" | "list_len" | "method" | "literal") {
+                    "list_local" | "list_item" | "finish_list" | "list_len" | "list_owner" |
+                    "list_alias" | "finish_list_borrow" | "return_start" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -548,7 +590,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
-        constructor_fields: BTreeSet::new(), list_items: 0,
+        constructor_fields: BTreeSet::new(), list_items: 0, pending_list_borrow: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
