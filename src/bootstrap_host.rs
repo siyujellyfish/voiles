@@ -32,6 +32,7 @@ struct Machine {
     dict_items: usize,
     dict_keys: BTreeSet<String>,
     pending_list_borrow: Option<(String, Option<String>)>,
+    pending_dict_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
 }
 
@@ -97,6 +98,16 @@ impl Machine {
             && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "dict"))))
+    }
+    fn at_dict_borrow(&self) -> R {
+        let Some(Token { kind: TokenKind::Name(owner), .. }) = self.tokens.get(self.cursor + 1) else {
+            return Ok(0);
+        };
+        Ok(i64::from(self.matched_width("with") != 0
+            && self.locals.get(owner).map(String::as_str) == Some("dict:str:int")
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol('['))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol(']'))))
     }
     fn at_len(&self) -> R {
         Ok(i64::from(self.matched_width("len") != 0
@@ -233,6 +244,7 @@ impl Machine {
         self.dict_items = 0;
         self.dict_keys.clear();
         self.pending_list_borrow = None;
+        self.pending_dict_borrow = None;
         self.pending_list_append = None;
         Ok(0)
     }
@@ -397,7 +409,11 @@ impl Machine {
         self.emit(&format!("v_{name}.pop().ok_or_else(|| Fault::Syntax(\"清單為空\".into()))?"))
     }
     fn return_start(&mut self) -> R {
-        if self.pending_list_borrow.is_some() { self.emit("return Ok(") } else { self.emit("Ok(") }
+        if self.pending_list_borrow.is_some() || self.pending_dict_borrow.is_some() {
+            self.emit("return Ok(")
+        } else {
+            self.emit("Ok(")
+        }
     }
     fn list_owner(&mut self) -> R {
         let name = self.take_name()?;
@@ -433,6 +449,46 @@ impl Machine {
         let alias = alias.ok_or_else(|| Fault::Syntax("清單借用缺少元素名稱".into()))?;
         self.locals.remove(&alias);
         self.emit("}\nNone => return Err(Fault::Syntax(\"清單索引越界\".into()))\n};\n")
+    }
+    fn dict_owner(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("dict:str:int") {
+            return Err(Fault::Syntax(format!("{name} 不是 dict{{str,int}}")));
+        }
+        if self.pending_dict_borrow.is_some() || self.pending_list_borrow.is_some() {
+            return Err(Fault::Syntax("字典借用邊界無效".into()));
+        }
+        self.pending_dict_borrow = Some((name.clone(), None));
+        self.emit(&format!("match v_{name}.iter().find(|(k, _)| *k == "))
+    }
+    fn dict_selector(&mut self) -> R {
+        let TokenKind::StringLiteral(key) = self.token() else {
+            return Err(Fault::Syntax("dict{str,int} 查找鍵必須是 str 常值".into()));
+        };
+        let key = key.clone();
+        self.cursor += 1;
+        self.emit(&format!("{key:?}"))
+    }
+    fn dict_alias(&mut self) -> R {
+        let alias = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&alias));
+        if parameter || self.locals.contains_key(&alias) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {alias}")));
+        }
+        let Some((_, pending_alias)) = self.pending_dict_borrow.as_mut() else {
+            return Err(Fault::Syntax("字典借用邊界無效".into()));
+        };
+        *pending_alias = Some(alias.clone());
+        self.locals.insert(alias.clone(), "int".into());
+        self.emit(&format!(").map(|(_, value)| value) {{\nSome(v_{alias}) => {{\nlet v_{alias}: i64 = *v_{alias};\n"))
+    }
+    fn finish_dict_borrow(&mut self) -> R {
+        let (_, alias) = self.pending_dict_borrow.take()
+            .ok_or_else(|| Fault::Syntax("字典借用邊界無效".into()))?;
+        let alias = alias.ok_or_else(|| Fault::Syntax("字典借用缺少元素名稱".into()))?;
+        self.locals.remove(&alias);
+        self.emit("}\nNone => return Err(Fault::Syntax(\"字典查找缺少鍵\".into()))\n};\n")
     }
     fn call(&mut self) -> R {
         let name = self.take_name()?;
@@ -489,7 +545,7 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_dict_local" | "at_len" | "at_list_append" | "at_list_pop" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_dict_local" | "at_dict_borrow" | "at_len" | "at_list_append" | "at_list_pop" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
@@ -498,7 +554,8 @@ impl Machine {
                     "list_local" | "list_item" | "finish_list" | "dict_local" | "dict_key" |
                     "finish_dict" | "list_len" | "list_append" |
                     "finish_list_append" | "list_pop" | "list_owner" |
-                    "list_alias" | "finish_list_borrow" | "return_start" | "method" | "literal") {
+                    "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
+                    "dict_alias" | "finish_dict_borrow" | "return_start" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -674,7 +731,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
         constructor_fields: BTreeSet::new(), list_items: 0, dict_items: 0,
-        dict_keys: BTreeSet::new(), pending_list_borrow: None,
+        dict_keys: BTreeSet::new(), pending_list_borrow: None, pending_dict_borrow: None,
         pending_list_append: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
