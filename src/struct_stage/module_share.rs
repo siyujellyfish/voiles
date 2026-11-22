@@ -214,6 +214,20 @@ enum Argument {
     Text(LocalText),
 }
 
+// 引數從左至右求值，已建立的共享借用會持續到整次呼叫結束。
+fn writes_argument(term:&Term,shared:&BTreeSet<String>)->bool {
+    match &term.kind {
+        TermKind::Move(n)|TermKind::StringReplace(n,..)=>shared.contains(n),
+        TermKind::Group(t)|TermKind::Not(t)=>writes_argument(t,shared),
+        TermKind::Logic(_,a,b)=>writes_argument(a,shared)||writes_argument(b,shared),
+        TermKind::BinaryInt(n)=>writes_argument(&n.left,shared)||writes_argument(&n.right,shared),
+        TermKind::Construct(_,args)=>args.iter().any(|(_,t)|writes_argument(t,shared)),
+        TermKind::Call(c)=>c.arguments.iter().any(|t|writes_argument(t,shared)),
+        TermKind::MethodCall(_,_,args)|TermKind::AwaitMethodCall(_,_,args)=>args.iter().any(|t|writes_argument(t,shared)),
+        _=>false,
+    }
+}
+
 impl TextInvocation {
     fn uses<'a>(&'a self, uses: &mut Vec<Use<'a>>) {
         for (_, _, arg) in &self.arguments {
@@ -453,13 +467,16 @@ impl Lower<'_> {
         if function.result_ty != result || function.is_async { return None; }
         let mut arguments = Vec::new();
         let mut slots = BTreeSet::new();
+        let mut shared=BTreeSet::new();
         for (index, (label, term)) in args.enumerate() {
+            if writes_argument(term,&shared) {return None;}
             let slot = match label { Some(n) => function.params.iter().position(|p| p.name == n)?, None => index };
             let p = function.params.get(slot)?;
             if !slots.insert(slot) { return None; }
             let value = match p.ty.as_str() {
                 "str" => if let TermKind::Name(owner) = &term.kind {
                     if !self.objects.as_ref()?.allows_shared(name,&p.name) || self.strings.get(owner)?.borrowed.is_some() { return None; }
+                    shared.insert(owner.clone());
                     Argument::SharedText(self.text_owner(owner,false,true)?)
                 } else { Argument::Text(self.local_text(term, "")?) },
                 ty @ ("int" | "bool" | "float") => Argument::Integer(self.scalar_value(ty,term)?),

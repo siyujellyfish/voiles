@@ -497,6 +497,18 @@ mod tests {
     }
 
     #[test]
+    fn shared_text_parameters_reuse_one_resource() {
+        use ResourceEvent::*;
+        let files=Files::new(&[("main.voil","fn read(a:str,b:str)->int{ return a[0][0]+b[0][0] }
+fn main()->int{ var s:str = \"*\"
+const n:int = read(s,s)
+return n - s[0][0] }")]);
+        let (value,trace)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+        assert_eq!(value.ok(),Some(42));
+        assert_eq!(trace,vec![Created(1),Released(1)]);
+    }
+
+    #[test]
     fn moved_text_reaches_imported_function_and_unwinds_once() {
         use ResourceEvent::*;
         for index in [0, 2] {

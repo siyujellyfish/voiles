@@ -301,7 +301,9 @@ impl Builder<'_, '_> {
         if function.is_async || function.result_ty != "str" { return None; }
         let mut arguments = Vec::new();
         let mut supplied = BTreeSet::new();
+        let mut shared=BTreeSet::new();
         for (position, (label, term)) in args.enumerate() {
+            if writes_argument(term,&shared) {return None;}
             let slot = match label {
                 Some(n) => function.params.iter().position(|param| param.name == n)?,
                 None => position,
@@ -313,6 +315,7 @@ impl Builder<'_, '_> {
                 ty @ ("int" | "bool" | "float") => Argument::Integer(self.typed(term, ty)?),
                 _ => return None,
             };
+            if let (Argument::SharedText(_),TermKind::Name(n))=(&value,&term.kind) {shared.insert(n.clone());}
             arguments.push((param.name.clone(), slot, value));
         }
         if supplied.len() != function.params.len() { return None; }
@@ -374,7 +377,9 @@ impl Builder<'_, '_> {
         let mut text_arguments = Vec::new();
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
+        let mut shared=BTreeSet::new();
         for (index,(label,arg)) in args.enumerate() {
+            if writes_argument(arg,&shared) {return None;}
             let slot = match label { Some(n) => f.params.iter().position(|p| p.name==n)?, None => index };
             let param = f.params.get(slot)?;
             if !slots.insert(slot) { return None; }
@@ -384,6 +389,7 @@ impl Builder<'_, '_> {
                     ty @ ("int" | "bool" | "float") => Argument::Integer(self.typed(arg, ty)?),
                     _ => return None,
                 };
+                if let (Argument::SharedText(_),TermKind::Name(n))=(&value,&arg.kind) {shared.insert(n.clone());}
                 text_arguments.push((param.name.clone(), slot, value));
             } else {
                 values.push((param.name.clone(),slot,self.typed(arg,&param.ty)?));
