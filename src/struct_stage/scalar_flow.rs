@@ -196,6 +196,24 @@ impl Builder<'_, '_> {
             self.invalidate();
             return Some(("int".into(), Number::Container(binding.slot.clone(), ContainerRead::Length)));
         }
+        if objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
+            let (signature, result)=standard::signature(name)?;
+            if result != "int" { return None; }
+            let mut values=Vec::new();
+            for (index,(label,term)) in args.enumerate() {
+                if label.is_some() { return None; }
+                let ty=signature.get(index).copied().or_else(||standard::variadic_parameter(name))?;
+                let arg=if ty=="int" { StandardArg::Int(self.typed(term,"int")?) }
+                    else {
+                        let Text::Literal(s)=self.lower.text(term)? else {return None};
+                        StandardArg::Text(LocalText::Literal(s))
+                    };
+                values.push(arg);
+            }
+            if values.len()<signature.len() {return None;}
+            self.invalidate();
+            return Some((result.into(),Number::Standard(StandardCall{name:name.into(),args:values})));
+        }
         let (target,_,f) = objects.function(name)?;
         if f.is_async || !matches!(f.result_ty.as_str(), "int" | "bool") { return None; }
         let mut values = Vec::new();
