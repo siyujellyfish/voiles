@@ -15,31 +15,42 @@ fn digit(b:int)->bool{
 
 # 小寫 a..z 編為 1..26，每字母占五位；最長關鍵字八字母。
 fn keyword(key:int)->bool{
-    match(key){
-        case 206{ return true }  # fn
-        case 3652212{ return true }  # const
-        case 22578{ return true }  # var
-        case 20186693{ return true }  # share
-        case 294{ return true }  # if
-        case 176741{ return true }  # else
-        case 609900110{ return true }  # return
-        case 674469{ return true }  # true
-        case 6337125{ return true }  # false
-        case 659117172{ return true }  # struct
-        case 1697219{ return true }  # async
-        case 24388997{ return true }  # while
-        case 6642{ return true }  # for
-        case 316161620{ return true }  # import
-        case 1476{ return true }  # and
-        case 498{ return true }  # or
-        case 14836{ return true }  # not
-        case 307{ return true }  # is
-        case 474565{ return true }  # none
-        case 2692139{ return true }  # break
-        case 119676385957{ return true }  # continue
-        case 21081{ return true }  # try
-        case 193041940{ return true }  # except
-        case _{ return false }
+    if(key < 674469){
+        if(key < 6642){
+            if(key < 307){
+                # fn, if
+                return key == 206 or key == 294
+            } else {
+                # is, or, and
+                return key == 307 or key == 498 or key == 1476
+            }
+        } else {
+            if(key < 22578){
+                # for, not, try
+                return key == 6642 or key == 14836 or key == 21081
+            } else {
+                # var, else, none
+                return key == 22578 or key == 176741 or key == 474565
+            }
+        }
+    } else {
+        if(key < 24388997){
+            if(key < 3652212){
+                # true, async, break
+                return key == 674469 or key == 1697219 or key == 2692139
+            } else {
+                # const, false, share
+                return key == 3652212 or key == 6337125 or key == 20186693
+            }
+        } else {
+            if(key < 609900110){
+                # while, except, import
+                return key == 24388997 or key == 193041940 or key == 316161620
+            } else {
+                # return, struct, continue
+                return key == 609900110 or key == 659117172 or key == 119676385957
+            }
+        }
     }
 }
 
@@ -58,6 +69,11 @@ fn scan(data:list[int])->list[Token]{
         var kind:int = 5
         if(b == 32 or b == 9){
             kind = 0
+            while(next == 32 or next == 9){
+                i = i + 1
+                next = -1
+                if(i < size){ with data[i] as look{ next = look } }
+            }
         } else if(b == 10 or b == 13){
             if(b == 13 and next == 10){ i = i + 1 }
             if(depth == 0){ kind = 7 } else { kind = 0 }

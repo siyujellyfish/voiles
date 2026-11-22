@@ -24,20 +24,28 @@ impl Machine {
         Ok(())
     }
     fn token(&self) -> &TokenKind { &self.tokens[self.cursor].kind }
-    fn at(&self, text: &str) -> R {
-        let matched = match self.token() {
+    fn matched_width(&self, text: &str) -> usize {
+        if matches!(text, "!=" | "==" | "<=" | ">=") {
+            let first = &self.tokens[self.cursor];
+            let Some(second) = self.tokens.get(self.cursor + 1) else {return 0};
+            return if first.end == second.start
+                && first.kind == TokenKind::Symbol(char::from(text.as_bytes()[0]))
+                && second.kind == TokenKind::Symbol('=') {2} else {0};
+        }
+        usize::from(match self.token() {
             TokenKind::Keyword(n) | TokenKind::Name(n) => n == text,
             TokenKind::Symbol(c) => text.len() == c.len_utf8() && text.starts_with(*c),
             TokenKind::Arrow => text == "->",
             _ => false,
-        };
-        Ok(i64::from(matched))
+        })
     }
+    fn at(&self, text: &str) -> R { Ok(i64::from(self.matched_width(text) != 0)) }
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
     fn expect(&mut self, text: &str) -> R {
-        if self.at(text)? == 0 { return Err(Fault::Syntax(format!("預期 {text}"))); }
-        self.cursor += 1;
+        let width = self.matched_width(text);
+        if width == 0 { return Err(Fault::Syntax(format!("預期 {text}"))); }
+        self.cursor += width;
         Ok(0)
     }
     fn emit(&mut self, text: &str) -> R {
