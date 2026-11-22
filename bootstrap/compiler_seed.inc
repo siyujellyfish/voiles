@@ -90,7 +90,6 @@ Ok(v_control(s, depth + 1)?)
 }
 }
 }
-}
 fn v_match_statement(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 Ok(s.expect("match")?.checked_add(s.match_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.emit(" {\n")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_match_arms(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_match()?).ok_or(Fault::Overflow)?.checked_add(v_after_match(s, depth + 1)?).ok_or(Fault::Overflow)?)
