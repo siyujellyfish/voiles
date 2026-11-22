@@ -54,7 +54,7 @@ fn keyword(key:int)->bool{
     }
 }
 
-fn scan(data:list[int],lines:bool)->list[Token]{
+fn scan(data:list[int],lines:bool,stream:bool)->list[Token]{
     var tokens:list[Token] = []
     const size:int = len(data)
     var i:int = 0
@@ -140,8 +140,20 @@ fn scan(data:list[int],lines:bool)->list[Token]{
             }
             if(valid){ i = start + width } else { kind = 8 }
         }
-        if(kind != 0){ tokens.append(Token(kind=kind,start=start,end=i)) }
+        if(kind != 0){
+            if(stream){
+                const row:str = f"{kind} {start} {i}\n"
+                stdout(row)
+            } else {
+                tokens.append(Token(kind=kind,start=start,end=i))
+            }
+        }
     }
-    tokens.append(Token(kind=9,start=size,end=size))
+    if(stream){
+        const end:str = f"9 {size} {size}\n"
+        stdout(end)
+    } else {
+        tokens.append(Token(kind=9,start=size,end=size))
+    }
     return tokens.move()
 }
