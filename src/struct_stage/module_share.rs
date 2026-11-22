@@ -137,6 +137,7 @@ impl LocalText {
     }
 }
 struct MethodStep {
+    boolean:bool,
     write: Option<String>,
     value: Number,
     origin: StepOrigin,
@@ -534,9 +535,22 @@ impl Lower<'_> {
         }
     }
 
+    fn scalar_method(&self,owner:&str,name:&str,args:&[Term],expected:&str)->Option<Number> {
+        let objects=self.objects.as_ref()?;
+        if !objects.has(owner) {return None;}
+        let mut values=Vec::new();
+        for arg in args {
+            let value=if let Some(n)=self.boolean(arg) {("bool",n)}
+                else if let Some(n)=self.floating(arg) {("float",n)}
+                else {("int",self.number(arg)?)};
+            values.push(value);
+        }
+        objects.method(owner,name,values,expected).map(Number::Method)
+    }
     fn floating(&self, term:&Term)->Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.floating(t),
+            TermKind::MethodCall(owner,n,args)=>self.scalar_method(owner,n,args,"float"),
             TermKind::FieldRead(owner,field) if self.objects.as_ref()?.field_type(owner,field,false)?=="float" =>
                 Some(Number::Member {owner:owner.clone(),field:field.clone(),receiver:None}),
             TermKind::Name(n) if self.locals.get(n)?.1 == "float" => Some(Number::Local(n.clone())),
@@ -579,8 +593,7 @@ impl Lower<'_> {
             }
             if let TermKind::MethodCall(owner,method,arguments)=&term.kind {
                 if objects.has(owner) {
-                    let values=arguments.iter().map(|t|self.number(t)).collect::<Option<Vec<_>>>()?;
-                    return objects.method(owner,method,values).map(Number::Method);
+                    return self.scalar_method(owner,method,arguments,"int");
                 }
             }
             if let Some(value) = objects.expression(term) { return Some(value); }
@@ -622,6 +635,7 @@ impl Lower<'_> {
     fn boolean(&self, term: &Term) -> Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.boolean(t),
+            TermKind::MethodCall(owner,n,args)=>self.scalar_method(owner,n,args,"bool"),
             TermKind::Name(n) if self.locals.get(n).is_some_and(|(_,ty)|ty=="bool") => Some(Number::Local(n.clone())),
             TermKind::Not(t) => Some(Number::Logic("==",Box::new(self.boolean(t)?),Box::new(Number::Constant(0)))) ,
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => Some(Number::Constant(i64::from(*b))),
@@ -1711,7 +1725,7 @@ impl Program {
                         if state.steps>budget.max_steps {return Err(StrRuntimeError::ExecutionBudgetExhausted);}
                         let n=self.eval(&step.value,&mut inner,state,depth+1)?;
                         if let Some(field)=&step.write {
-                            state.mixed.write_int_field(&call.owner,field,n,true).map_err(|_|StrRuntimeError::EvaluationFailed)?;
+                            (if step.boolean {state.mixed.write_bool_field(&call.owner,field,n!=0,true)} else {state.mixed.write_int_field(&call.owner,field,n,true)}).map_err(|_|StrRuntimeError::EvaluationFailed)?;
                         } else {return Ok(n);}
                     }
                     Err(StrRuntimeError::IncompleteReturn)

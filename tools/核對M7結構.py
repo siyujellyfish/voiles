@@ -78,3 +78,18 @@ verify(cli, [
     (decimal_box + "fn main()->int{ var a:Amount = Amount(n=1)\nreturn 0 }","reject"),
     ("struct Bad{ var n:int = 0.1 }\nfn main()->int{ return 0 }","reject"),
 ])
+
+overloads = """struct Counter{
+var n:int = 40
+var yes:bool = false
+fn pick(x:int)->int{ return self.n+x }
+fn pick(x:bool)->int{ self.yes = x
+return self.n }
+fn enabled()->bool{ return self.yes }
+}
+"""
+verify(cli, [(overloads + "fn main()->int{ var c:Counter = Counter()\n" + body + " }", expected)
+             for body, expected in [
+    ("const n:int = c.pick(true)\nconst result:int = c.pick(2)\nif(c.enabled()){ return result } else { return n }",42),
+    ("return c.pick(0.5)","reject"),
+]])
