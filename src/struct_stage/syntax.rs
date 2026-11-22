@@ -190,7 +190,8 @@ impl Parser<'_> {
                 0 if self.keyword("or") => "or",
                 1 if self.keyword("and") => "and",
                 2 if self.symbol('=') && self.tokens.get(self.cursor+1).is_some_and(|t|
-                    t.kind == TokenKind::Symbol('=') && self.tok().end == t.start) => "==",
+                    t.kind == TokenKind::Symbol('=') && self.tok().end == t.start)
+                    && self.tokens.get(self.cursor+2).is_some_and(|t|matches!(&t.kind, TokenKind::Keyword(k) if k=="none")) => "==",
                 2 if self.symbol('!') && self.tokens.get(self.cursor+1).is_some_and(|t|
                     t.kind == TokenKind::Symbol('=') && self.tok().end == t.start) => "!=",
                 _ => break,
@@ -203,7 +204,6 @@ impl Parser<'_> {
                 left=Term { start:left.start,end,kind:TermKind::OptionalCondition(name,OptionalPredicate::IsMissing(op=="==")) };
                 continue;
             }
-            if op=="==" { return Err(self.syntax("此等號比較需要右側 none")); }
             let right = self.logic_level(level + 1)?;
             left = Term { start:left.start, end:right.end,
                 kind:TermKind::Logic(op, Box::new(left), Box::new(right)) };
