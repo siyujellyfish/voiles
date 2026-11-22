@@ -37,6 +37,7 @@ struct Machine {
     pending_dict_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
+    pending_matches: Vec<(BTreeSet<i64>, bool, usize)>,
 }
 
 impl Machine {
@@ -271,7 +272,61 @@ impl Machine {
         self.pending_dict_borrow = None;
         self.pending_list_append = None;
         self.pending_dict_set = None;
+        self.pending_matches.clear();
         Ok(0)
+    }
+    fn match_start(&mut self) -> R {
+        self.pending_matches.push((BTreeSet::new(), false, 0));
+        self.emit("match ")
+    }
+    fn match_pattern(&mut self) -> R {
+        let (negative, raw) = if self.matched_width("-") != 0 {
+            self.cursor += 1;
+            let TokenKind::Integer(raw) = self.token() else {
+                return Err(Fault::Syntax("case 需要整數常值".into()));
+            };
+            (true, raw.clone())
+        } else {
+            let TokenKind::Integer(raw) = self.token() else {
+                return Err(Fault::Syntax("case 需要整數常值".into()));
+            };
+            (false, raw.clone())
+        };
+        let value = if negative {
+            crate::syntax_shared::negative_integer_i64(&raw)
+        } else {
+            crate::syntax_shared::integer_i64(&raw)
+        }.map_err(|_| Fault::Syntax("case 整數常值無效".into()))?;
+        self.cursor += 1;
+        let Some((seen, wildcard, _)) = self.pending_matches.last_mut() else {
+            return Err(Fault::Syntax("match 邊界無效".into()));
+        };
+        if *wildcard { return Err(Fault::Syntax("預設分支只能位於末尾".into())); }
+        if !seen.insert(value) { return Err(Fault::Syntax("case 常值重複".into())); }
+        self.emit(&format!("{value}i64 => {{\n"))
+    }
+    fn match_wildcard(&mut self) -> R {
+        self.expect("_")?;
+        let Some((_, wildcard, _)) = self.pending_matches.last_mut() else {
+            return Err(Fault::Syntax("match 邊界無效".into()));
+        };
+        if *wildcard { return Err(Fault::Syntax("預設分支重複".into())); }
+        *wildcard = true;
+        self.emit("_ => {\n")
+    }
+    fn finish_match_arm(&mut self) -> R {
+        let Some((_, _, arms)) = self.pending_matches.last_mut() else {
+            return Err(Fault::Syntax("match 邊界無效".into()));
+        };
+        *arms += 1;
+        self.emit("},\n")
+    }
+    fn finish_match(&mut self) -> R {
+        let (_, wildcard, arms) = self.pending_matches.pop()
+            .ok_or_else(|| Fault::Syntax("match 邊界無效".into()))?;
+        if arms == 0 { return Err(Fault::Syntax("match 需要至少一個 case".into())); }
+        if !wildcard { self.emit("_ => {},\n")?; }
+        self.emit("}\n")
     }
     fn local(&mut self) -> R {
         let name = self.take_name()?;
@@ -545,7 +600,8 @@ impl Machine {
         self.emit(&format!("; if let Some((_, current)) = v_{owner}.iter_mut().find(|(k, _)| *k == {key:?}) {{ *current = v_dict_value; }} else {{ v_{owner}.push(({key:?}, v_dict_value)); }} v_{owner}.len() as i64 }}"))
     }
     fn return_start(&mut self) -> R {
-        if !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some() {
+        if !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some()
+            || !self.pending_matches.is_empty() {
             self.emit("return Ok(")
         } else {
             self.emit("Ok(")
@@ -720,7 +776,8 @@ impl Machine {
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
-                    "finish_dict_set" | "return_start" | "method" | "literal") {
+                    "finish_dict_set" | "return_start" | "match_start" | "match_pattern" |
+                    "match_wildcard" | "finish_match_arm" | "finish_match" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -899,6 +956,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         nested_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,
         pending_list_append: None, pending_dict_set: None,
+        pending_matches: Vec::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);

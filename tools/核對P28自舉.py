@@ -606,6 +606,64 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe)[0] == 1
 
+    integer_match = ('fn main()->int{\nmatch(2+3){\ncase 4{ return 1 }\n'
+                     'case 5{ return 42 }\ncase _{ return 0 }\n}\n}')
+    source.write_text("import host\n" + integer_match, encoding="utf-8")
+    generated_matches = [invoke(cli, "bootstrap-compiler", source)
+                         for cli in (seed, stage, next_stage)]
+    assert generated_matches[0] == generated_matches[1] == generated_matches[2]
+    code, generated, error = generated_matches[2]
+    assert (code == 0 and not error and "match 2i64.checked_add(3i64)" in generated
+            and "4i64 =>" in generated and "5i64 =>" in generated
+            and "_ =>" in generated and generated.count("match 2i64") == 1)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(integer_match, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"integer-match-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    negative_match = ('fn main()->int{\nmatch(0-1){\ncase -1{ return 42 }\n}\n'
+                      'return 0\n}')
+    source.write_text("import host\n" + negative_match, encoding="utf-8")
+    generated_negative_matches = [invoke(cli, "bootstrap-compiler", source)
+                                  for cli in (seed, stage, next_stage)]
+    assert generated_negative_matches[0] == generated_negative_matches[1] == generated_negative_matches[2]
+    code, generated, error = generated_negative_matches[2]
+    assert code == 0 and not error and "-1i64 =>" in generated and "_ => {}," in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(negative_match, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+
+    invalid_matches = (
+        "fn main()->int{ match(1){} return 0 }",
+        "fn main()->int{ match(1){ case 1{ return 0 } case 0x1{ return 1 } } return 0 }",
+        "fn main()->int{ match(1){ case true{ return 1 } } return 0 }",
+        "fn main()->int{ match(1){ case 1+0{ return 1 } } return 0 }",
+        "fn main()->int{ match(1){ case _{ return 0 } case 1{ return 1 } } }",
+    )
+    for invalid in invalid_matches:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
     invalid_lists = (
         "fn main()->int{ var xs:list[int] = [true] return 0 }",
         "fn main()->int{ var xs:list[int] = [1,] return 0 }",
