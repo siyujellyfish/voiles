@@ -65,29 +65,33 @@ fn body()->int{
 }
 
 fn statement()->int{
-    if (host.at("var") != 0) {
-        return local() + statement()
+    if (host.at_str_local() != 0) {
+        return host.str_local() + statement()
     } else {
-        if (host.at_field_write() != 0) {
-            return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
+        if (host.at("var") != 0) {
+            return local() + statement()
         } else {
-            if (host.at("with") != 0) {
-                if (host.at_dict_borrow() != 0) {
-                    return dict_borrow()
-                } else {
-                    return list_borrow()
-                }
+            if (host.at_field_write() != 0) {
+                return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
             } else {
-                if (host.at("try") != 0) {
-                    return try_statement()
-                } else {
-                    if (host.at("match") != 0) {
-                        return match_statement()
+                if (host.at("with") != 0) {
+                    if (host.at_dict_borrow() != 0) {
+                        return dict_borrow()
                     } else {
-                        if (host.at("return") != 0) {
-                            return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                        return list_borrow()
+                    }
+                } else {
+                    if (host.at("try") != 0) {
+                        return try_statement()
+                    } else {
+                        if (host.at("match") != 0) {
+                            return match_statement()
                         } else {
-                            return control()
+                            if (host.at("return") != 0) {
+                                return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                            } else {
+                                return control()
+                            }
                         }
                     }
                 }

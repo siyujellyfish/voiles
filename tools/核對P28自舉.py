@@ -743,14 +743,16 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
-    conversion_exception = ('fn main()->int{\ntry{\nreturn "水母".to_int()\n}\n'
+    conversion_exception = ('fn main()->int{\nconst text:str = "水母"\n'
+                            'try{\nreturn text.to_int()\n}\n'
                             'except TypeConversationError{\nreturn 42\n}\n}')
     source.write_text("import host\n" + conversion_exception, encoding="utf-8")
     generated_conversions = [invoke(cli, "bootstrap-compiler", source)
                              for cli in (seed, stage, next_stage)]
     assert generated_conversions[0] == generated_conversions[1] == generated_conversions[2]
     code, generated, error = generated_conversions[2]
-    assert (code == 0 and not error and '"水母".parse::<i64>()' in generated
+    assert (code == 0 and not error and 'let v_text: &\'static str = "水母"' in generated
+            and "v_text.parse::<i64>()" in generated
             and "Err(Fault::Conversion)" in generated)
     rust_source.write_text(
         "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
@@ -767,9 +769,11 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
-    conversion_message = ('fn main()->int{\ntry{\nreturn "x".to_int()\n}\n'
+    conversion_message = ('fn main()->int{\nconst text:str = "x"\n'
+                          'try{\nreturn text.to_int()\n}\n'
                           'except TypeConversationError as msg{\nreturn len(msg)+36\n}\n}')
-    successful_conversion = ('fn main()->int{\ntry{\nreturn "42".to_int()\n}\n'
+    successful_conversion = ('fn main()->int{\nconst text:str = "42"\n'
+                             'try{\nreturn text.to_int()\n}\n'
                              'except TypeConversationError{\nreturn 1\n}\n}')
     for program in (conversion_message, successful_conversion):
         source.write_text("import host\n" + program, encoding="utf-8")
@@ -788,7 +792,8 @@ fn main(){
         assert invoke(next_stage, "check", public) == (0, "", "")
         assert invoke(next_stage, "run", public) == (0, "42\n", "")
 
-    mismatched_conversion = ('fn main()->int{\ntry{\nreturn "x".to_int()\n}\n'
+    mismatched_conversion = ('fn main()->int{\nconst text:str = "x"\n'
+                             'try{\nreturn text.to_int()\n}\n'
                              'except EvaluationError{\nreturn 42\n}\n}')
     source.write_text("import host\n" + mismatched_conversion, encoding="utf-8")
     mismatch_results = [invoke(cli, "bootstrap-compiler", source)

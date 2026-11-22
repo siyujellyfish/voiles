@@ -74,8 +74,17 @@ impl Machine {
     fn at(&self, text: &str) -> R { Ok(i64::from(self.matched_width(text) != 0)) }
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
+    fn at_str_local(&self) -> R {
+        Ok(i64::from(self.matched_width("const") != 0
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "str"))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('='))
+            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)))))
+    }
     fn at_conversion(&self) -> R {
-        Ok(i64::from(matches!(self.token(), TokenKind::StringLiteral(_))
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(ref name)
+                if self.locals.get(name).map(String::as_str) == Some("str"))
             && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "to_int"))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
@@ -346,16 +355,34 @@ impl Machine {
         self.emit("},\nErr(error) => return Err(error),\n}\n")
     }
     fn conversion(&mut self) -> R {
-        let TokenKind::StringLiteral(value) = self.token() else {
-            return Err(Fault::Syntax("to_int 需要 str 常值".into()));
-        };
-        let value = value.clone();
-        self.cursor += 1;
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("str") {
+            return Err(Fault::Syntax("to_int 需要 str 區域名稱".into()));
+        }
         self.expect(".")?;
         self.expect("to_int")?;
         self.expect("(")?;
         self.expect(")")?;
-        self.emit(&format!("{value:?}.parse::<i64>().map_err(|_| Fault::Conversion)?"))
+        self.emit(&format!("v_{name}.parse::<i64>().map_err(|_| Fault::Conversion)?"))
+    }
+    fn str_local(&mut self) -> R {
+        self.expect("const")?;
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {name}")));
+        }
+        self.expect(":")?;
+        self.expect("str")?;
+        self.expect("=")?;
+        let TokenKind::StringLiteral(value) = self.token() else {
+            return Err(Fault::Syntax("const str 需要字串常值".into()));
+        };
+        let value = value.clone();
+        self.cursor += 1;
+        self.locals.insert(name.clone(), "str".into());
+        self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
     }
     fn match_start(&mut self) -> R {
         self.pending_matches.push((None, BTreeSet::new(), false, 0));
@@ -644,7 +671,7 @@ impl Machine {
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
-        if self.locals.get(&name).map(String::as_str) == Some("error:str") {
+        if matches!(self.locals.get(&name).map(String::as_str), Some("str" | "error:str")) {
             return self.emit(&format!("(v_{name}.chars().count() as i64)"));
         }
         if !matches!(self.locals.get(&name).map(String::as_str),
@@ -903,7 +930,7 @@ impl Machine {
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
-                    "literal" | "at_conversion" | "conversion") {
+                    "literal" | "at_str_local" | "str_local" | "at_conversion" | "conversion") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
