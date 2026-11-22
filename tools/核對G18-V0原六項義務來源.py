@@ -169,7 +169,7 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
         elif 名稱 == "F4":
             必要證明 = {
                 "contract": "F4-C01..F4-C13",
-                "tests": "src/struct_stage/execute_call_scalar.rs",
+                "tests": "src/struct_stage/scalar_call_tests.rs",
                 "gate": "tools/核對G18-F4可達函式圖原始義務閉合.py",
                 "report": "AI-build/G18-P18-F4-可達函式圖原始義務閉合證據-20261113.md",
             }
@@ -181,7 +181,7 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
             預期數量 = {"C1": 10, "C2": 10, "C3": 12, "C4": 12}[名稱]
             必要證明 = {
                 "contract": f"{名稱}-01..{名稱}-{預期數量:02d}",
-                "tests": "src/struct_stage/execute_call_scalar.rs",
+                "tests": "src/struct_stage/scalar_call_tests.rs",
                 "gate": {
                     "C1": "tools/核對G18-P18.2-C1分支選葉.py",
                     "C2": "tools/核對G18-P18.2-C2迴圈回邊.py",
@@ -315,7 +315,7 @@ def 核對清冊(清冊: dict, 原證據: dict, 正式狀態: dict) -> tuple[lis
                 },
                 "T2": {
                     "contract": "T2-01..T2-12",
-                    "tests": "src/struct_stage/execute_call_scalar.rs",
+                    "tests": "src/struct_stage/scalar_cross_runtime_tests.rs",
                     "gate": "tools/核對G18-P18.5-T2六組跨功能正反.py",
                     "report": "AI-build/G18-P18.5-T1-T2四欄與交叉矩陣.md"
                 }

@@ -79,7 +79,7 @@
       "work_file": "src/struct_stage/execute_call_scalar.rs",
       "closure_proof": {
         "contract": "F4-C01..F4-C13",
-        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "tests": "src/struct_stage/scalar_call_tests.rs",
         "gate": "tools/核對G18-F4可達函式圖原始義務閉合.py",
         "report": "AI-build/G18-P18-F4-可達函式圖原始義務閉合證據-20261113.md"
       }
@@ -95,7 +95,7 @@
       "work_file": "src/struct_stage/execute_call_scalar.rs",
       "closure_proof": {
         "contract": "C1-01..C1-10",
-        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "tests": "src/struct_stage/scalar_call_tests.rs",
         "gate": "tools/核對G18-P18.2-C1分支選葉.py",
         "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
       }
@@ -111,7 +111,7 @@
       "work_file": "src/struct_stage/execute_call_scalar.rs",
       "closure_proof": {
         "contract": "C2-01..C2-10",
-        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "tests": "src/struct_stage/scalar_call_tests.rs",
         "gate": "tools/核對G18-P18.2-C2迴圈回邊.py",
         "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
       }
@@ -127,7 +127,7 @@
       "work_file": "src/struct_stage/execute_call_scalar.rs",
       "closure_proof": {
         "contract": "C3-01..C3-12",
-        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "tests": "src/struct_stage/scalar_call_tests.rs",
         "gate": "tools/核對G18-P18.2-C3巢狀控制轉移.py",
         "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
       }
@@ -143,7 +143,7 @@
       "work_file": "src/struct_stage/execute_call_scalar.rs",
       "closure_proof": {
         "contract": "C4-01..C4-12",
-        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "tests": "src/struct_stage/scalar_call_tests.rs",
         "gate": "tools/核對G18-P18.2-C4局部資源離域.py",
         "report": "AI-build/G18-P18.2-原始四義務正式驗收證據-20261113.md"
       }
@@ -319,7 +319,7 @@
       "work_file": "tools/核對G18-R06跨執行器正反矩陣.py",
       "closure_proof": {
         "contract": "T2-01..T2-12",
-        "tests": "src/struct_stage/execute_call_scalar.rs",
+        "tests": "src/struct_stage/scalar_cross_runtime_tests.rs",
         "gate": "tools/核對G18-P18.5-T2六組跨功能正反.py",
         "report": "AI-build/G18-P18.5-T1-T2四欄與交叉矩陣.md"
       }
