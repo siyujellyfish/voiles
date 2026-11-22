@@ -1,4 +1,6 @@
 """透過公開入口比對直譯結果、原生產物與拒絕案例。"""
+import ctypes.util
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -50,8 +52,6 @@ with TemporaryDirectory() as tmp:
         assert built.returncode == 0, built
         result = run(exe)
         assert result.returncode == (5 if index == 0 else 1) and result.stderr == checked.stderr, result
-        import os
-        import ctypes.util
         sanitizer = ctypes.util.find_library("lsan")
         if os.environ.get("GITHUB_ACTIONS"):
             assert sanitizer, "CI 需要 LeakSanitizer"
@@ -97,6 +97,13 @@ with TemporaryDirectory() as tmp:
     missing = run(cli, "pack", main, "-o", base / "missing")
     assert missing.returncode and "匯入失敗" in missing.stderr and not (base / "missing").exists(), missing
     main.write_text("fn main()->int{ return 5 }", encoding="utf-8")
+    # shell 由 exec 替換成 CLI，兩者 PID 相同，可重現先前中斷留下的同名目錄。
+    retry = run("sh", "-c",
+                'mkdir "$1/.voiles-build-$$" && exec "$2" build "$3" -o "$1/retry"',
+                "sh", base, cli, main)
+    assert retry.returncode == 0 and run(base / "retry").returncode == 5, retry
+    leftovers = list(base.glob(".voiles-build-*"))
+    assert len(leftovers) == 1 and leftovers[0].is_dir(), leftovers
     no_host = subprocess.run([cli, "pack", main, "-o", base / "no-host"], capture_output=True,
                              encoding="utf-8", env={**os.environ, "PATH": str(clean_root)})
     assert no_host.returncode and "rustc" in no_host.stderr and not (base / "no-host").exists(), no_host

@@ -16,7 +16,7 @@ from pathlib import Path
     "AI-build/待確認事項.md",
     "AI-build/工作紀錄.md",
 ]
-文字副檔名 = {".md", ".py", ".yml", ".yaml", ".json", ".toml"}
+文字副檔名 = {".md", ".py", ".yml", ".yaml", ".json", ".toml", ".rs", ".voil", ".inc", ".txt"}
 
 
 def 執行_git(*參數: str) -> list[str]:
@@ -61,16 +61,16 @@ def 檢查文字編碼() -> list[str]:
 
 
 def 檢查工作紀錄更新() -> list[str]:
-    # 在合併請求的暫存合併提交中，第一父提交為基底，第二父提交為工作分支。
+    # 在合併請求的暫存合併提交中，從第一父提交比到合併結果，包含刪除及重新命名的兩端。
     if os.environ.get("VOILES_PULL_REQUEST") != "true":
         return []
     try:
         變更檔案 = 執行_git(
             "diff",
             "--name-only",
-            "--diff-filter=ACMR",
+            "--no-renames",
             "HEAD^1",
-            "HEAD^2",
+            "HEAD",
         )
     except subprocess.CalledProcessError:
         return ["無法取得合併請求的差異，請檢查分支擷取深度。"]
