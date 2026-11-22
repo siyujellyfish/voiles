@@ -1,0 +1,27 @@
+struct Digit{
+    var value:int = 0
+    var digit:int = 0
+}
+fn binary(x:Digit)->int{
+    return x.value + x.value + x.digit
+}
+fn octal(x:Digit)->int{
+    const twice:int = x.value + x.value
+    const four:int = twice + twice
+    return four + four + x.digit
+}
+fn decimal(x:Digit)->int{
+    const twice:int = x.value + x.value
+    const four:int = twice + twice
+    return four + four + twice + x.digit
+}
+fn hexadecimal(x:Digit)->int{
+    const twice:int = x.value + x.value
+    const four:int = twice + twice
+    const eight:int = four + four
+    return eight + eight + x.digit
+}
+fn main()->int{
+    var pair:Digit = Digit(value=4, digit=2)
+    return decimal(pair.move())
+}

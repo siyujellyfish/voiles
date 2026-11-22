@@ -12,6 +12,10 @@ impl EntryProgram {
         LinkedProgram::prepare(path).map(Self).map_err(module_error)
     }
 
+    pub fn bootstrap_digits(&self) -> Result<String, String> {
+        self.0.bootstrap_digits().map_err(module_error)
+    }
+
     pub fn native_source(&self) -> Result<String, String> {
         self.0.native_source().map_err(module_error)
     }
