@@ -1,6 +1,8 @@
 import count from words as count_words
 fn main()->int{
-    const total:int = count_words()
+    const path:str = arg(0)
+    const text:str = read_utf8(path)
+    const total:int = count_words(text.move())
     const report:str = f"{total}\n"
     return stdout(report)
 }

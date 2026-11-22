@@ -54,7 +54,7 @@ pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Re
     for p in &function.params {
         if stored_type(&p.ty) {
             builder.containers.borrow_mut().insert(p.name.clone());
-        } else if !matches!(p.ty.as_str(), "int" | "bool" | "float") {
+        } else if !matches!(p.ty.as_str(), "int" | "bool" | "float" | "str") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
         }
         builder.scopes[0].insert(p.name.clone(), Binding { slot:p.name.clone(), ty:p.ty.clone(), mutable:false });
@@ -288,16 +288,32 @@ impl Builder<'_, '_> {
             let call=self.collection_call(name,args,&f.result_ty)?;
             return Some((f.result_ty.clone(),Number::FromCollection(call)));
         }
+        let takes_text = f.params.iter().any(|param| param.ty == "str");
+        let mut text_arguments = Vec::new();
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
         for (index,(label,arg)) in args.enumerate() {
             let slot = match label { Some(n) => f.params.iter().position(|p| p.name==n)?, None => index };
             let param = f.params.get(slot)?;
             if !slots.insert(slot) { return None; }
-            values.push((param.name.clone(),slot,self.typed(arg,&param.ty)?));
+            if takes_text {
+                let value = match param.ty.as_str() {
+                    "str" => Argument::Text(self.text(arg)?),
+                    "int" => Argument::Integer(self.typed(arg, "int")?),
+                    _ => return None,
+                };
+                text_arguments.push((param.name.clone(), slot, value));
+            } else {
+                values.push((param.name.clone(),slot,self.typed(arg,&param.ty)?));
+            }
         }
-        if values.len()!=f.params.len() { return None; }
+        if slots.len()!=f.params.len() { return None; }
         self.invalidate();
+        if takes_text {
+            return Some((f.result_ty.clone(), Number::TextCall(TextInvocation {
+                target: target.clone(), arguments: text_arguments,
+            })));
+        }
         Some((f.result_ty.clone(), Number::ScalarCall { awaited, target:target.clone(), arguments:values }))
     }
 
