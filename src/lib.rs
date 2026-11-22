@@ -2,7 +2,7 @@
 //! 保留單檔檢查介面，並提供 P22 命令使用的模組程式入口。
 
 mod bootstrap_host;
-pub use bootstrap_host::compile_bootstrap_source;
+pub use bootstrap_host::{compile_bootstrap_source, compile_bootstrap_tokens};
 mod entry;
 pub use entry::EntryProgram;
 

@@ -17,6 +17,14 @@ fn main() -> ExitCode {
       voiles pack <入口.voil> -o <獨立執行檔>
       voiles --help | --version";
     match args.first().and_then(|arg| arg.to_str()) {
+        Some("bootstrap-compiler") if args.len() == 4 && args[2] == "--tokens" => {
+            let compiled = std::fs::read_to_string(&args[3]).map_err(|e| e.to_string())
+                .and_then(|rows| voiles_core::compile_bootstrap_tokens(Path::new(&args[1]), &rows));
+            match compiled {
+                Ok(source) => print!("{source}"),
+                Err(error) => { eprintln!("{error}"); return ExitCode::FAILURE; }
+            }
+        }
         Some("bootstrap-compiler") if args.len() == 2 => {
             match voiles_core::compile_bootstrap_source(Path::new(&args[1])) {
                 Ok(source) => print!("{source}"),
