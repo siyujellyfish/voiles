@@ -34,6 +34,7 @@ struct Machine {
     pending_list_borrow: Option<(String, Option<String>)>,
     pending_dict_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
+    pending_dict_set: Option<(String, Option<String>)>,
 }
 
 impl Machine {
@@ -117,6 +118,7 @@ impl Machine {
     }
     fn at_list_append(&self) -> R { self.at_list_method("append", false) }
     fn at_list_pop(&self) -> R { self.at_list_method("pop", true) }
+    fn at_dict_set(&self) -> R { self.at_list_method("set", false) }
     fn at_list_method(&self, method: &str, closed: bool) -> R {
         let head = matches!(self.token(), TokenKind::Name(_))
             && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
@@ -246,6 +248,7 @@ impl Machine {
         self.pending_list_borrow = None;
         self.pending_dict_borrow = None;
         self.pending_list_append = None;
+        self.pending_dict_set = None;
         Ok(0)
     }
     fn local(&mut self) -> R {
@@ -386,6 +389,9 @@ impl Machine {
         if self.locals.get(&name).map(String::as_str) != Some("list:int") {
             return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
         }
+        if self.pending_list_borrow.as_ref().is_some_and(|(owner, _)| owner == &name) {
+            return Err(Fault::Syntax("有效唯讀元素借用期間不能修改清單".into()));
+        }
         self.expect(".")?;
         self.expect("append")?;
         self.expect("(")?;
@@ -402,11 +408,49 @@ impl Machine {
         if self.locals.get(&name).map(String::as_str) != Some("list:int") {
             return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
         }
+        if self.pending_list_borrow.as_ref().is_some_and(|(owner, _)| owner == &name) {
+            return Err(Fault::Syntax("有效唯讀元素借用期間不能修改清單".into()));
+        }
         self.expect(".")?;
         self.expect("pop")?;
         self.expect("(")?;
         self.expect(")")?;
         self.emit(&format!("v_{name}.pop().ok_or_else(|| Fault::Syntax(\"清單為空\".into()))?"))
+    }
+    fn dict_set(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("dict:str:int") {
+            return Err(Fault::Syntax(format!("{name} 不是 dict{{str,int}}")));
+        }
+        if self.pending_dict_borrow.as_ref().is_some_and(|(owner, _)| owner == &name) {
+            return Err(Fault::Syntax("有效唯讀元素借用期間不能修改字典".into()));
+        }
+        if self.pending_dict_set.is_some() {
+            return Err(Fault::Syntax("巢狀字典 set 尚未開放".into()));
+        }
+        self.expect(".")?;
+        self.expect("set")?;
+        self.expect("(")?;
+        self.pending_dict_set = Some((name, None));
+        Ok(0)
+    }
+    fn dict_set_key(&mut self) -> R {
+        let TokenKind::StringLiteral(key) = self.token() else {
+            return Err(Fault::Syntax("dict{str,int}.set 的鍵必須是 str 常值".into()));
+        };
+        let key = key.clone();
+        self.cursor += 1;
+        let Some((_, pending_key)) = self.pending_dict_set.as_mut() else {
+            return Err(Fault::Syntax("字典 set 邊界無效".into()));
+        };
+        *pending_key = Some(key);
+        self.emit("{ let v_dict_value = ")
+    }
+    fn finish_dict_set(&mut self) -> R {
+        let (owner, key) = self.pending_dict_set.take()
+            .ok_or_else(|| Fault::Syntax("字典 set 邊界無效".into()))?;
+        let key = key.ok_or_else(|| Fault::Syntax("字典 set 缺少鍵".into()))?;
+        self.emit(&format!("; if let Some((_, current)) = v_{owner}.iter_mut().find(|(k, _)| *k == {key:?}) {{ *current = v_dict_value; }} else {{ v_{owner}.push(({key:?}, v_dict_value)); }} v_{owner}.len() as i64 }}"))
     }
     fn return_start(&mut self) -> R {
         if self.pending_list_borrow.is_some() || self.pending_dict_borrow.is_some() {
@@ -545,7 +589,7 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_dict_local" | "at_dict_borrow" | "at_len" | "at_list_append" | "at_list_pop" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_dict_local" | "at_dict_borrow" | "at_len" | "at_list_append" | "at_list_pop" | "at_dict_set" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
@@ -555,7 +599,8 @@ impl Machine {
                     "finish_dict" | "list_len" | "list_append" |
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
-                    "dict_alias" | "finish_dict_borrow" | "return_start" | "method" | "literal") {
+                    "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
+                    "finish_dict_set" | "return_start" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -732,7 +777,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
         constructor_fields: BTreeSet::new(), list_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrow: None, pending_dict_borrow: None,
-        pending_list_append: None,
+        pending_list_append: None, pending_dict_set: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
