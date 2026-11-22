@@ -1,6 +1,7 @@
 //! 私有自舉編譯器的宿主 ABI。沿用正式 lexer，宿主提供有界的記號與輸出緩衝區。
 use crate::lexer::{self, Token, TokenKind};
 use crate::source::Source;
+use std::collections::BTreeMap;
 use std::path::Path;
 
 #[derive(Debug)]
@@ -12,6 +13,10 @@ struct Machine {
     cursor: usize,
     output: String,
     steps: usize,
+    functions: BTreeMap<String, Vec<String>>,
+    current_function: Option<String>,
+    calls: Vec<(String, usize)>,
+    call_stack: Vec<usize>,
 }
 
 impl Machine {
@@ -58,19 +63,91 @@ impl Machine {
         Ok(0)
     }
     fn name(&mut self) -> R {
+        let name = self.take_name()?;
+        self.emit_name(&name)
+    }
+    fn take_name(&mut self) -> Result<String, Fault> {
         let TokenKind::Name(name) = self.token() else {
             return Err(Fault::Syntax("預期函式名稱".into()));
         };
-        let ident = format!("v_{name}");
+        let name = name.clone();
         self.cursor += 1;
-        self.emit(&ident)
+        Ok(name)
+    }
+    fn emit_name(&mut self, name: &str) -> R { self.emit(&format!("v_{name}")) }
+    fn function(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.functions.contains_key(&name) {
+            return Err(Fault::Syntax(format!("重複函式 {name}")));
+        }
+        self.functions.insert(name.clone(), Vec::new());
+        self.current_function = Some(name.clone());
+        self.emit_name(&name)
+    }
+    fn parameter(&mut self) -> R {
+        let name = self.take_name()?;
+        let Some(function) = self.current_function.as_ref() else {
+            return Err(Fault::Syntax("參數不在函式中".into()));
+        };
+        let parameters = self.functions.get_mut(function).expect("目前函式已登錄");
+        if parameters.contains(&name) {
+            return Err(Fault::Syntax(format!("重複參數 {name}")));
+        }
+        parameters.push(name.clone());
+        self.emit_name(&name)
+    }
+    fn value(&mut self) -> R {
+        let name = self.take_name()?;
+        let known = self.current_function.as_ref()
+            .and_then(|function| self.functions.get(function))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if !known { return Err(Fault::Syntax(format!("未知名稱 {name}"))); }
+        self.emit_name(&name)
+    }
+    fn finish_function(&mut self) -> R {
+        self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
+        Ok(0)
+    }
+    fn call(&mut self) -> R {
+        let name = self.take_name()?;
+        let index = self.calls.len();
+        self.calls.push((name.clone(), 0));
+        self.call_stack.push(index);
+        self.emit_name(&name)
+    }
+    fn argument(&mut self) -> R {
+        let Some(index) = self.call_stack.last().copied() else {
+            return Err(Fault::Syntax("實參不在呼叫中".into()));
+        };
+        self.calls[index].1 += 1;
+        Ok(0)
+    }
+    fn finish_call(&mut self) -> R {
+        self.call_stack.pop().ok_or_else(|| Fault::Syntax("呼叫邊界無效".into()))?;
+        Ok(0)
+    }
+    fn finish_names(&mut self) -> R {
+        if self.current_function.is_some() || !self.call_stack.is_empty() {
+            return Err(Fault::Syntax("名稱解析邊界無效".into()));
+        }
+        for (name, actual) in &self.calls {
+            let Some(parameters) = self.functions.get(name) else {
+                return Err(Fault::Syntax(format!("未知函式 {name}")));
+            };
+            if *actual != parameters.len() {
+                return Err(Fault::Syntax(format!("函式 {name} 預期 {} 個實參，收到 {actual} 個", parameters.len())));
+            }
+        }
+        Ok(0)
     }
     fn method(&mut self) -> R {
         let TokenKind::Name(name) = self.token() else {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "expect" |
-                    "emit" | "name" | "method" | "literal") {
+                    "emit" | "name" | "function" | "parameter" | "value" |
+                    "finish_function" | "call" | "argument" | "finish_call" |
+                    "finish_names" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -162,7 +239,8 @@ pub fn compile_bootstrap_tokens(path: &Path, rows: &str) -> Result<String, Strin
 fn compile_tokens(path: &Path, source: &Source, tokens: Vec<Token>) -> Result<String,String> {
     let mut machine = Machine {
         tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
-        cursor: 0, steps: 0, output: String::new(),
+        cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
+        current_function: None, calls: Vec::new(), call_stack: Vec::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
