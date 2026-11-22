@@ -21,7 +21,23 @@ fn declarations()->int{
 }
 
 fn declaration()->int{
-    return host.expect("fn") + host.emit("fn ") + host.function() + signature() + body() + host.finish_function() + host.emit("}\n")
+    if (host.at("struct") != 0) {
+        return structure()
+    } else {
+        return host.expect("fn") + host.emit("fn ") + host.function() + signature() + body() + host.finish_function() + host.emit("}\n")
+    }
+}
+
+fn structure()->int{
+    return host.expect("struct") + host.emit("#[derive(Clone,Copy)]\nstruct ") + host.structure() + host.expect("{") + host.emit("{\n") + fields() + host.expect("}") + host.finish_structure() + host.emit("}\n")
+}
+
+fn fields()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        return host.expect("var") + host.field() + host.expect(":") + host.expect("int") + host.expect("=") + host.field_default() + host.emit(",\n") + fields()
+    }
 }
 
 fn signature()->int{
@@ -49,11 +65,19 @@ fn body()->int{
 }
 
 fn statement()->int{
-    if (host.at("return") != 0) {
-        return host.expect("return") + host.emit("Ok(") + expression() + host.emit(")\n")
+    if (host.at("var") != 0) {
+        return local() + statement()
     } else {
-        return control()
+        if (host.at("return") != 0) {
+            return host.expect("return") + host.emit("Ok(") + expression() + host.emit(")\n")
+        } else {
+            return control()
+        }
     }
+}
+
+fn local()->int{
+    return host.expect("var") + host.local() + host.expect(":") + host.local_type() + host.expect("=") + host.constructor() + host.expect("(") + host.expect(")") + host.emit(";\n")
 }
 
 fn control()->int{
@@ -181,7 +205,11 @@ fn atom()->int{
                 if (host.at_call() != 0) {
                     return call()
                 } else {
-                    return host.value()
+                    if (host.at_field() != 0) {
+                        return host.field_value()
+                    } else {
+                        return host.value()
+                    }
                 }
             }
         }

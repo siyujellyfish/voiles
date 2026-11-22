@@ -224,6 +224,44 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
+    # 具 int 預設欄位的結構由自舉來源宣告、空建立並讀取，生成真 Rust 結構。
+    structures = ("struct Box{\nvar value:int = 40\nvar extra:int = 2\n}\n"
+                  "fn main()->int{\nvar b:Box = Box()\nreturn b.value+b.extra\n}")
+    source.write_text("import host\n" + structures, encoding="utf-8")
+    generated_structs = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_structs[0] == generated_structs[1] == generated_structs[2]
+    code, generated, error = generated_structs[2]
+    assert code == 0 and not error and "struct S_Box" in generated and "v_b.f_value" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(structures, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"struct-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_structures = (
+        "struct Box{ var value:int } fn main()->int{ return 0 }",
+        "struct Box{ var value:int = 1 var value:int = 2 } fn main()->int{ return 0 }",
+        "struct Box{ var value:bool = 1 } fn main()->int{ return 0 }",
+        "fn main()->int{ var b:Missing = Missing() return 0 }",
+        "struct Box{ var value:int = 1 } struct Other{ var value:int = 2 } fn main()->int{ var b:Box = Other() return 0 }",
+        "struct Box{ var value:int = 1 } fn main()->int{ var b:Box = Box() return b.missing }",
+    )
+    for invalid in invalid_structures:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
     for invalid in (
         "fn bad(a:bool)->int{ return 0 }",
         "fn bad(a:int,)->int{ return a }",

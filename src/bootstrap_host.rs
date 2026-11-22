@@ -21,6 +21,11 @@ struct Machine {
     imports: BTreeSet<String>,
     allowed_imports: BTreeSet<String>,
     external_functions: BTreeMap<(String, String), usize>,
+    structures: BTreeMap<String, Vec<(String, i64)>>,
+    current_structure: Option<String>,
+    pending_field: Option<String>,
+    locals: BTreeMap<String, String>,
+    pending_local: Option<(String, String)>,
 }
 
 impl Machine {
@@ -62,6 +67,12 @@ impl Machine {
             && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))))
     }
+    fn at_field(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(_))
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && !self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))))
+    }
     fn expect(&mut self, text: &str) -> R {
         let width = self.matched_width(text);
         if width == 0 { return Err(Fault::Syntax(format!("預期 {text}"))); }
@@ -90,6 +101,44 @@ impl Machine {
             None => format!("v_{name}"),
         };
         self.emit(&ident)
+    }
+    fn struct_ident(&self, name: &str) -> String {
+        self.module.as_ref().map_or_else(|| format!("S_{name}"), |module| format!("S_{module}_{name}"))
+    }
+    fn structure(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.structures.contains_key(&name) { return Err(Fault::Syntax(format!("重複結構 {name}"))); }
+        self.structures.insert(name.clone(), Vec::new());
+        self.current_structure = Some(name.clone());
+        let ident = self.struct_ident(&name);
+        self.emit(&ident)
+    }
+    fn field(&mut self) -> R {
+        let name = self.take_name()?;
+        let Some(structure) = self.current_structure.as_ref() else {
+            return Err(Fault::Syntax("欄位不在結構中".into()));
+        };
+        if self.structures.get(structure).expect("目前結構已登錄").iter().any(|(field, _)| field == &name)
+            || self.pending_field.as_ref() == Some(&name) {
+            return Err(Fault::Syntax(format!("重複欄位 {name}")));
+        }
+        self.pending_field = Some(name.clone());
+        self.emit(&format!("f_{name}: i64"))
+    }
+    fn field_default(&mut self) -> R {
+        let TokenKind::Integer(raw) = self.token() else { return Err(Fault::Syntax("int 欄位需要整數預設值".into())); };
+        let value = crate::syntax_shared::integer_i64(raw)
+            .map_err(|_| Fault::Syntax("整數常值無效".into()))?;
+        self.cursor += 1;
+        let field = self.pending_field.take().ok_or_else(|| Fault::Syntax("欄位預設值邊界無效".into()))?;
+        let structure = self.current_structure.as_ref().expect("目前結構已登錄");
+        self.structures.get_mut(structure).expect("目前結構已登錄").push((field, value));
+        Ok(0)
+    }
+    fn finish_structure(&mut self) -> R {
+        if self.pending_field.is_some() { return Err(Fault::Syntax("欄位缺少預設值".into())); }
+        self.current_structure.take().ok_or_else(|| Fault::Syntax("結構邊界無效".into()))?;
+        Ok(0)
     }
     fn module_import(&mut self) -> R {
         let name = self.take_name()?;
@@ -134,7 +183,49 @@ impl Machine {
     }
     fn finish_function(&mut self) -> R {
         self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
+        self.locals.clear();
+        self.pending_local = None;
         Ok(0)
+    }
+    fn local(&mut self) -> R {
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) { return Err(Fault::Syntax(format!("重複區域名稱 {name}"))); }
+        self.pending_local = Some((name.clone(), String::new()));
+        self.emit(&format!("let mut v_{name}"))
+    }
+    fn local_type(&mut self) -> R {
+        let kind = self.take_name()?;
+        if !self.structures.contains_key(&kind) { return Err(Fault::Syntax(format!("未知結構 {kind}"))); }
+        let name = {
+            let Some((name, pending)) = self.pending_local.as_mut() else { return Err(Fault::Syntax("區域型別邊界無效".into())); };
+            *pending = kind.clone();
+            name.clone()
+        };
+        self.locals.insert(name, kind.clone());
+        let ident = self.struct_ident(&kind);
+        self.emit(&format!(": {ident}"))
+    }
+    fn constructor(&mut self) -> R {
+        let kind = self.take_name()?;
+        let Some((_, expected)) = self.pending_local.take() else { return Err(Fault::Syntax("建立式邊界無效".into())); };
+        if kind != expected { return Err(Fault::Syntax(format!("建立式型別應為 {expected}"))); }
+        let fields = self.structures.get(&kind).expect("已驗證結構").clone();
+        let values = fields.into_iter().map(|(name, value)| format!("f_{name}:{value}i64"))
+            .collect::<Vec<_>>().join(",");
+        let ident = self.struct_ident(&kind);
+        self.emit(&format!(" = {ident}{{{values}}}"))
+    }
+    fn field_value(&mut self) -> R {
+        let local = self.take_name()?;
+        self.expect(".")?;
+        let field = self.take_name()?;
+        let kind = self.locals.get(&local).ok_or_else(|| Fault::Syntax(format!("未知區域名稱 {local}")))?;
+        if !self.structures.get(kind).expect("區域結構已驗證").iter().any(|(name, _)| name == &field) {
+            return Err(Fault::Syntax(format!("未知欄位 {field}")));
+        }
+        self.emit(&format!("v_{local}.f_{field}"))
     }
     fn call(&mut self) -> R {
         let name = self.take_name()?;
@@ -191,10 +282,12 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
-                    "finish_names" | "module_import" | "module_call" | "method" | "literal") {
+                    "finish_names" | "module_import" | "module_call" | "structure" | "field" |
+                    "field_default" | "finish_structure" | "local" | "local_type" | "constructor" |
+                    "field_value" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
@@ -367,6 +460,8 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
         current_function: None, calls: Vec::new(), call_stack: Vec::new(),
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
+        structures: BTreeMap::new(), current_structure: None, pending_field: None,
+        locals: BTreeMap::new(), pending_local: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
