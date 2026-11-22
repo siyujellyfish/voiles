@@ -105,13 +105,17 @@ fn after_list_borrow()->int{
 }
 
 fn local()->int{
-    if (host.at_list_local() != 0) {
-        return list_local()
+    if (host.at_nested_list_local() != 0) {
+        return nested_list_local()
     } else {
-        if (host.at_dict_local() != 0) {
-            return dict_local()
+        if (host.at_list_local() != 0) {
+            return list_local()
         } else {
-            return struct_local()
+            if (host.at_dict_local() != 0) {
+                return dict_local()
+            } else {
+                return struct_local()
+            }
         }
     }
 }
@@ -135,6 +139,42 @@ fn list_items()->int{
 fn following_list_items()->int{
     if (host.at(",") != 0) {
         return host.expect(",") + host.list_item() + expression() + following_list_items()
+    } else {
+        return 0
+    }
+}
+
+fn nested_list_local()->int{
+    return host.expect("var") + host.nested_list_local() + host.expect(":") + host.expect("list") + host.expect("[") + host.expect("list") + host.expect("[") + host.expect("int") + host.expect("]") + host.expect("]") + host.expect("=") + host.expect("[") + nested_rows() + host.expect("]") + host.finish_nested_list() + host.emit(";\n")
+}
+
+fn nested_rows()->int{
+    if (host.at("]") != 0) {
+        return 0
+    } else {
+        return host.nested_row() + host.expect("[") + nested_items() + host.expect("]") + host.finish_nested_row() + following_nested_rows()
+    }
+}
+
+fn following_nested_rows()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.nested_row() + host.expect("[") + nested_items() + host.expect("]") + host.finish_nested_row() + following_nested_rows()
+    } else {
+        return 0
+    }
+}
+
+fn nested_items()->int{
+    if (host.at("]") != 0) {
+        return 0
+    } else {
+        return host.nested_item() + expression() + following_nested_items()
+    }
+}
+
+fn following_nested_items()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.nested_item() + expression() + following_nested_items()
     } else {
         return 0
     }

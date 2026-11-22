@@ -104,6 +104,9 @@ Ok(v_statement(s, depth + 1)?)
 }
 fn v_local(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
+if s.at_nested_list_local()? != 0i64 {
+Ok(v_nested_list_local(s, depth + 1)?)
+} else {
 if s.at_list_local()? != 0i64 {
 Ok(v_list_local(s, depth + 1)?)
 } else {
@@ -111,6 +114,7 @@ if s.at_dict_local()? != 0i64 {
 Ok(v_dict_local(s, depth + 1)?)
 } else {
 Ok(v_struct_local(s, depth + 1)?)
+}
 }
 }
 }
@@ -134,6 +138,42 @@ fn v_following_list_items(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 if s.at(",")? != 0i64 {
 Ok(s.expect(",")?.checked_add(s.list_item()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_list_items(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(0i64)
+}
+}
+fn v_nested_list_local(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+Ok(s.expect("var")?.checked_add(s.nested_list_local()?).ok_or(Fault::Overflow)?.checked_add(s.expect(":")?).ok_or(Fault::Overflow)?.checked_add(s.expect("list")?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(s.expect("list")?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(s.expect("int")?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.expect("=")?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(v_nested_rows(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.finish_nested_list()?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?)
+}
+fn v_nested_rows(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("]")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(s.nested_row()?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(v_nested_items(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.finish_nested_row()?).ok_or(Fault::Overflow)?.checked_add(v_following_nested_rows(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
+fn v_following_nested_rows(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at(",")? != 0i64 {
+Ok(s.expect(",")?.checked_add(s.nested_row()?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(v_nested_items(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.finish_nested_row()?).ok_or(Fault::Overflow)?.checked_add(v_following_nested_rows(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(0i64)
+}
+}
+fn v_nested_items(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("]")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(s.nested_item()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_nested_items(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
+fn v_following_nested_items(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at(",")? != 0i64 {
+Ok(s.expect(",")?.checked_add(s.nested_item()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_nested_items(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 Ok(0i64)
 }
