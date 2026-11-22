@@ -97,7 +97,7 @@ fn statement()->int{
 }
 
 fn try_statement()->int{
-    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.expect("EvaluationError") + exception_binding() + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
+    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.exception_category() + exception_binding() + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
 }
 
 fn exception_binding()->int{
@@ -429,34 +429,38 @@ fn primary()->int{
 }
 
 fn atom()->int{
-    if (host.at_integer() != 0) {
-        return host.literal()
+    if (host.at_conversion() != 0) {
+        return host.conversion()
     } else {
-        if (host.at("host") != 0) {
-            return call()
+        if (host.at_integer() != 0) {
+            return host.literal()
         } else {
-            if (host.at_len() != 0) {
-                return host.list_len()
+            if (host.at("host") != 0) {
+                return call()
             } else {
-                if (host.at_dict_set() != 0) {
-                    return host.dict_set() + host.dict_set_key() + host.expect(",") + expression() + host.expect(")") + host.finish_dict_set()
+                if (host.at_len() != 0) {
+                    return host.list_len()
                 } else {
-                    if (host.at_list_append() != 0) {
-                        return host.list_append() + expression() + host.expect(")") + host.finish_list_append()
+                    if (host.at_dict_set() != 0) {
+                        return host.dict_set() + host.dict_set_key() + host.expect(",") + expression() + host.expect(")") + host.finish_dict_set()
                     } else {
-                        if (host.at_list_pop() != 0) {
-                            return host.list_pop()
+                        if (host.at_list_append() != 0) {
+                            return host.list_append() + expression() + host.expect(")") + host.finish_list_append()
                         } else {
-                            if (host.at_module_call() != 0) {
-                                return call()
+                            if (host.at_list_pop() != 0) {
+                                return host.list_pop()
                             } else {
-                                if (host.at_call() != 0) {
+                                if (host.at_module_call() != 0) {
                                     return call()
                                 } else {
-                                    if (host.at_field() != 0) {
-                                        return host.field_value()
+                                    if (host.at_call() != 0) {
+                                        return call()
                                     } else {
-                                        return host.value()
+                                        if (host.at_field() != 0) {
+                                            return host.field_value()
+                                        } else {
+                                            return host.value()
+                                        }
                                     }
                                 }
                             }

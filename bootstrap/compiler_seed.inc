@@ -96,7 +96,7 @@ Ok(v_control(s, depth + 1)?)
 }
 fn v_try_statement(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-Ok(s.expect("try")?.checked_add(s.try_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.try_handler()?).ok_or(Fault::Overflow)?.checked_add(s.expect("except")?).ok_or(Fault::Overflow)?.checked_add(s.expect("EvaluationError")?).ok_or(Fault::Overflow)?.checked_add(v_exception_binding(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_try()?).ok_or(Fault::Overflow)?.checked_add(v_after_try(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.expect("try")?.checked_add(s.try_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.try_handler()?).ok_or(Fault::Overflow)?.checked_add(s.expect("except")?).ok_or(Fault::Overflow)?.checked_add(s.exception_category()?).ok_or(Fault::Overflow)?.checked_add(v_exception_binding(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_try()?).ok_or(Fault::Overflow)?.checked_add(v_after_try(s, depth + 1)?).ok_or(Fault::Overflow)?)
 }
 fn v_exception_binding(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
@@ -428,6 +428,9 @@ Ok(v_atom(s, depth + 1)?)
 }
 fn v_atom(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
+if s.at_conversion()? != 0i64 {
+Ok(s.conversion()?)
+} else {
 if s.at_integer()? != 0i64 {
 Ok(s.literal()?)
 } else {
@@ -456,6 +459,7 @@ if s.at_field()? != 0i64 {
 Ok(s.field_value()?)
 } else {
 Ok(s.value()?)
+}
 }
 }
 }
