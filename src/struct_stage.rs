@@ -120,6 +120,7 @@ enum StmtKind {
     ReadonlyElement(Box<ReadonlyElementBlock>),
     Evaluate(Term),
     ProcedureCall(Term),
+    ReturnAdd(String, Term),
     GraphemeWrite(Term),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
@@ -214,6 +215,7 @@ struct LanguageParser<'a,const PUBLIC:bool> {
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
 mod decimal;
+mod integer;
 mod module_share;
 pub(crate) use module_share::modules;
 pub(crate) use module_share::Program as PreparedShareModule;
@@ -852,7 +854,7 @@ impl VerifiedDeclarationFacts {
                         visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
                     StmtKind::ReadonlyElement(block) => visit(&block.body, direct_targets, borrow_targets, named_returns, field_writes),
-                    StmtKind::ProcedureCall(_) | StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
+                    StmtKind::ReturnAdd(..) | StmtKind::ProcedureCall(_) | StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
             }
         }

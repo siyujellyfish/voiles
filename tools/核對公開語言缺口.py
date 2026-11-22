@@ -55,3 +55,36 @@ verify(cli, [
     ("fn wrong()->none{ return 1 }\n" + main("return 0"), "reject"),
     (finish + "fn relay()->none{ return finish(42) }\n" + main("relay()\nreturn 42"), 42),
 ])
+
+verify(cli, [(main("if(" + condition + "){ return 42 } else { return 0 }"), expected)
+             for condition, expected in [
+    ("2 + 3 == 5 and 1 < 2 and 2 <= 2 and 3 > 2 and 4 >= 4", 42),
+    ("0 > 1 or 3 <= 2 or 4 < 4", 0),
+    ("false < true", "reject"),
+    ('"x" == "x"', "reject"),
+    ("1 == true", "reject"),
+    ("1 < 2 < 3", "reject"),
+]])
+
+verify(cli, [(main("return " + expression), expected) for expression, expected in [
+    ("2 + 5 * 2 ** 3", 42),
+    ("2 ** 3 ** 2 - 470", 42),
+    ("-2 ** 2 + 46", 42),
+    ("(-2) ** 2 + 38", 42),
+    ("-7 // 3 + 45", 42),
+    ("7 % -3 + 44", 42),
+    ("-7 / 3 + 44", 42),
+    ("0 ** 0 + 41", 42),
+    ("1 // 0", "runtime"),
+    ("1 % 0", "runtime"),
+    ("2 ** -1", "runtime"),
+    ("9223372036854775807 * 2", "runtime"),
+    ("false * 2", "reject"),
+]])
+
+verify(cli, [(main(body), expected) for body, expected in [
+    ("var n:int = 40\nreturn n+=2", 42),
+    ("const n:int = 40\nreturn n+=2", "reject"),
+    ("var n:int\nreturn n+=2", "reject"),
+    ("var n:int = 9223372036854775807\ntry{ return n+=1 } except EvaluationError{ return n - 9223372036854775765 }", 42),
+]])

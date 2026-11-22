@@ -136,7 +136,7 @@ impl Builder<'_, '_> {
                 let right = Box::new(self.typed(&n.right,&ty)?);
                 let left = Box::new(left);
                 match ty.as_str() {
-                    "float" => ("float", Number::Decimal(left,n.operator,right)),
+                    "float" if matches!(n.operator, '+' | '-') => ("float", Number::Decimal(left,n.operator,right)),
                     "int" => ("int", Number::Binary(left,n.operator,right)),
                     _ => return None,
                 }
@@ -144,7 +144,7 @@ impl Builder<'_, '_> {
             TermKind::Not(inner) => ("bool",Number::Logic("==",Box::new(self.typed(inner,"bool")?),Box::new(Number::Constant(0)))),
             TermKind::Logic(op,a,b) => {
                 let (ty,left) = self.expr(a)?;
-                if ty == "none" || (*op != "!=" && ty != "bool") { return None; }
+                if !public_format::logic_types(op, &ty) { return None; }
                 ("bool", Number::Logic(op, Box::new(left), Box::new(self.typed(b,&ty)?)))
             }
             TermKind::UnresolvedZeroArgs(n) => return self.call(n,false,std::iter::empty()),
@@ -626,6 +626,21 @@ impl Builder<'_, '_> {
                     if let Some(jump) = jump { self.patch(jump,self.body.len()); }
                     closed = normal_returns && handled_returns;
                     self.invalidate();
+                }
+                StmtKind::ReturnAdd(name, term) => {
+                    let binding = self.readable(name).filter(|b| b.mutable && b.ty == self.result)
+                        .ok_or_else(|| err("回傳加法賦值需要可讀寫且與返回型別相同的變數"))?;
+                    let slot = binding.slot.clone();
+                    let lhs = Box::new(Number::Local(slot.clone()));
+                    let rhs = Box::new(self.typed(term, self.result).ok_or_else(|| err("加法賦值型別不符"))?);
+                    let value = match self.result {
+                        "int" => Number::Binary(lhs, '+', rhs),
+                        "float" => Number::Decimal(lhs, '+', rhs),
+                        _ => return Err(err("加法賦值需要數值")),
+                    };
+                    self.step(s, Action::Bind(slot.clone(), value));
+                    self.step(s, Action::Return(Number::Local(slot)));
+                    closed = true;
                 }
                 StmtKind::Return(r) if self.result == "none" && matches!(r.expression.kind, TermKind::Literal("none")) => {
                     self.step(s, Action::Return(Number::Constant(0)));

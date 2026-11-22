@@ -1,6 +1,15 @@
 //! 以同一個解析器檢查插值中的純量，保留呼叫端的詞彙作用域。
 use super::*;
 
+pub(super) fn logic_types(operator: &str, ty: &str) -> bool {
+    match operator {
+        "and" | "or" => ty == "bool",
+        "!=" => matches!(ty, "bool" | "int" | "float"),
+        "==" | "<" | "<=" | ">" | ">=" => ty == "int",
+        _ => false,
+    }
+}
+
 fn format_scalar(t:&Term,tokens:&[Token],resolve:&impl Fn(&Term)->Option<(String,Number)>)->Option<(String,Number)> {
     let (ty,n)=match &t.kind {
         TermKind::Group(inner)=>return format_scalar(inner,tokens,resolve),
@@ -18,7 +27,7 @@ fn format_scalar(t:&Term,tokens:&[Token],resolve:&impl Fn(&Term)->Option<(String
             if ty!=other {return None;}
             let (a,b)=(Box::new(a),Box::new(b));
             match ty.as_str() { "int"=>("int",Number::Binary(a,node.operator,b)),
-                "float"=>("float",Number::Decimal(a,node.operator,b)), _=>return None }
+                "float" if matches!(node.operator, '+' | '-')=>("float",Number::Decimal(a,node.operator,b)), _=>return None }
         }
         TermKind::Not(rhs)=>{
             let (ty,n)=format_scalar(rhs,tokens,resolve)?;
@@ -28,7 +37,7 @@ fn format_scalar(t:&Term,tokens:&[Token],resolve:&impl Fn(&Term)->Option<(String
         TermKind::Logic(op,a,b)=>{
             let (ty,a)=format_scalar(a,tokens,resolve)?;
             let (other,b)=format_scalar(b,tokens,resolve)?;
-            if other!=ty || *op!="!=" && ty!="bool" {return None;}
+            if other!=ty || !logic_types(op,&ty) {return None;}
             ("bool",Number::Logic(op,Box::new(a),Box::new(b)))
         }
         TermKind::Name(_) | TermKind::UnresolvedZeroArgs(_) => return resolve(t),
