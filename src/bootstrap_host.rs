@@ -104,6 +104,15 @@ impl Machine {
             && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('['))
             && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "list"))))
     }
+    fn at_nested_dict_local(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Keyword(k) if k == "var")
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "dict"))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('{'))
+            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "str"))
+            && self.tokens.get(self.cursor + 7).is_some_and(|t| matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "list"))))
+    }
     fn at_dict_local(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Keyword(k) if k == "var")
             && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
@@ -115,7 +124,8 @@ impl Machine {
             return Ok(0);
         };
         Ok(i64::from(self.matched_width("with") != 0
-            && self.locals.get(owner).map(String::as_str) == Some("dict:str:int")
+            && matches!(self.locals.get(owner).map(String::as_str),
+                Some("dict:str:int" | "dict:str:list:int"))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol('['))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)))
             && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol(']'))))
@@ -417,13 +427,51 @@ impl Machine {
         self.dict_keys.clear();
         self.emit("]")
     }
+    fn nested_dict_local(&mut self) -> R {
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {name}")));
+        }
+        self.locals.insert(name.clone(), "dict:str:list:int".into());
+        self.dict_items = 0;
+        self.dict_keys.clear();
+        self.nested_items = 0;
+        self.emit(&format!("let v_{name}: Vec<(&'static str, Vec<i64>)> = vec!["))
+    }
+    fn nested_dict_key(&mut self) -> R {
+        let TokenKind::StringLiteral(key) = self.token() else {
+            return Err(Fault::Syntax("dict{str,list[int]} 的鍵必須是 str 常值".into()));
+        };
+        let key = key.clone();
+        if !self.dict_keys.insert(key.clone()) {
+            return Err(Fault::Syntax(format!("字典常值的鍵重複：{key}")));
+        }
+        self.cursor += 1;
+        self.expect(":")?;
+        let comma = if self.dict_items == 0 { "" } else { "," };
+        self.dict_items += 1;
+        self.nested_items = 0;
+        self.emit(&format!("{comma}({key:?},vec!["))
+    }
+    fn finish_nested_dict_value(&mut self) -> R {
+        self.nested_items = 0;
+        self.emit("])")
+    }
+    fn finish_nested_dict(&mut self) -> R {
+        self.dict_items = 0;
+        self.dict_keys.clear();
+        self.nested_items = 0;
+        self.emit("]")
+    }
     fn list_len(&mut self) -> R {
         self.expect("len")?;
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
         if !matches!(self.locals.get(&name).map(String::as_str),
-            Some("list:int" | "borrow:list:int" | "list:list:int" | "dict:str:int")) {
+            Some("list:int" | "borrow:list:int" | "list:list:int" | "dict:str:int" | "dict:str:list:int")) {
             return Err(Fault::Syntax(format!("{name} 不是已支援的容器")));
         }
         self.emit(&format!("(v_{name}.len() as i64)"))
@@ -509,7 +557,8 @@ impl Machine {
             Some("list:int" | "borrow:list:int" | "list:list:int")) {
             return Err(Fault::Syntax(format!("{name} 不是可選取的清單")));
         }
-        if self.pending_dict_borrow.is_some() {
+        if self.pending_dict_borrow.is_some()
+            && self.locals.get(&name).map(String::as_str) != Some("borrow:list:int") {
             return Err(Fault::Syntax("清單借用邊界無效".into()));
         }
         self.pending_list_borrows.push((name.clone(), None));
@@ -551,8 +600,9 @@ impl Machine {
     }
     fn dict_owner(&mut self) -> R {
         let name = self.take_name()?;
-        if self.locals.get(&name).map(String::as_str) != Some("dict:str:int") {
-            return Err(Fault::Syntax(format!("{name} 不是 dict{{str,int}}")));
+        if !matches!(self.locals.get(&name).map(String::as_str),
+            Some("dict:str:int" | "dict:str:list:int")) {
+            return Err(Fault::Syntax(format!("{name} 不是可選取的字典")));
         }
         if self.pending_dict_borrow.is_some() || !self.pending_list_borrows.is_empty() {
             return Err(Fault::Syntax("字典借用邊界無效".into()));
@@ -575,12 +625,24 @@ impl Machine {
         if parameter || self.locals.contains_key(&alias) {
             return Err(Fault::Syntax(format!("重複區域名稱 {alias}")));
         }
-        let Some((_, pending_alias)) = self.pending_dict_borrow.as_mut() else {
-            return Err(Fault::Syntax("字典借用邊界無效".into()));
+        let element_kind = {
+            let Some((owner, pending_alias)) = self.pending_dict_borrow.as_mut() else {
+                return Err(Fault::Syntax("字典借用邊界無效".into()));
+            };
+            *pending_alias = Some(alias.clone());
+            if self.locals.get(owner).map(String::as_str) == Some("dict:str:list:int") {
+                "borrow:list:int"
+            } else {
+                "int"
+            }
         };
-        *pending_alias = Some(alias.clone());
-        self.locals.insert(alias.clone(), "int".into());
-        self.emit(&format!(").map(|(_, value)| value) {{\nSome(v_{alias}) => {{\nlet v_{alias}: i64 = *v_{alias};\n"))
+        self.locals.insert(alias.clone(), element_kind.into());
+        let binding = if element_kind == "int" {
+            format!("let v_{alias}: i64 = *v_{alias};\n")
+        } else {
+            format!("let v_{alias}: &Vec<i64> = v_{alias};\n")
+        };
+        self.emit(&format!(").map(|(_, value)| value) {{\nSome(v_{alias}) => {{\n{binding}"))
     }
     fn finish_dict_borrow(&mut self) -> R {
         let (_, alias) = self.pending_dict_borrow.take()
@@ -644,7 +706,7 @@ impl Machine {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
         if self.module.is_some() { return Err(Fault::Syntax("一般模組不能使用自舉宿主".into())); }
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_nested_list_local" | "at_dict_local" | "at_dict_borrow" | "at_len" | "at_list_append" | "at_list_pop" | "at_dict_set" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_nested_list_local" | "at_nested_dict_local" | "at_dict_local" | "at_dict_borrow" | "at_len" | "at_list_append" | "at_list_pop" | "at_dict_set" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
@@ -652,6 +714,7 @@ impl Machine {
                     "constructor_field" | "finish_constructor" | "field_value" | "field_target" |
                     "list_local" | "list_item" | "finish_list" | "nested_list_local" |
                     "nested_row" | "nested_item" | "finish_nested_row" | "finish_nested_list" |
+                    "nested_dict_local" | "nested_dict_key" | "finish_nested_dict_value" | "finish_nested_dict" |
                     "dict_local" | "dict_key" |
                     "finish_dict" | "list_len" | "list_append" |
                     "finish_list_append" | "list_pop" | "list_owner" |
