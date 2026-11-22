@@ -15,6 +15,15 @@ impl Emitter<'_> {
 
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
+            Number::ScalarCall { target, arguments } => {
+                let mut expr = String::from("{ ");
+                for (_, slot, value) in arguments {
+                    write!(expr, "let arg{slot} = {}; ", self.number(value)?).ok()?;
+                }
+                let args: String = (0..arguments.len()).map(|i| format!(", arg{i}")).collect();
+                write!(expr, "f{}(globals, steps, depth + 1, site{args})? }}", self.functions.get(target.as_str())?).ok()?;
+                expr
+            }
             Number::Constant(n) => format!("({n}i64)"),
             Number::Local(name) => format!("v{}", self.locals.get(name)?),
             Number::Binary(a, op, b) => {
@@ -66,8 +75,10 @@ impl LinkedProgram {
             let unit = &self.graph.units[step.module];
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
-            let argument = signature.params.first().map(|p|
-                format!(", v{}: Object", emitter.local_id(&p.name))).unwrap_or_default();
+            let argument: String = signature.params.iter().map(|p| {
+                let ty = if p.ty == "int" { "i64" } else { "Object" };
+                format!(", v{}: {ty}", emitter.local_id(&p.name))
+            }).collect();
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             for step in body {
