@@ -10,7 +10,10 @@ entry = root / "bootstrap/lexer/main.voil"
 
 
 def run(*args):
-    return subprocess.run(args, check=True, capture_output=True, timeout=90).stdout
+    result = subprocess.run(args, capture_output=True, timeout=90)
+    if result.returncode:
+        raise AssertionError((args, result.returncode, result.stderr.decode("utf-8", errors="replace")))
+    return result.stdout
 
 
 with TemporaryDirectory() as directory:
