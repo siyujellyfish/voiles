@@ -178,7 +178,8 @@ impl Emitter<'_> {
                     "and" => format!("i64::from(({a}) != 0 && ({b}) != 0)"),
                     "or" => format!("i64::from(({a}) != 0 || ({b}) != 0)"),
                     "==" => format!("i64::from(({a}) == ({b}))"),
-                    "lt" => format!("i64::from(({a}) < ({b}))"),
+                    "<=" | ">" | ">=" => format!("i64::from(({a}) {op} ({b}))"),
+                    "<" | "lt" => format!("i64::from(({a}) < ({b}))"),
                     _ => format!("i64::from(({a}) != ({b}))"),
                 }
             }
@@ -188,8 +189,7 @@ impl Emitter<'_> {
             Number::ParseInt(n) => format!("v{}.text.parse::<i64>().map_err(|_| (site, \"整數轉換失敗\"))?", self.locals.get(n)?),
             Number::Decimal(a, op, b) => format!("decimal::arithmetic({}, {op:?}, {}).ok_or((site, ARITH))?", self.number(a)?, self.number(b)?),
             Number::Binary(a, op, b) => {
-                let method = if *op == '+' { "checked_add" } else { "checked_sub" };
-                format!("({}).{method}({}).ok_or((site, ARITH))?", self.number(a)?, self.number(b)?)
+                format!("integer::arithmetic({}, {op:?}, {}).ok_or((site, ARITH))?", self.number(a)?, self.number(b)?)
             }
             Number::Choice(test, yes, no) =>
                 format!("(if ({}) != 0 {{ {} }} else {{ {} }})", self.number(test)?, self.number(yes)?, self.number(no)?),
@@ -246,6 +246,9 @@ impl LinkedProgram {
         let budget = crate::execution::ExecutionBudget::default();
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
+        out.push_str("mod integer {\n");
+        out.push_str(include_str!("integer.rs"));
+        out.push_str("}\n");
         out.push_str("mod decimal {\n");
         out.push_str(include_str!("decimal.rs"));
         out.push_str("}\n");

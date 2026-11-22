@@ -204,7 +204,12 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
         }
         let mut left = self.logic_level(level + 1)?;
         loop {
+            let adjacent_equals = self.tokens.get(self.cursor+1).is_some_and(|t|
+                t.kind == TokenKind::Symbol('=') && self.tok().end == t.start);
             let op = match level {
+                2 if PUBLIC && self.symbol('<') => if adjacent_equals { "<=" } else { "<" },
+                2 if PUBLIC && self.symbol('>') => if adjacent_equals { ">=" } else { ">" },
+                2 if PUBLIC && self.symbol('=') && adjacent_equals => "==",
                 0 if self.keyword("or") => "or",
                 1 if self.keyword("and") => "and",
                 2 if self.symbol('=') && self.tokens.get(self.cursor+1).is_some_and(|t|
@@ -214,7 +219,7 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
                     t.kind == TokenKind::Symbol('=') && self.tok().end == t.start) => "!=",
                 _ => break,
             };
-            self.cursor += if matches!(op,"!="|"==") { 2 } else { 1 };
+            self.cursor += if matches!(op,"!="|"=="|"<="|">=") { 2 } else { 1 };
             if matches!(op,"!="|"==") && self.keyword("none") {
                 let TermKind::Name(name)=left.kind else {return Err(self.syntax("缺失比較需要具名 Optional"))};
                 let end=self.tok().end;
@@ -231,14 +236,14 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
 
     fn sum(&mut self) -> Result<Term, Diagnostic> {
         // P01 加減為相同優先序、左結合；括號在原子解析處理。
-        let left = self.atom()?;
+        let left = self.factor()?;
         crate::syntax_shared::fold_additive_spanned(
             left,
             || {
                 let Some(op) = crate::syntax_shared::additive_operator(
                     self.tokens, self.cursor) else { return Ok(None) };
                 self.cursor += 1;
-                Ok(Some((op, self.atom()?)))
+                Ok(Some((op, self.factor()?)))
             },
             |term| term.node_span(),
             |left, operator, right, span| Term {
@@ -248,6 +253,47 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
                 ),
             },
         )
+    }
+
+    fn arithmetic_node(left: Term, operator: char, right: Term) -> Term {
+        Term { start: left.start, end: right.end,
+            kind: TermKind::BinaryInt(crate::common_ir::ArithmeticNode::new(left, operator, right)) }
+    }
+
+    fn repeated_symbol(&self, ch: char) -> bool {
+        self.symbol(ch) && self.tokens.get(self.cursor + 1).is_some_and(|next|
+            next.kind == TokenKind::Symbol(ch) && next.start == self.tok().end)
+    }
+
+    fn factor(&mut self) -> Result<Term, Diagnostic> {
+        if !PUBLIC { return self.atom(); }
+        let mut value = self.signed_power()?;
+        loop {
+            let (op, width) = if self.repeated_symbol('/') { ('÷', 2) }
+                else if self.symbol('/') { ('/', 1) }
+                else if self.symbol('*') { ('*', 1) }
+                else if self.symbol('%') { ('%', 1) }
+                else { break };
+            self.cursor += width;
+            value = Self::arithmetic_node(value, op, self.signed_power()?);
+        }
+        Ok(value)
+    }
+
+    fn signed_power(&mut self) -> Result<Term, Diagnostic> {
+        if self.symbol('-') {
+            let minus = self.tok().clone();
+            self.cursor += 1;
+            let zero = Term { start: minus.start, end: minus.end,
+                kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer("0".into())) };
+            return Ok(Self::arithmetic_node(zero, '-', self.signed_power()?));
+        }
+        let value = self.atom()?;
+        if self.repeated_symbol('*') {
+            self.cursor += 2;
+            return Ok(Self::arithmetic_node(value, '^', self.signed_power()?));
+        }
+        Ok(value)
     }
 
     fn qualified_type_name(&mut self) -> Result<String, Diagnostic> {
@@ -616,7 +662,17 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
             let body = self.body()?;
             StmtKind::While { condition, body }
         } else if head == Some(crate::syntax_shared::StatementHead::Return) {
-            StmtKind::Return(crate::syntax_shared::parse_return(self)?)
+            if PUBLIC && matches!(self.tokens.get(self.cursor+1).map(|t| &t.kind), Some(TokenKind::Name(_)))
+                && crate::syntax_shared::symbol(self.tokens, self.cursor+2, '+')
+                && crate::syntax_shared::symbol(self.tokens, self.cursor+3, '=')
+                && self.tokens[self.cursor+2].end == self.tokens[self.cursor+3].start {
+                self.cursor += 1;
+                let name = self.name()?;
+                self.cursor += 2;
+                StmtKind::ReturnAdd(name, self.term()?)
+            } else {
+                StmtKind::Return(crate::syntax_shared::parse_return(self)?)
+            }
         } else if head == Some(crate::syntax_shared::StatementHead::Break) {
             self.cursor += 1;
             StmtKind::Break

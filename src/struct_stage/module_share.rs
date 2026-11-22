@@ -521,7 +521,7 @@ impl Lower<'_> {
                 let (c,e)=decimal::parts(s)?;
                 Some(Number::Constant(decimal::encode(c,e)))
             }
-            TermKind::BinaryInt(n) => Some(Number::Decimal(Box::new(self.floating(&n.left)?),
+            TermKind::BinaryInt(n) if matches!(n.operator, '+' | '-') => Some(Number::Decimal(Box::new(self.floating(&n.left)?),
                 n.operator,Box::new(self.floating(&n.right)?))),
             _ => None,
         }
@@ -604,7 +604,10 @@ impl Lower<'_> {
                 Some(Number::BoolMember(owner.clone(),field.clone())),
             TermKind::Logic("!=",a,b) if self.floating(a).is_some() =>
                 Some(Number::Logic("!=",Box::new(self.floating(a)?),Box::new(self.floating(b)?))),
-            TermKind::Logic(op, a, b) => Some(Number::Logic(op,Box::new(self.boolean(a)?),Box::new(self.boolean(b)?))),
+            TermKind::Logic(op @ ("==" | "<" | "<=" | ">" | ">="), a, b) =>
+                Some(Number::Logic(op,Box::new(self.number(a)?),Box::new(self.number(b)?))),
+            TermKind::Logic(op @ ("and" | "or" | "!="), a, b) =>
+                Some(Number::Logic(op,Box::new(self.boolean(a)?),Box::new(self.boolean(b)?))),
             _ => None,
         }
     }
@@ -1728,7 +1731,10 @@ impl Program {
                     "and" => left != 0 && self.eval(b, frame, state, depth)? != 0,
                     "or" => left != 0 || self.eval(b, frame, state, depth)? != 0,
                     "==" => left == self.eval(b, frame, state, depth)?,
-                    "lt" => left < self.eval(b, frame, state, depth)?,
+                    "<=" => left <= self.eval(b, frame, state, depth)?,
+                    ">" => left > self.eval(b, frame, state, depth)?,
+                    ">=" => left >= self.eval(b, frame, state, depth)?,
+                    "<" | "lt" => left < self.eval(b, frame, state, depth)?,
                     _ => left != self.eval(b, frame, state, depth)?,
                 };
                 Ok(i64::from(result))
@@ -1778,11 +1784,7 @@ impl Program {
             Number::Binary(left, op, right) => {
                 let a = self.eval(left, frame, state, depth)?;
                 let b = self.eval(right, frame, state, depth)?;
-                (if *op == '+' {
-                    a.checked_add(b)
-                } else {
-                    a.checked_sub(b)
-                })
+                integer::arithmetic(a, *op, b)
                 .ok_or(StrRuntimeError::EvaluationFailed)
             }
         }

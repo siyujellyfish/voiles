@@ -174,6 +174,7 @@ fn verified_private_token_roles(
     ) -> bool {
         match &stmt.kind {
             StmtKind::Try {..} => false,
+            StmtKind::ReturnAdd(_, value) => term(value,tokens,audit),
             StmtKind::ProcedureCall(value) | StmtKind::Evaluate(value) => value.node_span()==stmt.node_span() && term(value,tokens,audit),
             StmtKind::GraphemeWrite(value) => matches!(value.kind, TermKind::StringReplace(..))
                 && value.node_span() == stmt.node_span() && term(value, tokens, audit),
