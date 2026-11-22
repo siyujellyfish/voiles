@@ -902,6 +902,7 @@ impl Program {
                 let result = match *op {
                     "and" => left != 0 && self.eval(b, frame, state, depth)? != 0,
                     "or" => left != 0 || self.eval(b, frame, state, depth)? != 0,
+                    "==" => left == self.eval(b, frame, state, depth)?,
                     "lt" => left < self.eval(b, frame, state, depth)?,
                     _ => left != self.eval(b, frame, state, depth)?,
                 };

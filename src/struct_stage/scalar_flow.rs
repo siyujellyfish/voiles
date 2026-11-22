@@ -30,12 +30,13 @@ struct Builder<'a,'b> {
     scopes: Vec<HashMap<String, Binding>>,
     loops: Vec<Loop>,
     next_slot: usize,
+    candidate_sites: HashMap<usize, String>,
     containers: HashMap<String, Option<ContainerLiteral>>,
 }
 
 pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Result<Body, Diagnostic> {
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
-        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, containers: HashMap::new() };
+        scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: HashMap::new() };
     for p in &function.params {
         if !matches!(p.ty.as_str(), "int" | "bool") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
@@ -58,11 +59,29 @@ impl Builder<'_, '_> {
             TermKind::Group(t) => return self.expr(t),
             TermKind::Name(n) => {
                 let b = self.binding(n)?;
-                if element_type(&b.ty).is_some() { return None; }
+                if !matches!(b.ty.as_str(), "int" | "bool") { return None; }
                 return Some((b.ty.clone(), Number::Local(b.slot.clone())));
             }
             TermKind::Scalar(ScalarLiteral::Integer(n)) => ("int", Number::Constant(integer_i64(n).ok()?)),
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => ("bool", Number::Constant(i64::from(*b))),
+            TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(equal)) => {
+                let binding = self.binding(name)?;
+                if !binding.ty.starts_with("Optional[") { return None; }
+                let operator = if *equal { "==" } else { "!=" };
+                ("bool", Number::Logic(operator, Box::new(Number::Local(binding.slot.clone())),
+                    Box::new(Number::Constant(0))))
+            }
+            TermKind::OptionalCondition(name, OptionalPredicate::Candidate(Some(candidate))) => {
+                let binding = self.binding(name)?;
+                if self.candidate_sites.get(&term.start)? != &binding.slot { return None; }
+                let candidates = binding.ty.strip_prefix("Optional[")?.strip_suffix(']')?;
+                if !candidates.split(',').any(|ty| ty == candidate) { return None; }
+                let code = match candidate.as_str() {
+                    "int" => 1, "bool" => 2, "str" => 3, "float" => 4, _ => return None,
+                };
+                ("bool", Number::Logic("==", Box::new(Number::Local(binding.slot.clone())),
+                    Box::new(Number::Constant(code))))
+            }
             TermKind::BinaryInt(n) => ("int", Number::Binary(Box::new(self.typed(&n.left,"int")?),
                 n.operator, Box::new(self.typed(&n.right,"int")?))),
             TermKind::Logic(op,a,b) => {
@@ -153,23 +172,34 @@ impl Builder<'_, '_> {
         let binding = self.binding(owner)?;
         let value = self.containers.get(&binding.slot)?.as_ref()?;
         let (key_type, value_type) = element_type(&value.ty)?;
-        if !matches!(value_type, "int" | "bool") { return None; }
+        let optional = value_type.starts_with("Optional[");
+        if !optional && !matches!(value_type, "int" | "bool") { return None; }
+        let read = |atom: &ContainerAtom| {
+            if optional {
+                match atom {
+                    ContainerAtom::Missing => Some(0), ContainerAtom::Integer(_) => Some(1),
+                    ContainerAtom::Boolean(_) => Some(2), ContainerAtom::Text(_) => Some(3),
+                    ContainerAtom::Decimal(..) => Some(4), _ => None,
+                }
+            }
+            else { scalar(atom) }
+        };
         let mut entries = BTreeMap::new();
         let index = if key_type == "str" {
             if !matches!(key.kind, TermKind::Literal("str")) { return None; }
             let at = self.lower.tokens.binary_search_by_key(&key.start, |token| token.start).ok()?;
             let TokenKind::StringLiteral(text) = &self.lower.tokens[at].kind else { return None };
             if let Some(atom) = value.lookup(&ContainerAtom::Text(text.clone())) {
-                entries.insert(0, scalar(atom)?);
+                entries.insert(0, read(atom)?);
             }
             Number::Constant(0)
         } else {
             match &value.items {
                 ContainerItems::List(items) => {
-                    for (i, atom) in items.iter().enumerate() { entries.insert(i.try_into().ok()?, scalar(atom)?); }
+                    for (i, atom) in items.iter().enumerate() { entries.insert(i.try_into().ok()?, read(atom)?); }
                 }
                 ContainerItems::Dictionary(items) => {
-                    for (k, v) in items { entries.insert(scalar(k)?, scalar(v)?); }
+                    for (k, v) in items { entries.insert(scalar(k)?, read(v)?); }
                 }
             }
             self.typed(key, key_type)?
@@ -228,6 +258,16 @@ impl Builder<'_, '_> {
                 }
                 StmtKind::If{branch,no} => {
                     let test=self.typed(&branch.condition,"bool").ok_or_else(||err("分支需要 bool 條件"))?;
+                    if let TermKind::OptionalCondition(name, OptionalPredicate::IsMissing(equal)) = &branch.condition.kind {
+                        let body = if *equal { no.as_ref().map(|arm| arm.as_slice()) }
+                            else { Some(branch.body.statements.as_slice()) };
+                        let slot = self.binding(name).unwrap().slot.clone();
+                        if let Some(statements) = body {
+                            visit_candidate_sites(name, statements, |site| {
+                                self.candidate_sites.insert(site, slot.clone());
+                            });
+                        }
+                    }
                     let skip=self.step(s,Action::Unless(test,0));
                     let yes=self.block(&branch.body.statements,true)?;
                     let end=(!yes).then(||self.step(s,Action::Jump(0)));
