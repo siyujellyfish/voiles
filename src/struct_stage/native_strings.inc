@@ -12,6 +12,7 @@ impl ResourceText {
     }
     fn replace(&mut self, index: i64, text: &str) -> Option<()> {
         let range = self.range(index)?;
+        if boundaries(text).len() != 2 { return None; }
         self.text.replace_range(range, text);
         self.starts.take();
         Some(())

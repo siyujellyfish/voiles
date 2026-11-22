@@ -13,6 +13,13 @@ impl Emitter<'_> {
         *self.locals.entry(name.to_string()).or_insert(next)
     }
 
+    fn offset(&self, index: &StringOffset) -> Option<String> {
+        match index {
+            StringOffset::Constant(i) => Some(i.to_string()),
+            StringOffset::Named(name) => Some(format!("v{}", self.locals.get(name)?)),
+        }
+    }
+
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
             Number::Lookup(key, entries) => {
@@ -61,7 +68,7 @@ impl Emitter<'_> {
                 format!("f{function}(globals, steps, depth + 1, site, v{object})?")
             }
             Number::Byte(place, i, j) => format!(
-                "globals[{}].byte({i}, {j}).ok_or((site, ARITH))?", place.slot),
+                "globals[{}].byte({}, {}).ok_or((site, ARITH))?", place.slot, self.offset(i)?, self.offset(j)?),
             Number::Call(name, false) =>
                 format!("f{}(globals, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
             _ => return None,
@@ -153,12 +160,19 @@ impl LinkedProgram {
                         let rhs = match text {
                             Text::Literal(s) => format!("String::from({s:?})"),
                             Text::Grapheme(p, i) => format!(
-                                "globals[{}].grapheme({i}).ok_or((site, ARITH))?.to_owned()", p.slot),
+                                "globals[{}].grapheme({}).ok_or((site, ARITH))?.to_owned()", p.slot, emitter.offset(i).ok_or_else(unsupported)?),
                         };
                         writeln!(out, "globals[{}] = ResourceText::new({rhs});", place.slot).unwrap();
                     }
-                    Action::Replace(place, i, text) => {
-                        writeln!(out, "globals[{}].replace({i}, {text:?}).ok_or((site, ARITH))?;", place.slot).unwrap();
+                    Action::Replace(place, i, replacement) => {
+                        let text = match replacement {
+                            Replacement::Literal(s) => format!("{s:?}"),
+                            Replacement::Named(source) => {
+                                writeln!(out, "let rhs = globals[{}].text.clone();", source.slot).unwrap();
+                                "&rhs".into()
+                            }
+                        };
+                        writeln!(out, "globals[{}].replace({}, {text}).ok_or((site, ARITH))?;", place.slot, emitter.offset(i).ok_or_else(unsupported)?).unwrap();
                     }
                 }
                 if flow { out.push_str("}\n"); }

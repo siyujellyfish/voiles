@@ -79,14 +79,28 @@ enum Number {
     Consume { target:String, from:String, parameter:String },
     Constant(i64),
     Local(String),
-    Byte(Place, i64, i64),
+    Byte(Place, StringOffset, StringOffset),
     Call(String, bool),
     Binary(Box<Number>, char, Box<Number>),
 }
 
+impl StringOffset {
+    fn value(&self, frame: &Frame) -> Result<i64, StrRuntimeError> {
+        match self {
+            Self::Constant(i) => Ok(*i),
+            Self::Named(name) => frame.locals.get(name).copied().ok_or(StrRuntimeError::MissingOwner),
+        }
+    }
+}
+
 enum Text {
     Literal(String),
-    Grapheme(Place, i64),
+    Grapheme(Place, StringOffset),
+}
+
+enum Replacement {
+    Literal(String),
+    Named(Place),
 }
 
 enum Action {
@@ -96,7 +110,7 @@ enum Action {
     Bind(String, Number),
     Loan(String, Place, BorrowKind),
     Write(Place, Text),
-    Replace(Place, i64, String),
+    Replace(Place, StringOffset, Replacement),
     Return(Number),
 }
 
@@ -189,6 +203,13 @@ impl Lower<'_> {
         Some(Number::ScalarCall { target: target.clone(), arguments: values })
     }
 
+    fn offset(&self, offset: &StringOffset) -> Option<StringOffset> {
+        match offset {
+            StringOffset::Named(name) if !self.locals.contains_key(name) => None,
+            _ => Some(offset.clone()),
+        }
+    }
+
     fn number(&self, term: &Term) -> Option<Number> {
         if let Some(objects) = &self.objects {
             let callee = match &term.kind {
@@ -207,11 +228,8 @@ impl Lower<'_> {
             TermKind::Scalar(ScalarLiteral::Integer(value)) => {
                 Some(Number::Constant(integer_i64(value).ok()?))
             }
-            TermKind::StringIndex(
-                n,
-                StringOffset::Constant(i),
-                Some(StringOffset::Constant(j)),
-            ) => Some(Number::Byte(self.place(n)?, *i, *j)),
+            TermKind::StringIndex(n, i, Some(j)) =>
+                Some(Number::Byte(self.place(n)?, self.offset(i)?, self.offset(j)?)),
             TermKind::Name(n) if self.locals.contains_key(n) => Some(Number::Local(n.clone())),
             TermKind::UnresolvedZeroArgs(n) => self.call_target(n,false),
             TermKind::Call(call) if call.arguments.is_empty() => self.call_target(&call.name,call.awaited),
@@ -258,8 +276,8 @@ impl Lower<'_> {
                     _ => None,
                 }
             }
-            TermKind::StringIndex(n, StringOffset::Constant(i), None) => {
-                Some(Text::Grapheme(self.place(n)?, *i))
+            TermKind::StringIndex(n, i, None) => {
+                Some(Text::Grapheme(self.place(n)?, self.offset(i)?))
             }
             _ => None,
         }
@@ -356,20 +374,27 @@ impl Lower<'_> {
                 StmtKind::GraphemeWrite(t) => {
                     let TermKind::StringReplace(
                         name,
-                        StringOffset::Constant(i),
-                        GraphemeReplacement::Literal(text),
+                        i,
+                        replacement,
                     ) = &t.kind
                     else {
                         return Err(err("字素覆寫需要已驗證的索引與替換值"));
                     };
-                    if !crate::owned_str_runtime::single_grapheme(text) {
-                        return Err(err("替換值必須為單一字素"));
-                    }
+                    let rhs = match replacement {
+                        GraphemeReplacement::Literal(text) => {
+                            if !crate::owned_str_runtime::single_grapheme(text) {
+                                return Err(err("替換值必須為單一字素"));
+                            }
+                            Replacement::Literal(text.clone())
+                        }
+                        GraphemeReplacement::Named(name) =>
+                            Replacement::Named(self.place(name).ok_or_else(|| err("替換值需要字串"))?),
+                    };
                     let p = self.place(name).ok_or_else(|| err("字串未宣告"))?;
                     if self.readonly_slots.contains(&p.slot) || matches!(p.alias, Some((_, BorrowKind::SharedRead))) {
                         return Err(err("唯讀借用不可寫入"));
                     }
-                    Action::Replace(p, *i, text.clone())
+                    Action::Replace(p, self.offset(i).ok_or_else(|| err("字素索引需要 int"))?, rhs)
                 }
                 StmtKind::If { branch, no: Some(other) } => {
                     let TermKind::Scalar(ScalarLiteral::Boolean(test)) = &branch.condition.kind else {
@@ -522,7 +547,10 @@ impl Action {
             Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(..) => (),
-            Self::Replace(p, ..) => uses.push(Use::Direct(p)),
+            Self::Replace(p, _, rhs) => {
+                if let Replacement::Named(source) = rhs { uses.push(Use::Direct(source)); }
+                uses.push(Use::Direct(p));
+            }
             Self::Write(p, value) => {
                 if let Text::Grapheme(rhs, _) = value {
                     uses.push(Use::Direct(rhs));
@@ -813,6 +841,14 @@ impl Program {
                 }
                 Action::Return(rhs) => return self.eval(rhs, frame, state, depth),
                 Action::Replace(p, i, rhs) => {
+                    let text = match rhs {
+                        Replacement::Literal(s) => std::borrow::Cow::Borrowed(s.as_str()),
+                        Replacement::Named(source) => {
+                            frame.authorize(&mut state.loans, source, self.globals[source.slot].id,
+                                BorrowKind::SharedRead)?;
+                            std::borrow::Cow::Owned(state.heap.read(&self.globals[source.slot].name)?.to_owned())
+                        }
+                    };
                     frame.authorize(
                         &mut state.loans,
                         p,
@@ -821,7 +857,7 @@ impl Program {
                     )?;
                     let result = state
                         .heap
-                        .replace_grapheme(&self.globals[p.slot].name, *i, rhs)
+                        .replace_grapheme(&self.globals[p.slot].name, i.value(&frame)?, &text)
                         .map_err(|_| StrRuntimeError::EvaluationFailed)?;
                     state.heap.release_detached(result);
                 }
@@ -846,7 +882,7 @@ impl Program {
                             )?;
                             let rhs = state
                                 .heap
-                                .read_grapheme(&self.globals[from.slot].name, *i)
+                                .read_grapheme(&self.globals[from.slot].name, i.value(&frame)?)
                                 .map_err(|_| StrRuntimeError::EvaluationFailed)?;
                             let result = frame
                                 .authorize(
@@ -930,7 +966,7 @@ impl Program {
                     self.globals[p.slot].id,
                     BorrowKind::SharedRead,
                 )?;
-                state.byte(state.owner, true, &self.globals[p.slot].name, *i, *j)
+                state.byte(state.owner, true, &self.globals[p.slot].name, i.value(frame)?, j.value(frame)?)
             }
             Number::Binary(left, op, right) => {
                 let a = self.eval(left, frame, state, depth)?;
