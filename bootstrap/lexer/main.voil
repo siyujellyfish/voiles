@@ -2,8 +2,9 @@ import scanner
 
 fn main()->int{
     const path:str = arg(0)
+    const lines:bool = argc() == 1
     const data:list[int] = read_bytes(path)
-    var tokens:list[scanner.Token] = scanner.scan(data.move())
+    var tokens:list[scanner.Token] = scanner.scan(data.move(),lines)
     for i in 0..len(tokens){
         with tokens[i] as token{
             const kind:int = token.kind

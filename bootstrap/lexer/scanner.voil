@@ -54,7 +54,7 @@ fn keyword(key:int)->bool{
     }
 }
 
-fn scan(data:list[int])->list[Token]{
+fn scan(data:list[int],lines:bool)->list[Token]{
     var tokens:list[Token] = []
     const size:int = len(data)
     var i:int = 0
@@ -76,7 +76,7 @@ fn scan(data:list[int])->list[Token]{
             }
         } else if(b == 10 or b == 13){
             if(b == 13 and next == 10){ i = i + 1 }
-            if(depth == 0){ kind = 7 } else { kind = 0 }
+            if(depth == 0 and lines){ kind = 7 } else { kind = 0 }
         } else if(letter(b)){
             var key:int = b - 96
             while(letter(next) or digit(next)){

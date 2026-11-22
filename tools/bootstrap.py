@@ -39,7 +39,7 @@ def compile_stage(output, previous, standalone):
         compiler_source = output / "compiler.rs"
         compiler_input = ROOT / "bootstrap/compiler.voil"
         rows = subprocess.check_output([previous, "run", ROOT / "bootstrap/lexer/main.voil",
-                                        "--", compiler_input], cwd=ROOT, encoding="utf-8")
+                                        "--", compiler_input, "--compact"], cwd=ROOT, encoding="utf-8")
         stream, status = rows.rsplit("\n", 2)[:2]
         if status != "0":
             raise ValueError("自舉掃描器未成功返回")
