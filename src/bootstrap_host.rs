@@ -42,6 +42,11 @@ impl Machine {
     fn at(&self, text: &str) -> R { Ok(i64::from(self.matched_width(text) != 0)) }
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
+    fn at_call(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(_))
+            && self.tokens.get(self.cursor + 1).is_some_and(|token|
+                token.kind == TokenKind::Symbol('('))))
+    }
     fn expect(&mut self, text: &str) -> R {
         let width = self.matched_width(text);
         if width == 0 { return Err(Fault::Syntax(format!("預期 {text}"))); }
@@ -64,7 +69,7 @@ impl Machine {
         let TokenKind::Name(name) = self.token() else {
             return Err(Fault::Syntax("預期自舉宿主函式".into()));
         };
-        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "expect" |
+        if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "expect" |
                     "emit" | "name" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
