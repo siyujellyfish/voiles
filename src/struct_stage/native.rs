@@ -89,7 +89,7 @@ impl Emitter<'_> {
                 format!("({}).{method}({}).ok_or((site, ARITH))?", self.number(a)?, self.number(b)?)
             }
             Number::Choice(test, yes, no) =>
-                format!("(if {test} {{ {} }} else {{ {} }})", self.number(yes)?, self.number(no)?),
+                format!("(if ({}) != 0 {{ {} }} else {{ {} }})", self.number(test)?, self.number(yes)?, self.number(no)?),
             Number::Member { owner, field, .. } => {
                 let object = self.locals.get(owner)?;
                 format!("v{object}.integer({field:?}).ok_or((site, ARITH))?")
@@ -100,6 +100,9 @@ impl Emitter<'_> {
                 let function = self.functions.get(target.as_str())?;
                 format!("f{function}(globals, steps, depth + 1, site, v{object})?")
             }
+            Number::BoolMember(owner, field) => format!("v{}.boolean({field:?}).ok_or((site, ARITH))?", self.locals.get(owner)?),
+            Number::MemberByte(owner, field, i, j) => format!(
+                "v{}.byte({field:?}, {}, {}).ok_or((site, ARITH))?", self.locals.get(owner)?, self.offset(i)?, self.offset(j)?),
             Number::LocalByte(owner, i, j) => format!("v{}.byte({}, {}).ok_or((site, ARITH))?",
                 self.locals.get(owner)?, self.offset(i)?, self.offset(j)?),
             Number::Byte(place, i, j) => format!(
@@ -124,10 +127,11 @@ impl LinkedProgram {
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
-        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::StoreText { .. })) {
+        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
             out.push_str(include_str!("native_strings.inc"));
+            out.push_str("impl Object { fn byte(&self, field: &str, i:i64, j:i64) -> Option<i64> { let Field::Text(s) = self.0.get(field)? else {return None}; let g = s.get(indexed_range(&boundaries(s), i)?)?.as_bytes(); Some(i64::from(g[offset(j,g.len())?])) } }\n");
         }
         for (name, body) in &plan.bodies {
             emitter.locals.clear();
@@ -185,6 +189,19 @@ impl LinkedProgram {
                         let rhs = emitter.local_text(value).ok_or_else(unsupported)?;
                         writeln!(out, "{}v{} = {rhs};", if declaration.is_some() { "let mut " } else { "" },
                             emitter.local_id(target)).unwrap();
+                    }
+                    Action::RelocateObject { source, target, moving } => {
+                        let from = *emitter.locals.get(source).ok_or_else(unsupported)?;
+                        let rhs = if *moving { format!("v{from}") } else { format!("v{from}.copy_scalars().ok_or((site, ARITH))?") };
+                        writeln!(out, "let mut v{} = {rhs};", emitter.local_id(target)).unwrap();
+                    }
+                    Action::WriteMember { owner, field, value } => {
+                        let rhs = match value {
+                            MemberValue::Integer(n) => format!("Field::Int({})", emitter.number(n).ok_or_else(unsupported)?),
+                            MemberValue::Boolean(n) => format!("Field::Bool(({}) != 0)", emitter.number(n).ok_or_else(unsupported)?),
+                            MemberValue::Text(s) => format!("Field::Text(String::from({s:?}))"),
+                        };
+                        writeln!(out, "let rhs = {rhs}; v{}.0.insert({field:?},rhs);", emitter.locals.get(owner).ok_or_else(unsupported)?).unwrap();
                     }
                     Action::Construct(name, fields, supplied) => {
                         let id = emitter.local_id(name);

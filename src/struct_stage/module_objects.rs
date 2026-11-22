@@ -46,7 +46,7 @@ pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleErro
     Ok(())
 }
 
-struct Object { ty:String, id:DeclarationId, moved:std::cell::Cell<bool> }
+struct Object { ty:String, id:DeclarationId, mutable:bool, moved:std::cell::Cell<bool> }
 
 pub(in crate::struct_stage::module_share) struct ObjectScope<'a> {
     graph:&'a ModuleGraph,
@@ -59,8 +59,8 @@ impl<'a> ObjectScope<'a> {
     pub(super) fn new(graph:&'a ModuleGraph,caller:usize,targets:&'a BTreeMap<String,String>,owners:&'a BTreeMap<String,usize>)->Self {
         Self{graph,caller,targets,owners,variables:HashMap::new()}
     }
-    pub(super) fn bind(&mut self,name:&str,ty:&str,site:usize) {
-        self.variables.insert(name.to_owned(),Object{ty:ty.to_owned(),id:DeclarationId(site),moved:false.into()});
+    pub(super) fn bind(&mut self,name:&str,ty:&str,site:usize,mutable:bool) {
+        self.variables.insert(name.to_owned(),Object{ty:ty.to_owned(),id:DeclarationId(site),mutable,moved:false.into()});
     }
     pub(in crate::struct_stage::module_share) fn has(&self,n:&str)->bool {self.variables.contains_key(n)}
     pub(in crate::struct_stage::module_share) fn function(&self,n:&str)->Option<(&String,usize,&Function)> {
@@ -73,8 +73,18 @@ impl<'a> ObjectScope<'a> {
     pub(in crate::struct_stage::module_share) fn requires_argument(&self,name:&str)->bool {
         self.function(name).is_some_and(|(_,_,f)|!f.params.is_empty())
     }
-    pub(in crate::struct_stage::module_share) fn construct(&mut self,name:&str,ty:&str,start:usize,t:&Term)->Option<Action> {
+    pub(in crate::struct_stage::module_share) fn construct(&mut self,name:&str,ty:&str,start:usize,mutable:bool,t:&Term)->Option<Action> {
         let (origin,def)=self.graph.resolve_struct(self.caller,ty)?;
+        if let TermKind::Move(from) | TermKind::Name(from) = &t.kind {
+            let source = self.variables.get(from)?;
+            let (_, original) = self.graph.resolve_struct(self.caller,&source.ty)?;
+            if !std::ptr::eq(original,def) || source.moved.get() { return None; }
+            let moving = matches!(t.kind, TermKind::Move(_));
+            if !moving && def.fields.iter().any(|f| !matches!(f.ty.as_str(),"int" | "bool")) { return None; }
+            if moving { source.moved.set(true); }
+            self.bind(name,ty,start,mutable);
+            return Some(Action::RelocateObject { source: from.clone(), target: name.into(), moving });
+        }
         let qualified;
         let (ctor,args)=match &t.kind {
             TermKind::Construct(n,args)=>(n.as_str(),args.as_slice()),
@@ -100,9 +110,17 @@ impl<'a> ObjectScope<'a> {
             fields.push(PreparedField{name:f.name.clone(),kind:kind(&f.ty)?,immutable:f.immutable,
                 default:f.default.as_ref().and_then(|t|seed(&self.graph.units[origin],t))});
         }
-        self.bind(name,ty,start);
+        self.bind(name,ty,start,mutable);
         Some(Action::Construct(name.to_owned(),fields,supplied))
     }
+    pub(in crate::struct_stage::module_share) fn field_type(&self, owner:&str, name:&str, write:bool) -> Option<&str> {
+        let object = self.variables.get(owner)?;
+        if object.moved.get() || (write && !object.mutable) { return None; }
+        let field = self.graph.field(self.caller,&object.ty,name)?;
+        if write && field.immutable { return None; }
+        Some(&field.ty)
+    }
+
     pub(in crate::struct_stage::module_share) fn expression(&self,t:&Term)->Option<Number> {
         let (owner,field,method)=match &t.kind {
             TermKind::FieldRead(owner,n)=>(owner,n,false),
