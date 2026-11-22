@@ -63,7 +63,7 @@ impl<'a> ObjectScope<'a> {
         self.variables.insert(name.to_owned(),Object{ty:ty.to_owned(),id:DeclarationId(site),moved:false.into()});
     }
     pub(in crate::struct_stage::module_share) fn has(&self,n:&str)->bool {self.variables.contains_key(n)}
-    fn function(&self,n:&str)->Option<(&String,usize,&Function)> {
+    pub(in crate::struct_stage::module_share) fn function(&self,n:&str)->Option<(&String,usize,&Function)> {
         let target=self.targets.get(n)?;
         let origin=*self.owners.get(target)?;
         let name=target.split_once(':').map_or(target.as_str(),|(_,n)|n);

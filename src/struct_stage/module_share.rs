@@ -69,6 +69,7 @@ struct Place {
 }
 
 enum Number {
+    ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
     Choice(bool, Box<Number>, Box<Number>),
     Member { owner:String, field:String, receiver:Option<DeclarationId> },
     Consume { target:String, from:String, parameter:String },
@@ -160,6 +161,27 @@ impl Lower<'_> {
         Some(Number::Call(target,awaited))
     }
 
+    fn scalar_call<'t>(&self, name: &str, arguments: impl Iterator<Item = (Option<&'t str>, &'t Term)>) -> Option<Number> {
+        if self.shadowed(name) { return None; }
+        let (target, _, function) = self.objects.as_ref()?.function(name)?;
+        if function.is_async || function.params.is_empty() || function.params.iter().any(|p| p.ty != "int") {
+            return None;
+        }
+        let mut values = Vec::new();
+        let mut supplied = BTreeSet::new();
+        for (position, (label, term)) in arguments.enumerate() {
+            let slot = match label {
+                Some(label) => function.params.iter().position(|p| p.name == label)?,
+                None => position,
+            };
+            let param = function.params.get(slot)?;
+            if !supplied.insert(slot) { return None; }
+            values.push((param.name.clone(), slot, self.number(term)?));
+        }
+        if values.len() != function.params.len() { return None; }
+        Some(Number::ScalarCall { target: target.clone(), arguments: values })
+    }
+
     fn number(&self, term: &Term) -> Option<Number> {
         if let Some(objects) = &self.objects {
             let callee = match &term.kind {
@@ -188,6 +210,9 @@ impl Lower<'_> {
             TermKind::Call(call) if call.arguments.is_empty() => self.call_target(&call.name,call.awaited),
             TermKind::MethodCall(module,member,args) if args.is_empty() && self.linked_names.is_some() =>
                 self.call_target(&format!("{module}.{member}"),false),
+            TermKind::Call(c) if !c.awaited => self.scalar_call(&c.name, c.arguments.iter().map(|a| (None, a))),
+            TermKind::Construct(name, args) => self.scalar_call(name, args.iter().map(|(n, a)| (Some(n.as_str()), a))),
+            TermKind::MethodCall(module, member, args) => self.scalar_call(&format!("{module}.{member}"), args.iter().map(|a| (None, a))),
             TermKind::BinaryInt(node) => Some(Number::Binary(
                 Box::new(self.number(&node.left)?),
                 node.operator,
@@ -463,6 +488,10 @@ enum Use<'a> {
 impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
+            Self::ScalarCall { target, arguments } => {
+                for (_, _, value) in arguments { value.uses(list); }
+                list.push(Use::Call(target, false));
+            }
             Self::Choice(_, yes, no) => { yes.uses(list); no.uses(list); }
             Self::Byte(p, ..) => list.push(Use::Direct(p)),
             Self::Binary(left, _, right) => {
@@ -687,17 +716,17 @@ impl Program {
     }
 
     fn call(&self, name: &str, state: &mut State, depth: usize) -> Result<i64, StrRuntimeError> {
-        self.call_with_owner(name,state,depth,None)
+        self.call_with_owner(name,state,depth,None, HashMap::new())
     }
 
-    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<(&str,&str)>) -> Result<i64, StrRuntimeError> {
+    fn call_with_owner(&self, name: &str, state: &mut State, depth: usize, transfer:Option<(&str,&str)>, locals: HashMap<String, i64>) -> Result<i64, StrRuntimeError> {
         let budget = crate::execution::ExecutionBudget::default();
         if depth >= budget.max_call_frames {
             return Err(StrRuntimeError::ExecutionBudgetExhausted);
         }
         let caller_step = state.current_step;
         let body = &self.bodies[name];
-        let mut frame = Frame::default();
+        let mut frame = Frame { locals, ..Frame::default() };
         for site in body.iter().flat_map(|s| s.action.uses()) {
             if let Use::Direct(Place {
                 alias: Some((name, _)),
@@ -841,8 +870,15 @@ impl Program {
                 if let Some(ticket) = ticket { frame.object_loans.release(ticket).map_err(|_|StrRuntimeError::OutstandingResource)?; }
                 result
             }
-            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some((from,parameter))),
+            Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some((from,parameter)), HashMap::new()),
             Number::Choice(test, yes, no) => self.eval(if *test { yes } else { no }, frame, state, depth),
+            Number::ScalarCall { target, arguments } => {
+                let mut bindings = HashMap::new();
+                for (name, _, value) in arguments {
+                    bindings.insert(name.clone(), self.eval(value, frame, state, depth)?);
+                }
+                self.call_with_owner(target, state, depth + 1, None, bindings)
+            }
             Number::Constant(v) => Ok(*v),
             Number::Local(n) => frame
                 .locals

@@ -112,3 +112,10 @@ fn 發行包兩代位元組與乾淨安裝驗收() {
     assert!(status.success());
     std::fs::remove_dir_all(output).unwrap();
 }
+
+#[test]
+fn 跨檔純量參數與具名引數() {
+    let status = Command::new("python3").arg("tools/核對M7純量呼叫.py")
+        .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
+    assert!(status.success());
+}

@@ -285,18 +285,28 @@ impl LinkedProgram {
                 }
             }
             for f in &u.functions {
-                if f.result_ty!="int" || f.params.len()>1 || (id==0 && f.name=="main" && (f.is_async || !f.params.is_empty())) {
+                if f.result_ty!="int" || (id==0 && f.name=="main" && (f.is_async || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
-                if let Some(p) = f.params.first() {
+                let mut locals = HashMap::new();
+                if f.params.iter().all(|p| p.ty == "int") {
+                    for p in &f.params {
+                        if locals.insert(p.name.clone(), false).is_some() {
+                            return Err(u.error(f.start, f.end, "函式參數重複"));
+                        }
+                    }
+                    if !locals.is_empty() && f.is_async { return Err(u.error(f.start, f.end, "純量參數目前需要同步函式")); }
+                } else if let [p] = f.params.as_slice() {
                     if f.is_async || graph.resolve_struct(id,&p.ty).is_none() {
                         return Err(u.error(f.start,f.end,"跨檔持有者參數需要同步函式與可見結構型別"));
                     }
                     objects.bind(&p.name,&p.ty,p.declaration_start);
+                } else {
+                    return Err(u.error(f.start, f.end, "混合持有者參數尚未支援"));
                 }
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
-                    linked_names:Some(&targets),readonly_slots:readonly.clone(),locals:HashMap::new(),aliases:HashMap::new() };
+                    linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,aliases:HashMap::new() };
                 let body = lower.body(f, id).map_err(|diagnostic|ModuleError::Source{path:u.path.clone(),diagnostic})?;
                 let name = key(id,&f.name);
 
