@@ -195,7 +195,7 @@ pub(crate) struct ArithmeticNode<N> {
 }
 impl<N> ArithmeticNode<N> {
     pub(crate) fn new(left: N, operator: char, right: N) -> Self {
-        debug_assert!(matches!(operator, '+' | '-'), "此階段只核准加減");
+        debug_assert!(matches!(operator, '+' | '-' | '*' | '/' | '÷' | '%' | '^'), "未知的算術運算子");
         Self { left: Box::new(left), operator, right: Box::new(right) }
     }
 }
