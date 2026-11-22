@@ -72,7 +72,11 @@ fn statement()->int{
             return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
         } else {
             if (host.at("with") != 0) {
-                return list_borrow()
+                if (host.at_dict_borrow() != 0) {
+                    return dict_borrow()
+                } else {
+                    return list_borrow()
+                }
             } else {
                 if (host.at("return") != 0) {
                     return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
@@ -86,6 +90,10 @@ fn statement()->int{
 
 fn list_borrow()->int{
     return host.expect("with") + host.list_owner() + host.expect("[") + expression() + host.expect("]") + host.expect("as") + host.list_alias() + host.expect("{") + statement() + host.expect("}") + host.finish_list_borrow() + after_list_borrow()
+}
+
+fn dict_borrow()->int{
+    return host.expect("with") + host.dict_owner() + host.expect("[") + host.dict_selector() + host.expect("]") + host.expect("as") + host.dict_alias() + host.expect("{") + statement() + host.expect("}") + host.finish_dict_borrow() + after_list_borrow()
 }
 
 fn after_list_borrow()->int{

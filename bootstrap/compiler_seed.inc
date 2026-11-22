@@ -71,7 +71,11 @@ if s.at_field_write()? != 0i64 {
 Ok(s.field_target()?.checked_add(s.expect("=")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 if s.at("with")? != 0i64 {
+if s.at_dict_borrow()? != 0i64 {
+Ok(v_dict_borrow(s, depth + 1)?)
+} else {
 Ok(v_list_borrow(s, depth + 1)?)
+}
 } else {
 if s.at("return")? != 0i64 {
 Ok(s.expect("return")?.checked_add(s.return_start()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(")\n")?).ok_or(Fault::Overflow)?)
@@ -85,6 +89,10 @@ Ok(v_control(s, depth + 1)?)
 fn v_list_borrow(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 Ok(s.expect("with")?.checked_add(s.list_owner()?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.expect("as")?).ok_or(Fault::Overflow)?.checked_add(s.list_alias()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_list_borrow()?).ok_or(Fault::Overflow)?.checked_add(v_after_list_borrow(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_dict_borrow(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+Ok(s.expect("with")?.checked_add(s.dict_owner()?).ok_or(Fault::Overflow)?.checked_add(s.expect("[")?).ok_or(Fault::Overflow)?.checked_add(s.dict_selector()?).ok_or(Fault::Overflow)?.checked_add(s.expect("]")?).ok_or(Fault::Overflow)?.checked_add(s.expect("as")?).ok_or(Fault::Overflow)?.checked_add(s.dict_alias()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_dict_borrow()?).ok_or(Fault::Overflow)?.checked_add(v_after_list_borrow(s, depth + 1)?).ok_or(Fault::Overflow)?)
 }
 fn v_after_list_borrow(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;

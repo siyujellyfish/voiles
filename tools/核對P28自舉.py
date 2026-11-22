@@ -334,12 +334,38 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
+    dict_lookup = ('fn main()->int{\nvar entries:dict{str,int} = {"答案":40}\n'
+                   'with entries["答案"] as item {\nreturn item+2\n}\n}')
+    source.write_text("import host\n" + dict_lookup, encoding="utf-8")
+    generated_lookup = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_lookup[0] == generated_lookup[1] == generated_lookup[2]
+    code, generated, error = generated_lookup[2]
+    assert (code == 0 and not error and '.find(|(k, _)| *k == "答案")' in generated
+            and "字典查找缺少鍵" in generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(dict_lookup, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"dict-lookup-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
     invalid_dicts = (
         'fn main()->int{ var xs:dict{str,int} = {1:2} return 0 }',
         'fn main()->int{ var xs:dict{str,int} = {"a":true} return 0 }',
         'fn main()->int{ var xs:dict{str,int} = {"a":1,"a":2} return 0 }',
         'fn main()->int{ var xs:dict{str,int} = {"a" 1} return 0 }',
         'fn main()->int{ var xs:dict{str,int} = {"a":1,} return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {"a":1} with xs[1] as item { return item } return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {"a":1} with xs["a"] as xs { return xs } return 0 }',
+        'fn main()->int{ with missing["a"] as item { return item } return 0 }',
     )
     for invalid in invalid_dicts:
         source.write_text("import host\n" + invalid, encoding="utf-8")
@@ -347,6 +373,28 @@ fn main(){
         assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
+
+    missing_key = ('fn main()->int{\nvar entries:dict{str,int} = {"有":1}\n'
+                   'with entries["無"] as item {\nreturn item\n}\n}')
+    source.write_text("import host\n" + missing_key, encoding="utf-8")
+    generated_missing_key = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_missing_key[0] == generated_missing_key[1] == generated_missing_key[2]
+    code, generated, error = generated_missing_key[2]
+    assert code == 0 and not error and "字典查找缺少鍵" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native)[0] == 1
+    public.write_text(missing_key, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public)[0] == 1
+    for mode in ("build", "pack"):
+        exe = root / f"dict-missing-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe)[0] == 1
 
     invalid_lists = (
         "fn main()->int{ var xs:list[int] = [true] return 0 }",
