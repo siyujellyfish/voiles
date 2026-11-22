@@ -78,17 +78,33 @@ fn statement()->int{
                     return list_borrow()
                 }
             } else {
-                if (host.at("match") != 0) {
-                    return match_statement()
+                if (host.at("try") != 0) {
+                    return try_statement()
                 } else {
-                    if (host.at("return") != 0) {
-                        return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                    if (host.at("match") != 0) {
+                        return match_statement()
                     } else {
-                        return control()
+                        if (host.at("return") != 0) {
+                            return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                        } else {
+                            return control()
+                        }
                     }
                 }
             }
         }
+    }
+}
+
+fn try_statement()->int{
+    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.expect("EvaluationError") + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
+}
+
+fn after_try()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        return statement()
     }
 }
 

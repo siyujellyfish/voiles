@@ -77,6 +77,9 @@ Ok(v_dict_borrow(s, depth + 1)?)
 Ok(v_list_borrow(s, depth + 1)?)
 }
 } else {
+if s.at("try")? != 0i64 {
+Ok(v_try_statement(s, depth + 1)?)
+} else {
 if s.at("match")? != 0i64 {
 Ok(v_match_statement(s, depth + 1)?)
 } else {
@@ -88,6 +91,19 @@ Ok(v_control(s, depth + 1)?)
 }
 }
 }
+}
+}
+}
+fn v_try_statement(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+Ok(s.expect("try")?.checked_add(s.try_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.try_handler()?).ok_or(Fault::Overflow)?.checked_add(s.expect("except")?).ok_or(Fault::Overflow)?.checked_add(s.expect("EvaluationError")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_try()?).ok_or(Fault::Overflow)?.checked_add(v_after_try(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_after_try(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("}")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(v_statement(s, depth + 1)?)
 }
 }
 fn v_match_statement(s: &mut Machine, depth: usize) -> R {

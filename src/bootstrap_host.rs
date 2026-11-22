@@ -41,6 +41,7 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize)>,
+    pending_tries: Vec<bool>,
 }
 
 impl Machine {
@@ -276,7 +277,26 @@ impl Machine {
         self.pending_list_append = None;
         self.pending_dict_set = None;
         self.pending_matches.clear();
+        self.pending_tries.clear();
         Ok(0)
+    }
+    fn try_start(&mut self) -> R {
+        self.pending_tries.push(false);
+        self.emit("match (|| -> R {\n")
+    }
+    fn try_handler(&mut self) -> R {
+        let Some(handler) = self.pending_tries.last_mut() else {
+            return Err(Fault::Syntax("try 邊界無效".into()));
+        };
+        if *handler { return Err(Fault::Syntax("try 處理區塊重複".into())); }
+        *handler = true;
+        self.emit("})() {\nOk(value) => return Ok(value),\nErr(Fault::Overflow) => {\n")
+    }
+    fn finish_try(&mut self) -> R {
+        let handler = self.pending_tries.pop()
+            .ok_or_else(|| Fault::Syntax("try 邊界無效".into()))?;
+        if !handler { return Err(Fault::Syntax("try 缺少具型別的 except".into())); }
+        self.emit("},\nErr(error) => return Err(error),\n}\n")
     }
     fn match_start(&mut self) -> R {
         self.pending_matches.push((None, BTreeSet::new(), false, 0));
@@ -641,7 +661,7 @@ impl Machine {
     }
     fn return_start(&mut self) -> R {
         if !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some()
-            || !self.pending_matches.is_empty() {
+            || !self.pending_matches.is_empty() || !self.pending_tries.is_empty() {
             self.emit("return Ok(")
         } else {
             self.emit("Ok(")
@@ -816,7 +836,8 @@ impl Machine {
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
-                    "finish_dict_set" | "return_start" | "match_start" | "match_integer_subject" |
+                    "finish_dict_set" | "return_start" | "try_start" | "try_handler" | "finish_try" |
+                    "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" | "literal") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
@@ -997,7 +1018,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         nested_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,
         pending_list_append: None, pending_dict_set: None,
-        pending_matches: Vec::new(),
+        pending_matches: Vec::new(), pending_tries: Vec::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
