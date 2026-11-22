@@ -100,6 +100,7 @@ type Stmt = crate::common_ir::SpannedNode<StmtKind>;
 
 #[derive(Debug, Clone)]
 enum StmtKind {
+    Try { body: Vec<Stmt>, handler: Vec<Stmt>, category: String },
     ReadonlyElement(Box<ReadonlyElementBlock>),
     Evaluate(Term),
     GraphemeWrite(Term),
@@ -194,6 +195,7 @@ struct Parser<'a> {
 
 // 受限私有文法解析實作；目前使用同層 include! 以保持所有既有型別可見性。
 include!("struct_stage/syntax.rs");
+mod decimal;
 mod module_share;
 pub(crate) use module_share::modules;
 pub(crate) use module_share::Program as PreparedShareModule;
@@ -800,6 +802,9 @@ impl VerifiedDeclarationFacts {
         ) {
             for statement in statements {
                 match &statement.kind {
+                    StmtKind::Try {body,handler,..} => {
+                        for block in [body,handler] { visit(block,direct_targets,borrow_targets,named_returns,field_writes); }
+                    }
                     StmtKind::Declare(declaration) => {
                         match declaration.initializer.as_ref().map(|term| &term.kind) {
                             Some(TermKind::Move(_)) => {

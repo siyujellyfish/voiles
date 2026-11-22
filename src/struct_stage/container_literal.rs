@@ -93,7 +93,7 @@ impl Parser<'_> {
                 ("bool", ContainerAtom::Boolean(word == "true")),
             TokenKind::StringLiteral(text) => ("str", ContainerAtom::Text(text.clone())),
             TokenKind::Decimal(text) => {
-                let (coefficient, exponent) = Self::decimal64_checked_subset(text)
+                let (coefficient, exponent) = decimal::parts(text)
                     .ok_or_else(|| self.syntax("容器小數常值超出支援範圍"))?;
                 ("float", ContainerAtom::Decimal(coefficient, exponent))
             }

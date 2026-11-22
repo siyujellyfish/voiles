@@ -114,10 +114,15 @@ impl StandardCall {
 }
 impl LocalText {
     fn uses<'a>(&'a self, uses:&mut Vec<Use<'a>>) {
-        match self { Self::Standard(call)=>call.uses(uses), Self::Call(call)=>call.uses(uses), _=>() }
+        match self { Self::Formatted(parts)=>for part in parts {
+            match part { FormatPart::Boolean(n)|FormatPart::Float(n,_)|FormatPart::Decimal(n)|FormatPart::Hex(n)=>n.uses(uses), _=>() }
+        }, Self::Standard(call)=>call.uses(uses), Self::Call(call)=>call.uses(uses), _=>() }
     }
 }
 enum Number {
+    TextLength(String),
+    ParseInt(String),
+    Decimal(Box<Number>, char, Box<Number>),
     Standard(StandardCall),
     Container(String, ContainerRead),
     Edit(String, Box<Edit>),
@@ -152,7 +157,10 @@ enum Text {
     Grapheme(Place, StringOffset),
 }
 
+enum FormatPart { Boolean(Number), Float(Number,Option<usize>), Literal(String), Decimal(Number), Hex(Number), Text(String) }
+
 enum LocalText {
+    Formatted(Vec<FormatPart>),
     Standard(StandardCall),
     Call(TextInvocation),
     Literal(String),
@@ -240,7 +248,10 @@ struct StepOrigin {
     span: (usize, usize),
 }
 
+struct Handler { category:String, target:usize, cleanup:Vec<String> }
+
 struct Step {
+    handlers:Vec<Handler>,
     module: usize,
     action: Action,
     span: (usize, usize),
@@ -278,7 +289,7 @@ struct Lower<'a> {
     functions: &'a BTreeMap<String, bool>,
     linked_names: Option<&'a BTreeMap<String,String>>,
     readonly_slots: BTreeSet<usize>,
-    locals: HashMap<String, bool>,
+    locals: HashMap<String, (bool,String)>,
     strings: HashMap<String, TextBinding>,
     aliases: HashMap<String, Place>,
 }
@@ -359,7 +370,7 @@ impl Lower<'_> {
 
     fn offset(&self, offset: &StringOffset) -> Option<StringOffset> {
         match offset {
-            StringOffset::Named(name) if !self.locals.contains_key(name) => None,
+            StringOffset::Named(name) if !self.locals.get(name).is_some_and(|(_,ty)|ty=="int") => None,
             _ => Some(offset.clone()),
         }
     }
@@ -404,8 +415,102 @@ impl Lower<'_> {
         self.invocation(name,args,"str").map(LocalText::Call)
     }
 
+    fn format_scalar(&self, t:&Term, tokens:&[Token])->Option<(String,Number)> {
+        let (ty,n)=match &t.kind {
+            TermKind::Group(inner)=>return self.format_scalar(inner,tokens),
+            TermKind::Name(name)=>return Some((self.locals.get(name)?.1.clone(),Number::Local(name.clone()))),
+            TermKind::Scalar(ScalarLiteral::Integer(v))=>("int",Number::Constant(integer_i64(v).ok()?)),
+            TermKind::Scalar(ScalarLiteral::Boolean(v))=>("bool",Number::Constant(i64::from(*v))),
+            TermKind::Literal("float")=>{
+                let i=tokens.binary_search_by_key(&t.start,|t|t.start).ok()?;
+                let TokenKind::Decimal(text)=&tokens[i].kind else {return None};
+                let (c,e)=decimal::parts(text)?;
+                ("float",Number::Constant(decimal::encode(c,e)))
+            }
+            TermKind::UnresolvedZeroArgs(name)=>("int",self.call_target(name,false)?),
+            TermKind::BinaryInt(node)=>{
+                let (ty,a)=self.format_scalar(&node.left,tokens)?;
+                let (other,b)=self.format_scalar(&node.right,tokens)?;
+                if ty!=other {return None;}
+                let (a,b)=(Box::new(a),Box::new(b));
+                match ty.as_str() { "int"=>("int",Number::Binary(a,node.operator,b)),
+                    "float"=>("float",Number::Decimal(a,node.operator,b)), _=>return None }
+            }
+            TermKind::Not(rhs)=>{
+                let (ty,n)=self.format_scalar(rhs,tokens)?;
+                if ty!="bool" {return None;}
+                ("bool",Number::Logic("==",Box::new(n),Box::new(Number::Constant(0))))
+            }
+            TermKind::Logic(op,a,b)=>{
+                let (ty,a)=self.format_scalar(a,tokens)?;
+                let (other,b)=self.format_scalar(b,tokens)?;
+                if other!=ty || *op!="!=" && ty!="bool" {return None;}
+                ("bool",Number::Logic(op,Box::new(a),Box::new(b)))
+            }
+            _=>return None,
+        };
+        Some((ty.into(),n))
+    }
+
+    fn format_parts(&self, term: &Term) -> Option<Vec<FormatPart>> {
+        let index = self.tokens.binary_search_by_key(&term.start, |t| t.start).ok()?;
+        let TokenKind::StringLiteral(template) = &self.tokens.get(index + 1)?.kind else { return None };
+        let mut chars = template.chars().peekable();
+        let mut parts = Vec::new();
+        let mut literal = String::new();
+        while let Some(ch) = chars.next() {
+            if ch != '{' && ch != '}' {
+                literal.push(ch);
+            } else if chars.next_if_eq(&ch).is_some() {
+                literal.push(ch);
+            } else if ch == '}' {
+                return None;
+            } else {
+                if !literal.is_empty() {
+                    parts.push(FormatPart::Literal(std::mem::take(&mut literal)));
+                }
+                let mut field = String::new();
+                loop {
+                    let c = chars.next()?;
+                    if c == '}' { break; }
+                    field.push(c);
+                }
+                let (name, spec) = field.split_once(':').unwrap_or((&field, ""));
+                let name=name.trim();
+                let part = if self.strings.get(name).is_some_and(|b|b.live.get()) && matches!(spec,""|"s") {
+                    FormatPart::Text(name.into())
+                } else {
+                    if name.is_empty() {return None;}
+                    let source=Source::new(name.as_bytes().to_vec());
+                    let scan=lexer::scan(&source);
+                    if !scan.diagnostics.is_empty() {return None;}
+                    let mut parser=Parser {source:&source,tokens:&scan.tokens,cursor:0};
+                    let expression=parser.term().ok()?;
+                    if !parser.eof() {return None;}
+                    let (ty,value)=self.format_scalar(&expression,&scan.tokens)?;
+                    match (ty.as_str(),spec) {
+                        ("bool","") => FormatPart::Boolean(value),
+                        ("float","") => FormatPart::Float(value,None),
+                        ("float",format) => {
+                            let places=format.strip_prefix('.')?.strip_suffix('f')?.parse::<usize>().ok()?;
+                            if places>398 {return None;}
+                            FormatPart::Float(value,Some(places))
+                        }
+                        ("int","" | "d") => FormatPart::Decimal(value),
+                        ("int","x") => FormatPart::Hex(value),
+                        _ => return None,
+                    }
+                };
+                parts.push(part);
+            }
+        }
+        parts.push(FormatPart::Literal(literal));
+        Some(parts)
+    }
+
     fn local_text(&self, term: &Term, target: &str) -> Option<LocalText> {
         match &term.kind {
+            TermKind::Literal("formatted") => self.format_parts(term).map(LocalText::Formatted),
             TermKind::Group(inner) => self.local_text(inner, target),
             TermKind::UnresolvedZeroArgs(name) => self.text_call(name, std::iter::empty()),
             TermKind::Call(c) if !c.awaited => self.text_call(&c.name, c.arguments.iter().map(|t|(None,t))),
@@ -428,7 +533,38 @@ impl Lower<'_> {
         }
     }
 
+    fn floating(&self, term:&Term)->Option<Number> {
+        match &term.kind {
+            TermKind::Group(t) => self.floating(t),
+            TermKind::Name(n) if self.locals.get(n)?.1 == "float" => Some(Number::Local(n.clone())),
+            TermKind::Literal("float") => {
+                let index=self.tokens.binary_search_by_key(&term.start,|t|t.start).ok()?;
+                let TokenKind::Decimal(s)=&self.tokens[index].kind else {return None};
+                let (c,e)=decimal::parts(s)?;
+                Some(Number::Constant(decimal::encode(c,e)))
+            }
+            TermKind::BinaryInt(n) => Some(Number::Decimal(Box::new(self.floating(&n.left)?),
+                n.operator,Box::new(self.floating(&n.right)?))),
+            _ => None,
+        }
+    }
+    fn scalar_value(&self,ty:&str,term:&Term)->Option<Number> {
+        match ty { "bool"=>self.boolean(term), "float"=>self.floating(term), "int"=>self.number(term), _=>None }
+    }
+
     fn number(&self, term: &Term) -> Option<Number> {
+        if let TermKind::Call(call)=&term.kind {
+            if !call.awaited && call.name=="len" && !self.shadowed("len") && !self.functions.contains_key("len") && !self.globals.contains_key("len") {
+                if let [Term {kind:TermKind::Name(name),..}]=call.arguments.as_slice() {
+                    if self.strings.get(name).is_some_and(|b|b.live.get()) {return Some(Number::TextLength(name.clone()));}
+                }
+            }
+        }
+        if let TermKind::MethodCall(name,method,args)=&term.kind {
+            if method=="to_int" && args.is_empty() && self.strings.get(name).is_some_and(|b|b.live.get()) {
+                return Some(Number::ParseInt(name.clone()));
+            }
+        }
         if let Some(objects) = &self.objects {
             let callee = match &term.kind {
                 TermKind::Call(c) => Some(&c.name),
@@ -457,7 +593,7 @@ impl Lower<'_> {
                 Some(Number::Constant(crate::owned_str_runtime::literal_byte(s, *i, *j)?)),
             TermKind::StringIndex(n, i, Some(j)) =>
                 Some(Number::Byte(self.place(n)?, self.offset(i)?, self.offset(j)?)),
-            TermKind::Name(n) if self.locals.contains_key(n) => Some(Number::Local(n.clone())),
+            TermKind::Name(n) if self.locals.get(n).is_some_and(|(_,ty)|ty=="int") => Some(Number::Local(n.clone())),
             TermKind::UnresolvedZeroArgs(n) => self.call_target(n,false),
             TermKind::Call(call) if call.arguments.is_empty() => self.call_target(&call.name,call.awaited),
             TermKind::MethodCall(module,member,args) if args.is_empty() && self.linked_names.is_some() =>
@@ -477,6 +613,7 @@ impl Lower<'_> {
     fn boolean(&self, term: &Term) -> Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.boolean(t),
+            TermKind::Name(n) if self.locals.get(n).is_some_and(|(_,ty)|ty=="bool") => Some(Number::Local(n.clone())),
             TermKind::Not(t) => Some(Number::Logic("==",Box::new(self.boolean(t)?),Box::new(Number::Constant(0)))) ,
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => Some(Number::Constant(i64::from(*b))),
             TermKind::FieldRead(owner, field) if self.objects.as_ref()?.field_type(owner, field, false)? == "bool" =>
@@ -547,7 +684,9 @@ impl Lower<'_> {
                         .as_ref()
                         .ok_or_else(|| err("此執行路徑需要初值"))?;
                     if d.ty == "str" && !matches!(init.kind, TermKind::Borrow(_)) {
-                        let value = self.local_text(init, &d.name).ok_or_else(|| err("區域字串需要獨立初值或明確移動"))?;
+                        let value = if !d.mutable && matches!(init.kind,TermKind::Literal("template")) {
+                            self.format_parts(init).map(LocalText::Formatted)
+                        } else {self.local_text(init,&d.name)}.ok_or_else(||err("字串需要獨立初值，樣板需要 const"))?;
                         self.strings.insert(d.name.clone(), TextBinding::new(d.mutable));
                         Action::StoreText { target: d.name.clone(), declaration: Some(d.mutable), value }
                     } else if d.ty == "str" {
@@ -572,11 +711,11 @@ impl Lower<'_> {
                             },
                         );
                         Action::Loan(d.name.clone(), place, kind)
-                    } else if d.ty == "int" {
+                    } else if matches!(d.ty.as_str(),"int"|"float"|"bool") {
                         let value = self
-                            .number(init)
+                            .scalar_value(&d.ty,init)
                             .ok_or_else(|| err("需要 int 初值或已驗證的同步函式呼叫"))?;
-                        self.locals.insert(d.name.clone(), d.mutable);
+                        self.locals.insert(d.name.clone(), (d.mutable,d.ty.clone()));
                         Action::Bind(d.name.clone(), value)
                     } else {
                         if self.objects.is_none() {
@@ -602,12 +741,12 @@ impl Lower<'_> {
                     Action::StoreText { target: a.name.clone(), declaration: None, value }
                 }
                 StmtKind::Assign(a) if self.locals.contains_key(&a.name) => {
-                    if !self.locals[&a.name] {
+                    if !self.locals[&a.name].0 {
                         return Err(err("const 不可重賦值"));
                     }
                     Action::Bind(
                         a.name.clone(),
-                        self.number(&a.expression).ok_or_else(|| err("需要 int"))?,
+                        self.scalar_value(&self.locals[&a.name].1,&a.expression).ok_or_else(|| err("純量賦值型別不符"))?,
                     )
                 }
                 StmtKind::Assign(a) => {
@@ -650,7 +789,7 @@ impl Lower<'_> {
                     if self.strings.contains_key(name) {
                         let change = self.replacement(name, i, replacement)
                             .ok_or_else(|| err("區域字串覆寫需要可寫持有者、整數索引及單一字素"))?;
-                        steps.push(Step { module, span, action: Action::ReplaceLocal(change) });
+                        steps.push(Step { handlers:vec![], module, span, action: Action::ReplaceLocal(change) });
                         continue;
                     }
                     let rhs = match replacement {
@@ -689,7 +828,7 @@ impl Lower<'_> {
                 ),
                 _ => return Err(err("此模組語句缺少共享存取證明")),
             };
-            steps.push(Step { action, module, span });
+            steps.push(Step { handlers:vec![], action, module, span });
         }
         if !matches!(
             steps.last(),
@@ -808,7 +947,7 @@ impl Number {
             }
             Self::Choice(test, yes, no) => { test.uses(list); yes.uses(list); no.uses(list); }
             Self::Byte(p, ..) => list.push(Use::Direct(p)),
-            Self::Binary(left, _, right) => {
+            Self::Decimal(left, _, right) | Self::Binary(left, _, right) => {
                 left.uses(list);
                 right.uses(list);
             }
@@ -1146,6 +1285,23 @@ impl Program {
             LocalText::Standard(call) => match self.standard_value(call,frame,state,depth)? {
                 standard::Value::Text(s)=>state.heap.create_detached(&s), _=>Err(StrRuntimeError::EvaluationFailed),
             },
+            LocalText::Formatted(parts) => {
+                let mut output = String::new();
+                for part in parts {
+                    match part {
+                        FormatPart::Boolean(n) => output.push_str(if self.eval(n,frame,state,depth)? != 0 { "true" } else { "false" }),
+                        FormatPart::Float(n,p) => output.push_str(&decimal::display(self.eval(n,frame,state,depth)?,*p)),
+                        FormatPart::Literal(s) => output.push_str(s),
+                        FormatPart::Text(n) => output.push_str(state.heap.read(&format!("@{n}"))?),
+                        FormatPart::Decimal(n) | FormatPart::Hex(n) => {
+                            let number = self.eval(n,frame,state,depth)?;
+                            if matches!(part, FormatPart::Hex(_)) { output.push_str(&format!("{number:x}")); }
+                            else { output.push_str(&number.to_string()); }
+                        }
+                    }
+                }
+                state.heap.create_detached(&output)
+            }
             LocalText::Literal(text) => state.heap.create_detached(text),
             LocalText::Move(source) => state.heap.return_named(&format!("@{source}")),
             LocalText::Grapheme(source, index) => state.heap.read_grapheme(&format!("@{source}"), index.value(frame)?)
@@ -1176,6 +1332,7 @@ impl Program {
             if state.steps > max_steps {
                 return Err(StrRuntimeError::ExecutionBudgetExhausted);
             }
+            let outcome = (|| -> Result<Option<CallResult>, StrRuntimeError> {
             match &step.action {
                 Action::Container(slot, init) => match init {
                     ContainerInit::Literal(literal) => frame.containers.put(slot,literal.runtime().ok_or(StrRuntimeError::EvaluationFailed)?).ok_or(StrRuntimeError::EvaluationFailed)?,
@@ -1201,7 +1358,7 @@ impl Program {
                     }
                 }
                 Action::ReturnObject(name) => return state.mixed.return_with_shared_ledger(&mut state.heap,name)
-                    .map(CallResult::Object).map_err(|_|StrRuntimeError::EvaluationFailed),
+                    .map(|object|Some(CallResult::Object(object))).map_err(|_|StrRuntimeError::EvaluationFailed),
                 Action::RelocateObject { source, target, moving } => {
                     let result = if *moving { state.mixed.move_whole_with_shared_ledger(&mut state.heap, source,target) }
                         else { state.mixed.copy_whole(source,target) };
@@ -1278,11 +1435,11 @@ impl Program {
                             .map_err(|_| StrRuntimeError::OutstandingResource)?;
                     }
                 }
-                Action::Return(rhs) => return self.eval(rhs, frame, state, depth).map(CallResult::Integer),
+                Action::Return(rhs) => return self.eval(rhs, frame, state, depth).map(|n|Some(CallResult::Integer(n))),
                 Action::ReturnText(rhs) => {
                     let text = self.detached_text(rhs, frame, state, depth)?;
                     if !matches!(rhs, LocalText::Move(_)) { state.heap.mark_detached_return(&text); }
-                    return Ok(CallResult::Text(text));
+                    return Ok(Some(CallResult::Text(text)));
                 }
                 Action::Replace(p, i, rhs) => {
                     let text = match rhs {
@@ -1340,6 +1497,22 @@ impl Program {
                             result?;
                         }
                     }
+                }
+            }
+                Ok(None)
+            })();
+            match outcome {
+                Ok(Some(value)) => return Ok(value),
+                Ok(None) => (),
+                Err(error) => {
+                    let category = match error {
+                        StrRuntimeError::EvaluationFailed => "EvaluationError",
+                        StrRuntimeError::ConversionFailed => "TypeConversationError",
+                        _ => return Err(error),
+                    };
+                    let Some(handler) = step.handlers.iter().find(|h| h.category == category) else { return Err(error) };
+                    for slot in &handler.cleanup { frame.containers.drop_slot(slot); }
+                    pc = handler.target;
                 }
             }
         }
@@ -1461,6 +1634,14 @@ impl Program {
                     BorrowKind::SharedRead,
                 )?;
                 state.byte(state.owner, true, &self.globals[p.slot].name, i.value(frame)?, j.value(frame)?)
+            }
+            Number::TextLength(n)=>state.heap.grapheme_count(&format!("@{n}")),
+            Number::ParseInt(n) => state.heap.read(&format!("@{n}"))?.parse::<i64>()
+                .map_err(|_|StrRuntimeError::ConversionFailed),
+            Number::Decimal(left, op, right) => {
+                let a = self.eval(left, frame, state, depth)?;
+                let b = self.eval(right, frame, state, depth)?;
+                decimal::arithmetic(a,*op,b).ok_or(StrRuntimeError::EvaluationFailed)
             }
             Number::Binary(left, op, right) => {
                 let a = self.eval(left, frame, state, depth)?;

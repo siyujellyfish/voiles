@@ -52,6 +52,11 @@ impl OwnedStrRuntime {
         self.scopes[scope].names[slot].owned.as_ref().ok_or(StrRuntimeError::MovedSource)
     }
 
+    pub(crate) fn grapheme_count(&self, owner:&str)->Result<i64,StrRuntimeError> {
+        let value=self.indexed_value(owner)?;
+        Ok((value.grapheme_starts.get_or_init(||boundaries(value.text())).len()-1) as i64)
+    }
+
     pub(crate) fn read_grapheme(&mut self, owner: &str, index: i64)
         -> Result<OwnedUtf8, IndexError> {
         let value = self.indexed_value(owner)?;

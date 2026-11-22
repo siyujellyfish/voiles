@@ -535,6 +535,10 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     ) {
         for statement in body {
             match &statement.kind {
+                StmtKind::Try {body,handler,..} => {
+                    Self::scan_resolved_block_uses(body,&mut visible.clone(),used,kind);
+                    Self::scan_resolved_block_uses(handler,&mut visible.clone(),used,kind);
+                }
                 StmtKind::Declare(declaration) => {
                     if let Some(term) = &declaration.initializer {
                         Self::scan_resolved_term_uses(term, visible, used, kind);
@@ -2481,6 +2485,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
         Self::release_last_uses(vars, body, continuation);
         for (position, statement) in body.iter().enumerate() {
             match &statement.kind {
+                StmtKind::Try { .. } => return Err(Diagnostic {kind:DiagnosticKind::Static,
+                    message:"此例外處理需要公開執行計畫".into(),span:Some(self.source.span(statement.start,statement.end))}),
                 StmtKind::Evaluate(value) => return Err(self.error("此操作需要公開容器執行計畫",value)),
                 StmtKind::GraphemeWrite(value) => { self.evaluate(value, vars)?; }
                 StmtKind::ReadonlyElement(block) => {
@@ -3112,6 +3118,8 @@ impl<C: Fn(&str) -> CopyPermission> Checker<'_, C> {
     fn reject_method_statements(&self, body: &[Stmt]) -> Result<(), Diagnostic> {
         for stmt in body {
             match &stmt.kind {
+                StmtKind::Try { .. } => return Err(Diagnostic {kind:DiagnosticKind::Static,
+                    message:"此例外處理需要公開執行計畫".into(),span:Some(self.source.span(stmt.start,stmt.end))}),
                 StmtKind::Declare(declaration) => {
                     let init = &declaration.initializer;
                     if let Some(value) = init { self.reject_method_term(value)?; }

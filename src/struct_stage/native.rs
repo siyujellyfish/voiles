@@ -64,6 +64,22 @@ impl Emitter<'_> {
 
     fn local_text(&self, value: &LocalText) -> Option<String> {
         Some(match value {
+            LocalText::Formatted(parts) => {
+                let mut code = String::from("{ let mut output = String::new(); ");
+                for part in parts {
+                    let expression = match part {
+                        FormatPart::Boolean(n) => format!("if ({}) != 0 {{ \"true\" }} else {{ \"false\" }}",self.number(n)?),
+                        FormatPart::Float(n,p) => format!("&decimal::display({}, {p:?})",self.number(n)?),
+                        FormatPart::Literal(s) => format!("{s:?}"),
+                        FormatPart::Text(n) => format!("&v{}.text", self.locals.get(n)?),
+                        FormatPart::Decimal(n) => format!("&({}).to_string()", self.number(n)?),
+                        FormatPart::Hex(n) => format!("&format!(\"{{:x}}\", {})", self.number(n)?),
+                    };
+                    write!(code, "output.push_str({expression}); ").ok()?;
+                }
+                code.push_str("ResourceText::new(output) }");
+                code
+            }
             LocalText::Standard(call) => self.standard(call,true)?,
             LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
             LocalText::Replace(change) => self.local_replace(change)?,
@@ -136,6 +152,9 @@ impl Emitter<'_> {
             }
             Number::Constant(n) => format!("({n}i64)"),
             Number::Local(name) => format!("v{}", self.locals.get(name)?),
+            Number::TextLength(n)=>format!("(v{0}.starts.get_or_init(|| boundaries(&v{0}.text)).len()-1) as i64",self.locals.get(n)?),
+            Number::ParseInt(n) => format!("v{}.text.parse::<i64>().map_err(|_| (site, \"整數轉換失敗\"))?", self.locals.get(n)?),
+            Number::Decimal(a, op, b) => format!("decimal::arithmetic({}, {op:?}, {}).ok_or((site, ARITH))?", self.number(a)?, self.number(b)?),
             Number::Binary(a, op, b) => {
                 let method = if *op == '+' { "checked_add" } else { "checked_sub" };
                 format!("({}).{method}({}).ok_or((site, ARITH))?", self.number(a)?, self.number(b)?)
@@ -159,9 +178,8 @@ impl Emitter<'_> {
                 self.locals.get(owner)?, self.offset(i)?, self.offset(j)?),
             Number::Byte(place, i, j) => format!(
                 "globals[{}].byte({}, {}).ok_or((site, ARITH))?", place.slot, self.offset(i)?, self.offset(j)?),
-            Number::Call(name, false) =>
+            Number::Call(name, _) =>
                 format!("f{}(globals, argv, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
-            _ => return None,
         })
     }
 }
@@ -177,6 +195,9 @@ impl LinkedProgram {
         let budget = crate::execution::ExecutionBudget::default();
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
+        out.push_str("mod decimal {\n");
+        out.push_str(include_str!("decimal.rs"));
+        out.push_str("}\n");
         out.push_str("mod standard {\n");
         out.push_str(include_str!("standard.rs"));
         out.push_str("}\n");
@@ -201,7 +222,7 @@ impl LinkedProgram {
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument: String = signature.params.iter().map(|p| {
-                let ty = match p.ty.as_str() { "int" | "bool" => "i64", "str" => "ResourceText", _ => "Object" };
+                let ty = match p.ty.as_str() { "int" | "bool" | "float" => "i64", "str" => "ResourceText", _ => "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
             let ret = if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
@@ -210,9 +231,12 @@ impl LinkedProgram {
             if body.iter().any(|step| matches!(step.action, Action::Container(..))) {
                 out.push_str("let mut containers = containers::Store::default();\n");
             }
-            let flow = body.iter().any(|s| matches!(s.action, Action::Jump(_) | Action::Unless(..)));
+            let flow = body.iter().any(|s| !s.handlers.is_empty() || matches!(s.action, Action::Jump(_) | Action::Unless(..)));
             if flow {
                 for step in body {
+                    if let Action::StoreText {target,declaration:Some(_),..}=&step.action {
+                        writeln!(out,"let mut v{} = ResourceText::new(String::new());",emitter.local_id(target)).unwrap();
+                    }
                     if let Action::Bind(n, _) = &step.action {
                         if !emitter.locals.contains_key(n) {
                             writeln!(out, "let mut v{}: i64 = 0;", emitter.local_id(n)).unwrap();
@@ -228,6 +252,8 @@ impl LinkedProgram {
                 let site = format!("{}:{}:{}", unit.path.display(), span.start.line, span.start.column);
                 writeln!(out, "let site = {site:?}; *steps += 1; if *steps > {} {{ return Err((site, LIMIT)); }}", budget.max_steps).unwrap();
                 let unsupported = || unit.error(step.span.0, step.span.1, "原生後端尚未支援此操作");
+                let guarded = !step.handlers.is_empty();
+                if guarded { writeln!(out, "let outcome = (|| -> Result<Option<{ret}>, Failure> {{").unwrap(); }
                 match &step.action {
                     Action::Container(slot,init) => match init {
                         ContainerInit::Literal(v) => writeln!(out,"containers.put({slot:?},{}).ok_or((site, ARITH))?;",container_source(&v.runtime().ok_or_else(unsupported)?)).unwrap(),
@@ -260,14 +286,15 @@ impl LinkedProgram {
                     }
                     Action::Return(value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
-                        writeln!(out, "return Ok({expr});").unwrap();
+                        if guarded { writeln!(out,"return Ok(Some({expr}));").unwrap(); }
+                        else { writeln!(out, "return Ok({expr});").unwrap(); }
                     }
                     Action::ReplaceLocal(change) => {
                         writeln!(out, "{};", emitter.local_replace(change).ok_or_else(unsupported)?).unwrap();
                     }
                     Action::StoreText { target, declaration, value } => {
                         let rhs = emitter.local_text(value).ok_or_else(unsupported)?;
-                        writeln!(out, "{}v{} = {rhs};", if declaration.is_some() { "let mut " } else { "" },
+                        writeln!(out, "{}v{} = {rhs};", if declaration.is_some() && !flow { "let mut " } else { "" },
                             emitter.local_id(target)).unwrap();
                     }
                     Action::RelocateObject { source, target, moving } => {
@@ -319,6 +346,16 @@ impl LinkedProgram {
                         };
                         writeln!(out, "globals[{}].replace({}, {text}).ok_or((site, ARITH))?;", place.slot, emitter.offset(i).ok_or_else(unsupported)?).unwrap();
                     }
+                }
+                if guarded {
+                    out.push_str("#[allow(unreachable_code)] { Ok(None) } })(); match outcome { Ok(Some(n)) => return Ok(n), Ok(None) => (), Err(failure) => {");
+                    for h in &step.handlers {
+                        let label = if h.category=="EvaluationError" { "運算失敗" } else { "整數轉換失敗" };
+                        writeln!(out,"if failure.1 == {label:?} {{").unwrap();
+                        for slot in &h.cleanup { writeln!(out,"containers.drop_slot({slot:?});").unwrap(); }
+                        writeln!(out,"pc = {}; continue; }}",h.target).unwrap();
+                    }
+                    out.push_str("return Err(failure); } }\n");
                 }
                 if flow { out.push_str("}\n"); }
             }
