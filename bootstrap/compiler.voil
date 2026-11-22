@@ -306,22 +306,26 @@ fn atom()->int{
             if (host.at_len() != 0) {
                 return host.list_len()
             } else {
-                if (host.at_list_append() != 0) {
-                    return host.list_append() + expression() + host.expect(")") + host.finish_list_append()
+                if (host.at_dict_set() != 0) {
+                    return host.dict_set() + host.dict_set_key() + host.expect(",") + expression() + host.expect(")") + host.finish_dict_set()
                 } else {
-                    if (host.at_list_pop() != 0) {
-                        return host.list_pop()
+                    if (host.at_list_append() != 0) {
+                        return host.list_append() + expression() + host.expect(")") + host.finish_list_append()
                     } else {
-                        if (host.at_module_call() != 0) {
-                            return call()
+                        if (host.at_list_pop() != 0) {
+                            return host.list_pop()
                         } else {
-                            if (host.at_call() != 0) {
+                            if (host.at_module_call() != 0) {
                                 return call()
                             } else {
-                                if (host.at_field() != 0) {
-                                    return host.field_value()
+                                if (host.at_call() != 0) {
+                                    return call()
                                 } else {
-                                    return host.value()
+                                    if (host.at_field() != 0) {
+                                        return host.field_value()
+                                    } else {
+                                        return host.value()
+                                    }
                                 }
                             }
                         }

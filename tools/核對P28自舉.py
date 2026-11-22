@@ -357,6 +357,29 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
+    dict_set = ('fn main()->int{\nvar entries:dict{str,int} = {"既有":1}\n'
+                'return entries.set("既有",9)+entries.set("新增",2)+39\n}')
+    source.write_text("import host\n" + dict_set, encoding="utf-8")
+    generated_set = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+    assert generated_set[0] == generated_set[1] == generated_set[2]
+    code, generated, error = generated_set[2]
+    assert (code == 0 and not error and ".iter_mut().find" in generated
+            and '.push(("新增", v_dict_value))' in generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(dict_set, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"dict-set-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
     invalid_dicts = (
         'fn main()->int{ var xs:dict{str,int} = {1:2} return 0 }',
         'fn main()->int{ var xs:dict{str,int} = {"a":true} return 0 }',
@@ -366,6 +389,11 @@ fn main(){
         'fn main()->int{ var xs:dict{str,int} = {"a":1} with xs[1] as item { return item } return 0 }',
         'fn main()->int{ var xs:dict{str,int} = {"a":1} with xs["a"] as xs { return xs } return 0 }',
         'fn main()->int{ with missing["a"] as item { return item } return 0 }',
+        'fn main()->int{ var xs:dict{str,int} = {} return xs.set(1,2) }',
+        'fn main()->int{ var xs:dict{str,int} = {} return xs.set("a",true) }',
+        'fn main()->int{ var xs:dict{str,int} = {} return xs.set("a") }',
+        'fn main()->int{ var xs:dict{str,int} = {} return xs.set("a",1,2) }',
+        'fn main()->int{ var xs:dict{str,int} = {"a":1} with xs["a"] as item { return xs.set("b",2) } }',
     )
     for invalid in invalid_dicts:
         source.write_text("import host\n" + invalid, encoding="utf-8")
@@ -407,6 +435,8 @@ fn main(){
         "fn main()->int{ var xs:list[int] = [1] return xs.pop(1) }",
         "fn main()->int{ var xs:list[int] = [1] with missing[0] as item { return item } return 0 }",
         "fn main()->int{ var xs:list[int] = [1] with xs[0] as xs { return xs } return 0 }",
+        "fn main()->int{ var xs:list[int] = [1] with xs[0] as item { return xs.append(2) } }",
+        "fn main()->int{ var xs:list[int] = [1] with xs[0] as item { return xs.pop() } }",
     )
     for invalid in invalid_lists:
         source.write_text("import host\n" + invalid, encoding="utf-8")
