@@ -537,6 +537,75 @@ fn main(){
         assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
         assert invoke(exe)[0] == 1
 
+    nested_dict = ('fn main()->int{\nvar empty:dict{str,list[int]} = {}\n'
+                   'var rows:dict{str,list[int]} = {"主":[1,2],"空":[]}\n'
+                   'with rows["主"] as row {\nwith row[1] as item {\n'
+                   'return item+len(empty)+40\n}\n}\n}')
+    source.write_text("import host\n" + nested_dict, encoding="utf-8")
+    generated_nested_dict = [invoke(cli, "bootstrap-compiler", source)
+                             for cli in (seed, stage, next_stage)]
+    assert generated_nested_dict[0] == generated_nested_dict[1] == generated_nested_dict[2]
+    code, generated, error = generated_nested_dict[2]
+    assert (code == 0 and not error and "Vec<(&'static str, Vec<i64>)>" in generated
+            and "let v_empty: Vec<(&'static str, Vec<i64>)> = vec![]" in generated
+            and '("主",vec![1i64,2i64]),("空",vec![])' in generated
+            and "let v_row: &Vec<i64>" in generated
+            and "let v_item: i64" in generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(nested_dict, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"nested-dict-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_nested_dicts = (
+        'fn main()->int{ var xs:dict{str,list[int]} = {1:[2]} return 0 }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":[true]} return 0 }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":1} return 0 }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":[1],"a":[]} return 0 }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":[1],} return 0 }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":[1]} with xs["a"] as row { return row.append(2) } }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":[1]} return xs.set("a",2) }',
+        'fn main()->int{ var xs:dict{str,list[int]} = {"a":[1]} with xs["a"] as row { with row[0] as row { return row } } }',
+    )
+    for invalid in invalid_nested_dicts:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
+    missing_nested_key = ('fn main()->int{\nvar rows:dict{str,list[int]} = {"有":[1]}\n'
+                          'with rows["無"] as row {\nreturn len(row)\n}\n}')
+    source.write_text("import host\n" + missing_nested_key, encoding="utf-8")
+    generated_missing_nested_key = [invoke(cli, "bootstrap-compiler", source)
+                                    for cli in (seed, stage, next_stage)]
+    assert generated_missing_nested_key[0] == generated_missing_nested_key[1] == generated_missing_nested_key[2]
+    code, generated, error = generated_missing_nested_key[2]
+    assert code == 0 and not error and "字典查找缺少鍵" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native)[0] == 1
+    public.write_text(missing_nested_key, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public)[0] == 1
+    for mode in ("build", "pack"):
+        exe = root / f"nested-dict-missing-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe)[0] == 1
+
     invalid_lists = (
         "fn main()->int{ var xs:list[int] = [true] return 0 }",
         "fn main()->int{ var xs:list[int] = [1,] return 0 }",

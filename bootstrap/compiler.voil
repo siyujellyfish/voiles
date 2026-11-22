@@ -105,16 +105,20 @@ fn after_list_borrow()->int{
 }
 
 fn local()->int{
-    if (host.at_nested_list_local() != 0) {
-        return nested_list_local()
+    if (host.at_nested_dict_local() != 0) {
+        return nested_dict_local()
     } else {
-        if (host.at_list_local() != 0) {
-            return list_local()
+        if (host.at_nested_list_local() != 0) {
+            return nested_list_local()
         } else {
-            if (host.at_dict_local() != 0) {
-                return dict_local()
+            if (host.at_list_local() != 0) {
+                return list_local()
             } else {
-                return struct_local()
+                if (host.at_dict_local() != 0) {
+                    return dict_local()
+                } else {
+                    return struct_local()
+                }
             }
         }
     }
@@ -195,6 +199,26 @@ fn dict_items()->int{
 fn following_dict_items()->int{
     if (host.at(",") != 0) {
         return host.expect(",") + host.dict_key() + expression() + host.emit(")") + following_dict_items()
+    } else {
+        return 0
+    }
+}
+
+fn nested_dict_local()->int{
+    return host.expect("var") + host.nested_dict_local() + host.expect(":") + host.expect("dict") + host.expect("{") + host.expect("str") + host.expect(",") + host.expect("list") + host.expect("[") + host.expect("int") + host.expect("]") + host.expect("}") + host.expect("=") + host.expect("{") + nested_dict_items() + host.expect("}") + host.finish_nested_dict() + host.emit(";\n")
+}
+
+fn nested_dict_items()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        return host.nested_dict_key() + host.expect("[") + nested_items() + host.expect("]") + host.finish_nested_dict_value() + following_nested_dict_items()
+    }
+}
+
+fn following_nested_dict_items()->int{
+    if (host.at(",") != 0) {
+        return host.expect(",") + host.nested_dict_key() + host.expect("[") + nested_items() + host.expect("]") + host.finish_nested_dict_value() + following_nested_dict_items()
     } else {
         return 0
     }
