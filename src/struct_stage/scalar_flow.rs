@@ -144,7 +144,7 @@ impl Builder<'_, '_> {
             TermKind::Not(inner) => ("bool",Number::Logic("==",Box::new(self.typed(inner,"bool")?),Box::new(Number::Constant(0)))),
             TermKind::Logic(op,a,b) => {
                 let (ty,left) = self.expr(a)?;
-                if *op != "!=" && ty != "bool" { return None; }
+                if ty == "none" || (*op != "!=" && ty != "bool") { return None; }
                 ("bool", Number::Logic(op, Box::new(left), Box::new(self.typed(b,&ty)?)))
             }
             TermKind::UnresolvedZeroArgs(n) => return self.call(n,false,std::iter::empty()),
@@ -328,7 +328,7 @@ impl Builder<'_, '_> {
             return Some(("int".into(),Number::Standard(call)));
         }
         let (target,_,f) = objects.function(name)?;
-        if f.is_async!=awaited || !matches!(f.result_ty.as_str(), "int" | "bool" | "float") { return None; }
+        if f.is_async!=awaited || !matches!(f.result_ty.as_str(), "int" | "bool" | "float" | "none") { return None; }
         if !awaited && f.params.iter().any(|p|stored_type(&p.ty)) {
             let call=self.collection_call(name,args,&f.result_ty)?;
             return Some((f.result_ty.clone(),Number::FromCollection(call)));
@@ -570,6 +570,10 @@ impl Builder<'_, '_> {
                     let change=self.replacement(n,i,rhs).ok_or_else(||err("字素寫入的接收者或右值無效"))?;
                     self.step(s,Action::ReplaceLocal(change));
                 }
+                StmtKind::ProcedureCall(call) => {
+                    let value = self.typed(call, "none").ok_or_else(|| err("獨立函式呼叫需回傳 none"))?;
+                    self.step(s, Action::Evaluate(value));
+                }
                 StmtKind::Evaluate(t) => {
                     let (_,v)=self.expr(t).ok_or_else(||err("容器操作的權限或參數型別不符"))?;
                     self.step(s,Action::Evaluate(v));
@@ -622,6 +626,10 @@ impl Builder<'_, '_> {
                     if let Some(jump) = jump { self.patch(jump,self.body.len()); }
                     closed = normal_returns && handled_returns;
                     self.invalidate();
+                }
+                StmtKind::Return(r) if self.result == "none" && matches!(r.expression.kind, TermKind::Literal("none")) => {
+                    self.step(s, Action::Return(Number::Constant(0)));
+                    closed = true;
                 }
                 StmtKind::Return(r) if self.result == "str" => {
                     let text = self.text(&r.expression).ok_or_else(||err("返回需要獨立持有的字串"))?;

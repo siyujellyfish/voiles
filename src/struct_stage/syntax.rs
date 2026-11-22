@@ -577,6 +577,16 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
             let term=self.term()?;
             if !matches!(term.kind,TermKind::Call(_) | TermKind::UnresolvedZeroArgs(_)) { return Err(self.syntax("需要獨立呼叫語句")); }
             StmtKind::Evaluate(term)
+        } else if PUBLIC && matches!(self.tok().kind, TokenKind::Name(_)) &&
+            (crate::syntax_shared::symbol(self.tokens,self.cursor+1,'(') ||
+             (crate::syntax_shared::symbol(self.tokens,self.cursor+1,'.') &&
+              crate::syntax_shared::symbol(self.tokens,self.cursor+3,'('))) {
+            let call = self.term()?;
+            if !matches!(call.kind, TermKind::Call(_) | TermKind::Construct(..) |
+                TermKind::UnresolvedZeroArgs(_) | TermKind::MethodCall(..)) {
+                return Err(self.syntax("需要獨立函式呼叫"));
+            }
+            StmtKind::ProcedureCall(call)
         } else if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare(parsed)
@@ -1060,7 +1070,10 @@ impl<const PUBLIC:bool> crate::syntax_shared::FunctionSyntax for LanguageParser<
         crate::syntax_shared::take_return_arrow(self.tokens, &mut self.cursor)
             .map(|_| ()).ok_or_else(|| self.syntax("函式需要回傳型別標註"))
     }
-    fn function_result_type(&mut self) -> Result<String, Diagnostic> { if PUBLIC {self.local_type_annotation()} else {self.name()} }
+    fn function_result_type(&mut self) -> Result<String, Diagnostic> { if PUBLIC && self.keyword("none") {
+        self.cursor += 1;
+        Ok("none".into())
+    } else if PUBLIC { self.local_type_annotation() } else { self.name() } }
     fn function_body(&mut self) -> Result<crate::syntax_shared::ParsedBlock<Stmt>, Diagnostic> {
         crate::syntax_shared::parse_block(self)
     }

@@ -119,6 +119,7 @@ enum StmtKind {
     Try { body: Vec<Stmt>, handler: Vec<Stmt>, category: String },
     ReadonlyElement(Box<ReadonlyElementBlock>),
     Evaluate(Term),
+    ProcedureCall(Term),
     GraphemeWrite(Term),
     Declare(crate::syntax_shared::ParsedDeclaration<String, Term>),
     Assign(crate::syntax_shared::ParsedNamedAssignment<Term>),
@@ -851,7 +852,7 @@ impl VerifiedDeclarationFacts {
                         visit(body, direct_targets, borrow_targets, named_returns, field_writes);
                     }
                     StmtKind::ReadonlyElement(block) => visit(&block.body, direct_targets, borrow_targets, named_returns, field_writes),
-                    StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
+                    StmtKind::ProcedureCall(_) | StmtKind::Evaluate(_) | StmtKind::GraphemeWrite(_) | StmtKind::Assign(_) | StmtKind::Break | StmtKind::Continue => {}
                 }
             }
         }

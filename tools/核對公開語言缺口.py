@@ -41,3 +41,17 @@ verify(cli, [(main(body), expected) for body, expected in [
     ("for i in true..3{ return i }\nreturn 0", "reject"),
     ("for i in 0..0.5{ return i }\nreturn 0", "reject"),
 ]])
+
+finish = "fn finish(n:int)->none{ if(n != 0){ return none } else { return none } }\n"
+verify(cli, [(finish + main(body), expected) for body, expected in [
+    ("finish(42)\nreturn 42", 42),
+    ("finish(n=0)\nreturn 42", 42),
+    ("return finish(42)", "reject"),
+    ("if(finish(0) != finish(1)){ return 1 } else { return 0 }", "reject"),
+    ("finish(false)\nreturn 0", "reject"),
+]])
+verify(cli, [
+    ("fn main()->none{ return none }", "reject"),
+    ("fn wrong()->none{ return 1 }\n" + main("return 0"), "reject"),
+    (finish + "fn relay()->none{ return finish(42) }\n" + main("relay()\nreturn 42"), 42),
+])

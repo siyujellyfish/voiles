@@ -290,7 +290,7 @@ impl LinkedProgram {
                 }
                 let collection_signature = stored_type(&f.result_ty) || f.params.iter().any(|p|stored_type(&p.ty));
                 let object_result = !f.is_async && graph.resolve_struct(id,&f.result_ty).is_some();
-                if (collection_signature && f.is_async) || (!object_result && !stored_type(&f.result_ty) && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
+                if (collection_signature && f.is_async) || (!object_result && !stored_type(&f.result_ty) && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float" | "none")) || (matches!(f.result_ty.as_str(), "str" | "none") && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
@@ -302,7 +302,7 @@ impl LinkedProgram {
                             return Err(u.error(f.start, f.end, "函式參數重複"));
                         }
                     }
-                } else if !f.is_async && matches!(f.result_ty.as_str(),"int" | "str")
+                } else if !f.is_async && matches!(f.result_ty.as_str(),"int" | "str" | "none")
                     && f.params.iter().all(|p| matches!(p.ty.as_str(),"int" | "str" | "bool" | "float")) {
                     for p in &f.params {
                         if strings.contains_key(&p.name) || locals.contains_key(&p.name) {
@@ -322,7 +322,7 @@ impl LinkedProgram {
                 }
                 let mut lower = Lower { text_access:Default::default(),objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
-                let typed_signature = matches!(f.result_ty.as_str(), "bool" | "float") || f.params.iter().any(|p| matches!(p.ty.as_str(), "bool" | "float"));
+                let typed_signature = matches!(f.result_ty.as_str(), "bool" | "float" | "none") || f.params.iter().any(|p| matches!(p.ty.as_str(), "bool" | "float"));
                 let body = if f.result_ty == "str" {
                     lower.body(f,id).or_else(|_| scalar_flow::lower(&lower,f,id))
                 } else if object_result {
