@@ -196,6 +196,8 @@ enum MemberValue {
 }
 
 enum Action {
+    ReturnObject(String),
+    ReceiveObject {target:String,owner:String},
     Evaluate(Number),
     Container(String, ContainerInit),
     Select { alias: String, owner: String, key: ContainerKey },
@@ -487,7 +489,7 @@ impl Lower<'_> {
             if matches!(
                 steps.last(),
                 Some(Step {
-                    action: Action::Return(_) | Action::ReturnText(_),
+                    action: Action::Return(_) | Action::ReturnText(_) | Action::ReturnObject(_),
                     ..
                 })
             ) {
@@ -633,6 +635,9 @@ impl Lower<'_> {
                     };
                     Action::Return(Number::Choice(Box::new(test), Box::new(yes), Box::new(no)))
                 }
+                StmtKind::Return(r) if !matches!(function.result_ty.as_str(),"int"|"str"|"bool") =>
+                    Action::ReturnObject(self.objects.as_ref().and_then(|o|o.return_owner(&function.result_ty,&r.expression))
+                        .ok_or_else(||err("結構返回需要完整且同型的具名移動"))?),
                 StmtKind::Return(r) if function.result_ty == "str" => Action::ReturnText(
                     self.local_text(&r.expression, "").ok_or_else(|| err("需要獨立的 str 返回值"))?),
                 StmtKind::Return(r) => Action::Return(
@@ -646,7 +651,7 @@ impl Lower<'_> {
         if !matches!(
             steps.last(),
             Some(Step {
-                action: Action::Return(_) | Action::ReturnText(_),
+                action: Action::Return(_) | Action::ReturnText(_) | Action::ReturnObject(_),
                 ..
             })
         ) {
@@ -778,6 +783,8 @@ impl Action {
         match self {
             Self::Select { key: ContainerKey::Index(n), .. } => n.uses(&mut uses),
             Self::Select { .. } | Self::Container(..) | Self::DropContainer(_) => (),
+            Self::ReturnObject(_) => (),
+            Self::ReceiveObject {target,..} => uses.push(Use::Call(target,false)),
             Self::ReturnText(value) | Self::StoreText { value, .. } => {
                 if let LocalText::Call(call) = value { call.uses(&mut uses); }
             }
@@ -1081,7 +1088,7 @@ impl Program {
             LocalText::Call(call) => {
                 match self.invoke_text(call, frame, state, depth)? {
                     CallResult::Text(text) => Ok(text),
-                    CallResult::Integer(_) => Err(StrRuntimeError::EvaluationFailed),
+                    other => { other.integer(&mut state.heap)?; Err(StrRuntimeError::EvaluationFailed) },
                 }
             }
         }
@@ -1119,6 +1126,16 @@ impl Program {
                 Action::Evaluate(value) => { self.eval(value,frame,state,depth)?; }
                 Action::Jump(target) => pc = *target,
                 Action::Unless(test,target) => if self.eval(test, frame, state, depth)? == 0 { pc = *target; },
+                Action::ReceiveObject {target,owner} => {
+                    let result=self.call_with_owner(target,state,depth+1,None,HashMap::new())?;
+                    let CallResult::Object(object)=result else {return Err(StrRuntimeError::EvaluationFailed)};
+                    if let Err((_,object))=state.mixed.accept_return(owner,object) {
+                        crate::mixed_struct_runtime::MixedStructRuntime::discard_with_shared_ledger(&mut state.heap,object);
+                        return Err(StrRuntimeError::EvaluationFailed);
+                    }
+                }
+                Action::ReturnObject(name) => return state.mixed.return_with_shared_ledger(&mut state.heap,name)
+                    .map(CallResult::Object).map_err(|_|StrRuntimeError::EvaluationFailed),
                 Action::RelocateObject { source, target, moving } => {
                     let result = if *moving { state.mixed.move_whole_with_shared_ledger(&mut state.heap, source,target) }
                         else { state.mixed.copy_whole(source,target) };
@@ -1391,6 +1408,7 @@ impl Program {
 }
 
 enum CallResult {
+    Object(crate::mixed_struct_runtime::ReturnedMixed),
     Integer(i64),
     Text(crate::owned_str_runtime::OwnedUtf8),
 }
@@ -1399,6 +1417,10 @@ impl CallResult {
     fn integer(self, heap: &mut OwnedStrRuntime) -> Result<i64, StrRuntimeError> {
         match self {
             Self::Integer(value) => Ok(value),
+            Self::Object(value) => {
+                crate::mixed_struct_runtime::MixedStructRuntime::discard_with_shared_ledger(heap,value);
+                Err(StrRuntimeError::EvaluationFailed)
+            }
             Self::Text(value) => {
                 heap.release_detached(value);
                 Err(StrRuntimeError::EvaluationFailed)

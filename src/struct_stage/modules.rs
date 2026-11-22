@@ -288,7 +288,8 @@ impl LinkedProgram {
                 if f.result_ty == "str" && f.params.iter().any(|p| !matches!(p.ty.as_str(), "int" | "str")) {
                     return Err(u.error(f.start,f.end,"字串返回簽章需要 int 或 str 形參"));
                 }
-                if !matches!(f.result_ty.as_str(), "bool" | "int" | "str") || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
+                let object_result = !f.is_async && graph.resolve_struct(id,&f.result_ty).is_some();
+                if (!object_result && !matches!(f.result_ty.as_str(), "bool" | "int" | "str")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
@@ -322,7 +323,7 @@ impl LinkedProgram {
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
                 let typed_signature = f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool");
-                let body = if f.result_ty == "str" {
+                let body = if f.result_ty == "str" || object_result {
                     lower.body(f,id)
                 } else if typed_signature {
                     scalar_flow::lower(&lower, f, id)
@@ -499,6 +500,18 @@ mod tests {
             if index == 0 { assert_eq!(result.unwrap(), 42); }
             else { assert!(matches!(result, Err(ModuleError::RuntimeAt { path, .. }) if path == files.0.join("consumer.voil"))); }
         }
+    }
+
+    #[test]
+    fn returned_struct_keeps_original_field_resource_across_modules() {
+        use ResourceEvent::*;
+        let files=Files::new(&[
+            ("main.voil","import Box from factory as Item\nimport factory\nfn main()->int{\nvar received:Item = factory.make()\nreturn received.s[0][0]\n}"),
+            ("factory.voil","struct Box{\nvar s:str = \"*\"\n}\nfn make()->Box{\nvar result:Box = Box()\nreturn result.move()\n}"),
+        ]);
+        let (value,events)=LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+        assert_eq!(value.unwrap(),42);
+        assert_eq!(events,[Created(1),Returned(1),Released(1)]);
     }
 
     #[test]

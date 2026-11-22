@@ -94,6 +94,13 @@ impl<'a> ObjectScope<'a> {
             }
             _=>return None,
         };
+        if let Some((target,unit,function))=self.function(ctor) {
+            let (_,result)=self.graph.resolve_struct(unit,&function.result_ty)?;
+            if !std::ptr::eq(result,def) || function.is_async || !args.is_empty() || !function.params.is_empty() {return None;}
+            let target=target.clone();
+            self.bind(name,ty,start,mutable);
+            return Some(Action::ReceiveObject {target, owner:name.into()});
+        }
         let (ctor_origin,ctor_def)=self.graph.resolve_struct(self.caller,ctor)?;
         if ctor_origin!=origin || !std::ptr::eq(ctor_def,def) {return None;}
         let mut supplied=Vec::new();
@@ -150,12 +157,20 @@ impl<'a> ObjectScope<'a> {
         };
         Some(Number::Member{owner:owner.clone(),field:selected,receiver:method.then_some(object.id)})
     }
+    pub(in crate::struct_stage::module_share) fn return_owner(&self,ty:&str,value:&Term)->Option<String> {
+        let TermKind::Move(name)=&value.kind else {return None};
+        let object=self.variables.get(name)?;
+        let (_,actual)=self.graph.resolve_struct(self.caller,&object.ty)?;
+        let (_,expected)=self.graph.resolve_struct(self.caller,ty)?;
+        if !std::ptr::eq(actual,expected) || !object.missing.is_empty() || object.moved.replace(true) {return None;}
+        Some(name.clone())
+    }
     fn consume(&self,name:&str,args:&[Term])->Option<Number> {
         let [arg]=args else{return None;};
         let TermKind::Move(from)=&arg.kind else{return None;};
         let (target,origin,f)=self.function(name)?;
         let [p]=f.params.as_slice() else{return None;};
-        if f.is_async{return None;}
+        if f.is_async || f.result_ty != "int" {return None;}
         let object=self.variables.get(from)?;
         let (_,actual)=self.graph.resolve_struct(self.caller,&object.ty)?;
         let (_,expected)=self.graph.resolve_struct(origin,&p.ty)?;

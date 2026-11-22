@@ -33,3 +33,16 @@ verify(cli, ((pending + 'fn main()->int{\n' + body + '\n}', value) for body, val
     ('var v:Later = Later()\nv.s = 42\nreturn 0',"reject"),
     ('var v:Later = Later()\nv.s = "*"\nv.n = 9223372036854775807+1\nreturn 0',"runtime"),
 ]))
+
+def factory(body, result="Box"):
+    return schema + "fn make()->" + result + "{\n" + body + "\n}\n"
+
+
+receive = "fn main()->int{ var value:Box = make()\nreturn value.s[0][0] }"
+verify(cli, [
+    (factory('var a:Box = Box(s="*")\nreturn a.move()') + receive,42),
+    (factory('var a:Box = Box(s="*")\nreturn a') + receive,"reject"),
+    (factory('var a:Pair = Pair()\nreturn a.move()') + receive,"reject"),
+    (factory('var a:Box = Box(s="*")\nvar b:Box = a.move()\nreturn a.move()') + receive,"reject"),
+    (factory('var a:Box = Box(s="*")\nvar n:int = 9223372036854775807+1\nreturn a.move()') + receive,"runtime"),
+])

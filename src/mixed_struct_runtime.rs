@@ -403,14 +403,22 @@ impl MixedStructRuntime {
     }
     pub(crate) fn return_whole(&mut self,name:&str)
         ->Result<ReturnedMixed,MixedError> {
-        let (i,j)=self.valid_whole(name)?;
-        let value=self.scopes[i][j].owned.take().expect("已預檢");
+        let location=self.valid_whole(name)?;
+        Ok(Self::detach_return(&mut self.scopes,&mut self.ledger,location))
+    }
+    pub(crate) fn return_with_shared_ledger(&mut self, ledger:&mut OwnedStrRuntime, name:&str)
+        ->Result<ReturnedMixed,MixedError> {
+        let location=self.valid_whole(name)?;
+        Ok(Self::detach_return(&mut self.scopes,ledger,location))
+    }
+    fn detach_return(scopes:&mut [Vec<OwnedSlot>], ledger:&mut OwnedStrRuntime, (i,j):(usize,usize)) -> ReturnedMixed {
+        let value=scopes[i][j].owned.take().expect("已預檢");
         for field in &value.fields {
             if let StoredValue::Str(resource)=&field.value {
-                self.ledger.mark_detached_return(resource);
+                ledger.mark_detached_return(resource);
             }
         }
-        Ok(ReturnedMixed{value})
+        ReturnedMixed{value}
     }
     pub(crate) fn accept_return(&mut self,name:&str,result:ReturnedMixed)
         ->Result<(),(MixedError,ReturnedMixed)> {
@@ -419,6 +427,9 @@ impl MixedStructRuntime {
             name:name.to_owned(),owned:Some(result.value),
         });
         Ok(())
+    }
+    pub(crate) fn discard_with_shared_ledger(ledger:&mut OwnedStrRuntime, result:ReturnedMixed) {
+        Self::release_value(ledger,result.value);
     }
     pub(crate) fn discard_return(&mut self,value:ReturnedMixed) {
         Self::release_value(&mut self.ledger,value.value);
