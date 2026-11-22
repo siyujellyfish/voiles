@@ -77,6 +77,9 @@ Ok(v_dict_borrow(s, depth + 1)?)
 Ok(v_list_borrow(s, depth + 1)?)
 }
 } else {
+if s.at("match")? != 0i64 {
+Ok(v_match_statement(s, depth + 1)?)
+} else {
 if s.at("return")? != 0i64 {
 Ok(s.expect("return")?.checked_add(s.return_start()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(")\n")?).ok_or(Fault::Overflow)?)
 } else {
@@ -84,6 +87,36 @@ Ok(v_control(s, depth + 1)?)
 }
 }
 }
+}
+}
+}
+}
+fn v_match_statement(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+Ok(s.expect("match")?.checked_add(s.match_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.emit(" {\n")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_match_arms(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_match()?).ok_or(Fault::Overflow)?.checked_add(v_after_match(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_match_arms(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("}")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(s.expect("case")?.checked_add(v_match_pattern(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.finish_match_arm()?).ok_or(Fault::Overflow)?.checked_add(v_match_arms(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
+fn v_match_pattern(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("_")? != 0i64 {
+Ok(s.match_wildcard()?)
+} else {
+Ok(s.match_pattern()?)
+}
+}
+fn v_after_match(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("}")? != 0i64 {
+Ok(0i64)
+} else {
+Ok(v_statement(s, depth + 1)?)
 }
 }
 fn v_list_borrow(s: &mut Machine, depth: usize) -> R {
