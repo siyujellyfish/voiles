@@ -72,6 +72,7 @@ fn runtime_message(error: StrRuntimeError) -> &'static str {
         StrRuntimeError::MovedSource => "來源已移動",
         StrRuntimeError::NoInnerScope => "缺少內層作用域",
         StrRuntimeError::IncompleteReturn => "函式未完成回傳",
+        StrRuntimeError::ConversionFailed => "整數轉換失敗",
         StrRuntimeError::EvaluationFailed => "運算失敗",
         StrRuntimeError::ExecutionBudgetExhausted => "執行步數已耗盡",
         StrRuntimeError::ExhaustedIdentity => "資源識別碼已耗盡",

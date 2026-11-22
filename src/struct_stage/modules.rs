@@ -289,15 +289,15 @@ impl LinkedProgram {
                     return Err(u.error(f.start,f.end,"字串返回簽章需要 int 或 str 形參"));
                 }
                 let object_result = !f.is_async && graph.resolve_struct(id,&f.result_ty).is_some();
-                if (!object_result && !matches!(f.result_ty.as_str(), "bool" | "int" | "str")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
+                if (!object_result && !matches!(f.result_ty.as_str(), "bool" | "int" | "str" | "float")) || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
                 let mut locals = HashMap::new();
                 let mut strings = HashMap::new();
-                if f.params.iter().all(|p| matches!(p.ty.as_str(), "int" | "bool")) {
+                if f.params.iter().all(|p| matches!(p.ty.as_str(), "int" | "bool" | "float")) {
                     for p in &f.params {
-                        if locals.insert(p.name.clone(), false).is_some() {
+                        if locals.insert(p.name.clone(), (false,p.ty.clone())).is_some() {
                             return Err(u.error(f.start, f.end, "函式參數重複"));
                         }
                     }
@@ -309,7 +309,7 @@ impl LinkedProgram {
                             return Err(u.error(f.start,f.end,"函式參數重複"));
                         }
                         if p.ty == "str" { strings.insert(p.name.clone(), TextBinding::new(false)); }
-                        else { locals.insert(p.name.clone(), false); }
+                        else { locals.insert(p.name.clone(), (false,p.ty.clone())); }
                     }
                 } else if let [p] = f.params.as_slice() {
                     if !f.is_async && graph.resolve_struct(id,&p.ty).is_some() {
@@ -322,7 +322,7 @@ impl LinkedProgram {
                 }
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
-                let typed_signature = f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool");
+                let typed_signature = matches!(f.result_ty.as_str(), "bool" | "float") || f.params.iter().any(|p| matches!(p.ty.as_str(), "bool" | "float"));
                 let body = if f.result_ty == "str" || object_result {
                     lower.body(f,id)
                 } else if typed_signature {

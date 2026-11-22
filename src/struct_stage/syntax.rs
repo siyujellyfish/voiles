@@ -307,6 +307,15 @@ impl Parser<'_> {
                 kind: TermKind::Call(call), start, end,
             });
         }
+        if matches!(&self.tok().kind, TokenKind::Name(n) if n == "f" || n == "t")
+            && self.tokens.get(self.cursor + 1).is_some_and(|next|
+                next.start == self.tok().end && matches!(next.kind, TokenKind::StringLiteral(_))) {
+            let start = self.tok().start;
+            let end = self.tokens[self.cursor + 1].end;
+            let tag=if matches!(&self.tok().kind,TokenKind::Name(n) if n=="t") { "template" } else { "formatted" };
+            self.cursor += 2;
+            return Ok(Term { kind: TermKind::Literal(tag), start, end });
+        }
         // 無函式／方法／索引後綴時由公私共同核心直接建構裸名
         // AST；不能讓公開入口藉此接受私有 .move／.borrow 語法。
         if let Some(name) = crate::syntax_shared::parse_bare_name(
@@ -335,9 +344,9 @@ impl Parser<'_> {
                 (TermKind::Literal("none"),end)
             }
             TokenKind::Decimal(ref text) => {
-                if Self::decimal64_checked_subset(text).is_none() {
+                if decimal::parts(text).is_none() {
                     return Err(self.syntax(
-                        "P13 decimal64 常值超出已驗證的有限安全子集；下溢、超界與特殊值仍待正式規格"
+                        "decimal64 常值超出有限數值範圍"
                     ));
                 }
                 let end = self.tok().end;
@@ -513,7 +522,23 @@ impl Parser<'_> {
         let head = crate::syntax_shared::statement_head(
             self.tokens, self.cursor, crate::common_ir::FrontendMode::PrivateVerified,
         );
-        let kind = if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
+        let kind = if self.keyword("try") {
+            let opening = self.cursor;
+            self.cursor += 1;
+            let body = self.body()?.statements;
+            self.lines();
+            if !self.keyword("except") {
+                self.cursor = opening;
+                return Err(self.syntax("需要合法的名稱或型別名稱"));
+            }
+            self.cursor += 1;
+            let category = self.name()?;
+            if !matches!(category.as_str(), "EvaluationError" | "TypeConversationError") {
+                return Err(self.syntax("未知的例外型別"));
+            }
+            let handler = self.body()?.statements;
+            StmtKind::Try {body, handler, category}
+        } else if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
             && matches!(self.tokens.get(self.cursor + 1).map(|t| &t.kind), Some(TokenKind::Name(_))) {
             StmtKind::ReadonlyElement(Box::new(self.readonly_element_block()?))
         } else if matches!(&self.tok().kind, TokenKind::Name(_))
@@ -680,6 +705,14 @@ impl Parser<'_> {
     }
 
     fn module_items(mut self, mut shares: Option<&mut Vec<module_share::Declaration>>, mut imports: Option<&mut Vec<modules::Import>>) -> Result<(HashMap<String, StructDecl>, Vec<Function>), Diagnostic> {
+        if imports.is_none() {
+            if let Some(token) = self.tokens.iter().find(|token| matches!(&token.kind,
+                TokenKind::Decimal(text) if Self::decimal64_checked_subset(text).is_none())) {
+                return Err(Diagnostic { kind: DiagnosticKind::Syntax,
+                    message: "P13 decimal64 常值超出已驗證的有限安全子集；下溢、超界與特殊值仍待正式規格".into(),
+                    span: Some(self.source.span(token.start,token.end)) });
+            }
+        }
         let mut structs = HashMap::new();
         let mut funcs = Vec::new();
         let mut function_names = HashSet::new();

@@ -5,7 +5,7 @@ pub(super) fn needed(f: &Function) -> bool {
     f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool")
         || f.body.statements.iter().any(|s| match &s.kind {
             StmtKind::Declare(d) => d.ty == "bool",
-            StmtKind::If { .. } | StmtKind::While { .. } | StmtKind::ForRange { .. } => true,
+            StmtKind::Try { .. } | StmtKind::If { .. } | StmtKind::While { .. } | StmtKind::ForRange { .. } => true,
             _ => false,
         })
 }
@@ -51,7 +51,7 @@ pub(super) fn lower(lower: &Lower<'_>, function: &Function, module: usize) -> Re
     let mut builder = Builder { lower, module, result: &function.result_ty, body: Vec::new(),
         scopes: vec![HashMap::new()], loops: Vec::new(), next_slot: 0, candidate_sites: HashMap::new(), containers: BTreeSet::new(), views: BTreeSet::new(), storage: Vec::new(), borrowed: Vec::new(), flags: Default::default(), narrowed: Default::default() };
     for p in &function.params {
-        if !matches!(p.ty.as_str(), "int" | "bool") {
+        if !matches!(p.ty.as_str(), "int" | "bool" | "float") {
             return Err(problem(lower.source,(function.start,function.end),"此控制流程尚未驗證持有者參數"));
         }
         builder.scopes[0].insert(p.name.clone(), Binding { slot:p.name.clone(), ty:p.ty.clone(), mutable:false });
@@ -70,10 +70,16 @@ impl Builder<'_, '_> {
     fn expr(&self, term: &Term) -> Option<(String, Number)> {
         let (ty, value) = match &term.kind {
             TermKind::Group(t) => return self.expr(t),
+            TermKind::Literal("float") => {
+                let index = self.lower.tokens.binary_search_by_key(&term.start, |t| t.start).ok()?;
+                let TokenKind::Decimal(text) = &self.lower.tokens[index].kind else { return None };
+                let (c,e) = decimal::parts(text)?;
+                ("float", Number::Constant(decimal::encode(c,e)))
+            }
             TermKind::Name(n) => {
                 let b = self.binding(n)?;
                 let ty = self.narrowed.borrow().get(&b.slot).cloned().unwrap_or_else(|| b.ty.clone());
-                if !matches!(ty.as_str(), "int" | "bool") { return None; }
+                if !matches!(ty.as_str(), "int" | "bool" | "float") { return None; }
                 let value = if self.views.contains(&b.slot) { Number::Container(b.slot.clone(), ContainerRead::Scalar) }
                     else { Number::Local(b.slot.clone()) };
                 return Some((ty, value));
@@ -101,13 +107,26 @@ impl Builder<'_, '_> {
             TermKind::StringIndex(owner,i,Some(j)) => {
                 let binding=self.binding(owner)?;
                 let ty=self.narrowed.borrow().get(&binding.slot).cloned().unwrap_or_else(||binding.ty.clone());
-                if !self.views.contains(&binding.slot) || ty != "str" { return None; }
-                ("int",Number::ViewByte(binding.slot.clone(),self.offset(i)?,self.offset(j)?))
+                if ty != "str" { return None; }
+                let (i,j)=(self.offset(i)?,self.offset(j)?);
+                ("int",if self.views.contains(&binding.slot) {Number::ViewByte(binding.slot.clone(),i,j)}
+                    else {Number::LocalByte(binding.slot.clone(),i,j)})
             }
+            TermKind::MethodCall(owner,method,args) if method=="to_int" && args.is_empty()
+                && self.binding(owner).is_some_and(|b|b.ty=="str" && !self.views.contains(&b.slot)) =>
+                ("int", Number::ParseInt(self.binding(owner)?.slot.clone())),
             TermKind::MethodCall(owner,method,args) if self.binding(owner).is_some() =>
                 return self.edit(owner,method,args),
-            TermKind::BinaryInt(n) => ("int", Number::Binary(Box::new(self.typed(&n.left,"int")?),
-                n.operator, Box::new(self.typed(&n.right,"int")?))),
+            TermKind::BinaryInt(n) => {
+                let (ty, left) = self.expr(&n.left)?;
+                let right = Box::new(self.typed(&n.right,&ty)?);
+                let left = Box::new(left);
+                match ty.as_str() {
+                    "float" => ("float", Number::Decimal(left,n.operator,right)),
+                    "int" => ("int", Number::Binary(left,n.operator,right)),
+                    _ => return None,
+                }
+            }
             TermKind::Not(inner) => ("bool",Number::Logic("==",Box::new(self.typed(inner,"bool")?),Box::new(Number::Constant(0)))),
             TermKind::Logic(op,a,b) => {
                 let (ty,left) = self.expr(a)?;
@@ -183,6 +202,39 @@ impl Builder<'_, '_> {
         self.expr(t).and_then(|(ty,n)| (ty==expected).then_some(n))
     }
 
+    fn standard_call<'t>(&self,name:&str,args:impl Iterator<Item=(Option<&'t str>,&'t Term)>,expected:&str)->Option<StandardCall> {
+        if self.binding(name).is_some() || self.lower.objects.as_ref()?.function(name).is_some() || self.lower.globals.contains_key(name) {return None;}
+        let (params,result)=standard::signature(name)?;
+        if result!=expected {return None;}
+        let mut values=Vec::new();
+        for (i,(label,t)) in args.enumerate() {
+            if label.is_some() {return None;}
+            let ty=params.get(i).copied().or_else(||standard::variadic_parameter(name))?;
+            values.push(if ty=="int" { StandardArg::Int(self.typed(t,"int")?) }
+                else if let TermKind::Name(name)=&t.kind {
+                    let b=self.binding(name)?;
+                    if b.ty!="str" || self.views.contains(&b.slot) {return None;}
+                    StandardArg::Read(b.slot.clone())
+                } else { StandardArg::Text(self.text(t)?) });
+        }
+        if values.len()<params.len() {return None;}
+        self.invalidate();
+        Some(StandardCall {name:name.into(),args:values})
+    }
+
+    fn text(&self,t:&Term)->Option<LocalText> {
+        match &t.kind {
+            TermKind::Group(inner)=>self.text(inner),
+            TermKind::Call(c) if !c.awaited => self.standard_call(&c.name,c.arguments.iter().map(|t|(None,t)),"str").map(LocalText::Standard),
+            TermKind::StringIndex(n,i,None) => {
+                let b=self.binding(n)?;
+                if b.ty!="str" || self.views.contains(&b.slot) {return None;}
+                Some(LocalText::Grapheme(b.slot.clone(),self.offset(i)?))
+            }
+            _=>match self.lower.text(t)? {Text::Literal(s)=>Some(LocalText::Literal(s)), _=>None},
+        }
+    }
+
     fn call<'t>(&self,name:&str,args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<(String,Number)> {
         if self.binding(name.split('.').next()?).is_some() { return None; }
         let objects = self.lower.objects.as_ref()?;
@@ -192,30 +244,19 @@ impl Builder<'_, '_> {
             let TermKind::Name(owner) = &term.kind else { return None };
             if args.next().is_some() { return None; }
             let binding = self.binding(owner)?;
+            if binding.ty=="str" && !self.views.contains(&binding.slot) {
+                return Some(("int".into(),Number::TextLength(binding.slot.clone())));
+            }
             if element_type(&binding.ty).is_none() || !(self.containers.contains(&binding.slot) || self.views.contains(&binding.slot)) { return None; }
             self.invalidate();
             return Some(("int".into(), Number::Container(binding.slot.clone(), ContainerRead::Length)));
         }
         if objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
-            let (signature, result)=standard::signature(name)?;
-            if result != "int" { return None; }
-            let mut values=Vec::new();
-            for (index,(label,term)) in args.enumerate() {
-                if label.is_some() { return None; }
-                let ty=signature.get(index).copied().or_else(||standard::variadic_parameter(name))?;
-                let arg=if ty=="int" { StandardArg::Int(self.typed(term,"int")?) }
-                    else {
-                        let Text::Literal(s)=self.lower.text(term)? else {return None};
-                        StandardArg::Text(LocalText::Literal(s))
-                    };
-                values.push(arg);
-            }
-            if values.len()<signature.len() {return None;}
-            self.invalidate();
-            return Some((result.into(),Number::Standard(StandardCall{name:name.into(),args:values})));
+            let call=self.standard_call(name,args,"int")?;
+            return Some(("int".into(),Number::Standard(call)));
         }
         let (target,_,f) = objects.function(name)?;
-        if f.is_async || !matches!(f.result_ty.as_str(), "int" | "bool") { return None; }
+        if f.is_async || !matches!(f.result_ty.as_str(), "int" | "bool" | "float") { return None; }
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
         for (index,(label,arg)) in args.enumerate() {
@@ -316,7 +357,7 @@ impl Builder<'_, '_> {
 
     fn step(&mut self, s:&Stmt, action:Action) -> usize {
         let at=self.body.len();
-        self.body.push(Step{module:self.module,span:(s.start,s.end),action});
+        self.body.push(Step{handlers:vec![],module:self.module,span:(s.start,s.end),action});
         at
     }
     fn patch(&mut self, at:usize, to:usize) {
@@ -335,6 +376,14 @@ impl Builder<'_, '_> {
             match &s.kind {
                 StmtKind::Declare(d) => {
                     if self.scopes.last().unwrap().contains_key(&d.name) { return Err(err("重複區域宣告")); }
+                    if d.ty=="str" && self.scopes.len()==1 {
+                        let value=d.initializer.as_ref().and_then(|t|self.text(t)).ok_or_else(||err("需要可獨立持有的字串"))?;
+                        let slot=format!("@{}",self.next_slot);
+                        self.next_slot+=1;
+                        self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot:slot.clone(),ty:d.ty.clone(),mutable:d.mutable});
+                        self.step(s,Action::StoreText{target:slot,declaration:Some(d.mutable),value});
+                        continue;
+                    }
                     if element_type(&d.ty).is_some() {
                         self.container(s,d).ok_or_else(|| err("容器需要具型別常值或有效的整筆移動來源"))?;
                         continue;
@@ -373,9 +422,38 @@ impl Builder<'_, '_> {
                 }
                 StmtKind::Assign(a) => {
                     let b=self.binding(&a.name).filter(|b|b.mutable).ok_or_else(||err("缺少可寫區域純量"))?;
+                    if b.ty=="str" && !self.views.contains(&b.slot) {
+                        let value=self.text(&a.expression).ok_or_else(||err("需要字串右值"))?;
+                        self.step(s,Action::StoreText{target:b.slot.clone(),declaration:None,value});
+                        continue;
+                    }
                     let v=self.typed(&a.expression,&b.ty).ok_or_else(||err("賦值型別不符"))?;
                     self.flags.borrow_mut().remove(&b.slot);
                     self.step(s,Action::Bind(b.slot.clone(),v));
+                }
+                StmtKind::Try { body, handler, category } => {
+                    self.invalidate();
+                    let start = self.body.len();
+                    let normal_returns = self.block(body,true)?;
+                    let end = self.body.len();
+                    let jump = (!normal_returns).then(||self.step(s,Action::Jump(0)));
+                    let target = self.body.len();
+                    let mut cleanup = Vec::new();
+                    for step in &self.body[start..end] {
+                        match &step.action {
+                            Action::Container(slot,_) | Action::Select { alias:slot,.. } => cleanup.push(slot.clone()),
+                            _ => (),
+                        }
+                    }
+                    cleanup.reverse();
+                    for step in &mut self.body[start..end] {
+                        step.handlers.push(Handler { category:category.clone(),target,cleanup:cleanup.clone() });
+                    }
+                    self.invalidate();
+                    let handled_returns = self.block(handler,true)?;
+                    if let Some(jump) = jump { self.patch(jump,self.body.len()); }
+                    closed = normal_returns && handled_returns;
+                    self.invalidate();
                 }
                 StmtKind::Return(r) => {
                     let v=self.typed(&r.expression,self.result).ok_or_else(||err("回傳型別不符"))?;
