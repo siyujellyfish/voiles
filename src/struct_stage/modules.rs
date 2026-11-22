@@ -285,7 +285,10 @@ impl LinkedProgram {
                 }
             }
             for f in &u.functions {
-                if !matches!(f.result_ty.as_str(), "bool" | "int") || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
+                if f.result_ty == "str" && f.params.iter().any(|p| !matches!(p.ty.as_str(), "int" | "str")) {
+                    return Err(u.error(f.start,f.end,"字串返回簽章需要 int 或 str 形參"));
+                }
+                if !matches!(f.result_ty.as_str(), "bool" | "int" | "str") || (f.result_ty == "str" && f.is_async) || (id==0 && f.name=="main" && (f.is_async || f.result_ty != "int" || !f.params.is_empty())) {
                     return Err(u.error(f.start,f.end,"跨檔直線執行需要已驗證的 int 函式簽章"));
                 }
                 let mut objects = ObjectScope::new(&graph,id,&targets,&owners);
@@ -298,10 +301,17 @@ impl LinkedProgram {
                         }
                     }
                     if !locals.is_empty() && f.is_async { return Err(u.error(f.start, f.end, "純量參數目前需要同步函式")); }
+                } else if !f.is_async && matches!(f.result_ty.as_str(),"int" | "str")
+                    && f.params.iter().all(|p| matches!(p.ty.as_str(),"int" | "str")) {
+                    for p in &f.params {
+                        if strings.contains_key(&p.name) || locals.contains_key(&p.name) {
+                            return Err(u.error(f.start,f.end,"函式參數重複"));
+                        }
+                        if p.ty == "str" { strings.insert(p.name.clone(), TextBinding::new(false)); }
+                        else { locals.insert(p.name.clone(), false); }
+                    }
                 } else if let [p] = f.params.as_slice() {
-                    if p.ty == "str" && !f.is_async && f.result_ty == "int" {
-                        strings.insert(p.name.clone(), TextBinding::new(false));
-                    } else if !f.is_async && graph.resolve_struct(id,&p.ty).is_some() {
+                    if !f.is_async && graph.resolve_struct(id,&p.ty).is_some() {
                         objects.bind(&p.name,&p.ty,p.declaration_start);
                     } else {
                         return Err(u.error(f.start,f.end,"跨檔持有者參數需要同步函式與可見結構型別"));
@@ -312,7 +322,9 @@ impl LinkedProgram {
                 let mut lower = Lower { objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
                 let typed_signature = f.result_ty == "bool" || f.params.iter().any(|p| p.ty == "bool");
-                let body = if typed_signature {
+                let body = if f.result_ty == "str" {
+                    lower.body(f,id)
+                } else if typed_signature {
                     scalar_flow::lower(&lower, f, id)
                 } else {
                     let pure = scalar_flow::lower(&lower, f, id);
@@ -455,6 +467,23 @@ mod tests {
     }
 
     const MODEL:&str = "struct Box{\nvar _code:int = 7\nvar count:int = 3\nvar text:str = \"甲\"\nfn read()->int{\nreturn self._code\n}\nfn _hidden()->int{\nreturn self.count\n}\n}";
+
+    #[test]
+    fn returned_text_and_failed_argument_evaluation_balance_the_original_resources() {
+        use ResourceEvent::*;
+        let make = "fn pass(text:str)->str{ return text.move() }";
+        let take = "fn take(a:str,n:int)->int{ return a[n][0] }";
+        for (body, success, events) in [
+            ("return take(pass(\"*\"),0)", true, vec![Created(1),Moved(1),Returned(1),Moved(1),Released(1)]),
+            ("return take(pass(\"*\"),9223372036854775807+1)", false, vec![Created(1),Moved(1),Returned(1),Released(1)]),
+        ] {
+            let main = format!("{make}\n{take}\nfn main()->int{{ {body} }}");
+            let files = Files::new(&[("main.voil",&main)]);
+            let (actual, trace) = LinkedProgram::prepare(&files.entry()).unwrap().execute().unwrap();
+            assert_eq!(trace, events);
+            assert_eq!(actual.ok(), success.then_some(42));
+        }
+    }
 
     #[test]
     fn moved_text_reaches_imported_function_and_unwinds_once() {
