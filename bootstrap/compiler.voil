@@ -97,7 +97,15 @@ fn statement()->int{
 }
 
 fn try_statement()->int{
-    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.expect("EvaluationError") + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
+    return host.expect("try") + host.try_start() + host.expect("{") + statement() + host.expect("}") + host.try_handler() + host.expect("except") + host.expect("EvaluationError") + exception_binding() + host.expect("{") + statement() + host.expect("}") + host.finish_try() + after_try()
+}
+
+fn exception_binding()->int{
+    if (host.at("as") != 0) {
+        return host.expect("as") + host.exception_binding()
+    } else {
+        return 0
+    }
 }
 
 fn after_try()->int{
