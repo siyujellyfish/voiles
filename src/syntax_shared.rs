@@ -829,6 +829,9 @@ pub(crate) enum IntegerError {
 }
 
 /// 不更動十進位、二／八／十六進位、底線分隔與有號 64 位元上限的既有規則。
+#[cfg(voiles_bootstrap)]
+mod bootstrap_digits { include!(env!("VOILES_DIGITS_RS")); }
+
 pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
     let (radix, digits) = if let Some(rest) = literal.strip_prefix("0x") {
         (16, rest)
@@ -843,12 +846,26 @@ pub(crate) fn integer_i64(literal: &str) -> Result<i64, IntegerError> {
     if normalized.is_empty() || !normalized.chars().all(|c| c.to_digit(radix).is_some()) {
         return Err(IntegerError::InvalidDigits);
     }
+    #[cfg(voiles_bootstrap)]
+    {
+        let advance = match radix {
+            2 => bootstrap_digits::binary, 8 => bootstrap_digits::octal,
+            10 => bootstrap_digits::decimal, 16 => bootstrap_digits::hexadecimal,
+            _ => unreachable!(),
+        };
+        return normalized.chars().try_fold(0, |acc, c| {
+            advance(acc, i64::from(c.to_digit(radix).unwrap())).ok_or(IntegerError::OutOfRange)
+        });
+    }
+    #[cfg(not(voiles_bootstrap))]
+    {
     let value = u128::from_str_radix(&normalized, radix)
         .map_err(|_| IntegerError::OutOfRange)?;
     if value > i64::MAX as u128 {
         return Err(IntegerError::OutOfRange);
     }
     Ok(value as i64)
+    }
 }
 
 #[cfg(test)]

@@ -228,6 +228,8 @@ pub(crate) struct LinkedProgram {
 
 #[path = "native.rs"]
 mod native;
+#[path = "bootstrap.rs"]
+mod bootstrap;
 
 impl LinkedProgram {
     pub(crate) fn prepare(entry: &Path) -> Result<Self,ModuleError> {

@@ -96,3 +96,10 @@ fn 雙模式壓力與穩定性() {
         .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
     assert!(status.success());
 }
+
+#[test]
+fn 自舉數字核心與種子差異驗收() {
+    let status = Command::new("python3").arg("tools/核對P28自舉.py")
+        .arg(std::env::var_os("VOILES_CLI").unwrap()).status().unwrap();
+    assert!(status.success());
+}
