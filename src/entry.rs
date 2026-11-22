@@ -64,7 +64,7 @@ fn module_error(error: ModuleError) -> String {
     }
 }
 
-fn runtime_message(error: StrRuntimeError) -> &'static str {
+pub(crate) fn runtime_message(error: StrRuntimeError) -> &'static str {
     match error {
         StrRuntimeError::MissingOwner => "找不到資源持有者",
         StrRuntimeError::DuplicateBinding => "重複綁定",

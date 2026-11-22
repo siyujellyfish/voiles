@@ -90,6 +90,9 @@ impl Builder<'_, '_> {
                 let (c,e) = decimal::parts(text)?;
                 ("float", Number::Constant(decimal::encode(c,e)))
             }
+            TermKind::FieldRead(owner,field) if self.binding(owner).is_none() =>
+                ("int",Number::GlobalInt(self.lower.integer_slot(&format!("{owner}.{field}"))?)),
+            TermKind::Name(n) if self.binding(n).is_none()=>("int",Number::GlobalInt(self.lower.integer_slot(n)?)),
             TermKind::FieldRead(owner,field) => {
                 let b=self.readable(owner)?;
                 if !self.views.contains(&b.slot) {return None;}
@@ -133,17 +136,29 @@ impl Builder<'_, '_> {
                 ("int",if self.views.contains(&binding.slot) || binding.ty.starts_with("Optional[") {Number::ViewByte(binding.slot.clone(),i,j)}
                     else {Number::LocalByte(binding.slot.clone(),i,j)})
             }
+            TermKind::MethodCall(owner,method,args) if owner=="float" && self.binding(owner).is_none() &&
+                self.lower.float_special(owner,method,args).is_some()=>("float",self.lower.float_special(owner,method,args)?),
             TermKind::MethodCall(owner,method,args) if method=="to_int" && args.is_empty()
                 && self.binding(owner).is_some_and(|b|b.ty=="str" && !self.views.contains(&b.slot)) =>
                 ("int", Number::ParseInt(self.binding(owner)?.slot.clone())),
             TermKind::MethodCall(owner,method,args) if self.binding(owner).is_some() =>
                 return self.edit(owner,method,args),
+            TermKind::BinaryInt(n) if unary_minus(n,self.lower.tokens) => {
+                let (ty,rhs)=self.expr(&n.right)?;
+                let zero=Box::new(Number::Constant(0));
+                let rhs=Box::new(rhs);
+                match ty.as_str() {
+                    "float"=>("float",Number::Decimal(zero,'~',rhs)),
+                    "int"=>("int",Number::Binary(zero,'-',rhs)),
+                    _=>return None,
+                }
+            }
             TermKind::BinaryInt(n) => {
                 let (ty, left) = self.expr(&n.left)?;
                 let right = Box::new(self.typed(&n.right,&ty)?);
                 let left = Box::new(left);
                 match ty.as_str() {
-                    "float" if matches!(n.operator, '+' | '-') => ("float", Number::Decimal(left,n.operator,right)),
+                    "float" if matches!(n.operator, '+' | '-' | '*' | '/') => ("float", Number::Decimal(left,n.operator,right)),
                     "int" => ("int", Number::Binary(left,n.operator,right)),
                     _ => return None,
                 }
@@ -152,7 +167,7 @@ impl Builder<'_, '_> {
             TermKind::Logic(op,a,b) => {
                 let (ty,left) = self.expr(a)?;
                 if !public_format::logic_types(op, &ty) { return None; }
-                ("bool", Number::Logic(op, Box::new(left), Box::new(self.typed(b,&ty)?)))
+                ("bool", Number::Logic(if ty=="float" {"decimal!="} else {op}, Box::new(left), Box::new(self.typed(b,&ty)?)))
             }
             TermKind::UnresolvedZeroArgs(n) => return self.call(n,false,std::iter::empty()),
             TermKind::Call(c) => return self.call(&c.name,c.awaited,c.arguments.iter().map(|v|(None,v))),
@@ -625,6 +640,12 @@ impl Builder<'_, '_> {
                     let (_,v)=self.expr(t).ok_or_else(||err("容器操作的權限或參數型別不符"))?;
                     self.step(s,Action::Evaluate(v));
                 }
+                StmtKind::Assign(a) if self.binding(&a.name).is_none() && self.lower.integer_slot(&a.name).is_some() => {
+                    let slot=self.lower.integer_slot(&a.name).unwrap();
+                    if self.lower.readonly_slots.contains(&slot) {return Err(err("匯入的 share 不可寫入"));}
+                    let value=self.typed(&a.expression,"int").ok_or_else(||err("share 賦值需要 int"))?;
+                    self.step(s,Action::StoreInt(slot,value));
+                }
                 StmtKind::Assign(a) => {
                     let b=self.binding(&a.name).filter(|b|b.mutable).ok_or_else(||err("缺少可寫區域純量"))?;
                     if b.ty.starts_with("Optional[") {
@@ -646,7 +667,7 @@ impl Builder<'_, '_> {
                     self.uninitialized.remove(&slot);
                     self.step(s,Action::Bind(slot,v));
                 }
-                StmtKind::Try { body, handler, category } => {
+                StmtKind::Try { body, handler, category, binding } => {
                     self.invalidate();
                     let start = self.body.len();
                     let entry = self.uninitialized.clone();
@@ -668,11 +689,32 @@ impl Builder<'_, '_> {
                         step.handlers.push(Handler { category:category.clone(),target,cleanup:cleanup.clone() });
                     }
                     self.invalidate();
-                    let handled_returns = self.block(handler,true)?;
+                    self.scopes.push(HashMap::new());
+                    let message=binding.as_ref().map(|name| {
+                        let slot=format!("@{}",self.next_slot);
+                        self.next_slot+=1;
+                        self.scopes.last_mut().unwrap().insert(name.clone(),Binding{slot:slot.clone(),ty:"str".into(),mutable:false});
+                        self.step(s,Action::StoreText{target:slot.clone(),declaration:Some(false),value:LocalText::CaughtMessage});
+                        self.storage.push(Storage::Text(slot.clone()));
+                        slot
+                    });
+                    let handled_returns = self.block(handler,false)?;
+                    if let Some(slot)=message {
+                        self.storage.pop();
+                        if !handled_returns { self.step(s,Action::DropStorage(vec![Storage::Text(slot)])); }
+                    }
+                    self.scopes.pop();
                     self.join_initialization(normal, normal_returns, handled_returns);
                     if let Some(jump) = jump { self.patch(jump,self.body.len()); }
                     closed = normal_returns && handled_returns;
                     self.invalidate();
+                }
+                StmtKind::ReturnAdd(name,term) if self.binding(name).is_none() && self.lower.integer_slot(name).is_some() => {
+                    let slot=self.lower.integer_slot(name).unwrap();
+                    if self.result!="int" || self.lower.readonly_slots.contains(&slot) {return Err(err("share 加法賦值的權限或返回型別不符"));}
+                    let rhs=self.typed(term,"int").ok_or_else(||err("share 加法賦值需要 int"))?;
+                    self.step(s,Action::StoreInt(slot,Number::Binary(Box::new(Number::GlobalInt(slot)),'+',Box::new(rhs))));
+                    self.step(s,Action::Return(Number::GlobalInt(slot))); closed=true;
                 }
                 StmtKind::ReturnAdd(name, term) => {
                     let binding = self.readable(name).filter(|b| b.mutable && b.ty == self.result)
@@ -711,6 +753,50 @@ impl Builder<'_, '_> {
                 StmtKind::Return(r) => {
                     let v=self.typed(&r.expression,self.result).ok_or_else(||err("回傳型別不符"))?;
                     self.step(s,Action::Return(v)); closed=true;
+                }
+                StmtKind::Match {value,arms} => {
+                    let (ty,subject)=self.expr(value).filter(|(ty,_)|matches!(ty.as_str(),"int"|"bool"))
+                        .ok_or_else(||err("match 需要整數或布林值"))?;
+                    let name=format!("@match/{}",s.start);
+                    self.step(s,Action::Bind(name.clone(),subject));
+                    self.scopes.push(HashMap::from([(name.clone(),Binding{slot:name.clone(),ty:ty.clone(),mutable:false})]));
+                    let mut seen=BTreeSet::new();
+                    let mut tests=Vec::new();
+                    for (pattern,block) in arms {
+                        let test=if let Some(p)=pattern {
+                            let key=match (&p.kind,ty.as_str()) {
+                                (TermKind::Scalar(ScalarLiteral::Integer(n)),"int")=>integer_i64(n).ok(),
+                                (TermKind::BinaryInt(n),"int") if unary_minus(n,self.lower.tokens) => match &n.right.kind {
+                                    TermKind::Scalar(ScalarLiteral::Integer(v))=>integer_i64(v).ok().and_then(i64::checked_neg),
+                                    _=>None,
+                                },
+                                (TermKind::Scalar(ScalarLiteral::Boolean(b)),"bool")=>Some(i64::from(*b)),
+                                _=>None,
+                            }.ok_or_else(||err("case 需要與比對值同型的常值"))?;
+                            if !seen.insert(key) {return Err(err("case 常值重複"));}
+                            let local=Term{kind:TermKind::Name(name.clone()),start:value.start,end:value.end};
+                            Some(if ty=="int" {
+                                Term{kind:TermKind::Logic("==",Box::new(local),Box::new(p.clone())),start:p.start,end:p.end}
+                            } else if key==1 {local} else {
+                                Term{kind:TermKind::Not(Box::new(local)),start:p.start,end:p.end}
+                            })
+                        } else {None};
+                        if ty=="bool" && seen.len()==2 {
+                            if tests.len()+1!=arms.len() {return Err(err("所有布林值都已有分支"));}
+                            tests.push((None,block));
+                        } else {tests.push((test,block));}
+                    }
+                    let mut tail=None;
+                    for (condition,block) in tests.into_iter().rev() {
+                        tail=Some(if let Some(condition)=condition {
+                            let branch=crate::syntax_shared::ParsedIfArm{start:condition.start,
+                                branch:crate::common_ir::ConditionalBranch::new(condition,block.clone())};
+                            crate::syntax_shared::ParsedElse::ElseIf(Box::new(Stmt{start:s.start,end:block.end,
+                                kind:StmtKind::If{branch,no:tail}}))
+                        } else {crate::syntax_shared::ParsedElse::Block(block.clone())});
+                    }
+                    closed=self.branch_block(tail.as_ref().unwrap().as_slice(),true)?;
+                    self.scopes.pop();
                 }
                 StmtKind::If{branch,no} => {
                     let test=self.typed(&branch.condition,"bool").ok_or_else(||err("分支需要 bool 條件"))?;

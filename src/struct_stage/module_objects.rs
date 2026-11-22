@@ -25,65 +25,68 @@ fn seed(unit:&Unit,t:&Term)->Option<ApprovedSeed> {
     }
 }
 
-fn method_value(unit:&Unit,t:&Term,owner:&str,def:&StructDecl,method:&Function)->Option<(String,Number)> {
-    let (ty,value)=match &t.kind {
+fn method_value(unit:&Unit,t:&Term, owner:&str, def:&StructDecl, method:&Function)->Option<(String,Number)> {
+    let value=match &t.kind {
         TermKind::Group(t)=>return method_value(unit,t,owner,def,method),
         TermKind::Scalar(ScalarLiteral::Integer(n))=>("int",Number::Constant(integer_i64(n).ok()?)),
         TermKind::Scalar(ScalarLiteral::Boolean(v))=>("bool",Number::Constant(i64::from(*v))),
-        TermKind::Literal("float")=>{let ApprovedSeed::Int(n)=seed(unit,t)? else{return None};("float",Number::Constant(n))}
+        TermKind::Literal("float")=>{
+            let ApprovedSeed::Int(v)=seed(unit,t)? else {return None};
+            ("float",Number::Constant(v))
+        }
         TermKind::Name(n)=>{
             let p=method.params.iter().find(|p|p.name==*n)?;
             (p.ty.as_str(),Number::Local(format!("$arg/{n}")))
         }
         TermKind::FieldRead(receiver,n) if receiver=="self"=>{
             let ty=def.field(n)?.ty.as_str();
-            (ty,match ty {
-                "int"|"float"=>Number::Member{owner:owner.into(),field:n.clone(),receiver:None},
+            let value=match ty {
+                "int"|"float"=>Number::Member {owner:owner.into(),field:n.clone(),receiver:None},
                 "bool"=>Number::BoolMember(owner.into(),n.clone()),
                 _=>return None,
-            })
+            };
+            (ty,value)
         }
         TermKind::BinaryInt(n)=>{
-            let (ty,left)=method_value(unit,&n.left,owner,def,method)?;
-            let (other,right)=method_value(unit,&n.right,owner,def,method)?;
-            if ty!=other {return None;}
-            let (a,b)=(Box::new(left),Box::new(right));
-            let value=match ty.as_str() {
+            let (rhs,b)=method_value(unit,&n.right,owner,def,method)?;
+            let (ty,a)=if unary_minus(n,&unit.tokens) {(rhs.clone(),Number::Constant(0))}
+                else {method_value(unit,&n.left,owner,def,method)?};
+            if ty!=rhs {return None;}
+            let (a,b)=(Box::new(a),Box::new(b));
+            return Some((ty.clone(),match ty.as_str() {
                 "int"=>Number::Binary(a,n.operator,b),
-                "float" if matches!(n.operator,'+'|'-'|'*'|'/')=>Number::Decimal(a,n.operator,b),
+                "float" if matches!(n.operator,'+'|'-'|'*'|'/')=>Number::Decimal(a,if unary_minus(n,&unit.tokens) {'~'} else {n.operator},b),
                 _=>return None,
-            };
-            return Some((ty,value));
+            }));
         }
         TermKind::Logic(op,a,b)=>{
             let (ty,left)=method_value(unit,a,owner,def,method)?;
-            let (other,right)=method_value(unit,b,owner,def,method)?;
-            if ty!=other || !public_format::logic_types(op,&ty) {return None;}
-            ("bool",Number::Logic(op,Box::new(left),Box::new(right)))
+            let (rhs,right)=method_value(unit,b,owner,def,method)?;
+            if ty!=rhs || !public_format::logic_types(op,&ty) {return None;}
+            ("bool",Number::Logic(if ty=="float" {"decimal!="} else {op},Box::new(left),Box::new(right)))
         }
         _=>return None,
     };
-    Some((ty.to_owned(),value))
+    Some((value.0.to_owned(),value.1))
 }
 
 fn method_steps(unit:&Unit, module:usize, owner:&str, def:&StructDecl, method:&Function)->Option<Vec<MethodStep>> {
-    let scalar=|ty:&str| matches!(ty,"int"|"bool"|"float");
+    let scalar=|ty:&str|matches!(ty,"int"|"bool"|"float");
     if method.is_async || !scalar(&method.result_ty) {return None;}
     let mut names=HashSet::new();
     if method.params.iter().any(|p|!scalar(&p.ty) || p.name=="self" || !names.insert(&p.name)) {return None;}
     let (last,body)=method.body.statements.split_last()?;
     let mut steps=Vec::new();
     for stmt in body.iter().chain(std::iter::once(last)) {
-        let (write,expr)=match &stmt.kind {
+        let (write,expr,expected)=match &stmt.kind {
             StmtKind::FieldAssign{receiver,field,value} if receiver=="self" && !std::ptr::eq(stmt,last)
-                && !def.field(field)?.immutable => (Some(field.clone()),value),
-            StmtKind::Return(r) if std::ptr::eq(stmt,last)=>(None,&r.expression),
+                && !def.field(field)?.immutable => (Some(field.clone()),value,&def.field(field)?.ty),
+            StmtKind::Return(r) if std::ptr::eq(stmt,last)=>(None,&r.expression,&method.result_ty),
             _=>return None,
         };
-        let start=unit.source.span(stmt.start,stmt.end).start;
-        let expected=if let Some(n)=&write {&def.field(n)?.ty} else {&method.result_ty};
         let (ty,value)=method_value(unit,expr,owner,def,method)?;
         if &ty!=expected {return None;}
+        let start=unit.source.span(stmt.start,stmt.end).start;
         steps.push(MethodStep { write,value,boolean:ty=="bool",
             origin:StepOrigin {module,span:(stmt.start,stmt.end)},
             site:format!("{}:{}:{}",unit.path.display(),start.line,start.column) });
@@ -105,7 +108,7 @@ pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleErro
     let mut seen=HashSet::new();
     for m in &def.methods {
         if !seen.insert((&m.name,m.params.iter().map(|p|&p.ty).collect::<Vec<_>>())) || method_steps(unit,0,"self",def,m).is_none() {
-            return Err(unit.error(m.start,m.end,"方法簽章重複，或方法本體與簽章不符"));
+            return Err(unit.error(m.start,m.end,"方法簽章重複，或方法本體的型別與簽章不符"));
         }
     }
     Ok(())

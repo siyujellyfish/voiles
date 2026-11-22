@@ -25,3 +25,21 @@ verify(Path(sys.argv[1]).resolve(strict=True), [
     (equal("sum(1,0.2)", "1.2"), "reject"),
     (equal("1" + "0" * 385 + ".0", "0.0"), "reject"),
 ])
+
+verify(Path(sys.argv[1]).resolve(strict=True), [
+    ('fn main()->int{ if(-0.5 * -0.5 != 0.25){return 0}else{return 42} }',42),
+    ('fn main()->int{ return -9223372036854775808 + 9223372036854775807 + 43 }',42),
+    ('fn main()->int{ return -9223372036854775808 / -1 }',"runtime"),
+    ('fn main()->int{ if(0.1 * 0.2 != 0.02){return 0}else{return 42} }',42),
+    ('fn main()->int{ if(1.0 / 3.0 != 0.3333333333333333){return 0}else{return 42} }',42),
+    ('fn main()->int{ var x:float = 1.0 / 0.0\nreturn 0 }',"runtime"),
+    ('fn main()->int{ var x:float = 2.0 * 3\nreturn 0 }',"reject"),
+])
+
+verify(Path(sys.argv[1]).resolve(strict=True), [
+    ('fn main()->int{ const x:float = float.nan()\nif(x != x){return 42}else{return 0} }',42),
+    (equal("float.infinity()+1.0","float.infinity()"),42),
+    ('fn main()->int{ const n:float = float.infinity()-float.infinity()\nif(n != n){return 42}else{return 0} }',42),
+    (equal("-0.0","0.0"),42),
+    ('fn main()->int{ const n:float = -0.0\nconst s:str = f"{n:.1f}"\nreturn s[0][0] }',45),
+])

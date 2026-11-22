@@ -97,6 +97,7 @@ impl Emitter<'_> {
                 code.push_str("ResourceText::new(output) }");
                 code
             }
+            LocalText::CaughtMessage => "ResourceText::new(caught.take().ok_or((site,ARITH))?.to_owned())".into(),
             LocalText::Standard(call) => self.standard(call,"str")?,
             LocalText::Literal(s) => format!("ResourceText::new(String::from({s:?}))"),
             LocalText::Replace(change) => self.local_replace(change)?,
@@ -194,6 +195,7 @@ impl Emitter<'_> {
                 let a = self.number(a)?;
                 let b = self.number(b)?;
                 match *op {
+                    "decimal!=" => format!("i64::from(decimal::unequal({a},{b}))"),
                     "and" => format!("i64::from(({a}) != 0 && ({b}) != 0)"),
                     "or" => format!("i64::from(({a}) != 0 || ({b}) != 0)"),
                     "==" => format!("i64::from(({a}) == ({b}))"),
@@ -203,6 +205,7 @@ impl Emitter<'_> {
                 }
             }
             Number::Constant(n) => format!("({n}i64)"),
+            Number::GlobalInt(slot)=>format!("globals[{slot}].integer().ok_or((site,ARITH))?"),
             Number::Local(name) => format!("v{}", self.locals.get(name)?),
             Number::TextLength(n)=>format!("(v{0}.starts.get_or_init(|| boundaries(&v{0}.text)).len()-1) as i64",self.locals.get(n)?),
             Number::ParseInt(n) => format!("v{}.text.parse::<i64>().map_err(|_| (site, \"整數轉換失敗\"))?", self.locals.get(n)?),
@@ -225,8 +228,8 @@ impl Emitter<'_> {
                     write!(code,"let site={:?}; *steps+=1; if *steps>{} {{ return Err((site,LIMIT)); }} ",step.site,budget.max_steps).ok()?;
                     let expr=inner.number(&step.value)?;
                     if let Some(field)=&step.write {
-                        let value=if step.boolean {"Field::Bool(n!=0)"} else {"Field::Int(n)"};
-                        write!(code,"let n={expr}; v{owner}.0.insert({field:?},{value}); ").ok()?;
+                        let field_value=if step.boolean {"Field::Bool(n!=0)"} else {"Field::Int(n)"};
+                        write!(code,"let n={expr}; v{owner}.0.insert({field:?},{field_value}); ").ok()?;
                     } else {code.push_str(&expr);}
                 }
                 code.push_str(" }");
@@ -248,7 +251,7 @@ impl Emitter<'_> {
             Number::LocalByte(owner, i, j) => format!("v{}.byte({}, {}).ok_or((site, ARITH))?",
                 self.locals.get(owner)?, self.offset(i)?, self.offset(j)?),
             Number::Byte(place, i, j) => format!(
-                "globals[{}].byte({}, {}).ok_or((site, ARITH))?", place.slot, self.offset(i)?, self.offset(j)?),
+                "globals[{}].text().ok_or((site,ARITH))?.byte({}, {}).ok_or((site, ARITH))?", place.slot, self.offset(i)?, self.offset(j)?),
             Number::Call(name, _) =>
                 format!("f{}(globals, argv, steps, depth + 1, site)?", self.functions.get(name.as_str())?),
         })
@@ -283,6 +286,8 @@ impl LinkedProgram {
         out.push_str("enum TextArgument<'a> { Shared(&'a ResourceText), Owned(ResourceText) }\n");
         out.push_str("impl std::ops::Deref for TextArgument<'_> { type Target=ResourceText; fn deref(&self)->&ResourceText { match self {Self::Shared(v)=>v,Self::Owned(v)=>v} } }\n");
         out.push_str("impl TextArgument<'_> { fn into_owned(self)->Option<ResourceText>{match self{Self::Owned(v)=>Some(v),Self::Shared(_)=>None}} }\n");
+        out.push_str("enum Global {Int(i64),Text(ResourceText)}\n");
+        out.push_str("impl Global {fn integer(&self)->Option<i64>{if let Self::Int(n)=self{Some(*n)}else{None}} fn text(&self)->Option<&ResourceText>{if let Self::Text(s)=self{Some(s)}else{None}} fn text_mut(&mut self)->Option<&mut ResourceText>{if let Self::Text(s)=self{Some(s)}else{None}}}\n");
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
         out.push_str("impl ResourceText { fn new(text:String)->Self { Self { text, starts:Default::default() } } }\n");
         if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || self.graph.units.iter().any(|u|u.functions.iter().any(|f|f.params.iter().any(|p|stored_type(&p.ty)))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
@@ -305,7 +310,7 @@ impl LinkedProgram {
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
             let ret = if stored_type(&signature.result_ty) {"containers::Value"} else if signature.result_ty == "str" { "ResourceText" } else if self.graph.resolve_struct(step.module,&signature.result_ty).is_some() { "Object" } else { "i64" };
-            writeln!(out, "fn f{id}(globals: &mut [ResourceText], argv:&[std::ffi::OsString], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
+            writeln!(out, "fn f{id}(globals: &mut [Global], argv:&[std::ffi::OsString], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
             if stored_type(&signature.result_ty) || signature.params.iter().any(|p|stored_type(&p.ty)) || body.iter().any(|step| matches!(step.action, Action::Container(..))) {
                 out.push_str("let mut containers = containers::Store::default();\n");
@@ -315,6 +320,7 @@ impl LinkedProgram {
             }
             let flow = body.iter().any(|s| !s.handlers.is_empty() || matches!(s.action, Action::Jump(_) | Action::Unless(..)));
             if flow {
+                out.push_str("let mut caught: Option<&'static str> = None;\n");
                 for step in body {
                     if let Action::StoreText {target,declaration:Some(_),..}=&step.action {
                         writeln!(out,"let mut v{} = ResourceText::new(String::new());",emitter.local_id(target)).unwrap();
@@ -353,6 +359,9 @@ impl LinkedProgram {
                     Action::Jump(target) => writeln!(out, "pc = {target};").unwrap(),
                     Action::Unless(test, target) => {
                         writeln!(out, "if ({}) == 0 {{ pc = {target}; }}", emitter.number(test).ok_or_else(unsupported)?).unwrap();
+                    }
+                    Action::StoreInt(slot,value)=>{
+                        writeln!(out,"let n={}; globals[{slot}]=Global::Int(n);",emitter.number(value).ok_or_else(unsupported)?).unwrap();
                     }
                     Action::Bind(name, value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
@@ -435,19 +444,19 @@ impl LinkedProgram {
                         let rhs = match text {
                             Text::Literal(s) => format!("String::from({s:?})"),
                             Text::Grapheme(p, i) => format!(
-                                "globals[{}].grapheme({}).ok_or((site, ARITH))?.to_owned()", p.slot, emitter.offset(i).ok_or_else(unsupported)?),
+                                "globals[{}].text().ok_or((site,ARITH))?.grapheme({}).ok_or((site, ARITH))?.to_owned()", p.slot, emitter.offset(i).ok_or_else(unsupported)?),
                         };
-                        writeln!(out, "globals[{}] = ResourceText::new({rhs});", place.slot).unwrap();
+                        writeln!(out, "globals[{}] = Global::Text(ResourceText::new({rhs}));", place.slot).unwrap();
                     }
                     Action::Replace(place, i, replacement) => {
                         let text = match replacement {
                             Replacement::Literal(s) => format!("{s:?}"),
                             Replacement::Named(source) => {
-                                writeln!(out, "let rhs = globals[{}].text.clone();", source.slot).unwrap();
+                                writeln!(out, "let rhs = globals[{}].text().ok_or((site,ARITH))?.text.clone();", source.slot).unwrap();
                                 "&rhs".into()
                             }
                         };
-                        writeln!(out, "globals[{}].replace({}, {text}).ok_or((site, ARITH))?;", place.slot, emitter.offset(i).ok_or_else(unsupported)?).unwrap();
+                        writeln!(out, "globals[{}].text_mut().ok_or((site,ARITH))?.replace({}, {text}).ok_or((site, ARITH))?;", place.slot, emitter.offset(i).ok_or_else(unsupported)?).unwrap();
                     }
                 }
                 if guarded {
@@ -456,7 +465,7 @@ impl LinkedProgram {
                         let label = if h.category=="EvaluationError" { "運算失敗" } else { "整數轉換失敗" };
                         writeln!(out,"if failure.1 == {label:?} {{").unwrap();
                         emitter.cleanup(&mut out,&h.cleanup).ok_or_else(unsupported)?;
-                        writeln!(out,"pc = {}; continue; }}",h.target).unwrap();
+                        writeln!(out,"caught=Some(failure.1); pc = {}; continue; }}",h.target).unwrap();
                     }
                     out.push_str("return Err(failure); } }\n");
                 }
@@ -466,7 +475,7 @@ impl LinkedProgram {
             out.push_str("}\n");
         }
         let main = emitter.functions["main"];
-        let globals = plan.globals.iter().map(|g| format!("ResourceText::new(String::from({:?}))", g.initial))
+        let globals = plan.globals.iter().map(|g|match &g.initial {Initial::Text(s)=>format!("Global::Text(ResourceText::new(String::from({s:?})))"),Initial::Integer(n)=>format!("Global::Int({n}i64)")})
             .collect::<Vec<_>>().join(", ");
         writeln!(out, "fn main() -> std::process::ExitCode {{ match f{main}(&mut [{globals}], &std::env::args_os().skip(1).collect::<Vec<_>>(), &mut 0, 0, \"\") {{").unwrap();
         out.push_str("Ok(n) => std::process::ExitCode::from(n as u8),\nErr((s, e)) => { eprintln!(\"{s}: 執行期錯誤：{e}\"); std::process::ExitCode::FAILURE } } }\n");

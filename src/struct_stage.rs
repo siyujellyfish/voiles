@@ -116,7 +116,8 @@ impl RangeBound {
 
 #[derive(Debug, Clone)]
 enum StmtKind {
-    Try { body: Vec<Stmt>, handler: Vec<Stmt>, category: String },
+    Match { value: Term, arms: Vec<(Option<Term>,crate::syntax_shared::ParsedBlock<Stmt>)> },
+    Try { body: Vec<Stmt>, handler: Vec<Stmt>, category: String, binding: Option<String> },
     ReadonlyElement(Box<ReadonlyElementBlock>),
     Evaluate(Term),
     ProcedureCall(Term),
@@ -204,6 +205,12 @@ crate::common_ir::define_shared_expression_kind!(
         AwaitMethodCall(String, String, Vec<Term>),
     }
 );
+
+fn unary_minus(node:&crate::common_ir::ArithmeticNode<Term>,tokens:&[Token])->bool {
+    node.operator=='-' && matches!(&node.left.kind,TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(n)) if n=="0")
+        && tokens.binary_search_by_key(&node.left.start,|t|t.start).ok()
+            .is_some_and(|i|tokens[i].kind==TokenKind::Symbol('-') && tokens[i].end==node.left.end)
+}
 
 type Parser<'a> = LanguageParser<'a,false>;
 struct LanguageParser<'a,const PUBLIC:bool> {
@@ -822,6 +829,9 @@ impl VerifiedDeclarationFacts {
         ) {
             for statement in statements {
                 match &statement.kind {
+                    StmtKind::Match {arms,..} => for (_,block) in arms {
+                        visit(block,direct_targets,borrow_targets,named_returns,field_writes);
+                    },
                     StmtKind::Try {body,handler,..} => {
                         for block in [body,handler] { visit(block,direct_targets,borrow_targets,named_returns,field_writes); }
                     }
