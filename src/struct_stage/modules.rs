@@ -364,7 +364,11 @@ impl LinkedProgram {
     }
 
     pub(crate) fn execute_with_args(&self,args:&[std::ffi::OsString]) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
-        self.checked_plan()?.execute_with_origin(args,|error, origin| match origin {
+        self.execute_with_args_and_steps(args,crate::execution::ExecutionBudget::default().max_steps)
+    }
+
+    pub(crate) fn execute_with_args_and_steps(&self,args:&[std::ffi::OsString],max_steps:usize) -> Result<(Result<i64,ModuleError>,Vec<ResourceEvent>),ModuleError> {
+        self.checked_plan()?.execute_with_origin(args,max_steps,|error, origin| match origin {
             Some(step) => {
                 let unit = &self.graph.units[step.module];
                 ModuleError::RuntimeAt { path: unit.path.clone(),
