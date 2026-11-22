@@ -284,6 +284,17 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
         if self.symbol('-') {
             let minus = self.tok().clone();
             self.cursor += 1;
+            if let TokenKind::Integer(text)=&self.tok().kind {
+                if crate::syntax_shared::negative_integer_i64(text) == Ok(i64::MIN) {
+                    let end=self.tok().end;
+                    self.cursor+=1;
+                    if self.repeated_symbol('*') {return Err(self.syntax("次方底數超出整數範圍"));}
+                    let scalar=|digits:&str|Term{start:minus.start,end,
+                        kind:TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer(digits.into()))};
+                    let negative=Self::arithmetic_node(scalar("0"),'-',scalar("9223372036854775807"));
+                    return Ok(Self::arithmetic_node(negative,'-',scalar("1")));
+                }
+            }
             let zero = Term { start: minus.start, end: minus.end,
                 kind: TermKind::Scalar(crate::syntax_shared::ScalarLiteral::Integer("0".into())) };
             return Ok(Self::arithmetic_node(zero, '-', self.signed_power()?));
@@ -584,12 +595,53 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
         let body = self.body()?;
         Ok(ReadonlyElementBlock { owner, selector, alias, body })
     }
+    fn starts_match(&self) -> bool {
+        if !matches!(&self.tok().kind, TokenKind::Name(n) if n=="match")
+            || !crate::syntax_shared::symbol(self.tokens,self.cursor+1,'(') {return false;}
+        let mut depth=0usize;
+        for (i,token) in self.tokens.iter().enumerate().skip(self.cursor+1) {
+            match token.kind {
+                TokenKind::Symbol('(')=>depth+=1,
+                TokenKind::Symbol(')')=>{
+                    depth-=1;
+                    if depth==0 {return crate::syntax_shared::symbol(self.tokens,i+1,'{');}
+                }
+                TokenKind::End=>break,
+                _=>(),
+            }
+        }
+        false
+    }
+
     fn statement(&mut self) -> Result<Stmt, Diagnostic> {
         let start = self.tok().start;
         let head = crate::syntax_shared::statement_head(
             self.tokens, self.cursor, crate::common_ir::FrontendMode::PrivateVerified,
         );
-        let kind = if PUBLIC && self.keyword("try") {
+        let kind = if PUBLIC && self.starts_match() {
+            self.cursor += 1;
+            let value=self.atom()?;
+            self.take('{',"match 需要大括號區塊")?;
+            self.lines();
+            let mut arms=Vec::new();
+            let mut wildcard=false;
+            while !self.symbol('}') {
+                if wildcard || !matches!(&self.tok().kind,TokenKind::Name(n) if n=="case") {
+                    return Err(self.syntax("需要 case，且預設分支只能出現在末尾"));
+                }
+                self.cursor+=1;
+                let pattern=if matches!(&self.tok().kind,TokenKind::Name(n) if n=="_") {
+                    self.cursor+=1;
+                    wildcard=true;
+                    None
+                } else {Some(self.term()?)};
+                arms.push((pattern,self.body()?));
+                self.lines();
+            }
+            if arms.is_empty() {return Err(self.syntax("match 需要至少一個 case"));}
+            self.cursor+=1;
+            StmtKind::Match {value,arms}
+        } else if PUBLIC && self.keyword("try") {
             self.cursor += 1;
             let body = self.body()?.statements;
             self.lines();
@@ -601,8 +653,12 @@ impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
             if !matches!(category.as_str(), "EvaluationError" | "TypeConversationError") {
                 return Err(self.syntax("未知的例外型別"));
             }
+            let binding = if matches!(&self.tok().kind,TokenKind::Name(n) if n=="as") {
+                self.cursor+=1;
+                Some(self.name()?)
+            } else { None };
             let handler = self.body()?.statements;
-            StmtKind::Try {body, handler, category}
+            StmtKind::Try {body, handler, category, binding}
         } else if matches!(&self.tok().kind, TokenKind::Name(word) if word == "with")
             && matches!(self.tokens.get(self.cursor + 1).map(|t| &t.kind), Some(TokenKind::Name(_))) {
             StmtKind::ReadonlyElement(Box::new(self.readonly_element_block()?))

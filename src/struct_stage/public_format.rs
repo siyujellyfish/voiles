@@ -22,12 +22,13 @@ fn format_scalar(t:&Term,tokens:&[Token],resolve:&impl Fn(&Term)->Option<(String
             ("float",Number::Constant(decimal::encode(c,e)))
         }
         TermKind::BinaryInt(node)=>{
-            let (ty,a)=format_scalar(&node.left,tokens,resolve)?;
             let (other,b)=format_scalar(&node.right,tokens,resolve)?;
+            let (ty,a)=if unary_minus(node,tokens) {(other.clone(),Number::Constant(0))}
+                else {format_scalar(&node.left,tokens,resolve)?};
             if ty!=other {return None;}
             let (a,b)=(Box::new(a),Box::new(b));
             match ty.as_str() { "int"=>("int",Number::Binary(a,node.operator,b)),
-                "float" if matches!(node.operator, '+' | '-')=>("float",Number::Decimal(a,node.operator,b)), _=>return None }
+                "float" if matches!(node.operator, '+' | '-' | '*' | '/')=>("float",Number::Decimal(a,if unary_minus(node,tokens) {'~'} else {node.operator},b)), _=>return None }
         }
         TermKind::Not(rhs)=>{
             let (ty,n)=format_scalar(rhs,tokens,resolve)?;
@@ -38,7 +39,7 @@ fn format_scalar(t:&Term,tokens:&[Token],resolve:&impl Fn(&Term)->Option<(String
             let (ty,a)=format_scalar(a,tokens,resolve)?;
             let (other,b)=format_scalar(b,tokens,resolve)?;
             if other!=ty || !logic_types(op,&ty) {return None;}
-            ("bool",Number::Logic(op,Box::new(a),Box::new(b)))
+            ("bool",Number::Logic(if ty=="float" {"decimal!="} else {op},Box::new(a),Box::new(b)))
         }
         TermKind::Name(_) | TermKind::UnresolvedZeroArgs(_) => return resolve(t),
         _ => return None,

@@ -6,9 +6,12 @@ use crate::borrow_safety::BorrowTicket;
 use crate::owned_str_runtime::{OwnedStrRuntime, ResourceEvent, StrRuntimeError};
 use crate::syntax_shared::{integer_i64, ScalarLiteral};
 
+#[derive(Clone)]
+enum Initial { Text(String), Integer(i64) }
+
 pub(super) struct Declaration {
     pub(super) name: String,
-    initial: String,
+    initial: Initial,
     id: DeclarationId,
 }
 
@@ -18,7 +21,8 @@ pub(super) fn parse<const PUBLIC:bool>(parser: &mut LanguageParser<'_,PUBLIC>) -
     let name = parser.name()?;
     parser.take(':', "share 必須明確標註型別")?;
     let ty = parser.tok().clone();
-    if parser.name()? != "str" {
+    let kind=parser.name()?;
+    if kind != "str" && !(PUBLIC && kind == "int") {
         return Err(problem(
             parser.source,
             (ty.start, ty.end),
@@ -26,8 +30,13 @@ pub(super) fn parse<const PUBLIC:bool>(parser: &mut LanguageParser<'_,PUBLIC>) -
         ));
     }
     parser.take('=', "share 必須立即初始化")?;
-    let TokenKind::StringLiteral(initial) = parser.tok().kind.clone() else {
-        return Err(parser.syntax("模組初始化需要已驗證的字串常值"));
+    let negative = kind == "int" && parser.symbol('-');
+    if negative { parser.cursor += 1; }
+    let initial=match (&parser.tok().kind,kind.as_str()) {
+        (TokenKind::StringLiteral(text),"str")=>Initial::Text(text.clone()),
+        (TokenKind::Integer(n),"int")=>Initial::Integer((if negative { crate::syntax_shared::negative_integer_i64(n) } else { integer_i64(n) }).map_err(|_|parser.syntax("整數初值超出範圍"))?),
+        _ if kind=="str"=>return Err(parser.syntax("模組初始化需要已驗證的字串常值")),
+        _=>return Err(parser.syntax("整數 share 需要 int 常值")),
     };
     parser.cursor += 1;
     Ok(Declaration { name, initial, id })
@@ -137,7 +146,7 @@ impl LocalText {
     }
 }
 struct MethodStep {
-    boolean:bool,
+    boolean: bool,
     write: Option<String>,
     value: Number,
     origin: StepOrigin,
@@ -153,6 +162,7 @@ struct MethodCall {
 }
 
 enum Number {
+    GlobalInt(usize),
     FromCollection(CollectionCall),
     Method(MethodCall),
     TextLength(String),
@@ -195,6 +205,7 @@ enum Text {
 enum FormatPart { Boolean(Number), Float(Number,Option<usize>), Literal(String), Decimal(Number), Hex(Number), Text(String) }
 
 enum LocalText {
+    CaughtMessage,
     Formatted(Vec<FormatPart>),
     Standard(StandardCall),
     Call(TextInvocation),
@@ -272,6 +283,7 @@ enum MemberValue {
 }
 
 enum Action {
+    StoreInt(usize,Number),
     BorrowLocal { alias:String, owner:String,kind:BorrowKind },
     ReturnCollection(String),
     ReturnOptional(ContainerItem),
@@ -356,6 +368,7 @@ struct Lower<'a> {
     source: &'a Source,
     tokens: &'a [Token],
     globals: &'a BTreeMap<String, usize>,
+    integer_slots: BTreeSet<usize>,
     functions: &'a BTreeMap<String, bool>,
     linked_names: Option<&'a BTreeMap<String,String>>,
     readonly_slots: BTreeSet<usize>,
@@ -372,6 +385,11 @@ impl Lower<'_> {
         Some(binding.borrowed.as_deref().unwrap_or(name).into())
     }
 
+    fn integer_slot(&self,name:&str)->Option<usize> {
+        let slot=*self.globals.get(name)?;
+        (self.integer_slots.contains(&slot) && !self.shadowed(name)).then_some(slot)
+    }
+
     fn place(&self, name: &str) -> Option<Place> {
         if self.objects.as_ref().is_some_and(|s| s.has(name.split('.').next().unwrap_or(name))) { return None; }
         if self.strings.contains_key(name.split('.').next()?) || self.locals.contains_key(name) || name.split_once('.').is_some_and(|(prefix,_)| self.locals.contains_key(prefix) || self.aliases.contains_key(prefix)) {
@@ -379,7 +397,7 @@ impl Lower<'_> {
         }
         self.aliases.get(name).cloned().or_else(|| {
             self.globals
-                .get(name)
+                .get(name).filter(|s|!self.integer_slots.contains(s))
                 .map(|&slot| Place { slot, alias: None })
         })
     }
@@ -535,6 +553,12 @@ impl Lower<'_> {
         }
     }
 
+    fn float_special(&self,owner:&str,method:&str,args:&[Term])->Option<Number> {
+        if owner!="float" || !args.is_empty() || self.shadowed(owner) ||
+            self.objects.as_ref()?.names_module_item(owner) {return None;}
+        decimal::special(method).map(Number::Constant)
+    }
+
     fn scalar_method(&self,owner:&str,name:&str,args:&[Term],expected:&str)->Option<Number> {
         let objects=self.objects.as_ref()?;
         if !objects.has(owner) {return None;}
@@ -547,10 +571,11 @@ impl Lower<'_> {
         }
         objects.method(owner,name,values,expected).map(Number::Method)
     }
+
     fn floating(&self, term:&Term)->Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.floating(t),
-            TermKind::MethodCall(owner,n,args)=>self.scalar_method(owner,n,args,"float"),
+            TermKind::MethodCall(owner,name,args) => self.scalar_method(owner,name,args,"float").or_else(||self.float_special(owner,name,args)),
             TermKind::FieldRead(owner,field) if self.objects.as_ref()?.field_type(owner,field,false)?=="float" =>
                 Some(Number::Member {owner:owner.clone(),field:field.clone(),receiver:None}),
             TermKind::Name(n) if self.locals.get(n)?.1 == "float" => Some(Number::Local(n.clone())),
@@ -560,7 +585,8 @@ impl Lower<'_> {
                 let (c,e)=decimal::parts(s)?;
                 Some(Number::Constant(decimal::encode(c,e)))
             }
-            TermKind::BinaryInt(n) if matches!(n.operator, '+' | '-') => Some(Number::Decimal(Box::new(self.floating(&n.left)?),
+            TermKind::BinaryInt(n) if unary_minus(n,self.tokens) => Some(Number::Decimal(Box::new(Number::Constant(0)),'~',Box::new(self.floating(&n.right)?))),
+            TermKind::BinaryInt(n) if matches!(n.operator, '+' | '-' | '*' | '/') => Some(Number::Decimal(Box::new(self.floating(&n.left)?),
                 n.operator,Box::new(self.floating(&n.right)?))),
             _ => None,
         }
@@ -615,6 +641,9 @@ impl Lower<'_> {
                 Some(Number::Constant(crate::owned_str_runtime::literal_byte(s, *i, *j)?)),
             TermKind::StringIndex(n, i, Some(j)) =>
                 Some(Number::Byte(self.place(n)?, self.offset(i)?, self.offset(j)?)),
+            TermKind::Name(n) if self.integer_slot(n).is_some()=>Some(Number::GlobalInt(self.integer_slot(n)?)),
+            TermKind::FieldRead(module,member) if self.integer_slot(&format!("{module}.{member}")).is_some()=>
+                Some(Number::GlobalInt(self.integer_slot(&format!("{module}.{member}"))?)),
             TermKind::Name(n) if self.locals.get(n).is_some_and(|(_,ty)|ty=="int") => Some(Number::Local(n.clone())),
             TermKind::UnresolvedZeroArgs(n) => self.call_target(n,false),
             TermKind::Call(call) if call.arguments.is_empty() => self.call_target(&call.name,call.awaited),
@@ -635,14 +664,14 @@ impl Lower<'_> {
     fn boolean(&self, term: &Term) -> Option<Number> {
         match &term.kind {
             TermKind::Group(t) => self.boolean(t),
-            TermKind::MethodCall(owner,n,args)=>self.scalar_method(owner,n,args,"bool"),
+            TermKind::MethodCall(owner,name,args) => self.scalar_method(owner,name,args,"bool"),
             TermKind::Name(n) if self.locals.get(n).is_some_and(|(_,ty)|ty=="bool") => Some(Number::Local(n.clone())),
             TermKind::Not(t) => Some(Number::Logic("==",Box::new(self.boolean(t)?),Box::new(Number::Constant(0)))) ,
             TermKind::Scalar(ScalarLiteral::Boolean(b)) => Some(Number::Constant(i64::from(*b))),
             TermKind::FieldRead(owner, field) if self.objects.as_ref()?.field_type(owner, field, false)? == "bool" =>
                 Some(Number::BoolMember(owner.clone(),field.clone())),
             TermKind::Logic("!=",a,b) if self.floating(a).is_some() =>
-                Some(Number::Logic("!=",Box::new(self.floating(a)?),Box::new(self.floating(b)?))),
+                Some(Number::Logic("decimal!=",Box::new(self.floating(a)?),Box::new(self.floating(b)?))),
             TermKind::Logic(op @ ("==" | "<" | "<=" | ">" | ">="), a, b) =>
                 Some(Number::Logic(op,Box::new(self.number(a)?),Box::new(self.number(b)?))),
             TermKind::Logic(op @ ("and" | "or" | "!="), a, b) =>
@@ -973,7 +1002,7 @@ impl Program {
                     "共享模組尚無此簽章或非同步安全證明",
                 ));
             }
-            let mut lower = Lower { text_access:Default::default(),
+            let mut lower = Lower { integer_slots:Default::default(),text_access:Default::default(),
                 source: &source,
                 tokens: &lexed.tokens,
                 objects: None, linked_names: None, readonly_slots: BTreeSet::new(),
@@ -1068,7 +1097,7 @@ impl Action {
             }
             Self::WriteMember { value: MemberValue::Integer(n) | MemberValue::Boolean(n), .. } => n.uses(&mut uses),
             Self::WriteMember { .. } | Self::RelocateObject { .. } | Self::Jump(_) | Self::ReplaceLocal(_) => (),
-            Self::Evaluate(value) | Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
+            Self::StoreInt(_,value) | Self::Evaluate(value) | Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(_,_,args) => for (_,value) in args {
                 if let MemberValue::Integer(n)|MemberValue::Boolean(n)=value { n.uses(&mut uses); }
@@ -1263,6 +1292,7 @@ impl Program {
 
     fn instantiate(&self, owner: ModuleId) -> Result<State<'_>, StrRuntimeError> {
         let mut state = State {
+            integers:self.globals.iter().map(|g|match g.initial {Initial::Integer(n)=>n, _=>0}).collect(),
             args:Vec::new(),
             owner,
             mixed: crate::mixed_struct_runtime::MixedStructRuntime::new(),
@@ -1274,7 +1304,8 @@ impl Program {
             _local: Default::default(),
         };
         for g in &self.globals {
-            if let Err(error) = state.heap.declare(&g.name, true, &g.initial) {
+            let Initial::Text(text)=&g.initial else {continue};
+            if let Err(error) = state.heap.declare(&g.name, true, text) {
                 state.heap.finish()?;
                 return Err(error);
             }
@@ -1386,6 +1417,7 @@ impl Program {
     fn detached_text(&self, value: &LocalText, frame: &mut Frame, state: &mut State, depth: usize)
         -> Result<crate::owned_str_runtime::OwnedUtf8, StrRuntimeError> {
         match value {
+            LocalText::CaughtMessage => state.heap.create_detached(frame.caught_message.take().ok_or(StrRuntimeError::EvaluationFailed)?),
             LocalText::Standard(call) => match self.standard_value(call,frame,state,depth)? {
                 standard::Value::Text(s)=>state.heap.create_detached(&s), _=>Err(StrRuntimeError::EvaluationFailed),
             },
@@ -1531,6 +1563,7 @@ impl Program {
                     state.mixed.construct_with_shared_ledger(&mut state.heap,n,&schema,&args,None)
                         .map_err(|_|StrRuntimeError::EvaluationFailed)?;
                 }
+                Action::StoreInt(slot,rhs)=>{let value=self.eval(rhs,frame,state,depth)?; state.integers[*slot]=value;}
                 Action::Bind(n, rhs) => {
                     let value = self.eval(rhs, frame, state, depth)?;
                     frame.locals.insert(n.clone(), value);
@@ -1654,6 +1687,7 @@ impl Program {
                     };
                     let Some(handler) = step.handlers.iter().find(|h| h.category == category) else { return Err(error) };
                     Storage::cleanup(&handler.cleanup,frame,&mut state.heap);
+                    frame.caught_message=Some(crate::entry::runtime_message(error));
                     pc = handler.target;
                 }
             }
@@ -1725,7 +1759,8 @@ impl Program {
                         if state.steps>budget.max_steps {return Err(StrRuntimeError::ExecutionBudgetExhausted);}
                         let n=self.eval(&step.value,&mut inner,state,depth+1)?;
                         if let Some(field)=&step.write {
-                            (if step.boolean {state.mixed.write_bool_field(&call.owner,field,n!=0,true)} else {state.mixed.write_int_field(&call.owner,field,n,true)}).map_err(|_|StrRuntimeError::EvaluationFailed)?;
+                            (if step.boolean {state.mixed.write_bool_field(&call.owner,field,n!=0,true)}
+                             else {state.mixed.write_int_field(&call.owner,field,n,true)}).map_err(|_|StrRuntimeError::EvaluationFailed)?;
                         } else {return Ok(n);}
                     }
                     Err(StrRuntimeError::IncompleteReturn)
@@ -1794,6 +1829,7 @@ impl Program {
             Number::Logic(op,a,b) => {
                 let left = self.eval(a, frame, state, depth)?;
                 let result = match *op {
+                    "decimal!=" => decimal::unequal(left,self.eval(b,frame,state,depth)?),
                     "and" => left != 0 && self.eval(b, frame, state, depth)? != 0,
                     "or" => left != 0 || self.eval(b, frame, state, depth)? != 0,
                     "==" => left == self.eval(b, frame, state, depth)?,
@@ -1805,6 +1841,7 @@ impl Program {
                 };
                 Ok(i64::from(result))
             }
+            Number::GlobalInt(slot)=>Ok(state.integers[*slot]),
             Number::Constant(v) => Ok(*v),
             Number::Local(n) => frame
                 .locals
@@ -1889,6 +1926,7 @@ enum Transfer<'a> {
 
 #[derive(Default)]
 struct Frame {
+    caught_message: Option<&'static str>,
     containers: containers::Store,
     text_loans:BorrowSafety,
     text_tickets:HashMap<String,BorrowTicket>,
@@ -1935,6 +1973,7 @@ impl Frame {
 }
 
 struct State<'a> {
+    integers: Vec<i64>,
     args:Vec<std::ffi::OsString>,
     mixed: crate::mixed_struct_runtime::MixedStructRuntime,
     declarations: &'a [Declaration],

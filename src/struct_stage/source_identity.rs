@@ -75,7 +75,7 @@ fn verified_private_syntax_roles(
             return false;
         }
         match &value.kind {
-            StmtKind::Try {..} => false,
+            StmtKind::Match {..} | StmtKind::Try {..} => false,
             StmtKind::ReturnAdd(_,value) | StmtKind::ProcedureCall(value) | StmtKind::Evaluate(value) | StmtKind::GraphemeWrite(value) => term(value, span, audit),
             StmtKind::ReadonlyElement(binding) =>
                 audit.record(NodeRole::Declaration, NodeSpan::new(binding.alias.start, binding.alias.end), Some(span))

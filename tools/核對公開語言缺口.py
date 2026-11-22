@@ -105,3 +105,27 @@ verify(cli, [(program + main(body), expected) for body, expected in [
     ("var xs:list[Missing] = []\nreturn len(xs)", "reject"),
     ("var xs:list[lexer.Token] = []\nxs.append(42)\nreturn 0", "reject"),
 ]], {"lexer.voil": lexer})
+
+verify(cli, [(main(body), expected) for body, expected in [
+    ("match(1+1){ case 1{ return 0 } case 2{ return 42 } case _{ return 3 } }",42),
+    ("match(-9223372036854775808){ case -0x8000000000000000{ return 42 } case _{ return 0 } }",42),
+    ("match(-1){ case -1+0{ return 1 } case _{ return 42 } }","reject"),
+    ("match(false){ case true{ return 0 } case false{ return 42 } }",42),
+    ("var n:int\nmatch(1){ case 1{ n = 42 } case _{ n = 3 } }\nreturn n",42),
+    ("var n:int\nmatch(1){ case 1{ n = 42 } }\nreturn n","reject"),
+    ("match(1){ case 1{ return 0 } case 0x1{ return 1 } }\nreturn 0","reject"),
+    ("match(1){ case true{ return 1 } }\nreturn 0","reject"),
+]])
+
+counter = "share i:int = 40\nfn next()->int{ return i+=1 }"
+verify(cli, [
+    ("import counter\n" + main("const first:int = counter.next()\nreturn counter.i + counter.next() - first"),42),
+    ("import counter\n" + main("match(counter.next()){ case 0{ return 0 } case 41{ return counter.i + 1 } case _{ return 0 } }"),42),
+    ("import i from counter as number\n" + main("return number+=1"),"reject"),
+], {"counter.voil": counter})
+
+verify(cli, [
+    ("share start:int = -0x8000000000000000\n" + main("return start + 9223372036854775807 + 43"),42),
+    ("share start:int = -9223372036854775809\n" + main("return start"),"reject"),
+    ("import float\n" + main("const x:float = float.nan()\nreturn 0"),"reject"),
+], {"float.voil":"fn marker()->int{ return 42 }"})

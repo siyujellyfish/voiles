@@ -32,4 +32,4 @@ cli=./target/dev-cli/voiles
 
 已發行的 Linux x86-64 `0.1.0-preview.1` 對應 M6 凍結基線。上面的 M7、M8 範例請使用主線建置版本。[預覽版下載與校驗碼](https://github.com/siyujellyfish/voiles/tree/releases/0.1.0-preview.1/dist) · [預覽版使用說明](release/使用說明.md)
 
-語法與語意以[語言規格](AI-build/語言規格-v0.2.md)為準。歷史階段、設計決策與工程紀錄可從[工程文件索引](AI-build/README.md)查閱。
+語法與語意以[語言規格](AI-build/語言規格-v0.2.md)為準。動態區間、一般 none 返回、運算、唯讀字串傳參與跨模組結構清單的行為和測試收錄於[公開語言缺口逐批驗收](AI-build/公開語言缺口.md)。歷史階段、設計決策與工程紀錄可從[工程文件索引](AI-build/README.md)查閱。

@@ -324,7 +324,7 @@ impl LinkedProgram {
                 } else {
                     return Err(u.error(f.start, f.end, "混合持有者參數尚未支援"));
                 }
-                let mut lower = Lower { text_access:Default::default(),objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
+                let mut lower = Lower { integer_slots:globals.iter().enumerate().filter_map(|(i,g)|matches!(g.initial,Initial::Integer(_)).then_some(i)).collect(), text_access:Default::default(),objects: Some(objects), source:&u.source,tokens:&u.tokens,globals:&visible,functions:&names,
                     linked_names:Some(&targets),readonly_slots:readonly.clone(),locals,strings,aliases:HashMap::new() };
                 let typed_signature = matches!(f.result_ty.as_str(), "bool" | "float" | "none") || f.params.iter().any(|p| matches!(p.ty.as_str(), "bool" | "float"));
                 let body = if f.result_ty == "str" {

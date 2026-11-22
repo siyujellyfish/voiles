@@ -42,3 +42,10 @@ verify(Path(sys.argv[1]).resolve(strict=True), [
           'count = count + t[0][0] }\ncontinue }\nreturn count'),126),
     (main('if(true){ const t:str = "*" }\nreturn t[0][0]'),"reject"),
 ])
+
+verify(Path(sys.argv[1]).resolve(strict=True), [
+    (main('try{ return 1 / 0 } except EvaluationError as msg{ return len(msg) + 38 }'),42),
+    (main('const s:str = "x"\ntry{ return s.to_int() } except TypeConversationError as msg{ return len(msg) + 36 }'),42),
+    (main('try{ return 1 / 0 } except EvaluationError as msg{ msg = "x"\nreturn 0 }'),"reject"),
+    (main('try{ const n:int = 1 } except EvaluationError as msg{ return 0 }\nreturn len(msg)'),"reject"),
+])
