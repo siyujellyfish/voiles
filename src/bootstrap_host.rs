@@ -33,7 +33,7 @@ struct Machine {
     nested_items: usize,
     dict_items: usize,
     dict_keys: BTreeSet<String>,
-    pending_list_borrow: Option<(String, Option<String>)>,
+    pending_list_borrows: Vec<(String, Option<String>)>,
     pending_dict_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
@@ -257,7 +257,7 @@ impl Machine {
         self.nested_items = 0;
         self.dict_items = 0;
         self.dict_keys.clear();
-        self.pending_list_borrow = None;
+        self.pending_list_borrows.clear();
         self.pending_dict_borrow = None;
         self.pending_list_append = None;
         self.pending_dict_set = None;
@@ -433,7 +433,7 @@ impl Machine {
         if self.locals.get(&name).map(String::as_str) != Some("list:int") {
             return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
         }
-        if self.pending_list_borrow.as_ref().is_some_and(|(owner, _)| owner == &name) {
+        if self.pending_list_borrows.iter().any(|(owner, _)| owner == &name) {
             return Err(Fault::Syntax("有效唯讀元素借用期間不能修改清單".into()));
         }
         self.expect(".")?;
@@ -452,7 +452,7 @@ impl Machine {
         if self.locals.get(&name).map(String::as_str) != Some("list:int") {
             return Err(Fault::Syntax(format!("{name} 不是 list[int]")));
         }
-        if self.pending_list_borrow.as_ref().is_some_and(|(owner, _)| owner == &name) {
+        if self.pending_list_borrows.iter().any(|(owner, _)| owner == &name) {
             return Err(Fault::Syntax("有效唯讀元素借用期間不能修改清單".into()));
         }
         self.expect(".")?;
@@ -497,7 +497,7 @@ impl Machine {
         self.emit(&format!("; if let Some((_, current)) = v_{owner}.iter_mut().find(|(k, _)| *k == {key:?}) {{ *current = v_dict_value; }} else {{ v_{owner}.push(({key:?}, v_dict_value)); }} v_{owner}.len() as i64 }}"))
     }
     fn return_start(&mut self) -> R {
-        if self.pending_list_borrow.is_some() || self.pending_dict_borrow.is_some() {
+        if !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some() {
             self.emit("return Ok(")
         } else {
             self.emit("Ok(")
@@ -505,13 +505,14 @@ impl Machine {
     }
     fn list_owner(&mut self) -> R {
         let name = self.take_name()?;
-        if !matches!(self.locals.get(&name).map(String::as_str), Some("list:int" | "list:list:int")) {
+        if !matches!(self.locals.get(&name).map(String::as_str),
+            Some("list:int" | "borrow:list:int" | "list:list:int")) {
             return Err(Fault::Syntax(format!("{name} 不是可選取的清單")));
         }
-        if self.pending_list_borrow.is_some() || self.pending_dict_borrow.is_some() {
+        if self.pending_dict_borrow.is_some() {
             return Err(Fault::Syntax("清單借用邊界無效".into()));
         }
-        self.pending_list_borrow = Some((name.clone(), None));
+        self.pending_list_borrows.push((name.clone(), None));
         self.emit("match usize::try_from(")
     }
     fn list_alias(&mut self) -> R {
@@ -522,7 +523,7 @@ impl Machine {
             return Err(Fault::Syntax(format!("重複區域名稱 {alias}")));
         }
         let (owner, element_kind) = {
-            let Some((owner, pending_alias)) = self.pending_list_borrow.as_mut() else {
+            let Some((owner, pending_alias)) = self.pending_list_borrows.last_mut() else {
                 return Err(Fault::Syntax("清單借用邊界無效".into()));
             };
             *pending_alias = Some(alias.clone());
@@ -542,7 +543,7 @@ impl Machine {
         self.emit(&format!(").ok().and_then(|i| v_{owner}.get(i)) {{\nSome(v_{alias}) => {{\n{binding}"))
     }
     fn finish_list_borrow(&mut self) -> R {
-        let (_, alias) = self.pending_list_borrow.take()
+        let (_, alias) = self.pending_list_borrows.pop()
             .ok_or_else(|| Fault::Syntax("清單借用邊界無效".into()))?;
         let alias = alias.ok_or_else(|| Fault::Syntax("清單借用缺少元素名稱".into()))?;
         self.locals.remove(&alias);
@@ -553,7 +554,7 @@ impl Machine {
         if self.locals.get(&name).map(String::as_str) != Some("dict:str:int") {
             return Err(Fault::Syntax(format!("{name} 不是 dict{{str,int}}")));
         }
-        if self.pending_dict_borrow.is_some() || self.pending_list_borrow.is_some() {
+        if self.pending_dict_borrow.is_some() || !self.pending_list_borrows.is_empty() {
             return Err(Fault::Syntax("字典借用邊界無效".into()));
         }
         self.pending_dict_borrow = Some((name.clone(), None));
@@ -833,7 +834,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
         constructor_fields: BTreeSet::new(), list_items: 0, nested_rows: 0,
         nested_items: 0, dict_items: 0,
-        dict_keys: BTreeSet::new(), pending_list_borrow: None, pending_dict_borrow: None,
+        dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,
         pending_list_append: None, pending_dict_set: None,
     };
     v_main(&mut machine, 0).map_err(|e| {
