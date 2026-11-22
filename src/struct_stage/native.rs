@@ -24,6 +24,16 @@ impl Emitter<'_> {
                 write!(expr, "f{}(globals, steps, depth + 1, site{args})? }}", self.functions.get(target.as_str())?).ok()?;
                 expr
             }
+            Number::Logic(op, a, b) => {
+                let a = self.number(a)?;
+                let b = self.number(b)?;
+                match *op {
+                    "and" => format!("i64::from(({a}) != 0 && ({b}) != 0)"),
+                    "or" => format!("i64::from(({a}) != 0 || ({b}) != 0)"),
+                    "lt" => format!("i64::from(({a}) < ({b}))"),
+                    _ => format!("i64::from(({a}) != ({b}))"),
+                }
+            }
             Number::Constant(n) => format!("({n}i64)"),
             Number::Local(name) => format!("v{}", self.locals.get(name)?),
             Number::Binary(a, op, b) => {
@@ -57,7 +67,7 @@ impl LinkedProgram {
             functions: plan.bodies.keys().enumerate().map(|(i, n)| (n.as_str(), i)).collect(),
             locals: BTreeMap::new(),
         };
-        let mut out = String::from("#![forbid(unsafe_code)]\n#![allow(unused_variables, unused_parens, dead_code)]\n");
+        let mut out = String::from("#![forbid(unsafe_code)]\n#![allow(unused_variables, unused_parens, unused_assignments, unused_mut, dead_code)]\n");
         let budget = crate::execution::ExecutionBudget::default();
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
@@ -76,22 +86,38 @@ impl LinkedProgram {
             let local_name = name.split_once(':').map_or(name.as_str(), |(_, n)| n);
             let signature = unit.functions.iter().find(|f| f.name == local_name).unwrap();
             let argument: String = signature.params.iter().map(|p| {
-                let ty = if p.ty == "int" { "i64" } else { "Object" };
+                let ty = if matches!(p.ty.as_str(),"int" | "bool") { "i64" } else { "Object" };
                 format!(", v{}: {ty}", emitter.local_id(&p.name))
             }).collect();
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<i64, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
-            for step in body {
+            let flow = body.iter().any(|s| matches!(s.action, Action::Jump(_) | Action::Unless(..)));
+            if flow {
+                for step in body {
+                    if let Action::Bind(n, _) = &step.action {
+                        if !emitter.locals.contains_key(n) {
+                            writeln!(out, "let mut v{}: i64 = 0;", emitter.local_id(n)).unwrap();
+                        }
+                    }
+                }
+                out.push_str("let mut pc = 0usize; loop { match pc {\n");
+            }
+            for (index, step) in body.iter().enumerate() {
+                if flow { writeln!(out, "{index} => {{ pc = {};", index+1).unwrap(); }
                 let unit = &self.graph.units[step.module];
                 let span = unit.source.span(step.span.0, step.span.1);
                 let site = format!("{}:{}:{}", unit.path.display(), span.start.line, span.start.column);
                 writeln!(out, "let site = {site:?}; *steps += 1; if *steps > {} {{ return Err((site, LIMIT)); }}", budget.max_steps).unwrap();
                 let unsupported = || unit.error(step.span.0, step.span.1, "原生後端尚未支援此操作");
                 match &step.action {
+                    Action::Jump(target) => writeln!(out, "pc = {target};").unwrap(),
+                    Action::Unless(test, target) => {
+                        writeln!(out, "if ({}) == 0 {{ pc = {target}; }}", emitter.number(test).ok_or_else(unsupported)?).unwrap();
+                    }
                     Action::Bind(name, value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
                         let local = emitter.local_id(name);
-                        writeln!(out, "let v{local} = {expr};").unwrap();
+                        writeln!(out, "{}v{local} = {expr};", if flow { "" } else { "let " }).unwrap();
                     }
                     Action::Return(value) => {
                         let expr = emitter.number(value).ok_or_else(unsupported)?;
@@ -126,7 +152,9 @@ impl LinkedProgram {
                         writeln!(out, "globals[{}].replace({i}, {text:?}).ok_or((site, ARITH))?;", place.slot).unwrap();
                     }
                 }
+                if flow { out.push_str("}\n"); }
             }
+            if flow { out.push_str("_ => unreachable!(), } }\n"); }
             out.push_str("}\n");
         }
         let main = emitter.functions["main"];

@@ -173,6 +173,29 @@ impl Parser<'_> {
     }
 
     fn term(&mut self) -> Result<Term, Diagnostic> {
+        self.logic_level(0)
+    }
+
+    fn logic_level(&mut self, level: usize) -> Result<Term, Diagnostic> {
+        if level == 3 { return self.sum(); }
+        let mut left = self.logic_level(level + 1)?;
+        loop {
+            let op = match level {
+                0 if self.keyword("or") => "or",
+                1 if self.keyword("and") => "and",
+                2 if self.symbol('!') && self.tokens.get(self.cursor+1).is_some_and(|t|
+                    t.kind == TokenKind::Symbol('=') && self.tok().end == t.start) => "!=",
+                _ => break,
+            };
+            self.cursor += if op == "!=" { 2 } else { 1 };
+            let right = self.logic_level(level + 1)?;
+            left = Term { start:left.start, end:right.end,
+                kind:TermKind::Logic(op, Box::new(left), Box::new(right)) };
+        }
+        Ok(left)
+    }
+
+    fn sum(&mut self) -> Result<Term, Diagnostic> {
         // P01 加減為相同優先序、左結合；括號在原子解析處理。
         let left = self.atom()?;
         crate::syntax_shared::fold_additive_spanned(

@@ -39,3 +39,33 @@ with TemporaryDirectory() as temp:
             exe = root / "invalid"
             result = invoke(cli, mode, entry, *(["-o", exe] if mode in ["build", "pack"] else []))
             assert result.returncode == 1 and result.stderr and not exe.exists(), result
+
+    entry.write_text("""fn exploding()->bool{ return 9223372036854775807 + 1 != 0 }
+fn choose(flag:bool)->int{
+    var sum:int = 0
+    for i in 0..8{
+        if(i != 3){ sum = sum + i } else { continue }
+        if(i != 5){ continue } else { break }
+    }
+    while(sum != 42){ sum = sum + 1 }
+    if(flag or false and exploding()){ return sum } else { return 0 }
+}
+fn main()->int{ return choose(flag=true) }
+""", encoding="utf-8")
+    for mode in ["check", "run", "build", "pack"]:
+        exe = root / f"flow-{mode}"
+        result = invoke(cli, mode, entry, *(["-o", exe] if mode in ["build", "pack"] else []))
+        assert result.returncode == 0, result
+        if mode == "run":
+            assert result.stdout == "42\n", result
+        if mode in ["build", "pack"]:
+            assert invoke(exe).returncode == 42
+    for body in ["if(1){ return 0 } else { return 1 }",
+                 "const x:bool = true\nx = false\nreturn 0",
+                 "while(false){ var x:int = 1 }\nreturn x",
+                 "return true", "break\nreturn 0"]:
+        entry.write_text("fn main()->int{\n" + body + "\n}", encoding="utf-8")
+        for mode in ["check", "run", "build", "pack"]:
+            exe = root / "invalid"
+            result = invoke(cli, mode, entry, *(["-o", exe] if mode in ["build", "pack"] else []))
+            assert result.returncode == 1 and result.stderr and not exe.exists(), result

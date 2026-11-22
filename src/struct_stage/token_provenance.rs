@@ -21,6 +21,7 @@ fn verified_private_token_roles(
         value: &Term, tokens: &[Token], audit: &mut SourceIdentityAudit<'_>,
     ) -> bool {
         match &value.kind {
+            TermKind::Logic(..) => false, // 私有證據管線尚未接受此形式。
             TermKind::StringReplace(owner, index, rhs) => {
                 let Ok(cursor) = tokens.binary_search_by_key(&value.start, |t| t.start) else { return false };
                 let source = Source::new(audit.source.as_bytes().to_vec());
