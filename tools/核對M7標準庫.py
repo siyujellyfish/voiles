@@ -63,3 +63,19 @@ return status + argc() + file_len(path)
     assert binary.read_bytes() == bytes([0,255,42])
     verify(cli, [(f'fn main()->int{{ return write_bytes("{binary}") }}',0)])
     assert binary.read_bytes() == b""
+
+    stats = Path(__file__).resolve().parents[1] / "tests" / "m7" / "字素統計.voil"
+    data.write_text("甲 é 🪼",encoding="utf-8")
+    assert run(cli,"check",stats,cwd=root).returncode == 0
+    reference = run(cli,"run",stats,"--",data,cwd=root)
+    assert (reference.returncode,reference.stdout,reference.stderr) == (0,"3\n",""), reference
+    missing = root / "缺少的輸入"
+    failure = run(cli,"run",stats,"--",missing,cwd=root)
+    assert failure.returncode == 1 and "字素統計.voil:3:" in failure.stderr, failure
+    for mode in ("build","pack"):
+        exe = root / ("stats-" + mode)
+        built = run(cli,mode,stats,"-o",exe,cwd=root)
+        assert (built.returncode,built.stderr) == (0,""), built
+        assert run(exe,data,cwd=root).returncode == 3
+        rejected = run(exe,missing,cwd=root)
+        assert (rejected.returncode,rejected.stderr) == (1,failure.stderr), rejected

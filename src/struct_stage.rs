@@ -187,7 +187,8 @@ crate::common_ir::define_shared_expression_kind!(
     }
 );
 
-struct Parser<'a> {
+type Parser<'a> = LanguageParser<'a,false>;
+struct LanguageParser<'a,const PUBLIC:bool> {
     source: &'a Source,
     tokens: &'a [Token],
     cursor: usize,

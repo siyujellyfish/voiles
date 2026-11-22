@@ -14,7 +14,7 @@ pub(super) enum Value {
     Integer(i64),
     Boolean(bool),
     Text(String),
-    Decimal(u64, i32),
+    Decimal(i64),
     List(Vec<Value>),
     Dict(BTreeMap<Key, Value>),
 }
@@ -35,7 +35,7 @@ impl Value {
         }
     }
     pub(super) fn scalar(&self) -> Option<i64> {
-        match self { Self::Decimal(c,e) => Some(super::decimal::encode(*c,*e)), Self::Integer(n) => Some(*n), Self::Boolean(b) => Some(i64::from(*b)), _ => None }
+        match self { Self::Decimal(n) => Some(*n), Self::Integer(n) => Some(*n), Self::Boolean(b) => Some(i64::from(*b)), _ => None }
     }
     pub(super) fn tag(&self) -> Option<i64> {
         Some(match self {
@@ -56,7 +56,7 @@ impl Store {
         match value {
             Value::CopyFrom(slot) => *value = match self.get(slot)? {
                 Value::Missing => Value::Missing, Value::Integer(n) => Value::Integer(*n),
-                Value::Boolean(b) => Value::Boolean(*b), Value::Decimal(c,e) => Value::Decimal(*c,*e),
+                Value::Boolean(b) => Value::Boolean(*b), Value::Decimal(n) => Value::Decimal(*n),
                 _ => return None,
             },
             Value::List(xs) => { for x in xs { self.resolve(x)?; } }

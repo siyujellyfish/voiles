@@ -23,3 +23,12 @@ verify(Path(sys.argv[1]).resolve(strict=True), [
     (before + "const k:int = a[0][0]\nreturn await leaf()\n}", 42),
     (before + "const k:int = await leaf()\nreturn a[0][0]\n}", "reject"),
 ])
+
+with_argument = "async fn job(value:int)->int{ return value + 1 }"
+verify(Path(sys.argv[1]).resolve(strict=True), [
+    (program(with_argument,"await job(41)"),42),
+    (program(with_argument,"await job(false)"),"reject"),
+    (program(with_argument,"job(41)"),"reject"),
+    (with_argument + "\nfn wrapper()->int{ return await job(41) }\n"
+     + "fn main()->int{ var xs:list[int] = [1]\nwith xs[0] as x { return wrapper() + x }\nreturn 0 }","reject"),
+])

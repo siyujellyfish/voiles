@@ -46,3 +46,20 @@ verify(cli, [
     (factory('var a:Box = Box(s="*")\nvar b:Box = a.move()\nreturn a.move()') + receive,"reject"),
     (factory('var a:Box = Box(s="*")\nvar n:int = 9223372036854775807+1\nreturn a.move()') + receive,"runtime"),
 ])
+
+counter = """struct Counter{
+var n:int = 0
+fn add(by:int)->int{
+self.n = self.n + by
+return self.n
+}
+fn twice()->int{ return self.n + self.n }
+}
+"""
+verify(cli, ((counter + 'fn main()->int{\n' + body + '\n}', expected) for body,expected in [
+    ("var a:Counter = Counter()\nconst done:int = a.add(21)\nreturn a.twice()",42),
+    ("const a:Counter = Counter(n=21)\nreturn a.twice()",42),
+    ("const a:Counter = Counter()\nreturn a.add(42)","reject"),
+    ("var a:Counter = Counter()\nreturn a.add(true)","reject"),
+    ("var a:Counter = Counter(n=9223372036854775807)\nreturn a.add(1)","runtime"),
+]))

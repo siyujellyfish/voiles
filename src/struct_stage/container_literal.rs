@@ -73,7 +73,7 @@ impl ContainerLiteral {
     }
 }
 
-impl Parser<'_> {
+impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
     fn container_atom(&mut self, expected: &str) -> Result<ContainerAtom, Diagnostic> {
         if element_type(expected).is_some() {
             let term = self.container_literal(expected)?;
@@ -93,7 +93,7 @@ impl Parser<'_> {
                 ("bool", ContainerAtom::Boolean(word == "true")),
             TokenKind::StringLiteral(text) => ("str", ContainerAtom::Text(text.clone())),
             TokenKind::Decimal(text) => {
-                let (coefficient, exponent) = decimal::parts(text)
+                let (coefficient, exponent) = (if PUBLIC {decimal::parts(text)} else {Self::decimal64_checked_subset(text)})
                     .ok_or_else(|| self.syntax("容器小數常值超出支援範圍"))?;
                 ("float", ContainerAtom::Decimal(coefficient, exponent))
             }
@@ -572,7 +572,7 @@ enum OptionalPredicate {
     Candidate(Option<String>),
 }
 
-impl Parser<'_> {
+impl<const PUBLIC:bool> LanguageParser<'_,PUBLIC> {
     fn optional_condition(&mut self) -> Result<Option<Term>, Diagnostic> {
         let start = self.tok().start;
         let TokenKind::Name(name) = self.tok().kind.clone() else { return Ok(None) };

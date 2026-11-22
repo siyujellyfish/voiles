@@ -2,6 +2,7 @@
 use super::*;
 use std::fmt::Write;
 
+#[derive(Clone)]
 struct Emitter<'a> {
     functions: BTreeMap<&'a str, usize>,
     locals: BTreeMap<String, usize>,
@@ -15,7 +16,7 @@ fn container_source(value: &containers::Value) -> String {
         Value::Integer(n) => format!("containers::Value::Integer({n})"),
         Value::Boolean(b) => format!("containers::Value::Boolean({b})"),
         Value::Text(s) => format!("containers::Value::Text(String::from({s:?}))"),
-        Value::Decimal(c,e) => format!("containers::Value::Decimal({c},{e})"),
+        Value::Decimal(n) => format!("containers::Value::Decimal({n})"),
         Value::List(xs) => format!("containers::Value::List(vec![{}])",xs.iter().map(container_source).collect::<Vec<_>>().join(",")),
         Value::Dict(xs) => {
             let entries = xs.iter().map(|(k,v)| {
@@ -104,6 +105,7 @@ impl Emitter<'_> {
 
     fn container_item(&self, item: &ContainerItem) -> Option<String> {
         Some(match item {
+            ContainerItem::Decimal(n)=>format!("containers::Value::Decimal({})",self.number(n)?),
             ContainerItem::Scalar(n,true) => format!("containers::Value::Boolean(({}) != 0)",self.number(n)?),
             ContainerItem::Scalar(n,false) => format!("containers::Value::Integer({})",self.number(n)?),
             ContainerItem::Literal(v) => container_source(v),
@@ -122,6 +124,7 @@ impl Emitter<'_> {
             Number::Standard(call)=>self.standard(call,false)?,
             Number::ViewByte(slot,i,j) => format!("{{ let Some(containers::Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
             Number::Edit(slot,edit) => match edit.as_ref() {
+                Edit::ReplaceOptional(item)=>format!("{{ let value={}; containers.put({slot:?},value).ok_or((site,ARITH))?; 0i64 }}",self.container_item(item)?),
                 Edit::Append(item) => format!("{{ let item = {}; containers.append({slot:?},item).ok_or((site,ARITH))? }}",self.container_item(item)?),
                 Edit::Set(key,item) => format!("{{ let key = {}; let item = {}; containers.set({slot:?},key,item).ok_or((site,ARITH))? }}",self.key(key)?,self.container_item(item)?),
                 Edit::Pop => format!("containers.pop({slot:?}).ok_or((site,ARITH))?"),
@@ -130,7 +133,7 @@ impl Emitter<'_> {
                 let method = match read { ContainerRead::Length => "length", ContainerRead::Tag => "tag", ContainerRead::Scalar => "scalar" };
                 format!("containers.get({slot:?}).and_then(containers::Value::{method}).ok_or((site, ARITH))?")
             }
-            Number::ScalarCall { target, arguments } => {
+            Number::ScalarCall { target, arguments,.. } => {
                 let mut expr = String::from("{ ");
                 for (_, slot, value) in arguments {
                     write!(expr, "let arg{slot} = {}; ", self.number(value)?).ok()?;
@@ -161,6 +164,25 @@ impl Emitter<'_> {
             }
             Number::Choice(test, yes, no) =>
                 format!("(if ({}) != 0 {{ {} }} else {{ {} }})", self.number(test)?, self.number(yes)?, self.number(no)?),
+            Number::Method(call)=>{
+                let mut inner=self.clone();
+                let owner=self.locals.get(&call.owner)?;
+                let mut code=String::from("{ ");
+                for (name,arg) in &call.arguments {
+                    write!(code,"let v{} = {}; ",inner.local_id(name),self.number(arg)?).ok()?;
+                }
+                let budget=crate::execution::ExecutionBudget::default();
+                write!(code,"if depth+1 >= {} {{ return Err((site,LIMIT)); }} ",budget.max_call_frames).ok()?;
+                for step in &call.steps {
+                    write!(code,"let site={:?}; *steps+=1; if *steps>{} {{ return Err((site,LIMIT)); }} ",step.site,budget.max_steps).ok()?;
+                    let expr=inner.number(&step.value)?;
+                    if let Some(field)=&step.write {
+                        write!(code,"let n={expr}; v{owner}.0.insert({field:?},Field::Int(n)); ").ok()?;
+                    } else {code.push_str(&expr);}
+                }
+                code.push_str(" }");
+                code
+            }
             Number::Member { owner, field, .. } => {
                 let object = self.locals.get(owner)?;
                 format!("v{object}.integer({field:?}).ok_or((site, ARITH))?")
@@ -256,6 +278,7 @@ impl LinkedProgram {
                 if guarded { writeln!(out, "let outcome = (|| -> Result<Option<{ret}>, Failure> {{").unwrap(); }
                 match &step.action {
                     Action::Container(slot,init) => match init {
+                        ContainerInit::Optional(item)=>writeln!(out,"let value={}; containers.put({slot:?},value).ok_or((site,ARITH))?;",emitter.container_item(item).ok_or_else(unsupported)?).unwrap(),
                         ContainerInit::Literal(v) => writeln!(out,"containers.put({slot:?},{}).ok_or((site, ARITH))?;",container_source(&v.runtime().ok_or_else(unsupported)?)).unwrap(),
                         ContainerInit::Move(from) => writeln!(out,"containers.relocate({from:?},{slot:?}).ok_or((site, ARITH))?;").unwrap(),
                     },

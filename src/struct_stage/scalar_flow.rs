@@ -80,7 +80,7 @@ impl Builder<'_, '_> {
                 let b = self.binding(n)?;
                 let ty = self.narrowed.borrow().get(&b.slot).cloned().unwrap_or_else(|| b.ty.clone());
                 if !matches!(ty.as_str(), "int" | "bool" | "float") { return None; }
-                let value = if self.views.contains(&b.slot) { Number::Container(b.slot.clone(), ContainerRead::Scalar) }
+                let value = if self.views.contains(&b.slot) || b.ty.starts_with("Optional[") { Number::Container(b.slot.clone(), ContainerRead::Scalar) }
                     else { Number::Local(b.slot.clone()) };
                 return Some((ty, value));
             }
@@ -109,7 +109,7 @@ impl Builder<'_, '_> {
                 let ty=self.narrowed.borrow().get(&binding.slot).cloned().unwrap_or_else(||binding.ty.clone());
                 if ty != "str" { return None; }
                 let (i,j)=(self.offset(i)?,self.offset(j)?);
-                ("int",if self.views.contains(&binding.slot) {Number::ViewByte(binding.slot.clone(),i,j)}
+                ("int",if self.views.contains(&binding.slot) || binding.ty.starts_with("Optional[") {Number::ViewByte(binding.slot.clone(),i,j)}
                     else {Number::LocalByte(binding.slot.clone(),i,j)})
             }
             TermKind::MethodCall(owner,method,args) if method=="to_int" && args.is_empty()
@@ -133,10 +133,10 @@ impl Builder<'_, '_> {
                 if *op != "!=" && ty != "bool" { return None; }
                 ("bool", Number::Logic(op, Box::new(left), Box::new(self.typed(b,&ty)?)))
             }
-            TermKind::UnresolvedZeroArgs(n) => return self.call(n,std::iter::empty()),
-            TermKind::Call(c) if !c.awaited => return self.call(&c.name,c.arguments.iter().map(|v|(None,v))),
-            TermKind::Construct(n,args) => return self.call(n,args.iter().map(|(n,v)|(Some(n.as_str()),v))),
-            TermKind::MethodCall(m,n,args) => return self.call(&format!("{m}.{n}"),args.iter().map(|v|(None,v))),
+            TermKind::UnresolvedZeroArgs(n) => return self.call(n,false,std::iter::empty()),
+            TermKind::Call(c) => return self.call(&c.name,c.awaited,c.arguments.iter().map(|v|(None,v))),
+            TermKind::Construct(n,args) => return self.call(n,false,args.iter().map(|(n,v)|(Some(n.as_str()),v))),
+            TermKind::MethodCall(m,n,args) => return self.call(&format!("{m}.{n}"),false,args.iter().map(|v|(None,v))),
             _ => return None,
         };
         Some((ty.to_owned(),value))
@@ -158,7 +158,7 @@ impl Builder<'_, '_> {
             .map(|s|s.split(',').map(str::to_owned).collect::<BTreeSet<_>>());
         let source=members(&b.ty)?;
         let target=members(expected)?;
-        (self.views.contains(&b.slot) && !source.contains("str") && source.is_subset(&target)).then(||b.slot.clone())
+        ((self.views.contains(&b.slot) || self.containers.contains(&b.slot)) && !source.contains("str") && source.is_subset(&target)).then(||b.slot.clone())
     }
 
     fn item(&self, term:&Term, expected:&str) -> Option<ContainerItem> {
@@ -176,7 +176,8 @@ impl Builder<'_, '_> {
             }
             _ => {
                 let (ty,n)=self.expr(term)?;
-                (permits(&ty) && matches!(ty.as_str(),"int"|"bool")).then(||ContainerItem::Scalar(n,ty=="bool"))
+                if !permits(&ty) {return None;}
+                match ty.as_str() { "float"=>Some(ContainerItem::Decimal(n)), "int"|"bool"=>Some(ContainerItem::Scalar(n,ty=="bool")), _=>None }
             }
         }
     }
@@ -235,10 +236,10 @@ impl Builder<'_, '_> {
         }
     }
 
-    fn call<'t>(&self,name:&str,args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<(String,Number)> {
+    fn call<'t>(&self,name:&str,awaited:bool,args: impl Iterator<Item=(Option<&'t str>, &'t Term)>) -> Option<(String,Number)> {
         if self.binding(name.split('.').next()?).is_some() { return None; }
         let objects = self.lower.objects.as_ref()?;
-        if name == "len" && objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
+        if !awaited && name == "len" && objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
             let mut args = args;
             let (None, term) = args.next()? else { return None };
             let TermKind::Name(owner) = &term.kind else { return None };
@@ -251,12 +252,12 @@ impl Builder<'_, '_> {
             self.invalidate();
             return Some(("int".into(), Number::Container(binding.slot.clone(), ContainerRead::Length)));
         }
-        if objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
+        if !awaited && objects.function(name).is_none() && !self.lower.globals.contains_key(name) {
             let call=self.standard_call(name,args,"int")?;
             return Some(("int".into(),Number::Standard(call)));
         }
         let (target,_,f) = objects.function(name)?;
-        if f.is_async || !matches!(f.result_ty.as_str(), "int" | "bool" | "float") { return None; }
+        if f.is_async!=awaited || !matches!(f.result_ty.as_str(), "int" | "bool" | "float") { return None; }
         let mut values = Vec::new();
         let mut slots = BTreeSet::new();
         for (index,(label,arg)) in args.enumerate() {
@@ -267,7 +268,7 @@ impl Builder<'_, '_> {
         }
         if values.len()!=f.params.len() { return None; }
         self.invalidate();
-        Some((f.result_ty.clone(), Number::ScalarCall { target:target.clone(), arguments:values }))
+        Some((f.result_ty.clone(), Number::ScalarCall { awaited, target:target.clone(), arguments:values }))
     }
 
     fn container(&mut self, stmt: &Stmt, declaration: &crate::syntax_shared::ParsedDeclaration<String, Term>) -> Option<()> {
@@ -357,7 +358,7 @@ impl Builder<'_, '_> {
 
     fn step(&mut self, s:&Stmt, action:Action) -> usize {
         let at=self.body.len();
-        self.body.push(Step{handlers:vec![],module:self.module,span:(s.start,s.end),action});
+        self.body.push(Step{active_view:!self.borrowed.is_empty(),handlers:vec![],module:self.module,span:(s.start,s.end),action});
         at
     }
     fn patch(&mut self, at:usize, to:usize) {
@@ -376,6 +377,16 @@ impl Builder<'_, '_> {
             match &s.kind {
                 StmtKind::Declare(d) => {
                     if self.scopes.last().unwrap().contains_key(&d.name) { return Err(err("重複區域宣告")); }
+                    if d.ty.starts_with("Optional[") {
+                        let item=d.initializer.as_ref().and_then(|t|self.item(t,&d.ty)).ok_or_else(||err("Optional 初值不屬於宣告的候選集合"))?;
+                        let slot=format!("@{}",self.next_slot);
+                        self.next_slot+=1;
+                        self.containers.insert(slot.clone());
+                        self.storage.push(slot.clone());
+                        self.step(s,Action::Container(slot.clone(),ContainerInit::Optional(item)));
+                        self.scopes.last_mut().unwrap().insert(d.name.clone(),Binding{slot,ty:d.ty.clone(),mutable:d.mutable});
+                        continue;
+                    }
                     if d.ty=="str" && self.scopes.len()==1 {
                         let value=d.initializer.as_ref().and_then(|t|self.text(t)).ok_or_else(||err("需要可獨立持有的字串"))?;
                         let slot=format!("@{}",self.next_slot);
@@ -422,6 +433,13 @@ impl Builder<'_, '_> {
                 }
                 StmtKind::Assign(a) => {
                     let b=self.binding(&a.name).filter(|b|b.mutable).ok_or_else(||err("缺少可寫區域純量"))?;
+                    if b.ty.starts_with("Optional[") {
+                        let value=self.item(&a.expression,&b.ty).ok_or_else(||err("Optional 賦值型別不符"))?;
+                        let slot=b.slot.clone();
+                        self.invalidate();
+                        self.step(s,Action::Evaluate(Number::Edit(slot,Box::new(Edit::ReplaceOptional(value)))));
+                        continue;
+                    }
                     if b.ty=="str" && !self.views.contains(&b.slot) {
                         let value=self.text(&a.expression).ok_or_else(||err("需要字串右值"))?;
                         self.step(s,Action::StoreText{target:b.slot.clone(),declaration:None,value});

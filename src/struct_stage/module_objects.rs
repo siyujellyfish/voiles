@@ -19,15 +19,38 @@ fn seed(unit:&Unit,t:&Term)->Option<ApprovedSeed> {
     }
 }
 
-// 這個執行入口目前接受以 self 讀取整數欄位的同步方法。
-fn returned_field(method:&Function)->Option<&str> {
-    if method.result_ty!="int" || method.is_async || !method.params.is_empty() {return None;}
-    let [stmt]=method.body.statements.as_slice() else {return None;};
-    let StmtKind::Return(ret)=&stmt.kind else {return None;};
-    match &ret.expression.kind {
-        TermKind::FieldRead(owner,field) if owner=="self"=>Some(field),
+fn method_value(t:&Term, owner:&str, def:&StructDecl, method:&Function)->Option<Number> {
+    match &t.kind {
+        TermKind::Group(t)=>method_value(t,owner,def,method),
+        TermKind::Scalar(ScalarLiteral::Integer(n))=>Some(Number::Constant(integer_i64(n).ok()?)),
+        TermKind::Name(n) if method.params.iter().any(|p|p.name==*n && p.ty=="int")=>Some(Number::Local(format!("$arg/{n}"))),
+        TermKind::FieldRead(receiver,n) if receiver=="self" && def.field(n)?.ty=="int" =>
+            Some(Number::Member {owner:owner.into(),field:n.clone(),receiver:None}),
+        TermKind::BinaryInt(n)=>Some(Number::Binary(Box::new(method_value(&n.left,owner,def,method)?),n.operator,
+            Box::new(method_value(&n.right,owner,def,method)?))),
         _=>None,
     }
+}
+
+fn method_steps(unit:&Unit, module:usize, owner:&str, def:&StructDecl, method:&Function)->Option<Vec<MethodStep>> {
+    if method.is_async || method.result_ty!="int" {return None;}
+    let mut names=HashSet::new();
+    if method.params.iter().any(|p|p.ty!="int" || p.name=="self" || !names.insert(&p.name)) {return None;}
+    let (last,body)=method.body.statements.split_last()?;
+    let mut steps=Vec::new();
+    for stmt in body.iter().chain(std::iter::once(last)) {
+        let (write,expr)=match &stmt.kind {
+            StmtKind::FieldAssign{receiver,field,value} if receiver=="self" && !std::ptr::eq(stmt,last)
+                && !def.field(field)?.immutable && def.field(field)?.ty=="int" => (Some(field.clone()),value),
+            StmtKind::Return(r) if std::ptr::eq(stmt,last)=>(None,&r.expression),
+            _=>return None,
+        };
+        let start=unit.source.span(stmt.start,stmt.end).start;
+        steps.push(MethodStep { write,value:method_value(expr,owner,def,method)?,
+            origin:StepOrigin {module,span:(stmt.start,stmt.end)},
+            site:format!("{}:{}:{}",unit.path.display(),start.line,start.column) });
+    }
+    Some(steps)
 }
 
 pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleError> {
@@ -39,7 +62,7 @@ pub(super) fn check_definition(unit:&Unit,def:&StructDecl)->Result<(),ModuleErro
     }
     let mut seen=HashSet::new();
     for m in &def.methods {
-        if !seen.insert(&m.name) || returned_field(m).and_then(|n|def.field(n)).is_none_or(|f|f.ty!="int") {
+        if !seen.insert(&m.name) || method_steps(unit,0,"self",def,m).is_none() {
             return Err(unit.error(m.start,m.end,"跨檔方法需要唯一的已檢查整數欄位讀取"));
         }
     }
@@ -137,25 +160,28 @@ impl<'a> ObjectScope<'a> {
     }
 
     pub(in crate::struct_stage::module_share) fn expression(&self,t:&Term)->Option<Number> {
-        let (owner,field,method)=match &t.kind {
-            TermKind::FieldRead(owner,n)=>(owner,n,false),
-            TermKind::MethodCall(owner,n,args) if args.is_empty() && self.has(owner)=>(owner,n,true),
+        let (owner,field)=match &t.kind {
+            TermKind::FieldRead(owner,n)=>(owner,n),
             TermKind::Call(c) if !c.awaited=>return self.consume(&c.name,&c.arguments),
             TermKind::MethodCall(module,n,args) if !self.has(module)=>return self.consume(&format!("{module}.{n}"),args),
             _=>return None,
         };
         let object=self.variables.get(owner)?;
-        if object.moved.get() || !object.missing.is_empty(){return None;}
-        let selected=if method {
-            let methods=self.graph.methods(self.caller,&object.ty,field);
-            let [m]=methods.as_slice() else{return None;};
-            returned_field(m)?.to_owned()
-        } else {
-            let f=self.graph.field(self.caller,&object.ty,field)?;
-            if f.ty!="int"{return None;}
-            field.clone()
-        };
-        Some(Number::Member{owner:owner.clone(),field:selected,receiver:method.then_some(object.id)})
+        if object.moved.get() || !object.missing.is_empty() || self.graph.field(self.caller,&object.ty,field)?.ty!="int" {return None;}
+        Some(Number::Member{owner:owner.clone(),field:field.clone(),receiver:None})
+    }
+    pub(in crate::struct_stage::module_share) fn method(&self,owner:&str,name:&str,values:Vec<Number>)->Option<MethodCall> {
+        let object=self.variables.get(owner)?;
+        if object.moved.get() || !object.missing.is_empty() {return None;}
+        let (module,def)=self.graph.resolve_struct(self.caller,&object.ty)?;
+        let methods=self.graph.methods(self.caller,&object.ty,name);
+        let [method]=methods.as_slice() else {return None;};
+        if values.len()!=method.params.len() {return None;}
+        let steps=method_steps(&self.graph.units[module],module,owner,def,method)?;
+        let writes=steps.iter().any(|s|s.write.is_some());
+        if writes && !object.mutable {return None;}
+        let arguments=method.params.iter().zip(values).map(|(p,n)|(format!("$arg/{}",p.name),n)).collect();
+        Some(MethodCall{owner:owner.into(),id:object.id,writes,steps,arguments})
     }
     pub(in crate::struct_stage::module_share) fn return_owner(&self,ty:&str,value:&Term)->Option<String> {
         let TermKind::Move(name)=&value.kind else {return None};

@@ -21,11 +21,11 @@ pub(in crate::struct_stage) struct Import {
     end: usize,
 }
 
-fn word(parser: &Parser<'_>, word: &str) -> bool {
+fn word<const PUBLIC:bool>(parser: &LanguageParser<'_,PUBLIC>, word: &str) -> bool {
     matches!(&parser.tok().kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == word)
 }
 
-pub(in crate::struct_stage) fn parse_import(parser: &mut Parser<'_>) -> Result<Import, Diagnostic> {
+pub(in crate::struct_stage) fn parse_import<const PUBLIC:bool>(parser: &mut LanguageParser<'_,PUBLIC>) -> Result<Import, Diagnostic> {
     let start = parser.tok().start;
     parser.cursor += 1;
     let first = parser.name()?;
@@ -65,7 +65,7 @@ impl Unit {
         if let Some(error) = lexed.diagnostics.into_iter().next() { return Err(error); }
         let mut imports = Vec::new();
         let mut shares = Vec::new();
-        let (structs, functions) = Parser { source: &source, tokens: &lexed.tokens, cursor: 0 }
+        let (structs, functions) = LanguageParser::<true> { source: &source, tokens: &lexed.tokens, cursor: 0 }
             .module_items(Some(&mut shares),Some(&mut imports))?;
         Ok(Self { path: path.to_owned(), source, tokens: lexed.tokens, imports, functions, structs, shares, edges: Vec::new() })
     }
@@ -301,7 +301,6 @@ impl LinkedProgram {
                             return Err(u.error(f.start, f.end, "函式參數重複"));
                         }
                     }
-                    if !locals.is_empty() && f.is_async { return Err(u.error(f.start, f.end, "純量參數目前需要同步函式")); }
                 } else if !f.is_async && matches!(f.result_ty.as_str(),"int" | "str")
                     && f.params.iter().all(|p| matches!(p.ty.as_str(),"int" | "str")) {
                     for p in &f.params {
