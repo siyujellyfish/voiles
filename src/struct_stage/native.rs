@@ -7,6 +7,26 @@ struct Emitter<'a> {
     locals: BTreeMap<String, usize>,
 }
 
+fn container_source(value: &containers::Value) -> String {
+    use containers::{Key, Value};
+    match value {
+        Value::CopyFrom(slot) => format!("Value::CopyFrom(String::from({slot:?}))"),
+        Value::Missing => "Value::Missing".into(),
+        Value::Integer(n) => format!("Value::Integer({n})"),
+        Value::Boolean(b) => format!("Value::Boolean({b})"),
+        Value::Text(s) => format!("Value::Text(String::from({s:?}))"),
+        Value::Decimal(c,e) => format!("Value::Decimal({c},{e})"),
+        Value::List(xs) => format!("Value::List(vec![{}])",xs.iter().map(container_source).collect::<Vec<_>>().join(",")),
+        Value::Dict(xs) => {
+            let entries = xs.iter().map(|(k,v)| {
+                let key = match k { Key::Index(n) => format!("Key::Index({n})"), Key::Text(s) => format!("Key::Text(String::from({s:?}))") };
+                format!("({key},{})",container_source(v))
+            }).collect::<Vec<_>>().join(",");
+            format!("Value::Dict(std::collections::BTreeMap::from([{entries}]))")
+        }
+    }
+}
+
 impl Emitter<'_> {
     fn local_id(&mut self, name: &str) -> usize {
         let next = self.locals.len();
@@ -52,15 +72,32 @@ impl Emitter<'_> {
         Some(code)
     }
 
+    fn container_item(&self, item: &ContainerItem) -> Option<String> {
+        Some(match item {
+            ContainerItem::Scalar(n,true) => format!("Value::Boolean(({}) != 0)",self.number(n)?),
+            ContainerItem::Scalar(n,false) => format!("Value::Integer({})",self.number(n)?),
+            ContainerItem::Literal(v) => container_source(v),
+        })
+    }
+
+    fn key(&self, key:&ContainerKey) -> Option<String> {
+        Some(match key {
+            ContainerKey::Text(s) => format!("Key::Text(String::from({s:?}))"),
+            ContainerKey::Index(n) => format!("Key::Index({})",self.number(n)?),
+        })
+    }
+
     fn number(&self, value: &Number) -> Option<String> {
         Some(match value {
-            Number::Lookup(key, entries) => {
-                let mut expr = format!("(match {} {{ ", self.number(key)?);
-                for (key, value) in entries {
-                    write!(expr, "{key}i64 => {value}i64, ").ok()?;
-                }
-                expr.push_str("_ => return Err((site, ARITH)), })");
-                expr
+            Number::ViewByte(slot,i,j) => format!("{{ let Some(Value::Text(s)) = containers.get({slot:?}) else {{ return Err((site,ARITH)) }}; text_byte(s,{},{}).ok_or((site,ARITH))? }}",self.offset(i)?,self.offset(j)?),
+            Number::Edit(slot,edit) => match edit.as_ref() {
+                Edit::Append(item) => format!("{{ let item = {}; containers.append({slot:?},item).ok_or((site,ARITH))? }}",self.container_item(item)?),
+                Edit::Set(key,item) => format!("{{ let key = {}; let item = {}; containers.set({slot:?},key,item).ok_or((site,ARITH))? }}",self.key(key)?,self.container_item(item)?),
+                Edit::Pop => format!("containers.pop({slot:?}).ok_or((site,ARITH))?"),
+            },
+            Number::Container(slot,read) => {
+                let method = match read { ContainerRead::Length => "length", ContainerRead::Tag => "tag", ContainerRead::Scalar => "scalar" };
+                format!("containers.get({slot:?}).and_then(Value::{method}).ok_or((site, ARITH))?")
             }
             Number::ScalarCall { target, arguments } => {
                 let mut expr = String::from("{ ");
@@ -125,13 +162,17 @@ impl LinkedProgram {
         let budget = crate::execution::ExecutionBudget::default();
         out.push_str("type Failure = (&'static str, &'static str);\n");
         out.push_str("const ARITH: &str = \"運算失敗\";\nconst LIMIT: &str = \"執行步數已耗盡\";\n");
+        out.push_str("mod containers {\n");
+        out.push_str(include_str!("public_containers.rs"));
+        out.push_str("}\nuse containers::{Key, Value};\n");
         out.push_str(include_str!("native_object.inc"));
         out.push_str("struct ResourceText { text: String, starts: std::cell::OnceCell<Vec<usize>> }\n");
-        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::StoreText { .. })) {
+        if !plan.globals.is_empty() || self.graph.units.iter().any(|u| !u.structs.is_empty()) || self.graph.units.iter().any(|u| u.functions.iter().any(|f| f.result_ty == "str" || f.params.iter().any(|p| p.ty == "str"))) || plan.bodies.values().flatten().any(|s| matches!(s.action, Action::Construct(..) | Action::Container(..) | Action::StoreText { .. })) {
             out.push_str(include_str!("../grapheme_data.rs"));
             out.push_str(include_str!("../grapheme_boundaries.rs"));
             out.push_str(include_str!("native_strings.inc"));
-            out.push_str("impl Object { fn byte(&self, field: &str, i:i64, j:i64) -> Option<i64> { let Field::Text(s) = self.0.get(field)? else {return None}; let g = s.get(indexed_range(&boundaries(s), i)?)?.as_bytes(); Some(i64::from(g[offset(j,g.len())?])) } }\n");
+            out.push_str("fn text_byte(s:&str,i:i64,j:i64)->Option<i64>{let g=s.get(indexed_range(&boundaries(s),i)?)?.as_bytes();Some(i64::from(g[offset(j,g.len())?]))}\n");
+            out.push_str("impl Object { fn byte(&self, field: &str, i:i64, j:i64) -> Option<i64> { let Field::Text(s) = self.0.get(field)? else {return None}; text_byte(s,i,j) } }\n");
         }
         for (name, body) in &plan.bodies {
             emitter.locals.clear();
@@ -147,6 +188,9 @@ impl LinkedProgram {
             let ret = if signature.result_ty == "str" { "ResourceText" } else { "i64" };
             writeln!(out, "fn f{id}(globals: &mut [ResourceText], steps: &mut usize, depth: usize, caller: &'static str{argument}) -> Result<{ret}, Failure> {{").unwrap();
             writeln!(out, "if depth >= {} {{ return Err((caller, LIMIT)); }}", budget.max_call_frames).unwrap();
+            if body.iter().any(|step| matches!(step.action, Action::Container(..))) {
+                out.push_str("let mut containers = containers::Store::default();\n");
+            }
             let flow = body.iter().any(|s| matches!(s.action, Action::Jump(_) | Action::Unless(..)));
             if flow {
                 for step in body {
@@ -166,6 +210,16 @@ impl LinkedProgram {
                 writeln!(out, "let site = {site:?}; *steps += 1; if *steps > {} {{ return Err((site, LIMIT)); }}", budget.max_steps).unwrap();
                 let unsupported = || unit.error(step.span.0, step.span.1, "原生後端尚未支援此操作");
                 match &step.action {
+                    Action::Container(slot,init) => match init {
+                        ContainerInit::Literal(v) => writeln!(out,"containers.put({slot:?},{}).ok_or((site, ARITH))?;",container_source(&v.runtime().ok_or_else(unsupported)?)).unwrap(),
+                        ContainerInit::Move(from) => writeln!(out,"containers.relocate({from:?},{slot:?}).ok_or((site, ARITH))?;").unwrap(),
+                    },
+                    Action::Select { alias, owner, key } => {
+                        let value = emitter.key(key).ok_or_else(unsupported)?;
+                        writeln!(out,"let k = {value}; containers.select({alias:?},{owner:?},k).ok_or((site, ARITH))?;").unwrap();
+                    }
+                    Action::DropContainer(slot) => writeln!(out,"containers.drop_slot({slot:?});").unwrap(),
+                    Action::Evaluate(n) => writeln!(out,"let _ = {};",emitter.number(n).ok_or_else(unsupported)?).unwrap(),
                     Action::Jump(target) => writeln!(out, "pc = {target};").unwrap(),
                     Action::Unless(test, target) => {
                         writeln!(out, "if ({}) == 0 {{ pc = {target}; }}", emitter.number(test).ok_or_else(unsupported)?).unwrap();

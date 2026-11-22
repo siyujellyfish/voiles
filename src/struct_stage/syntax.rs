@@ -313,6 +313,11 @@ impl Parser<'_> {
             (literal.kind, literal.end)
         } else {
         match self.tok().kind.clone() {
+            TokenKind::Keyword(ref name) if name == "none" => {
+                let end = self.tok().end;
+                self.cursor += 1;
+                (TermKind::Literal("none"),end)
+            }
             TokenKind::Decimal(ref text) => {
                 if Self::decimal64_checked_subset(text).is_none() {
                     return Err(self.syntax(
@@ -500,6 +505,13 @@ impl Parser<'_> {
             let value = self.term()?;
             if !matches!(value.kind, TermKind::StringReplace(..)) { return Err(self.syntax("字素寫入語句需要賦值")); }
             StmtKind::GraphemeWrite(value)
+        } else if matches!(&self.tok().kind,TokenKind::Name(_))
+            && crate::syntax_shared::symbol(self.tokens,self.cursor+1,'.')
+            && matches!(self.tokens.get(self.cursor+2).map(|t|&t.kind), Some(TokenKind::Name(n)) if matches!(n.as_str(),"append"|"pop"|"set"))
+            && crate::syntax_shared::symbol(self.tokens,self.cursor+3,'(') {
+            let term=self.term()?;
+            if !matches!(term.kind,TermKind::MethodCall(..)) { return Err(self.syntax("此語句需要完整的容器方法呼叫")); }
+            StmtKind::Evaluate(term)
         } else if head == Some(crate::syntax_shared::StatementHead::Declaration) {
             let parsed = crate::syntax_shared::parse_declaration(self)?;
             StmtKind::Declare(parsed)

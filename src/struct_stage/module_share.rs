@@ -70,8 +70,41 @@ struct Place {
 
 #[path = "scalar_flow.rs"]
 mod scalar_flow;
+#[path = "public_containers.rs"]
+mod containers;
+
+enum ContainerKey { Text(String), Index(Number) }
+enum ContainerItem { Scalar(Number, bool), Literal(containers::Value) }
+enum Edit { Append(ContainerItem), Set(ContainerKey, ContainerItem), Pop }
+enum ContainerRead { Length, Tag, Scalar }
+enum ContainerInit { Literal(ContainerLiteral), Move(String) }
+
+impl ContainerLiteral {
+    fn runtime(&self) -> Option<containers::Value> {
+        use containers::{Key, Value};
+        fn atom(a: &ContainerAtom) -> Option<Value> {
+            Some(match a {
+                ContainerAtom::Integer(n) => Value::Integer(*n), ContainerAtom::Boolean(b) => Value::Boolean(*b),
+                ContainerAtom::Text(s) => Value::Text(s.clone()), ContainerAtom::Missing => Value::Missing,
+                ContainerAtom::Decimal(c,e) => Value::Decimal(*c,*e), ContainerAtom::Nested(v) => v.runtime()?,
+                ContainerAtom::ElementName(slot) => Value::CopyFrom(slot.clone()),
+            })
+        }
+        match &self.items {
+            ContainerItems::List(v) => Some(Value::List(v.iter().map(atom).collect::<Option<_>>()?)),
+            ContainerItems::Dictionary(v) => Some(Value::Dict(v.iter().map(|(k,v)| {
+                let key = match k { ContainerAtom::Integer(n) => Key::Index(*n), ContainerAtom::Boolean(b) => Key::Index(i64::from(*b)),
+                    ContainerAtom::Text(s) => Key::Text(s.clone()), _ => return None };
+                Some((key, atom(v)?))
+            }).collect::<Option<_>>()?)),
+        }
+    }
+}
+
 enum Number {
-    Lookup(Box<Number>, BTreeMap<i64, i64>),
+    Container(String, ContainerRead),
+    Edit(String, Box<Edit>),
+    ViewByte(String,StringOffset,StringOffset),
     Logic(&'static str, Box<Number>, Box<Number>),
     ScalarCall { target: String, arguments: Vec<(String, usize, Number)> },
     Choice(Box<Number>, Box<Number>, Box<Number>),
@@ -163,6 +196,10 @@ enum MemberValue {
 }
 
 enum Action {
+    Evaluate(Number),
+    Container(String, ContainerInit),
+    Select { alias: String, owner: String, key: ContainerKey },
+    DropContainer(String),
     RelocateObject { source: String, target: String, moving: bool },
     WriteMember { owner: String, field: String, value: MemberValue },
     ReturnText(LocalText),
@@ -711,7 +748,11 @@ enum Use<'a> {
 impl Number {
     fn uses<'a>(&'a self, list: &mut Vec<Use<'a>>) {
         match self {
-            Self::Lookup(key, _) => key.uses(list),
+
+            Self::Edit(_, edit) => {
+                if let Edit::Set(ContainerKey::Index(n),_) = edit.as_ref() { n.uses(list); }
+                if let Edit::Set(_,ContainerItem::Scalar(n,_)) | Edit::Append(ContainerItem::Scalar(n,_)) = edit.as_ref() { n.uses(list); }
+            }
             Self::Logic(_,a,b) => { a.uses(list); b.uses(list); }
             Self::ScalarCall { target, arguments } => {
                 for (_, _, value) in arguments { value.uses(list); }
@@ -735,12 +776,14 @@ impl Action {
     fn uses(&self) -> Vec<Use<'_>> {
         let mut uses = Vec::new();
         match self {
+            Self::Select { key: ContainerKey::Index(n), .. } => n.uses(&mut uses),
+            Self::Select { .. } | Self::Container(..) | Self::DropContainer(_) => (),
             Self::ReturnText(value) | Self::StoreText { value, .. } => {
                 if let LocalText::Call(call) = value { call.uses(&mut uses); }
             }
             Self::WriteMember { value: MemberValue::Integer(n) | MemberValue::Boolean(n), .. } => n.uses(&mut uses),
             Self::WriteMember { .. } | Self::RelocateObject { .. } | Self::Jump(_) | Self::ReplaceLocal(_) => (),
-            Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
+            Self::Evaluate(value) | Self::Unless(value, _) | Self::Bind(_, value) | Self::Return(value) => value.uses(&mut uses),
             Self::Loan(alias, p, kind) => uses.push(Use::Loan(alias, p, *kind)),
             Self::Construct(..) => (),
             Self::Replace(p, _, rhs) => {
@@ -1061,6 +1104,19 @@ impl Program {
                 return Err(StrRuntimeError::ExecutionBudgetExhausted);
             }
             match &step.action {
+                Action::Container(slot, init) => match init {
+                    ContainerInit::Literal(literal) => frame.containers.put(slot,literal.runtime().ok_or(StrRuntimeError::EvaluationFailed)?).ok_or(StrRuntimeError::EvaluationFailed)?,
+                    ContainerInit::Move(from) => frame.containers.relocate(from,slot).ok_or(StrRuntimeError::EvaluationFailed)?,
+                },
+                Action::DropContainer(slot) => frame.containers.drop_slot(slot),
+                Action::Select { alias, owner, key } => {
+                    let key = match key {
+                        ContainerKey::Index(n) => containers::Key::Index(self.eval(n,frame,state,depth)?),
+                        ContainerKey::Text(s) => containers::Key::Text(s.clone()),
+                    };
+                    frame.containers.select(alias,owner,key).ok_or(StrRuntimeError::EvaluationFailed)?;
+                }
+                Action::Evaluate(value) => { self.eval(value,frame,state,depth)?; }
                 Action::Jump(target) => pc = *target,
                 Action::Unless(test,target) => if self.eval(test, frame, state, depth)? == 0 { pc = *target; },
                 Action::RelocateObject { source, target, moving } => {
@@ -1224,9 +1280,38 @@ impl Program {
             }
             Number::TextCall(call) => self.invoke_text(call,frame,state,depth)?.integer(&mut state.heap),
             Number::Consume {target,from,parameter} => self.call_with_owner(target,state,depth+1,Some(Transfer::Object(from,parameter)), HashMap::new())?.integer(&mut state.heap),
-            Number::Lookup(key, entries) => {
-                let key = self.eval(key, frame, state, depth)?;
-                entries.get(&key).copied().ok_or(StrRuntimeError::EvaluationFailed)
+            Number::ViewByte(slot,i,j) => {
+                let Some(containers::Value::Text(text)) = frame.containers.get(slot) else { return Err(StrRuntimeError::EvaluationFailed) };
+                crate::owned_str_runtime::literal_byte(text,i.value(frame)?,j.value(frame)?).ok_or(StrRuntimeError::EvaluationFailed)
+            }
+            Number::Edit(slot, edit) => {
+                let item = |value: &ContainerItem, frame: &mut Frame, state: &mut State| -> Result<containers::Value, StrRuntimeError> {
+                    Ok(match value {
+                        ContainerItem::Scalar(n, boolean) => {
+                            let v=self.eval(n,frame,state,depth)?;
+                            if *boolean {containers::Value::Boolean(v!=0)} else {containers::Value::Integer(v)}
+                        }
+                        ContainerItem::Literal(v) => v.clone(),
+                    })
+                };
+                match edit.as_ref() {
+                    Edit::Append(value) => {
+                        let v=item(value,frame,state)?;
+                        frame.containers.append(slot,v)
+                    }
+                    Edit::Set(key,value) => {
+                        let k=match key { ContainerKey::Text(s)=>containers::Key::Text(s.clone()),
+                            ContainerKey::Index(n)=>containers::Key::Index(self.eval(n,frame,state,depth)?) };
+                        let v=item(value,frame,state)?;
+                        frame.containers.set(slot,k,v)
+                    }
+                    Edit::Pop => frame.containers.pop(slot),
+                }.ok_or(StrRuntimeError::EvaluationFailed)
+            }
+            Number::Container(slot, read) => {
+                let value = frame.containers.get(slot).ok_or(StrRuntimeError::EvaluationFailed)?;
+                match read { ContainerRead::Length => value.length(), ContainerRead::Tag => value.tag(),
+                    ContainerRead::Scalar => value.scalar() }.ok_or(StrRuntimeError::EvaluationFailed)
             }
             Number::Choice(test, yes, no) => {
                 let selected = if self.eval(test, frame, state, depth)? != 0 { yes } else { no };
@@ -1326,6 +1411,7 @@ enum Transfer<'a> {
 
 #[derive(Default)]
 struct Frame {
+    containers: containers::Store,
     object_loans: BorrowSafety,
     locals: HashMap<String, i64>,
     tickets: HashMap<String, BorrowTicket>,
