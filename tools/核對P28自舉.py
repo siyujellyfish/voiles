@@ -394,7 +394,9 @@ fn main(){
                    for cli in (seed, stage, next_stage)]
         assert results[0] == results[1] == results[2], (case_number, results)
         code, generated, error = results[2]
-        assert code == 0 and not error and "let mut v_second: String = v_first;" in generated, (
+        expected_move = ("let mut v_middle: String = v_first;" if case_number == 2
+                         else "let mut v_second: String = v_first;")
+        assert code == 0 and not error and expected_move in generated, (
             case_number, code, error, generated)
         assert ".clone()" not in generated, (case_number, generated)
         rust_source.write_text(
