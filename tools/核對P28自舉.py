@@ -308,7 +308,7 @@ fn main(){
          'return text.to_int()\n}\n}'),
         ('fn main()->int{\nvar text:str = "0"\n'
          'match(1){case 1{\ntext = "42"\nreturn text.to_int()\n}'
-         'case _{\nreturn 0\n}}\nreturn 0\n}'),
+         'case _{\nreturn 0\n}}\n}'),
     )
     for case_number, program in enumerate(string_reassignment_cases):
         source.write_text("import host\n" + program, encoding="utf-8")
@@ -326,7 +326,8 @@ fn main(){
         subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
         assert invoke(native) == (42, "", ""), (case_number, invoke(native))
         public.write_text(program, encoding="utf-8")
-        assert invoke(next_stage, "check", public) == (0, "", ""), case_number
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
         assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
         for mode in ("build", "pack"):
             exe = root / f"string-reassignment-{case_number}-{mode}"
