@@ -249,6 +249,49 @@ fn main(){
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
 
+    # 自舉 var str 建立真正擁有的 Rust String，依分支／例外詞彙作用域清理。
+    owned_string_programs = (
+        'fn main()->int{\nvar text:str = "42"\nreturn text.to_int()\n}',
+        'fn main()->int{\nvar text:str = "abcd"\nreturn len(text)+38\n}',
+        ('fn main()->int{\nvar text:str = "非數字"\ntry{\n'
+         'return text.to_int()\n}\nexcept TypeConversationError{\nreturn 42\n}\n}'),
+        ('fn main()->int{\nif(1==1){\nvar text:str = "42"\nreturn text.to_int()\n'
+         '}else{\nvar text:str = "0"\nreturn text.to_int()\n}\n}'),
+    )
+    for case_number, program in enumerate(owned_string_programs):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        three_generations = [invoke(cli, "bootstrap-compiler", source)
+                             for cli in (seed, stage, next_stage)]
+        assert three_generations[0] == three_generations[1] == three_generations[2]
+        code, generated, error = three_generations[2]
+        assert code == 0 and not error and 'let mut v_text: String = String::from(' in generated
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", "")
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public) == (0, "", "")
+        assert invoke(next_stage, "run", public) == (0, "42\n", "")
+        for mode in ("build", "pack"):
+            exe = root / f"owned-string-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", "")
+
+    invalid_owned_string = (
+        'fn main()->int{var text:str = "42" var text:str = "0" return text.to_int()}',
+        'fn main()->int{var text:str = 42 return 0}',
+    )
+    for invalid in invalid_owned_string:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        failed = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in failed), failed
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
