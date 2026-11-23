@@ -565,6 +565,66 @@ fn main(){
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
 
+    # const str 宣告可以接受明確 move() 的完整擁有權，
+    # 但宣告後不可改綁定；不依賴 &str 隱含複製。
+    const_move_initializer_cases = (
+        ('fn main()->int{\nvar source:str = "42"\n'
+         'const target:str = source.move()\nreturn target.to_int()\n}'),
+        ('fn main()->int{\nconst source:str = "42"\n'
+         'const target:str = source.move()\nreturn target.to_int()\n}'),
+        ('fn main()->int{\nvar source:str = "海龜"\n'
+         'const target:str = source.move()\nreturn len(target)+40\n}'),
+        ('fn main()->int{\nconst source:str = "42"\n'
+         'const middle:str = source.move()\n'
+         'const target:str = middle.move()\nreturn target.to_int()\n}'),
+    )
+    for case_number, program in enumerate(const_move_initializer_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert results[0] == results[1] == results[2], (case_number, results)
+        code, generated, err = results[2]
+        expected = ("let v_middle: String = v_source;" if case_number == 3
+                    else "let v_target: String = v_source;")
+        assert code == 0 and not err and expected in generated, (case_number, generated, err)
+        assert ".clone()" not in generated
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), case_number
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
+        for mode in ("build", "pack"):
+            exe = root / f"const-move-init-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_const_move_initializers = (
+        ('fn main()->int{\nvar source:str = "42"\n'
+         'const target:str = source.move()\nreturn source.to_int()\n}'),
+        ('fn main()->int{\nvar source:str = "42"\n'
+         'const target:str = source.move()\n'
+         'var again:str = source.move()\nreturn 0\n}'),
+        ('fn main()->int{\nvar source:str = "42"\n'
+         'const target:str = source.move()\ntarget = "42"\nreturn 0\n}'),
+        ('fn main()->int{\nvar source:str = "42"\n'
+         'const target:str = source\nreturn len(target)\n}'),
+    )
+    for program in invalid_const_move_initializers:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and err for code, generated, err in results), (
+            program, results)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
     # 自身移交拒絕：只能在初始化及轉移完整的前置值之間交換所有權。
     self_move = 'fn main()->int{\nvar text:str = "42"\ntext = text.move()\nreturn 0\n}'
     source.write_text("import host\n" + self_move, encoding="utf-8")
