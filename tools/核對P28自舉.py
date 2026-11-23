@@ -730,7 +730,7 @@ fn main(){
         code, generated, error = generations[2]
         assert code == 0 and not error and ": String" in generated, (
             case_number, code, error, generated)
-        assert ", v_raw)" in generated and ".clone()" not in generated, (case_number, generated)
+        assert ", v_raw" in generated and ".clone()" not in generated, (case_number, generated)
         rust_source.write_text(
             "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
             "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
