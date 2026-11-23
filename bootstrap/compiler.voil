@@ -528,22 +528,22 @@ fn call_arguments()->int{
     if (host.at(")") != 0) {
         return 0
     } else {
-        if (host.at_str_move_argument() != 0) {
-            return host.str_move_argument() + following_arguments()
-        } else {
-            return host.argument() + host.emit(", ") + expression() + following_arguments()
-        }
+        return one_argument() + following_arguments()
     }
 }
 
 fn following_arguments()->int{
     if (host.at(",") != 0) {
-        if (host.at_str_move_argument() != 0) {
-            return host.expect(",") + host.str_move_argument() + following_arguments()
-        } else {
-            return host.expect(",") + host.argument() + host.emit(", ") + expression() + following_arguments()
-        }
+        return host.expect(",") + one_argument() + following_arguments()
     } else {
         return 0
+    }
+}
+
+fn one_argument()->int{
+    if (host.at_str_move_argument() != 0) {
+        return host.str_move_argument()
+    } else {
+        return host.argument() + host.emit(", ") + expression()
     }
 }
