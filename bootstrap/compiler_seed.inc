@@ -323,7 +323,7 @@ s.enter(depth)?;
 if s.at("while")? != 0i64 {
 Ok(s.expect("while")?.checked_add(s.emit("while ")?).ok_or(Fault::Overflow)?.checked_add(v_comparison(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(s.emit("s.enter(depth)?;\n")?).ok_or(Fault::Overflow)?.checked_add(v_actions(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.emit("}\n")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
-Ok(v_condition(s, depth + 1)?.checked_add(v_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("else")?).ok_or(Fault::Overflow)?.checked_add(s.emit("} else {\n")?).ok_or(Fault::Overflow)?.checked_add(v_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit("}\n")?).ok_or(Fault::Overflow)?)
+Ok(v_condition(s, depth + 1)?.checked_add(s.if_scope_start()?).ok_or(Fault::Overflow)?.checked_add(v_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("else")?).ok_or(Fault::Overflow)?.checked_add(s.if_scope_else()?).ok_or(Fault::Overflow)?.checked_add(s.emit("} else {\n")?).ok_or(Fault::Overflow)?.checked_add(v_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.if_scope_finish()?).ok_or(Fault::Overflow)?.checked_add(s.emit("}\n")?).ok_or(Fault::Overflow)?)
 }
 }
 fn v_condition(s: &mut Machine, depth: usize) -> R {

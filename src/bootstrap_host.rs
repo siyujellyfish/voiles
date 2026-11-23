@@ -44,6 +44,7 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize, BTreeMap<String, String>)>,
+    pending_if_scopes: Vec<(bool, BTreeMap<String, String>)>,
     pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>, BTreeMap<String, String>)>,
 }
 
@@ -295,7 +296,30 @@ impl Machine {
         self.pending_list_append = None;
         self.pending_dict_set = None;
         self.pending_matches.clear();
+        self.pending_if_scopes.clear();
         self.pending_tries.clear();
+        Ok(0)
+    }
+    fn if_scope_start(&mut self) -> R {
+        // 分支型別環境以進入條件式時的外層可見名稱為準。
+        self.pending_if_scopes.push((false, self.locals.clone()));
+        Ok(0)
+    }
+    fn if_scope_else(&mut self) -> R {
+        let Some((switched, outer_locals)) = self.pending_if_scopes.last_mut() else {
+            return Err(Fault::Syntax("if 分支邊界無效".into()));
+        };
+        if *switched { return Err(Fault::Syntax("if 分支重複切換".into())); }
+        *switched = true;
+        self.locals = outer_locals.clone();
+        Ok(0)
+    }
+    fn if_scope_finish(&mut self) -> R {
+        let Some((switched, outer_locals)) = self.pending_if_scopes.pop() else {
+            return Err(Fault::Syntax("if 分支邊界無效".into()));
+        };
+        if !switched { return Err(Fault::Syntax("if 缺少 else 分支".into())); }
+        self.locals = outer_locals;
         Ok(0)
     }
     fn try_start(&mut self) -> R {
@@ -930,7 +954,8 @@ impl Machine {
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
-                    "finish_dict_set" | "return_start" | "try_start" | "try_handler" |
+                    "finish_dict_set" | "return_start" | "if_scope_start" | "if_scope_else" |
+                    "if_scope_finish" | "try_start" | "try_handler" |
                     "exception_category" | "exception_binding" | "finish_try" |
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
@@ -1114,7 +1139,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         nested_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,
         pending_list_append: None, pending_dict_set: None,
-        pending_matches: Vec::new(), pending_tries: Vec::new(),
+        pending_matches: Vec::new(), pending_if_scopes: Vec::new(), pending_tries: Vec::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);

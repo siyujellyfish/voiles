@@ -203,6 +203,52 @@ fn main(){
         assert (generated[0] == 0) == ok, (op, generated)
         assert (invoke(next_stage, "check", public)[0] == 0) == ok, op
 
+    # if／else 是互斥詞彙環境，兩臂各自可有同名唯讀 str；巢狀分支也必須還原。
+    scoped_if = ('fn main()->int{\nif(1==1){\nconst text:str = "42"\n'
+                 'return text.to_int()\n}else{\nconst text:str = "0"\n'
+                 'return text.to_int()\n}\n}')
+    nested_if = ('fn main()->int{\nif(1==1){\nif(0==1){\n'
+                 'const text:str = "0"\nreturn text.to_int()\n}else{\n'
+                 'const text:str = "42"\nreturn text.to_int()\n}\n'
+                 '}else{\nreturn 0\n}\n}')
+    for case_number, program in enumerate((scoped_if, nested_if)):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generated_branches = [invoke(cli, "bootstrap-compiler", source)
+                              for cli in (seed, stage, next_stage)]
+        assert generated_branches[0] == generated_branches[1] == generated_branches[2]
+        code, generated, error = generated_branches[2]
+        assert code == 0 and not error and generated.count("let v_text: &'static str") == 2
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", "")
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public) == (0, "", "")
+        assert invoke(next_stage, "run", public) == (0, "42\n", "")
+        for mode in ("build", "pack"):
+            exe = root / f"scoped-if-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (mode, program, built)
+            assert invoke(exe) == (42, "", "")
+
+    invalid_if_scopes = (
+        'fn main()->int{ if(1==1){const hidden:str = "42" return hidden.to_int()} '
+        'else{return hidden.to_int()} }',
+        'fn main()->int{ if(1==1){return hidden.to_int()} '
+        'else{const hidden:str = "42" return hidden.to_int()} }',
+        'fn main()->int{ if(1==1){const text:str = "42" const text:str = "7" '
+        'return text.to_int()} else{return 0} }',
+    )
+    for invalid in invalid_if_scopes:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source) for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic for code, output, diagnostic in results), results
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"

@@ -324,7 +324,7 @@ fn control()->int{
     if (host.at("while") != 0) {
         return host.expect("while") + host.emit("while ") + comparison() + host.expect("{") + host.emit("s.enter(depth)?;\n") + actions() + host.expect("}") + host.emit("}\n") + statement()
     } else {
-        return condition() + body() + host.expect("else") + host.emit("} else {\n") + body() + host.emit("}\n")
+        return condition() + host.if_scope_start() + body() + host.expect("else") + host.if_scope_else() + host.emit("} else {\n") + body() + host.if_scope_finish() + host.emit("}\n")
     }
 }
 
