@@ -328,7 +328,23 @@ fn control()->int{
     if (host.at("while") != 0) {
         return host.expect("while") + host.emit("while ") + comparison() + host.expect("{") + host.emit("s.enter(depth)?;\n") + actions() + host.expect("}") + host.emit("}\n") + statement()
     } else {
-        return condition() + host.if_scope_start() + body() + host.expect("else") + host.if_scope_else() + host.emit("} else {\n") + body() + host.if_scope_finish() + host.emit("}\n")
+        if (host.if_has_continuation() != 0) {
+            return condition() + host.if_scope_start() + host.expect("{") + if_flow_body() + host.expect("}") + host.expect("else") + host.if_scope_else() + host.emit("} else {\n") + host.expect("{") + if_flow_body() + host.expect("}") + host.if_scope_finish() + host.emit("}\n") + statement()
+        } else {
+            return condition() + host.if_scope_start() + body() + host.expect("else") + host.if_scope_else() + host.emit("} else {\n") + body() + host.if_scope_finish() + host.emit("}\n")
+        }
+    }
+}
+
+fn if_flow_body()->int{
+    if (host.at("}") != 0) {
+        return 0
+    } else {
+        if (host.at_str_local() != 0) {
+            return host.str_local() + if_flow_body()
+        } else {
+            return host.str_assignment() + if_flow_body()
+        }
     }
 }
 
