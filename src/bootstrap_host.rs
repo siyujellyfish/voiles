@@ -499,7 +499,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 沿用宣告移交已核准的直線、無有效借用安全子集。
-                if !self.pending_matches.is_empty()
+                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
                     || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                     || self.pending_dict_borrow.is_some() {
                     return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
@@ -552,7 +552,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 第一批明確移交限直線語句：分支合流與借用票據需後續獨立檢查。
-                if !self.pending_matches.is_empty()
+                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
                     || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                     || self.pending_dict_borrow.is_some() {
                     return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
