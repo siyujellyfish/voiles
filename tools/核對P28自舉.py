@@ -834,11 +834,43 @@ fn main(){
         assert invoke(next_stage, "check", public) == (0, "", "")
         assert invoke(next_stage, "run", public) == (0, "42\n", "")
 
+    # 自舉產生器的 try 保護臂、處理臂須與公開靜態檢查使用相同詞彙作用域。
+    # 兩個獨立臂可以各自宣告同名 str；不能把名稱從一個臂洩漏到另一個臂。
+    scoped_strings = ('fn main()->int{\ntry{\nconst text:str = "非數字"\n'
+                      'return text.to_int()\n}\nexcept TypeConversationError{\n'
+                      'const text:str = "42"\nreturn text.to_int()\n}\n}')
+    source.write_text("import host\n" + scoped_strings, encoding="utf-8")
+    scoped_generated = [invoke(cli, "bootstrap-compiler", source)
+                        for cli in (seed, stage, next_stage)]
+    assert scoped_generated[0] == scoped_generated[1] == scoped_generated[2]
+    code, generated, error = scoped_generated[2]
+    assert code == 0 and not error and generated.count("let v_text: &'static str") == 2
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    public.write_text(scoped_strings, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"scoped-exception-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
     invalid_exceptions = (
         "fn main()->int{ try{ return 1 } return 0 }",
         "fn main()->int{ try{ return 1 } except Unknown{ return 2 } }",
         'fn main()->int{ try{ return 1/0 } except EvaluationError as msg{ msg = "x" return 0 } }',
         "fn main()->int{ try{ return 1 } except EvaluationError as msg{ return 0 } return len(msg) }",
+        'fn main()->int{ try{ const secret:str = "x" return secret.to_int() } '
+        'except TypeConversationError{ return secret.to_int() } }',
+        'fn main()->int{ try{ return 1 } except EvaluationError{ '
+        'const hidden:str = "42" return hidden.to_int() } return hidden.to_int() }',
+        'fn main()->int{ try{ const private:str = "42" return private.to_int() } '
+        'except EvaluationError{ return 0 } return private.to_int() }',
     )
     for invalid in invalid_exceptions:
         source.write_text("import host\n" + invalid, encoding="utf-8")

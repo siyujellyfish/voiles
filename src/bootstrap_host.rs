@@ -44,7 +44,7 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize)>,
-    pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>)>,
+    pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>, BTreeMap<String, String>)>,
 }
 
 impl Machine {
@@ -299,15 +299,18 @@ impl Machine {
         Ok(0)
     }
     fn try_start(&mut self) -> R {
-        self.pending_tries.push((false, None, None));
+        // 每個 try 臂以進入前的詞彙環境為基準；區塊內區域不可逃逸到 except／後續語句。
+        self.pending_tries.push((false, None, None, self.locals.clone()));
         self.emit("match (|| -> R {\n")
     }
     fn try_handler(&mut self) -> R {
-        let Some((handler, _, _)) = self.pending_tries.last_mut() else {
+        let Some((handler, _, _, outer_locals)) = self.pending_tries.last_mut() else {
             return Err(Fault::Syntax("try 邊界無效".into()));
         };
         if *handler { return Err(Fault::Syntax("try 處理區塊重複".into())); }
         *handler = true;
+        // Rust 生成物的保護臂由封閉 closure 隔離；靜態名稱解析必須同樣隔離。
+        self.locals = outer_locals.clone();
         self.emit("})() {\nOk(value) => return Ok(value),\n")
     }
     fn exception_category(&mut self) -> R {
@@ -318,7 +321,7 @@ impl Machine {
         } else {
             return Err(Fault::Syntax("未知的例外型別".into()));
         };
-        let Some((handler, category, _)) = self.pending_tries.last_mut() else {
+        let Some((handler, category, _, _)) = self.pending_tries.last_mut() else {
             return Err(Fault::Syntax("except 型別不在處理區塊中".into()));
         };
         if !*handler { return Err(Fault::Syntax("except 型別邊界無效".into())); }
@@ -329,7 +332,7 @@ impl Machine {
     }
     fn exception_binding(&mut self) -> R {
         let name = self.take_name()?;
-        let Some((handler, category, binding)) = self.pending_tries.last_mut() else {
+        let Some((handler, category, binding, _)) = self.pending_tries.last_mut() else {
             return Err(Fault::Syntax("except 綁定不在處理區塊中".into()));
         };
         if !*handler { return Err(Fault::Syntax("except 綁定邊界無效".into())); }
@@ -344,14 +347,12 @@ impl Machine {
         self.emit(&format!("let v_{name}: &'static str = {message:?};\n"))
     }
     fn finish_try(&mut self) -> R {
-        let (handler, category, binding) = self.pending_tries.pop()
+        let (handler, category, _binding, outer_locals) = self.pending_tries.pop()
             .ok_or_else(|| Fault::Syntax("try 邊界無效".into()))?;
         if !handler { return Err(Fault::Syntax("try 缺少具型別的 except".into())); }
         if category.is_none() { return Err(Fault::Syntax("try 缺少例外型別".into())); }
-        if let Some((name, previous)) = binding {
-            self.locals.remove(&name);
-            if let Some(previous) = previous { self.locals.insert(name, previous); }
-        }
+        // except 綁定及處理臂內宣告的字串只在處理臂內有效。
+        self.locals = outer_locals;
         self.emit("},\nErr(error) => return Err(error),\n}\n")
     }
     fn conversion(&mut self) -> R {
