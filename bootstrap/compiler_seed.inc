@@ -327,7 +327,23 @@ s.enter(depth)?;
 if s.at("while")? != 0i64 {
 Ok(s.expect("while")?.checked_add(s.emit("while ")?).ok_or(Fault::Overflow)?.checked_add(v_comparison(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(s.emit("s.enter(depth)?;\n")?).ok_or(Fault::Overflow)?.checked_add(v_actions(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.emit("}\n")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
+if s.if_has_continuation()? != 0i64 {
+Ok(v_condition(s, depth + 1)?.checked_add(s.if_scope_start()?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.expect("else")?).ok_or(Fault::Overflow)?.checked_add(s.if_scope_else()?).ok_or(Fault::Overflow)?.checked_add(s.emit("} else {\n")?).ok_or(Fault::Overflow)?.checked_add(s.expect("{")?).ok_or(Fault::Overflow)?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("}")?).ok_or(Fault::Overflow)?.checked_add(s.if_scope_finish()?).ok_or(Fault::Overflow)?.checked_add(s.emit("}\n")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
 Ok(v_condition(s, depth + 1)?.checked_add(s.if_scope_start()?).ok_or(Fault::Overflow)?.checked_add(v_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect("else")?).ok_or(Fault::Overflow)?.checked_add(s.if_scope_else()?).ok_or(Fault::Overflow)?.checked_add(s.emit("} else {\n")?).ok_or(Fault::Overflow)?.checked_add(v_body(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.if_scope_finish()?).ok_or(Fault::Overflow)?.checked_add(s.emit("}\n")?).ok_or(Fault::Overflow)?)
+}
+}
+}
+fn v_if_flow_body(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("}")? != 0i64 {
+Ok(0i64)
+} else {
+if s.at_str_local()? != 0i64 {
+Ok(s.str_local()?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+Ok(s.str_assignment()?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
 }
 }
 fn v_condition(s: &mut Machine, depth: usize) -> R {
