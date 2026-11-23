@@ -48,15 +48,23 @@ fn parameters()->int{
     if (host.at(")") != 0) {
         return 0
     } else {
-        return host.emit(", ") + host.parameter() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
+        return host.emit(", ") + host.parameter() + host.expect(":") + parameter_type() + following_parameters()
     }
 }
 
 fn following_parameters()->int{
     if (host.at(",") != 0) {
-        return host.expect(",") + host.emit(", ") + host.parameter() + host.expect(":") + host.expect("int") + host.emit(": i64") + following_parameters()
+        return host.expect(",") + host.emit(", ") + host.parameter() + host.expect(":") + parameter_type() + following_parameters()
     } else {
         return 0
+    }
+}
+
+fn parameter_type()->int{
+    if (host.at("str") != 0) {
+        return host.expect("str") + host.emit(": String")
+    } else {
+        return host.expect("int") + host.emit(": i64")
     }
 }
 
@@ -520,14 +528,22 @@ fn call_arguments()->int{
     if (host.at(")") != 0) {
         return 0
     } else {
-        return host.argument() + host.emit(", ") + expression() + following_arguments()
+        return one_argument() + following_arguments()
     }
 }
 
 fn following_arguments()->int{
     if (host.at(",") != 0) {
-        return host.expect(",") + host.argument() + host.emit(", ") + expression() + following_arguments()
+        return host.expect(",") + one_argument() + following_arguments()
     } else {
         return 0
+    }
+}
+
+fn one_argument()->int{
+    if (host.at_str_move_argument() != 0) {
+        return host.str_move_argument()
+    } else {
+        return host.argument() + host.emit(", ") + expression()
     }
 }

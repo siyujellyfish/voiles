@@ -20,8 +20,9 @@ struct Machine {
     output: String,
     steps: usize,
     functions: BTreeMap<String, Vec<String>>,
+    function_param_kinds: BTreeMap<String, Vec<String>>,
     current_function: Option<String>,
-    calls: Vec<(Option<String>, String, usize)>,
+    calls: Vec<(Option<String>, String, usize, Vec<String>)>,
     call_stack: Vec<usize>,
     module: Option<String>,
     imports: BTreeSet<String>,
@@ -275,6 +276,7 @@ impl Machine {
             return Err(Fault::Syntax(format!("重複函式 {name}")));
         }
         self.functions.insert(name.clone(), Vec::new());
+        self.function_param_kinds.insert(name.clone(), Vec::new());
         self.current_function = Some(name.clone());
         self.emit_name(&name)
     }
@@ -287,16 +289,31 @@ impl Machine {
         if parameters.contains(&name) {
             return Err(Fault::Syntax(format!("重複參數 {name}")));
         }
+        // 在語法消耗 :int／:str 前取得參數型別，讓前向呼叫於 finish_names
+        // 可核對完整簽章；第一批 str 參數為不可重新賦值的擁有 String。
+        let kind = if self.tokens.get(self.cursor + 1).is_some_and(|t|
+            matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "str")) {
+            "str"
+        } else { "int" };
         parameters.push(name.clone());
+        self.function_param_kinds.get_mut(function).expect("函式參數型別已登錄")
+            .push(kind.into());
+        if kind == "str" {
+            self.locals.insert(name.clone(), "const-owned:str".into());
+        }
         self.emit_name(&name)
     }
     fn value(&mut self) -> R {
         let name = self.take_name()?;
-        let parameter = self.current_function.as_ref()
-            .and_then(|function| self.functions.get(function))
-            .is_some_and(|parameters| parameters.contains(&name));
+        let parameter_kind = self.current_function.as_ref().and_then(|function| {
+            self.functions.get(function)?.iter().position(|candidate| candidate == &name)
+                .and_then(|index| self.function_param_kinds.get(function)?.get(index))
+        }).map(String::as_str);
+        let parameter = parameter_kind == Some("int");
         let local_int = self.locals.get(&name).is_some_and(|kind| kind == "int");
-        if !parameter && !local_int { return Err(Fault::Syntax(format!("未知名稱 {name}"))); }
+        if !parameter && !local_int {
+            return Err(Fault::Syntax(format!("{name} 不是可用的 int 名稱")));
+        }
         if parameter { self.emit_name(&name) } else { self.emit(&format!("v_{name}")) }
     }
     fn finish_function(&mut self) -> R {
@@ -1058,7 +1075,7 @@ impl Machine {
     fn call(&mut self) -> R {
         let name = self.take_name()?;
         let index = self.calls.len();
-        self.calls.push((None, name.clone(), 0));
+        self.calls.push((None, name.clone(), 0, Vec::new()));
         self.call_stack.push(index);
         self.emit_name(&name)
     }
@@ -1067,7 +1084,7 @@ impl Machine {
         self.expect(".")?;
         let name = self.take_name()?;
         let index = self.calls.len();
-        self.calls.push((Some(module.clone()), name.clone(), 0));
+        self.calls.push((Some(module.clone()), name.clone(), 0, Vec::new()));
         self.call_stack.push(index);
         self.emit(&format!("v_{module}_{name}"))
     }
@@ -1076,7 +1093,45 @@ impl Machine {
             return Err(Fault::Syntax("實參不在呼叫中".into()));
         };
         self.calls[index].2 += 1;
+        self.calls[index].3.push("int".into());
         Ok(0)
+    }
+    fn at_str_move_argument(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(name)
+                if matches!(self.locals.get(name).map(String::as_str), Some("owned:str" | "const-owned:str")))
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t|
+                matches!(&t.kind, TokenKind::Name(k) | TokenKind::Keyword(k) if k == "move"))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol(')'))))
+    }
+    fn str_move_argument(&mut self) -> R {
+        let index = self.call_stack.last().copied()
+            .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
+        if self.calls[index].0.is_some() {
+            return Err(Fault::Syntax("跨模組字串移交尚未支援".into()));
+        }
+        if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+            || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
+            || self.pending_dict_borrow.is_some() {
+            return Err(Fault::Syntax("字串實參移交暫不允許跨控制流程或有效借用".into()));
+        }
+        let name = self.take_name()?;
+        let kind = self.locals.get(&name).map(String::as_str).ok_or_else(||
+            Fault::Syntax(format!("未知字串擁有者 {name}")))?;
+        let moved_kind = match kind {
+            "owned:str" => "moved:str",
+            "const-owned:str" => "moved:const:str",
+            _ => return Err(Fault::Syntax(format!("{name} 不是可移交的擁有字串"))),
+        };
+        self.expect(".")?;
+        self.expect("move")?;
+        self.expect("(")?;
+        self.expect(")")?;
+        self.locals.insert(name.clone(), moved_kind.into());
+        self.calls[index].2 += 1;
+        self.calls[index].3.push("str".into());
+        self.emit(&format!(", v_{name}"))
     }
     fn finish_call(&mut self) -> R {
         self.call_stack.pop().ok_or_else(|| Fault::Syntax("呼叫邊界無效".into()))?;
@@ -1086,7 +1141,7 @@ impl Machine {
         if self.current_function.is_some() || !self.call_stack.is_empty() {
             return Err(Fault::Syntax("名稱解析邊界無效".into()));
         }
-        for (module, name, actual) in &self.calls {
+        for (module, name, actual, actual_kinds) in &self.calls {
             let expected = if let Some(module) = module {
                 if !self.imports.contains(module) {
                     return Err(Fault::Syntax(format!("未匯入模組 {module}")));
@@ -1101,6 +1156,15 @@ impl Machine {
             };
             if *actual != expected {
                 return Err(Fault::Syntax(format!("函式 {name} 預期 {expected} 個實參，收到 {actual} 個")));
+            }
+            if module.is_none() {
+                let expected_kinds = self.function_param_kinds.get(name)
+                    .ok_or_else(|| Fault::Syntax(format!("未知函式型別 {name}")))?;
+                if expected_kinds != actual_kinds {
+                    return Err(Fault::Syntax(format!("函式 {name} 的 str／int 實參型別不符")));
+                }
+            } else if actual_kinds.iter().any(|kind| kind == "str") {
+                return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
             }
         }
         Ok(0)
@@ -1130,7 +1194,8 @@ impl Machine {
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
-                    "literal" | "at_str_local" | "str_local" | "at_str_assignment" |
+                    "literal" | "at_str_local" | "str_local" | "at_str_move_argument" |
+                    "str_move_argument" | "at_str_assignment" |
                     "str_assignment" | "at_conversion" | "conversion") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
@@ -1302,7 +1367,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
     let mut machine = Machine {
         tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
         cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
-        current_function: None, calls: Vec::new(), call_stack: Vec::new(),
+        function_param_kinds: BTreeMap::new(), current_function: None, calls: Vec::new(), call_stack: Vec::new(),
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,

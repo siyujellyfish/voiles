@@ -707,6 +707,79 @@ fn main(){
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
 
+    # 跨函式 str 擁有權移交的第一批：形參是單一擁有 String、實參必須
+    # 明確 move。函式回傳仍為 int；前向解析與混合參數在全文最後核對型別。
+    str_function_parameter_cases = (
+        ('fn main()->int{\nvar raw:str = "42"\nreturn decode(raw.move())\n}\n'
+         'fn decode(text:str)->int{return text.to_int()}'),
+        ('fn main()->int{\nvar raw:str = "2"\nreturn calc(40,raw.move())\n}\n'
+         'fn calc(base:int,text:str)->int{return base+text.to_int()}'),
+        ('fn main()->int{\nconst raw:str = "2"\nreturn calc(raw.move(),40)\n}\n'
+         'fn calc(text:str,base:int)->int{return base+text.to_int()}'),
+        ('fn main()->int{\nvar raw:str = "海龜"\nreturn size(raw.move())\n}\n'
+         'fn size(text:str)->int{return len(text)+40}'),
+        ('fn main()->int{\nvar raw:str = "42"\nreturn relay(raw.move())\n}\n'
+         'fn relay(value:str)->int{return decode(value.move())}\n'
+         'fn decode(text:str)->int{return text.to_int()}'),
+    )
+    for case_number, program in enumerate(str_function_parameter_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-compiler", source)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (case_number, generations)
+        code, generated, error = generations[2]
+        assert code == 0 and not error and ": String" in generated, (
+            case_number, code, error, generated)
+        assert ", v_raw" in generated and ".clone()" not in generated, (case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), (case_number, program)
+        for mode in ("build", "pack"):
+            exe = root / f"str-fn-param-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_str_function_parameters = (
+        ('fn main()->int{return decode(42)}\n'
+         'fn decode(text:str)->int{return text.to_int()}'),
+        ('fn main()->int{\nvar raw:str = "42"\nreturn number(raw.move())\n}\n'
+         'fn number(value:int)->int{return value}'),
+        ('fn main()->int{\nvar raw:str = "42"\nreturn decode(raw.move())+raw.to_int()\n}\n'
+         'fn decode(text:str)->int{return text.to_int()}'),
+        ('fn main()->int{\nvar raw:str = "42"\nreturn decode(raw.move())\n}\n'
+         'fn decode(text:str)->int{return text+1}'),
+        ('fn main()->int{\nvar raw:str = "42"\nreturn decode(raw.move())\n}\n'
+         'fn decode(text:str,text:int)->int{return 42}'),
+    )
+    for program in invalid_str_function_parameters:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-compiler", source)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and error
+                   for code, generated, error in failures), (program, failures)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 公開 Checker 接受未顯式 move 的 str 實參；目前私有自舉
+    # 僅移植獨立擁有者明確轉交，不能將公開合法語法誤判為公開錯誤。
+    implicit_str_argument = ('fn main()->int{\nvar raw:str = "42"\n'
+                             'return decode(raw)\n}\n'
+                             'fn decode(text:str)->int{return text.to_int()}')
+    source.write_text("import host\n" + implicit_str_argument, encoding="utf-8")
+    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
+               for cli in (seed, stage, next_stage))
+    public.write_text(implicit_str_argument, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"

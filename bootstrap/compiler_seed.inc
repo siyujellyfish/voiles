@@ -47,15 +47,23 @@ s.enter(depth)?;
 if s.at(")")? != 0i64 {
 Ok(0i64)
 } else {
-Ok(s.emit(", ")?.checked_add(s.parameter()?).ok_or(Fault::Overflow)?.checked_add(s.expect(":")?).ok_or(Fault::Overflow)?.checked_add(s.expect("int")?).ok_or(Fault::Overflow)?.checked_add(s.emit(": i64")?).ok_or(Fault::Overflow)?.checked_add(v_following_parameters(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.emit(", ")?.checked_add(s.parameter()?).ok_or(Fault::Overflow)?.checked_add(s.expect(":")?).ok_or(Fault::Overflow)?.checked_add(v_parameter_type(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_parameters(s, depth + 1)?).ok_or(Fault::Overflow)?)
 }
 }
 fn v_following_parameters(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 if s.at(",")? != 0i64 {
-Ok(s.expect(",")?.checked_add(s.emit(", ")?).ok_or(Fault::Overflow)?.checked_add(s.parameter()?).ok_or(Fault::Overflow)?.checked_add(s.expect(":")?).ok_or(Fault::Overflow)?.checked_add(s.expect("int")?).ok_or(Fault::Overflow)?.checked_add(s.emit(": i64")?).ok_or(Fault::Overflow)?.checked_add(v_following_parameters(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.expect(",")?.checked_add(s.emit(", ")?).ok_or(Fault::Overflow)?.checked_add(s.parameter()?).ok_or(Fault::Overflow)?.checked_add(s.expect(":")?).ok_or(Fault::Overflow)?.checked_add(v_parameter_type(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_parameters(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 Ok(0i64)
+}
+}
+fn v_parameter_type(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("str")? != 0i64 {
+Ok(s.expect("str")?.checked_add(s.emit(": String")?).ok_or(Fault::Overflow)?)
+} else {
+Ok(s.expect("int")?.checked_add(s.emit(": i64")?).ok_or(Fault::Overflow)?)
 }
 }
 fn v_body(s: &mut Machine, depth: usize) -> R {
@@ -519,14 +527,22 @@ s.enter(depth)?;
 if s.at(")")? != 0i64 {
 Ok(0i64)
 } else {
-Ok(s.argument()?.checked_add(s.emit(", ")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(v_one_argument(s, depth + 1)?.checked_add(v_following_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?)
 }
 }
 fn v_following_arguments(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
 if s.at(",")? != 0i64 {
-Ok(s.expect(",")?.checked_add(s.argument()?).ok_or(Fault::Overflow)?.checked_add(s.emit(", ")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?)
+Ok(s.expect(",")?.checked_add(v_one_argument(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(v_following_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 Ok(0i64)
+}
+}
+fn v_one_argument(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at_str_move_argument()? != 0i64 {
+Ok(s.str_move_argument()?)
+} else {
+Ok(s.argument()?.checked_add(s.emit(", ")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?)
 }
 }
