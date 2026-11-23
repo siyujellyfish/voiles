@@ -571,6 +571,82 @@ fn main(){
     assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
                for cli in (seed, stage, next_stage))
 
+    # if/else 兩臂都正常續行時，測試區域名稱不洩漏，以及外層擁有字串的
+    # 路徑一致覆寫。公開 Checker 尚拒絕分支內的外層持有者 move，
+    # 所以不把未公開核准的移交冒充已支援的自舉路徑。
+    if_string_flow_cases = (
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'if(1==1){text = "42"}else{text = "0"}\n'
+         'return text.to_int()\n}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'if(0==1){text = "0"}else{text = "海龜"}\n'
+         'return len(text)+40\n}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'if(0==1){text = "0"}else{text = "42"}\n'
+         'return text.to_int()\n}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'if(1==1){text = "0"\ntext = "42"}\n'
+         'else{text = "0"\ntext = "7"}\n'
+         'return text.to_int()\n}'),
+        ('fn main()->int{\nconst text:str = "42"\n'
+         'if(1==1){const local:str = "A"}\n'
+         'else{const local:str = "B"}\n'
+         'return text.to_int()\n}'),
+    )
+    for case_number, program in enumerate(if_string_flow_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-compiler", source)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (case_number, generations)
+        code, generated, err = generations[2]
+        assert code == 0 and not err and "if " in generated and "} else {" in generated, (
+            case_number, code, err, generated)
+        assert ".clone()" not in generated, (case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
+        for mode in ("build", "pack"):
+            exe = root / f"if-string-flow-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_if_string_flow = (
+        # 分支內的外層持有者 move 尚未取得公開 Checker 的獨立持有證據。
+        ('fn main()->int{\nvar text:str = "42"\n'
+         'if(1==1){var taken:str = text.move()}\n'
+         'else{var taken:str = text.move()}\n'
+         'text = "42"\nreturn text.to_int()\n}'),
+        # 不可變綁定不允許進行覆寫。
+        ('fn main()->int{\nconst text:str = "42"\n'
+         'if(1==1){text = "0"}else{var local:str = "0"}\n'
+         'return text.to_int()\n}'),
+        # 分支新增的名稱不會進入外層詞彙作用域。
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'if(1==1){const hidden:str = "42"}\n'
+         'else{const hidden:str = "42"}\nreturn hidden.to_int()\n}'),
+        # 非 Copy 的擁有字串不能未經明確 move 進行隱含複製。
+        ('fn main()->int{\nvar text:str = "42"\nvar second:str = "0"\n'
+         'if(1==1){second = text}else{second = "0"}\n'
+         'return second.to_int()\n}'),
+    )
+    for program in invalid_if_string_flow:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and err for code, generated, err in results), (
+            program, results)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
