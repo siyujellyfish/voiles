@@ -98,7 +98,7 @@ impl Machine {
     fn at_str_assignment(&self) -> R {
         // 由已登錄的字串宣告辨識賦值語句；const 也進入此路徑以明確拒絕。
         Ok(i64::from(matches!(self.token(), TokenKind::Name(name)
-                if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str")))
+                if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str" | "moved:str")))
             && self.tokens.get(self.cursor + 1)
                 .is_some_and(|t| t.kind == TokenKind::Symbol('='))))
     }
@@ -411,18 +411,44 @@ impl Machine {
     }
     fn str_assignment(&mut self) -> R {
         let name = self.take_name()?;
-        if self.locals.get(&name).map(String::as_str) != Some("owned:str") {
+        if !matches!(self.locals.get(&name).map(String::as_str), Some("owned:str" | "moved:str")) {
             return Err(Fault::Syntax(format!("{name} 不是可變的擁有字串")));
         }
         self.expect("=")?;
-        let TokenKind::StringLiteral(value) = self.token() else {
-            return Err(Fault::Syntax("str 重新賦值需要字串常值".into()));
-        };
-        let value = value.clone();
-        self.cursor += 1;
-        // Rust 賦值先建立新的 String，再以 RAII 清理原持有值；
-        // 不透過隱含 clone 或更改既有公開所有權契約。
-        self.emit(&format!("v_{name} = String::from({value:?});\n"))
+        match self.token() {
+            TokenKind::StringLiteral(value) => {
+                let value = value.clone();
+                self.cursor += 1;
+                // moved:str 可重新初始化；既有 owner 則先建立新字串，再釋放舊值。
+                self.locals.insert(name.clone(), "owned:str".into());
+                self.emit(&format!("v_{name} = String::from({value:?});\n"))
+            }
+            TokenKind::Name(source) => {
+                let source = source.clone();
+                if source == name {
+                    return Err(Fault::Syntax("字串不能以自身作為 move 來源".into()));
+                }
+                if self.locals.get(&source).map(String::as_str) != Some("owned:str") {
+                    return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
+                }
+                // 沿用宣告移交已核准的直線、無有效借用安全子集。
+                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                    || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
+                    || self.pending_dict_borrow.is_some() {
+                    return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
+                }
+                self.cursor += 1;
+                self.expect(".")?;
+                self.expect("move")?;
+                self.expect("(")?;
+                self.expect(")")?;
+                self.locals.insert(source.clone(), "moved:str".into());
+                self.locals.insert(name.clone(), "owned:str".into());
+                // 目標先前有效：Rust 賦值釋放其舊 String；已移交則重新取得所有權。
+                self.emit(&format!("v_{name} = v_{source};\n"))
+            }
+            _ => Err(Fault::Syntax("str 重新賦值需要字串常值或明確 move".into())),
+        }
     }
     fn str_local(&mut self) -> R {
         let mutable = self.matched_width("var") != 0;
