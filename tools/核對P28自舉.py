@@ -498,8 +498,6 @@ fn main(){
          'var second:str = first.move()\nfirst = 42\nreturn 0\n}'),
         ('fn main()->int{\nvar first:str = "42"\nvar second:str = "0"\n'
          'second = first\nreturn second.to_int()\n}'),
-        ('fn main()->int{\nconst first:str = "42"\nvar second:str = "0"\n'
-         'second = first.move()\nreturn second.to_int()\n}'),
         ('fn main()->int{\nvar first:str = "42"\nvar second:str = "0"\n'
          'second = first.move()\nsecond = first.move()\nreturn 0\n}'),
     )
@@ -511,6 +509,17 @@ fn main(){
                    for code, generated, diagnostic in rejected), (program, rejected)
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 公開語言允許不可變擁有者的明確移交，但私有自舉 const str
+    # 仍採 &'static str 非擁有表示；不可冒充此情境已移植。
+    const_source_move = ('fn main()->int{\nconst first:str = "42"\n'
+                         'var second:str = "0"\nsecond = first.move()\n'
+                         'return second.to_int()\n}')
+    source.write_text("import host\n" + const_source_move, encoding="utf-8")
+    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
+               for cli in (seed, stage, next_stage))
+    public.write_text(const_source_move, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
 
     # 自身移交拒絕：只能在初始化及轉移完整的前置值之間交換所有權。
     self_move = 'fn main()->int{\nvar text:str = "42"\ntext = text.move()\nreturn 0\n}'
