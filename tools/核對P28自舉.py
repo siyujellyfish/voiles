@@ -463,7 +463,15 @@ fn main(){
         code, generated, error = generated_by[2]
         assert code == 0 and not error, (case_number, code, error)
         assert "let mut v_first: String = String::from(" in generated
-        assert ("v_first = " in generated or "v_second = v_first;" in generated), (
+        expected_updates = (
+            ("v_first = String::from(",),
+            ("v_first = v_second;",),
+            ("v_second = v_first;",),
+            ("v_third = v_second;",),
+            ("v_second = v_first;",),
+            ("v_first = String::from(",),
+        )
+        assert all(fragment in generated for fragment in expected_updates[case_number]), (
             case_number, generated)
         assert ".clone()" not in generated
         rust_source.write_text(
