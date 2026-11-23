@@ -43,7 +43,7 @@ struct Machine {
     pending_dict_borrow: Option<(String, Option<String>)>,
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
-    pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize)>,
+    pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize, BTreeMap<String, String>)>,
     pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>, BTreeMap<String, String>)>,
 }
 
@@ -386,11 +386,12 @@ impl Machine {
         self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
     }
     fn match_start(&mut self) -> R {
-        self.pending_matches.push((None, BTreeSet::new(), false, 0));
+        // 同一 match 的各 case 共用外層名稱，但不共用分支內宣告。
+        self.pending_matches.push((None, BTreeSet::new(), false, 0, self.locals.clone()));
         self.emit("match ")
     }
     fn match_integer_subject(&mut self) -> R {
-        let Some((kind, _, _, _)) = self.pending_matches.last_mut() else {
+        let Some((kind, _, _, _, _)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         *kind = Some(MatchKind::Integer);
@@ -400,7 +401,7 @@ impl Machine {
         let value = if self.matched_width("true") != 0 { "true" }
             else if self.matched_width("false") != 0 { "false" }
             else { return Err(Fault::Syntax("match 需要布林常值".into())); };
-        let Some((kind, _, _, _)) = self.pending_matches.last_mut() else {
+        let Some((kind, _, _, _, _)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         *kind = Some(MatchKind::Boolean);
@@ -408,7 +409,7 @@ impl Machine {
         self.emit(value)
     }
     fn match_pattern(&mut self) -> R {
-        let Some(kind) = self.pending_matches.last().and_then(|(kind, _, _, _)| *kind) else {
+        let Some(kind) = self.pending_matches.last().and_then(|(kind, _, _, _, _)| *kind) else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         let (value, emitted) = match kind {
@@ -440,7 +441,7 @@ impl Machine {
             }
         };
         self.cursor += 1;
-        let Some((_, seen, wildcard, _)) = self.pending_matches.last_mut() else {
+        let Some((_, seen, wildcard, _, _)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         if *wildcard { return Err(Fault::Syntax("預設分支只能位於末尾".into())); }
@@ -449,7 +450,7 @@ impl Machine {
     }
     fn match_wildcard(&mut self) -> R {
         self.expect("_")?;
-        let Some((kind, seen, wildcard, _)) = self.pending_matches.last_mut() else {
+        let Some((kind, seen, wildcard, _, _)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         if *wildcard { return Err(Fault::Syntax("預設分支重複".into())); }
@@ -460,17 +461,20 @@ impl Machine {
         self.emit("_ => {\n")
     }
     fn finish_match_arm(&mut self) -> R {
-        let Some((_, _, _, arms)) = self.pending_matches.last_mut() else {
+        let Some((_, _, _, arms, outer_locals)) = self.pending_matches.last_mut() else {
             return Err(Fault::Syntax("match 邊界無效".into()));
         };
         *arms += 1;
+        // 真 Rust 的 case 區塊結束後區域名稱亦到期。
+        self.locals = outer_locals.clone();
         self.emit("},\n")
     }
     fn finish_match(&mut self) -> R {
-        let (kind, seen, wildcard, arms) = self.pending_matches.pop()
+        let (kind, seen, wildcard, arms, outer_locals) = self.pending_matches.pop()
             .ok_or_else(|| Fault::Syntax("match 邊界無效".into()))?;
         if kind.is_none() { return Err(Fault::Syntax("match 缺少比對值".into())); }
         if arms == 0 { return Err(Fault::Syntax("match 需要至少一個 case".into())); }
+        self.locals = outer_locals;
         let exhaustive_boolean = kind == Some(MatchKind::Boolean) && seen.len() == 2;
         if !wildcard && !exhaustive_boolean { self.emit("_ => {},\n")?; }
         self.emit("}\n")
