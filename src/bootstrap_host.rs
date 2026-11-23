@@ -21,6 +21,8 @@ struct Machine {
     steps: usize,
     functions: BTreeMap<String, Vec<String>>,
     function_param_kinds: BTreeMap<String, Vec<String>>,
+    function_return_kinds: BTreeMap<String, String>,
+    str_factory_calls: Vec<String>,
     current_function: Option<String>,
     calls: Vec<(Option<String>, String, usize, Vec<String>)>,
     call_stack: Vec<usize>,
@@ -94,7 +96,11 @@ impl Machine {
                 matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "move"))
             && self.tokens.get(self.cursor + 8).is_some_and(|t| t.kind == TokenKind::Symbol('('))
             && self.tokens.get(self.cursor + 9).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
-        Ok(i64::from(head && (literal || moved)))
+        let factory_call = declarator
+            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+            && self.tokens.get(self.cursor + 7).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
+        Ok(i64::from(head && (literal || moved || factory_call)))
     }
     fn at_str_assignment(&self) -> R {
         // 由已登錄的字串宣告辨識賦值語句；const 也進入此路徑以明確拒絕。
@@ -277,6 +283,7 @@ impl Machine {
         }
         self.functions.insert(name.clone(), Vec::new());
         self.function_param_kinds.insert(name.clone(), Vec::new());
+        self.function_return_kinds.insert(name.clone(), "int".into());
         self.current_function = Some(name.clone());
         self.emit_name(&name)
     }
@@ -315,6 +322,54 @@ impl Machine {
             return Err(Fault::Syntax(format!("{name} 不是可用的 int 名稱")));
         }
         if parameter { self.emit_name(&name) } else { self.emit(&format!("v_{name}")) }
+    }
+    fn mark_str_return(&mut self) -> R {
+        let name = self.current_function.as_ref()
+            .ok_or_else(|| Fault::Syntax("str 返回型別不在函式中".into()))?;
+        if name == "main" {
+            return Err(Fault::Syntax("main 必須回傳 int".into()));
+        }
+        self.function_return_kinds.insert(name.clone(), "str".into());
+        Ok(0)
+    }
+    fn is_str_return(&self) -> R {
+        Ok(i64::from(self.current_function.as_ref()
+            .and_then(|name| self.function_return_kinds.get(name))
+            .is_some_and(|kind| kind == "str")))
+    }
+    fn str_return_statement(&mut self) -> R {
+        if self.is_str_return()? == 0 {
+            return Err(Fault::Syntax("此函式必須回傳 int".into()));
+        }
+        if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+            || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
+            || self.pending_dict_borrow.is_some() {
+            return Err(Fault::Syntax("str 返回暫不支援未收斂控制流程或借用".into()));
+        }
+        self.expect("return")?;
+        match self.token() {
+            TokenKind::StringLiteral(value) => {
+                let value = value.clone();
+                self.cursor += 1;
+                self.emit(&format!("Ok(String::from({value:?}))\n"))
+            }
+            TokenKind::Name(name) => {
+                let name = name.clone();
+                let moved_kind = match self.locals.get(&name).map(String::as_str) {
+                    Some("owned:str") => "moved:str",
+                    Some("const-owned:str") => "moved:const:str",
+                    _ => return Err(Fault::Syntax(format!("{name} 不是可返回的擁有字串"))),
+                };
+                self.cursor += 1;
+                self.expect(".")?;
+                self.expect("move")?;
+                self.expect("(")?;
+                self.expect(")")?;
+                self.locals.insert(name.clone(), moved_kind.into());
+                self.emit(&format!("Ok(v_{name})\n"))
+            }
+            _ => Err(Fault::Syntax("str 返回需要字串常值或明確 move".into())),
+        }
     }
     fn finish_function(&mut self) -> R {
         self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
@@ -565,6 +620,22 @@ impl Machine {
             }
             TokenKind::Name(source) => {
                 let source = source.clone();
+                if self.tokens.get(self.cursor + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+                    self.cursor += 1;
+                    self.expect("(")?;
+                    self.expect(")")?;
+                    self.str_factory_calls.push(source.clone());
+                    self.locals.insert(name.clone(), if mutable {
+                        "owned:str".into()
+                    } else {
+                        "const-owned:str".into()
+                    });
+                    let modifier = if mutable { "mut " } else { "" };
+                    return self.emit(&format!(
+                        "let {modifier}v_{name}: String = v_{source}(s, depth + 1)?;\n"
+                    ));
+                }
                 if !matches!(self.locals.get(&source).map(String::as_str), Some("owned:str" | "const-owned:str")) {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
@@ -1163,8 +1234,19 @@ impl Machine {
                 if expected_kinds != actual_kinds {
                     return Err(Fault::Syntax(format!("函式 {name} 的 str／int 實參型別不符")));
                 }
+                if self.function_return_kinds.get(name).map(String::as_str) != Some("int") {
+                    return Err(Fault::Syntax(format!("函式 {name} 不回傳 int")));
+                }
             } else if actual_kinds.iter().any(|kind| kind == "str") {
                 return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
+            }
+        }
+        for name in &self.str_factory_calls {
+            let Some(params) = self.functions.get(name) else {
+                return Err(Fault::Syntax(format!("未知 str 返回函式 {name}")));
+            };
+            if !params.is_empty() || self.function_return_kinds.get(name).map(String::as_str) != Some("str") {
+                return Err(Fault::Syntax(format!("字串初始化只允許零參數 str 返回函式：{name}")));
             }
         }
         Ok(0)
@@ -1195,7 +1277,8 @@ impl Machine {
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
                     "literal" | "at_str_local" | "str_local" | "at_str_move_argument" |
-                    "str_move_argument" | "at_str_assignment" |
+                    "str_move_argument" | "mark_str_return" | "is_str_return" |
+                    "str_return_statement" | "at_str_assignment" |
                     "str_assignment" | "at_conversion" | "conversion") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
@@ -1367,7 +1450,8 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
     let mut machine = Machine {
         tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
         cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
-        function_param_kinds: BTreeMap::new(), current_function: None, calls: Vec::new(), call_stack: Vec::new(),
+        function_param_kinds: BTreeMap::new(),
+        function_return_kinds: BTreeMap::new(), str_factory_calls: Vec::new(), current_function: None, calls: Vec::new(), call_stack: Vec::new(),
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
