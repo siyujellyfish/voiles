@@ -264,7 +264,7 @@ fn main(){
                              for cli in (seed, stage, next_stage)]
         assert three_generations[0] == three_generations[1] == three_generations[2]
         code, generated, error = three_generations[2]
-        assert code == 0 and not error and 'let mut v_text: String = String::from(' in generated
+        assert code == 0 and not error and 'let mut v_text: String = String::from(' in generated, (case_number, code, generated, error)
         rust_source.write_text(
             "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
             "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
