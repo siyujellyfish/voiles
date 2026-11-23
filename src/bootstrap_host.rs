@@ -76,7 +76,7 @@ impl Machine {
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
     fn at_str_local(&self) -> R {
-        Ok(i64::from(self.matched_width("const") != 0
+        Ok(i64::from((self.matched_width("const") != 0 || self.matched_width("var") != 0)
             && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "str"))
@@ -85,7 +85,7 @@ impl Machine {
     }
     fn at_conversion(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Name(ref name)
-                if self.locals.get(name).map(String::as_str) == Some("str"))
+                if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str")))
             && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "to_int"))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
@@ -391,7 +391,8 @@ impl Machine {
         self.emit(&format!("v_{name}.parse::<i64>().map_err(|_| Fault::Conversion)?"))
     }
     fn str_local(&mut self) -> R {
-        self.expect("const")?;
+        let mutable = self.matched_width("var") != 0;
+        self.expect(if mutable { "var" } else { "const" })?;
         let name = self.take_name()?;
         let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
             .is_some_and(|parameters| parameters.contains(&name));
@@ -406,8 +407,14 @@ impl Machine {
         };
         let value = value.clone();
         self.cursor += 1;
-        self.locals.insert(name.clone(), "str".into());
-        self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
+        if mutable {
+            // 僅限字面值初始化的擁有字串；離開 Rust 詞彙作用域時由 RAII 釋放。
+            self.locals.insert(name.clone(), "owned:str".into());
+            self.emit(&format!("let mut v_{name}: String = String::from({value:?});\n"))
+        } else {
+            self.locals.insert(name.clone(), "str".into());
+            self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
+        }
     }
     fn match_start(&mut self) -> R {
         // 同一 match 的各 case 共用外層名稱，但不共用分支內宣告。
@@ -700,7 +707,7 @@ impl Machine {
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
-        if matches!(self.locals.get(&name).map(String::as_str), Some("str" | "error:str")) {
+        if matches!(self.locals.get(&name).map(String::as_str), Some("str" | "owned:str" | "error:str")) {
             return self.emit(&format!("(v_{name}.chars().count() as i64)"));
         }
         if !matches!(self.locals.get(&name).map(String::as_str),
