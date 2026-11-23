@@ -41,7 +41,15 @@ fn fields()->int{
 }
 
 fn signature()->int{
-    return host.expect("(") + host.emit("(s: &mut Machine, depth: usize") + parameters() + host.expect(")") + host.expect("->") + host.expect("int") + host.emit(") -> R {\ns.enter(depth)?;\n")
+    return host.expect("(") + host.emit("(s: &mut Machine, depth: usize") + parameters() + host.expect(")") + host.expect("->") + return_type()
+}
+
+fn return_type()->int{
+    if (host.at("str") != 0) {
+        return host.expect("str") + host.mark_str_return() + host.emit(") -> Result<String,Fault> {\ns.enter(depth)?;\n")
+    } else {
+        return host.expect("int") + host.emit(") -> R {\ns.enter(depth)?;\n")
+    }
 }
 
 fn parameters()->int{
@@ -99,7 +107,11 @@ fn statement()->int{
                                 return match_statement()
                             } else {
                                 if (host.at("return") != 0) {
+                                    if (host.is_str_return() != 0) {
+                                    return host.str_return_statement()
+                                } else {
                                     return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                                }
                                 } else {
                                     return control()
                                 }
