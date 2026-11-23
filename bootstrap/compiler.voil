@@ -107,12 +107,12 @@ fn statement()->int{
                                 return match_statement()
                             } else {
                                 if (host.at("return") != 0) {
-                                    if (host.is_str_return() != 0) {
+                                if (host.is_str_return() != 0) {
                                     return host.str_return_statement()
                                 } else {
                                     return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
                                 }
-                                } else {
+                            } else {
                                     return control()
                                 }
                             }
