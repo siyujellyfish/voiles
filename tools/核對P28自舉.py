@@ -749,8 +749,6 @@ fn main(){
             assert invoke(exe) == (42, "", ""), (case_number, mode)
 
     invalid_str_function_parameters = (
-        ('fn main()->int{\nvar raw:str = "42"\nreturn decode(raw)\n}\n'
-         'fn decode(text:str)->int{return text.to_int()}'),
         ('fn main()->int{return decode(42)}\n'
          'fn decode(text:str)->int{return text.to_int()}'),
         ('fn main()->int{\nvar raw:str = "42"\nreturn number(raw.move())\n}\n'
@@ -770,6 +768,17 @@ fn main(){
                    for code, generated, error in failures), (program, failures)
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 公開 Checker 接受未顯式 move 的 str 實參；目前私有自舉
+    # 僅移植獨立擁有者明確轉交，不能將公開合法語法誤判為公開錯誤。
+    implicit_str_argument = ('fn main()->int{\nvar raw:str = "42"\n'
+                             'return decode(raw)\n}\n'
+                             'fn decode(text:str)->int{return text.to_int()}')
+    source.write_text("import host\n" + implicit_str_argument, encoding="utf-8")
+    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
+               for cli in (seed, stage, next_stage))
+    public.write_text(implicit_str_argument, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
 
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
