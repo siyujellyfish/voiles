@@ -211,7 +211,7 @@ fn main(){
                  'const text:str = "0"\nreturn text.to_int()\n}else{\n'
                  'const text:str = "42"\nreturn text.to_int()\n}\n'
                  '}else{\nreturn 0\n}\n}')
-    for program in (scoped_if, nested_if):
+    for case_number, program in enumerate((scoped_if, nested_if)):
         source.write_text("import host\n" + program, encoding="utf-8")
         generated_branches = [invoke(cli, "bootstrap-compiler", source)
                               for cli in (seed, stage, next_stage)]
@@ -229,7 +229,7 @@ fn main(){
         assert invoke(next_stage, "check", public) == (0, "", "")
         assert invoke(next_stage, "run", public) == (0, "42\n", "")
         for mode in ("build", "pack"):
-            exe = root / f"scoped-if-{mode}"
+            exe = root / f"scoped-if-{case_number}-{mode}"
             built = invoke(next_stage, mode, public, "-o", exe)
             assert built == (0, "", ""), (mode, program, built)
             assert invoke(exe) == (42, "", "")
