@@ -40,7 +40,15 @@ Ok(s.expect("var")?.checked_add(s.field()?).ok_or(Fault::Overflow)?.checked_add(
 }
 fn v_signature(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
-Ok(s.expect("(")?.checked_add(s.emit("(s: &mut Machine, depth: usize")?).ok_or(Fault::Overflow)?.checked_add(v_parameters(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.expect("->")?).ok_or(Fault::Overflow)?.checked_add(s.expect("int")?).ok_or(Fault::Overflow)?.checked_add(s.emit(") -> R {\ns.enter(depth)?;\n")?).ok_or(Fault::Overflow)?)
+Ok(s.expect("(")?.checked_add(s.emit("(s: &mut Machine, depth: usize")?).ok_or(Fault::Overflow)?.checked_add(v_parameters(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.expect("->")?).ok_or(Fault::Overflow)?.checked_add(v_return_type(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+fn v_return_type(s: &mut Machine, depth: usize) -> R {
+s.enter(depth)?;
+if s.at("str")? != 0i64 {
+Ok(s.expect("str")?.checked_add(s.mark_str_return()?).ok_or(Fault::Overflow)?.checked_add(s.emit(") -> Result<String,Fault> {\ns.enter(depth)?;\n")?).ok_or(Fault::Overflow)?)
+} else {
+Ok(s.expect("int")?.checked_add(s.emit(") -> R {\ns.enter(depth)?;\n")?).ok_or(Fault::Overflow)?)
+}
 }
 fn v_parameters(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
@@ -98,7 +106,11 @@ if s.at("match")? != 0i64 {
 Ok(v_match_statement(s, depth + 1)?)
 } else {
 if s.at("return")? != 0i64 {
+if s.is_str_return()? != 0i64 {
+Ok(s.str_return_statement()?)
+} else {
 Ok(s.expect("return")?.checked_add(s.return_start()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(")\n")?).ok_or(Fault::Overflow)?)
+}
 } else {
 Ok(v_control(s, depth + 1)?)
 }
