@@ -70,6 +70,9 @@ Ok(s.str_local()?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)
 if s.at("var")? != 0i64 {
 Ok(v_local(s, depth + 1)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
+if s.at_str_assignment()? != 0i64 {
+Ok(s.str_assignment()?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
 if s.at_field_write()? != 0i64 {
 Ok(s.field_target()?.checked_add(s.expect("=")?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
@@ -90,6 +93,7 @@ if s.at("return")? != 0i64 {
 Ok(s.expect("return")?.checked_add(s.return_start()?).ok_or(Fault::Overflow)?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(")\n")?).ok_or(Fault::Overflow)?)
 } else {
 Ok(v_control(s, depth + 1)?)
+}
 }
 }
 }

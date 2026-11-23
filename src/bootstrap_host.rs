@@ -83,6 +83,13 @@ impl Machine {
             && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('='))
             && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)))))
     }
+    fn at_str_assignment(&self) -> R {
+        // 由已登錄的字串宣告辨識賦值語句；const 也進入此路徑以明確拒絕。
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(name)
+                if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str")))
+            && self.tokens.get(self.cursor + 1)
+                .is_some_and(|t| t.kind == TokenKind::Symbol('='))))
+    }
     fn at_conversion(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Name(ref name)
                 if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str")))
@@ -389,6 +396,21 @@ impl Machine {
         self.expect("(")?;
         self.expect(")")?;
         self.emit(&format!("v_{name}.parse::<i64>().map_err(|_| Fault::Conversion)?"))
+    }
+    fn str_assignment(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("owned:str") {
+            return Err(Fault::Syntax(format!("{name} 不是可變的擁有字串")));
+        }
+        self.expect("=")?;
+        let TokenKind::StringLiteral(value) = self.token() else {
+            return Err(Fault::Syntax("str 重新賦值需要字串常值".into()));
+        };
+        let value = value.clone();
+        self.cursor += 1;
+        // Rust 賦值先建立新的 String，再以 RAII 清理原持有值；
+        // 不透過隱含 clone 或更改既有公開所有權契約。
+        self.emit(&format!("v_{name} = String::from({value:?});\n"))
     }
     fn str_local(&mut self) -> R {
         let mutable = self.matched_width("var") != 0;
@@ -967,7 +989,8 @@ impl Machine {
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
-                    "literal" | "at_str_local" | "str_local" | "at_conversion" | "conversion") {
+                    "literal" | "at_str_local" | "str_local" | "at_str_assignment" |
+                    "str_assignment" | "at_conversion" | "conversion") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
         }
         let ident = format!("s.{name}");
