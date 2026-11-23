@@ -780,6 +780,66 @@ fn main(){
     public.write_text(implicit_str_argument, encoding="utf-8")
     assert invoke(next_stage, "check", public) == (0, "", "")
 
+    # str 返回第一批：零參數函式建立一個獨立的擁有 String，呼叫端可以
+    # 用 var／const 接收；具名來源須明確 move，不透過 clone 或 &'static str。
+    str_return_factory_cases = (
+        ('fn main()->int{\nvar text:str = make()\nreturn text.to_int()\n}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{\nconst text:str = make()\nreturn len(text)+40\n}\n'
+         'fn make()->str{return "海龜"}'),
+        ('fn main()->int{\nvar text:str = make()\nreturn text.to_int()\n}\n'
+         'fn make()->str{\nvar result:str = "42"\nreturn result.move()\n}'),
+        ('fn main()->int{\nconst text:str = make()\n'
+         'var other:str = text.move()\nreturn other.to_int()\n}\n'
+         'fn make()->str{\nconst result:str = "42"\nreturn result.move()\n}'),
+    )
+    for case_number, program in enumerate(str_return_factory_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-compiler", source)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (case_number, generations)
+        code, generated, error = generations[2]
+        assert code == 0 and not error and "-> Result<String,Fault>" in generated, (
+            case_number, code, error, generated)
+        assert "v_make(s, depth + 1)?" in generated and ".clone()" not in generated, (
+            case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), (case_number, program)
+        for mode in ("build", "pack"):
+            exe = root / f"str-fn-return-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_str_return_factories = (
+        'fn main()->int{var text:str = missing() return text.to_int()}',
+        ('fn main()->int{\nvar text:str = number()\nreturn text.to_int()\n}\n'
+         'fn number()->int{return 42}'),
+        ('fn main()->int{return make()}\nfn make()->str{return "42"}'),
+        ('fn main()->int{var text:str = make() return text.to_int()}\n'
+         'fn make()->str{return 42}'),
+        ('fn main()->int{var text:str = make() return text.to_int()}\n'
+         'fn make()->str{var t:str = "42" return t}'),
+        'fn main()->str{return "42"}',
+    )
+    for program in invalid_str_return_factories:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in results), (program, results)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
