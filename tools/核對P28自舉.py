@@ -230,7 +230,8 @@ fn main(){
         assert invoke(next_stage, "run", public) == (0, "42\n", "")
         for mode in ("build", "pack"):
             exe = root / f"scoped-if-{mode}"
-            assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (mode, program, built)
             assert invoke(exe) == (42, "", "")
 
     invalid_if_scopes = (
