@@ -217,7 +217,7 @@ fn main(){
                               for cli in (seed, stage, next_stage)]
         assert generated_branches[0] == generated_branches[1] == generated_branches[2]
         code, generated, error = generated_branches[2]
-        assert code == 0 and not error and generated.count("let v_text: &'static str") == 2
+        assert code == 0 and not error and generated.count("let v_text: String = String::from(") == 2
         rust_source.write_text(
             "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
             "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
@@ -510,16 +510,60 @@ fn main(){
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
 
-    # 公開語言允許不可變擁有者的明確移交，但私有自舉 const str
-    # 仍採 &'static str 非擁有表示；不可冒充此情境已移植。
-    const_source_move = ('fn main()->int{\nconst first:str = "42"\n'
-                         'var second:str = "0"\nsecond = first.move()\n'
-                         'return second.to_int()\n}')
-    source.write_text("import host\n" + const_source_move, encoding="utf-8")
-    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
-               for cli in (seed, stage, next_stage))
-    public.write_text(const_source_move, encoding="utf-8")
-    assert invoke(next_stage, "check", public) == (0, "", "")
+    # const str 現由不可變的 Rust String 持有：可明確移交，但不可變更綁定。
+    const_owner_move_cases = (
+        ('fn main()->int{\nconst first:str = "42"\n'
+         'var second:str = "0"\nsecond = first.move()\n'
+         'return second.to_int()\n}'),
+        ('fn main()->int{\nconst first:str = "42"\n'
+         'var second:str = first.move()\nreturn second.to_int()\n}'),
+        ('fn main()->int{\nconst first:str = "海龜"\n'
+         'var second:str = first.move()\nreturn len(second)+40\n}'),
+    )
+    for case_number, program in enumerate(const_owner_move_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-compiler", source)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (case_number, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic and (
+            'let v_first: String = String::from(' in generated), (case_number, generated, diagnostic)
+        assert (("v_second = v_first;" in generated)
+                if case_number == 0 else ("let mut v_second: String = v_first;" in generated))
+        assert ".clone()" not in generated
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), case_number
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public) == (0, "", ""), case_number
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
+        for mode in ("build", "pack"):
+            exe = root / f"const-owner-move-{case_number}-{mode}"
+            assert invoke(next_stage, mode, public, "-o", exe) == (0, "", ""), case_number
+            assert invoke(exe) == (42, "", ""), case_number
+
+    invalid_const_owner_move = (
+        ('fn main()->int{\nconst first:str = "42"\n'
+         'var second:str = first.move()\nreturn first.to_int()\n}'),
+        ('fn main()->int{\nconst first:str = "42"\n'
+         'var second:str = first.move()\nvar third:str = first.move()\nreturn 0\n}'),
+        ('fn main()->int{\nconst first:str = "42"\n'
+         'first = "7"\nreturn first.to_int()\n}'),
+        ('fn main()->int{\nconst first:str = "42"\n'
+         'var second:str = first.move()\nfirst = "42"\nreturn 0\n}'),
+    )
+    for program in invalid_const_owner_move:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in results), (program, results)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
 
     # 自身移交拒絕：只能在初始化及轉移完整的前置值之間交換所有權。
     self_move = 'fn main()->int{\nvar text:str = "42"\ntext = text.move()\nreturn 0\n}'
@@ -1028,7 +1072,7 @@ fn main(){
                     for cli in (seed, stage, next_stage)]
     assert match_scopes[0] == match_scopes[1] == match_scopes[2]
     code, generated, error = match_scopes[2]
-    assert code == 0 and not error and generated.count("let v_text: &'static str") == 2
+    assert code == 0 and not error and generated.count("let v_text: String = String::from(") == 2
     rust_source.write_text(
         "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
         "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
@@ -1101,7 +1145,7 @@ fn main(){
                              for cli in (seed, stage, next_stage)]
     assert generated_conversions[0] == generated_conversions[1] == generated_conversions[2]
     code, generated, error = generated_conversions[2]
-    assert (code == 0 and not error and 'let v_text: &\'static str = "水母"' in generated
+    assert (code == 0 and not error and 'let v_text: String = String::from("水母")' in generated
             and "v_text.parse::<i64>()" in generated
             and "Err(Fault::Conversion)" in generated)
     rust_source.write_text(
@@ -1194,7 +1238,7 @@ fn main(){
                         for cli in (seed, stage, next_stage)]
     assert scoped_generated[0] == scoped_generated[1] == scoped_generated[2]
     code, generated, error = scoped_generated[2]
-    assert code == 0 and not error and generated.count("let v_text: &'static str") == 2
+    assert code == 0 and not error and generated.count("let v_text: String = String::from(") == 2
     rust_source.write_text(
         "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
         "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
