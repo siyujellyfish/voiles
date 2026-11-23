@@ -292,6 +292,65 @@ fn main(){
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1
 
+    # 受限 var str 重新賦值先建立新擁有字串，原有 String 由 Rust RAII 清理。
+    # 覆蓋、分支、例外與 Unicode 長度均以三代自舉生成的真原生程式比對公開四入口。
+    string_reassignment_cases = (
+        ('fn main()->int{\nvar text:str = "0"\ntext = "18"\n'
+         'text = "42"\nreturn text.to_int()\n}'),
+        ('fn main()->int{\nvar text:str = "0"\ntext = "abcd"\n'
+         'return len(text)+38\n}'),
+        ('fn main()->int{\nvar text:str = "0"\nif(1==1){\n'
+         'text = "42"\nreturn text.to_int()\n}else{\n'
+         'text = "1"\nreturn text.to_int()\n}\n}'),
+        ('fn main()->int{\nvar text:str = "0"\ntry{\n'
+         'text = "非數字"\nreturn text.to_int()\n}\n'
+         'except TypeConversationError{\ntext = "42"\n'
+         'return text.to_int()\n}\n}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'match(1){case 1{\ntext = "42"\nreturn text.to_int()\n}'
+         'case _{\nreturn 0\n}}\nreturn 0\n}'),
+    )
+    for case_number, program in enumerate(string_reassignment_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-compiler", source)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (case_number, generations)
+        code, generated, error = generations[2]
+        assert code == 0 and not error, (case_number, code, error)
+        assert 'v_text = String::from(' in generated, (case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public) == (0, "", ""), case_number
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
+        for mode in ("build", "pack"):
+            exe = root / f"string-reassignment-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_string_reassignment = (
+        'fn main()->int{const text:str = "42" text = "1" return text.to_int()}',
+        'fn main()->int{var text:str = "42" text = 1 return text.to_int()}',
+        'fn main()->int{var text:str = "42" text = true return text.to_int()}',
+        'fn main()->int{text = "42" return 0}',
+        ('fn main()->int{const text:str = "a"\ntry{\nreturn text.to_int()\n}'
+         'except TypeConversationError as msg{\nmsg = "42"\nreturn 0\n}}'),
+    )
+    for invalid in invalid_string_reassignment:
+        source.write_text("import host\n" + invalid, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not output and diagnostic
+                   for code, output, diagnostic in results), (invalid, results)
+        public.write_text(invalid, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, invalid
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
