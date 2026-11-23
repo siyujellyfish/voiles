@@ -98,13 +98,13 @@ impl Machine {
     fn at_str_assignment(&self) -> R {
         // 由已登錄的字串宣告辨識賦值語句；const 也進入此路徑以明確拒絕。
         Ok(i64::from(matches!(self.token(), TokenKind::Name(name)
-                if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str" | "moved:str")))
+                if matches!(self.locals.get(name).map(String::as_str), Some("const-owned:str" | "owned:str" | "moved:str" | "moved:const:str")))
             && self.tokens.get(self.cursor + 1)
                 .is_some_and(|t| t.kind == TokenKind::Symbol('='))))
     }
     fn at_conversion(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Name(ref name)
-                if matches!(self.locals.get(name).map(String::as_str), Some("str" | "owned:str")))
+                if matches!(self.locals.get(name).map(String::as_str), Some("const-owned:str" | "owned:str")))
             && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "to_int"))
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
@@ -400,7 +400,7 @@ impl Machine {
     }
     fn conversion(&mut self) -> R {
         let name = self.take_name()?;
-        if !matches!(self.locals.get(&name).map(String::as_str), Some("str" | "owned:str")) {
+        if !matches!(self.locals.get(&name).map(String::as_str), Some("const-owned:str" | "owned:str")) {
             return Err(Fault::Syntax("to_int 需要 str 區域名稱".into()));
         }
         self.expect(".")?;
@@ -428,7 +428,7 @@ impl Machine {
                 if source == name {
                     return Err(Fault::Syntax("字串不能以自身作為 move 來源".into()));
                 }
-                if self.locals.get(&source).map(String::as_str) != Some("owned:str") {
+                if !matches!(self.locals.get(&source).map(String::as_str), Some("owned:str" | "const-owned:str")) {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 沿用宣告移交已核准的直線、無有效借用安全子集。
@@ -442,7 +442,12 @@ impl Machine {
                 self.expect("move")?;
                 self.expect("(")?;
                 self.expect(")")?;
-                self.locals.insert(source.clone(), "moved:str".into());
+                let moved_kind = if self.locals.get(&source).map(String::as_str) == Some("const-owned:str") {
+                    "moved:const:str"
+                } else {
+                    "moved:str"
+                };
+                self.locals.insert(source.clone(), moved_kind.into());
                 self.locals.insert(name.clone(), "owned:str".into());
                 // 目標先前有效：Rust 賦值釋放其舊 String；已移交則重新取得所有權。
                 self.emit(&format!("v_{name} = v_{source};\n"))
@@ -470,13 +475,13 @@ impl Machine {
                     self.locals.insert(name.clone(), "owned:str".into());
                     self.emit(&format!("let mut v_{name}: String = String::from({value:?});\n"))
                 } else {
-                    self.locals.insert(name.clone(), "str".into());
-                    self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
+                    self.locals.insert(name.clone(), "const-owned:str".into());
+                    self.emit(&format!("let v_{name}: String = String::from({value:?});\n"))
                 }
             }
             TokenKind::Name(source) if mutable => {
                 let source = source.clone();
-                if self.locals.get(&source).map(String::as_str) != Some("owned:str") {
+                if !matches!(self.locals.get(&source).map(String::as_str), Some("owned:str" | "const-owned:str")) {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 第一批明確移交限直線語句：分支合流與借用票據需後續獨立檢查。
@@ -490,7 +495,12 @@ impl Machine {
                 self.expect("move")?;
                 self.expect("(")?;
                 self.expect(")")?;
-                self.locals.insert(source.clone(), "moved:str".into());
+                let moved_kind = if self.locals.get(&source).map(String::as_str) == Some("const-owned:str") {
+                    "moved:const:str"
+                } else {
+                    "moved:str"
+                };
+                self.locals.insert(source.clone(), moved_kind.into());
                 self.locals.insert(name.clone(), "owned:str".into());
                 // 直接 Move String；來源被標記失效，不透過 clone。
                 self.emit(&format!("let mut v_{name}: String = v_{source};\n"))
@@ -789,7 +799,7 @@ impl Machine {
         self.expect("(")?;
         let name = self.take_name()?;
         self.expect(")")?;
-        if matches!(self.locals.get(&name).map(String::as_str), Some("str" | "owned:str" | "error:str")) {
+        if matches!(self.locals.get(&name).map(String::as_str), Some("const-owned:str" | "owned:str" | "error:str")) {
             return self.emit(&format!("(v_{name}.chars().count() as i64)"));
         }
         if !matches!(self.locals.get(&name).map(String::as_str),
