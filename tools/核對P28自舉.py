@@ -297,8 +297,8 @@ fn main(){
     string_reassignment_cases = (
         ('fn main()->int{\nvar text:str = "0"\ntext = "18"\n'
          'text = "42"\nreturn text.to_int()\n}'),
-        ('fn main()->int{\nvar text:str = "0"\ntext = "abcd"\n'
-         'return len(text)+38\n}'),
+        ('fn main()->int{\nvar text:str = "0"\ntext = "海龜"\n'
+         'return len(text)+40\n}'),
         ('fn main()->int{\nvar text:str = "0"\nif(1==1){\n'
          'text = "42"\nreturn text.to_int()\n}else{\n'
          'text = "1"\nreturn text.to_int()\n}\n}'),
@@ -333,6 +333,30 @@ fn main(){
             built = invoke(next_stage, mode, public, "-o", exe)
             assert built == (0, "", ""), (case_number, mode, built)
             assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    # 未捕捉的轉換錯誤也不得保留被覆寫的舊擁有者。
+    unhandled_reassignment = ('fn main()->int{\nvar text:str = "42"\n'
+                              'text = "非數字"\nreturn text.to_int()\n}')
+    source.write_text("import host\n" + unhandled_reassignment, encoding="utf-8")
+    generated_failures = [invoke(cli, "bootstrap-compiler", source)
+                          for cli in (seed, stage, next_stage)]
+    assert generated_failures[0] == generated_failures[1] == generated_failures[2]
+    code, generated, error = generated_failures[2]
+    assert code == 0 and not error and "String::from" in generated
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native)[0] == 1
+    public.write_text(unhandled_reassignment, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+    assert invoke(next_stage, "run", public)[0] == 1
+    for mode in ("build", "pack"):
+        exe = root / f"unhandled-string-reassignment-{mode}"
+        assert invoke(next_stage, mode, public, "-o", exe) == (0, "", "")
+        assert invoke(exe)[0] == 1
 
     invalid_string_reassignment = (
         'fn main()->int{const text:str = "42" text = "1" return text.to_int()}',
