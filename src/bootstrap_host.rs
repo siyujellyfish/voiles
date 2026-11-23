@@ -76,12 +76,24 @@ impl Machine {
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
     fn at_str_local(&self) -> R {
-        Ok(i64::from((self.matched_width("const") != 0 || self.matched_width("var") != 0)
+        let mutable = self.matched_width("var") != 0;
+        let declarator = mutable || self.matched_width("const") != 0;
+        let head = declarator
             && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
-            && self.tokens.get(self.cursor + 3).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "str"))
-            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('='))
-            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)))))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t|
+                matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "str"))
+            && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('='));
+        let literal = self.tokens.get(self.cursor + 5)
+            .is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)));
+        let moved = mutable
+            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+            && self.tokens.get(self.cursor + 7).is_some_and(|t|
+                matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "move"))
+            && self.tokens.get(self.cursor + 8).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+            && self.tokens.get(self.cursor + 9).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
+        Ok(i64::from(head && (literal || moved)))
     }
     fn at_str_assignment(&self) -> R {
         // 由已登錄的字串宣告辨識賦值語句；const 也進入此路徑以明確拒絕。
@@ -424,18 +436,40 @@ impl Machine {
         self.expect(":")?;
         self.expect("str")?;
         self.expect("=")?;
-        let TokenKind::StringLiteral(value) = self.token() else {
-            return Err(Fault::Syntax("str 初始化需要字串常值".into()));
-        };
-        let value = value.clone();
-        self.cursor += 1;
-        if mutable {
-            // 僅限字面值初始化的擁有字串；離開 Rust 詞彙作用域時由 RAII 釋放。
-            self.locals.insert(name.clone(), "owned:str".into());
-            self.emit(&format!("let mut v_{name}: String = String::from({value:?});\n"))
-        } else {
-            self.locals.insert(name.clone(), "str".into());
-            self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
+        match self.token() {
+            TokenKind::StringLiteral(value) => {
+                let value = value.clone();
+                self.cursor += 1;
+                if mutable {
+                    self.locals.insert(name.clone(), "owned:str".into());
+                    self.emit(&format!("let mut v_{name}: String = String::from({value:?});\n"))
+                } else {
+                    self.locals.insert(name.clone(), "str".into());
+                    self.emit(&format!("let v_{name}: &'static str = {value:?};\n"))
+                }
+            }
+            TokenKind::Name(source) if mutable => {
+                let source = source.clone();
+                if self.locals.get(&source).map(String::as_str) != Some("owned:str") {
+                    return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
+                }
+                // 第一批明確移交限直線語句：分支合流與借用票據需後續獨立檢查。
+                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                    || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
+                    || self.pending_dict_borrow.is_some() {
+                    return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
+                }
+                self.cursor += 1;
+                self.expect(".")?;
+                self.expect("move")?;
+                self.expect("(")?;
+                self.expect(")")?;
+                self.locals.insert(source.clone(), "moved:str".into());
+                self.locals.insert(name.clone(), "owned:str".into());
+                // 直接 Move String；來源被標記失效，不透過 clone。
+                self.emit(&format!("let mut v_{name}: String = v_{source};\n"))
+            }
+            _ => Err(Fault::Syntax("str 初始化需要字串常值或明確 move".into())),
         }
     }
     fn match_start(&mut self) -> R {
