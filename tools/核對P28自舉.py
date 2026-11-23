@@ -376,6 +376,64 @@ fn main(){
         public.write_text(invalid, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, invalid
 
+    # 直接 move 是真正 String 所有權移交；來源此後不可再使用。
+    owned_move_cases = (
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nreturn second.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "海龜"\n'
+         'var second:str = first.move()\nreturn len(second)+40\n}'),
+        ('fn main()->int{\nvar first:str = "4"\n'
+         'var middle:str = first.move()\n'
+         'var last:str = middle.move()\nreturn last.to_int()+38\n}'),
+        ('fn main()->int{\nvar first:str = "0"\nfirst = "42"\n'
+         'var second:str = first.move()\nreturn second.to_int()\n}'),
+    )
+    for case_number, program in enumerate(owned_move_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert results[0] == results[1] == results[2], (case_number, results)
+        code, generated, error = results[2]
+        assert code == 0 and not error and "let mut v_second: String = v_first;" in generated, (
+            case_number, code, error, generated)
+        assert ".clone()" not in generated, (case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), case_number
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
+        for mode in ("build", "pack"):
+            exe = root / f"owned-move-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_owned_moves = (
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nreturn first.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nreturn len(first)\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\n'
+         'var third:str = first.move()\nreturn 0\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first\nreturn len(second)\n}'),
+    )
+    for program in invalid_owned_moves:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        results = [invoke(cli, "bootstrap-compiler", source)
+                   for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and error
+                   for code, generated, error in results), (program, results)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
