@@ -86,7 +86,7 @@ impl Machine {
             && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol('='));
         let literal = self.tokens.get(self.cursor + 5)
             .is_some_and(|t| matches!(t.kind, TokenKind::StringLiteral(_)));
-        let moved = mutable
+        let moved = declarator
             && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
             && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
             && self.tokens.get(self.cursor + 7).is_some_and(|t|
@@ -546,7 +546,7 @@ impl Machine {
                     self.emit(&format!("let v_{name}: String = String::from({value:?});\n"))
                 }
             }
-            TokenKind::Name(source) if mutable => {
+            TokenKind::Name(source) => {
                 let source = source.clone();
                 if !matches!(self.locals.get(&source).map(String::as_str), Some("owned:str" | "const-owned:str")) {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
@@ -568,9 +568,13 @@ impl Machine {
                     "moved:str"
                 };
                 self.locals.insert(source.clone(), moved_kind.into());
-                self.locals.insert(name.clone(), "owned:str".into());
-                // 直接 Move String；來源被標記失效，不透過 clone。
-                self.emit(&format!("let mut v_{name}: String = v_{source};\n"))
+                if mutable {
+                    self.locals.insert(name.clone(), "owned:str".into());
+                    self.emit(&format!("let mut v_{name}: String = v_{source};\n"))
+                } else {
+                    self.locals.insert(name.clone(), "const-owned:str".into());
+                    self.emit(&format!("let v_{name}: String = v_{source};\n"))
+                }
             }
             _ => Err(Fault::Syntax("str 初始化需要字串常值或明確 move".into())),
         }
