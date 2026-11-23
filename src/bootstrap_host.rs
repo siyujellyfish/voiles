@@ -44,7 +44,7 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize, BTreeMap<String, String>)>,
-    pending_if_scopes: Vec<(bool, BTreeMap<String, String>)>,
+    pending_if_scopes: Vec<(bool, BTreeMap<String, String>, Option<BTreeMap<String, String>>)>,
     pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>, BTreeMap<String, String>)>,
 }
 
@@ -319,26 +319,93 @@ impl Machine {
         self.pending_tries.clear();
         Ok(0)
     }
+    fn if_has_continuation(&self) -> R {
+        // 自舉第一批允許 fallthrough if，但不能把終端 return 路徑誤當成合流。
+        // 從 if 的詞彙起點尋找兩個完整的 {}，包括巢狀括號。
+        if self.matched_width("if") == 0 { return Ok(0); }
+        let Some(start) = (self.cursor..self.tokens.len())
+            .find(|&i| self.tokens[i].kind == TokenKind::Symbol('{')) else {
+            return Ok(0);
+        };
+        let matching_end = |opening: usize| -> Option<usize> {
+            let mut depth = 0usize;
+            for i in opening..self.tokens.len() {
+                match self.tokens[i].kind {
+                    TokenKind::Symbol('{') => depth += 1,
+                    TokenKind::Symbol('}') => {
+                        depth = depth.checked_sub(1)?;
+                        if depth == 0 { return Some(i); }
+                    }
+                    _ => {}
+                }
+            }
+            None
+        };
+        let Some(then_end) = matching_end(start) else { return Ok(0); };
+        let Some(else_token) = self.tokens.get(then_end + 1) else { return Ok(0); };
+        if !matches!(&else_token.kind, TokenKind::Keyword(s) | TokenKind::Name(s) if s == "else") {
+            return Ok(0);
+        }
+        if !self.tokens.get(then_end + 2).is_some_and(|t| t.kind == TokenKind::Symbol('{')) {
+            return Ok(0);
+        }
+        let Some(else_end) = matching_end(then_end + 2) else { return Ok(0); };
+        Ok(i64::from(self.tokens.get(else_end + 1).is_some_and(|next|
+            !matches!(next.kind, TokenKind::Symbol('}') | TokenKind::End))))
+    }
     fn if_scope_start(&mut self) -> R {
-        // 分支型別環境以進入條件式時的外層可見名稱為準。
-        self.pending_if_scopes.push((false, self.locals.clone()));
+        // 保存外層與兩個互斥臂的獨立擁有權狀態。
+        self.pending_if_scopes.push((false, self.locals.clone(), None));
         Ok(0)
     }
     fn if_scope_else(&mut self) -> R {
-        let Some((switched, outer_locals)) = self.pending_if_scopes.last_mut() else {
+        let completed_then = self.locals.clone();
+        let Some((switched, outer_locals, then_locals)) = self.pending_if_scopes.last_mut() else {
             return Err(Fault::Syntax("if 分支邊界無效".into()));
         };
         if *switched { return Err(Fault::Syntax("if 分支重複切換".into())); }
         *switched = true;
+        *then_locals = Some(completed_then);
         self.locals = outer_locals.clone();
         Ok(0)
     }
     fn if_scope_finish(&mut self) -> R {
-        let Some((switched, outer_locals)) = self.pending_if_scopes.pop() else {
+        let Some((switched, outer_locals, completed_then)) = self.pending_if_scopes.pop() else {
             return Err(Fault::Syntax("if 分支邊界無效".into()));
         };
         if !switched { return Err(Fault::Syntax("if 缺少 else 分支".into())); }
-        self.locals = outer_locals;
+        let completed_then = completed_then.ok_or_else(|| Fault::Syntax("if true 分支狀態缺失".into()))?;
+        let completed_else = self.locals.clone();
+        let mut merged = outer_locals.clone();
+        for (name, original_kind) in &outer_locals {
+            let Some(then_kind) = completed_then.get(name) else {
+                return Err(Fault::Syntax(format!("if true 分支遺失外層變數 {name}")));
+            };
+            let Some(else_kind) = completed_else.get(name) else {
+                return Err(Fault::Syntax(format!("if else 分支遺失外層變數 {name}")));
+            };
+            if then_kind == else_kind {
+                merged.insert(name.clone(), then_kind.clone());
+                continue;
+            }
+            let mutable_owner = matches!(original_kind.as_str(), "owned:str" | "moved:str")
+                && matches!(then_kind.as_str(), "owned:str" | "moved:str")
+                && matches!(else_kind.as_str(), "owned:str" | "moved:str");
+            let immutable_owner = matches!(original_kind.as_str(), "const-owned:str" | "moved:const:str")
+                && matches!(then_kind.as_str(), "const-owned:str" | "moved:const:str")
+                && matches!(else_kind.as_str(), "const-owned:str" | "moved:const:str");
+            if mutable_owner {
+                // 兩臂只要有一臂失去所有權，合流後便不可讀；
+                // 明確重新初始化後才可再次使用。
+                merged.insert(name.clone(), "moved:str".into());
+            } else if immutable_owner {
+                merged.insert(name.clone(), "moved:const:str".into());
+            } else {
+                return Err(Fault::Syntax(format!("if 分支的 {name} 資源狀態無法安全合流")));
+            }
+        }
+        // 分支內的新區域名稱不提升為外層。
+        self.locals = merged;
         Ok(0)
     }
     fn try_start(&mut self) -> R {
@@ -432,7 +499,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 沿用宣告移交已核准的直線、無有效借用安全子集。
-                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                if !self.pending_matches.is_empty()
                     || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                     || self.pending_dict_borrow.is_some() {
                     return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
@@ -485,7 +552,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 第一批明確移交限直線語句：分支合流與借用票據需後續獨立檢查。
-                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                if !self.pending_matches.is_empty()
                     || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                     || self.pending_dict_borrow.is_some() {
                     return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
@@ -1054,7 +1121,7 @@ impl Machine {
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
                     "finish_dict_set" | "return_start" | "if_scope_start" | "if_scope_else" |
-                    "if_scope_finish" | "try_start" | "try_handler" |
+                    "if_scope_finish" | "if_has_continuation" | "try_start" | "try_handler" |
                     "exception_category" | "exception_binding" | "finish_try" |
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
