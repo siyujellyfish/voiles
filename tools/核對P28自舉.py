@@ -436,6 +436,97 @@ fn main(){
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
 
+    # move 之後可以重新初始化原持有者；賦值也可用明確 move 取代既有字串。
+    # 比對三代自舉真正的 Rust String 移交、公開完整四入口與原生產物。
+    str_reinitialization_cases = (
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nfirst = "42"\nreturn first.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nfirst = "0"\n'
+         'first = second.move()\nreturn first.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "42"\nvar second:str = "0"\n'
+         'second = first.move()\nreturn second.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\n'
+         'var third:str = "0"\nthird = second.move()\nreturn third.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "海龜"\nvar second:str = "0"\n'
+         'second = first.move()\nreturn len(second)+40\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nfirst = "0"\n'
+         'first = "42"\nreturn first.to_int()\n}'),
+    )
+    for case_number, program in enumerate(str_reinitialization_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generated_by = [invoke(cli, "bootstrap-compiler", source)
+                        for cli in (seed, stage, next_stage)]
+        assert generated_by[0] == generated_by[1] == generated_by[2], (case_number, generated_by)
+        code, generated, error = generated_by[2]
+        assert code == 0 and not error, (case_number, code, error)
+        assert "let mut v_first: String = String::from(" in generated
+        expected_updates = (
+            ("v_first = String::from(",),
+            ("v_first = v_second;",),
+            ("v_second = v_first;",),
+            ("v_third = v_second;",),
+            ("v_second = v_first;",),
+            ("v_first = String::from(",),
+        )
+        assert all(fragment in generated for fragment in expected_updates[case_number]), (
+            case_number, generated)
+        assert ".clone()" not in generated
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, checked, program)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), case_number
+        for mode in ("build", "pack"):
+            exe = root / f"str-reinitialize-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_str_reinitialization = (
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nreturn first.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "42"\n'
+         'var second:str = first.move()\nfirst = 42\nreturn 0\n}'),
+        ('fn main()->int{\nvar first:str = "42"\nvar second:str = "0"\n'
+         'second = first\nreturn second.to_int()\n}'),
+        ('fn main()->int{\nvar first:str = "42"\nvar second:str = "0"\n'
+         'second = first.move()\nsecond = first.move()\nreturn 0\n}'),
+    )
+    for program in invalid_str_reinitialization:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        rejected = [invoke(cli, "bootstrap-compiler", source)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in rejected), (program, rejected)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 公開語言允許不可變擁有者的明確移交，但私有自舉 const str
+    # 仍採 &'static str 非擁有表示；不可冒充此情境已移植。
+    const_source_move = ('fn main()->int{\nconst first:str = "42"\n'
+                         'var second:str = "0"\nsecond = first.move()\n'
+                         'return second.to_int()\n}')
+    source.write_text("import host\n" + const_source_move, encoding="utf-8")
+    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
+               for cli in (seed, stage, next_stage))
+    public.write_text(const_source_move, encoding="utf-8")
+    assert invoke(next_stage, "check", public) == (0, "", "")
+
+    # 自身移交拒絕：只能在初始化及轉移完整的前置值之間交換所有權。
+    self_move = 'fn main()->int{\nvar text:str = "42"\ntext = text.move()\nreturn 0\n}'
+    source.write_text("import host\n" + self_move, encoding="utf-8")
+    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
+               for cli in (seed, stage, next_stage))
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
