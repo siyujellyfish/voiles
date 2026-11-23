@@ -381,7 +381,7 @@ impl Machine {
     }
     fn conversion(&mut self) -> R {
         let name = self.take_name()?;
-        if self.locals.get(&name).map(String::as_str) != Some("str") {
+        if !matches!(self.locals.get(&name).map(String::as_str), Some("str" | "owned:str")) {
             return Err(Fault::Syntax("to_int 需要 str 區域名稱".into()));
         }
         self.expect(".")?;
@@ -403,7 +403,7 @@ impl Machine {
         self.expect("str")?;
         self.expect("=")?;
         let TokenKind::StringLiteral(value) = self.token() else {
-            return Err(Fault::Syntax("const str 需要字串常值".into()));
+            return Err(Fault::Syntax("str 初始化需要字串常值".into()));
         };
         let value = value.clone();
         self.cursor += 1;
