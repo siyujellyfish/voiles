@@ -935,15 +935,15 @@ fn main(){
 
     # 公開 Checker 允許部分非顯式字串傳參；這不代表此自舉子集
     # 已實作非擁有借用或隱含暫存。維持公開與自舉能力邊界。
-    implicit_str_return_argument = (
+    implicit_str_int_argument = (
         'fn main()->int{\nvar raw:str = "42"\n'
-        'var result:str = identity(raw)\nreturn result.to_int()\n}\n'
-        'fn identity(value:str)->str{return value.move()}'
+        'return decode(raw)\n}\n'
+        'fn decode(value:str)->int{return value.to_int()}'
     )
-    source.write_text("import host\n" + implicit_str_return_argument, encoding="utf-8")
+    source.write_text("import host\n" + implicit_str_int_argument, encoding="utf-8")
     assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
                for cli in (seed, stage, next_stage))
-    public.write_text(implicit_str_return_argument, encoding="utf-8")
+    public.write_text(implicit_str_int_argument, encoding="utf-8")
     assert invoke(next_stage, "check", public) == (0, "", "")
 
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
