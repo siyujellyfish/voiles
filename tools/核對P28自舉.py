@@ -946,6 +946,93 @@ fn main(){
     public.write_text(implicit_str_int_argument, encoding="utf-8")
     assert invoke(next_stage, "check", public) == (0, "", "")
 
+    # str 函式結果可直接賦值給已存在的可變持有者；另一個 ->str
+    # 函式亦可返回該結果，而不必經過中間的字串宣告與移交。
+    str_return_forwarding_cases = (
+        ('fn main()->int{\nvar text:str = "0"\ntext = make()\n'
+         'return text.to_int()\n}\nfn make()->str{return "42"}'),
+        ('fn main()->int{\nvar text:str = "0"\ntext = make(7)\n'
+         'return text.to_int()\n}\nfn make(x:int)->str{return "42"}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'var before:str = text.move()\ntext = make()\n'
+         'return text.to_int()\n}\nfn make()->str{return "42"}'),
+        ('fn main()->int{\nvar text:str = "0"\nvar raw:str = "42"\n'
+         'text = identity(raw.move())\nreturn text.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar text:str = "0"\ntext = identity(text.move())\n'
+         'return text.to_int()+42\n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar raw:str = "42"\n'
+         'const text:str = forward(raw.move())\nreturn text.to_int()\n}\n'
+         'fn forward(value:str)->str{return identity(value.move())}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar text:str = forward(17)\n'
+         'return text.to_int()\n}\n'
+         'fn forward(x:int)->str{return make(x)}\n'
+         'fn make(x:int)->str{return "42"}'),
+        ('fn main()->int{\nconst text:str = forward()\n'
+         'return text.to_int()\n}\n'
+         'fn forward()->str{return make()}\n'
+         'fn make()->str{return "42"}'),
+    )
+    for case_number, program in enumerate(str_return_forwarding_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generated_by = [invoke(cli, "bootstrap-compiler", source)
+                        for cli in (seed, stage, next_stage)]
+        assert generated_by[0] == generated_by[1] == generated_by[2], (
+            case_number, generated_by)
+        code, generated, error = generated_by[2]
+        assert code == 0 and not error and ".clone()" not in generated, (
+            case_number, code, error, generated)
+        if case_number <= 4:
+            assert "v_text = v_" in generated, (case_number, generated)
+        else:
+            assert "Ok(v_" in generated, (case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), (case_number, program)
+        for mode in ("build", "pack"):
+            exe = root / f"str-forward-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_str_return_forwarding = (
+        ('fn main()->int{\nconst text:str = "0"\ntext = make()\n'
+         'return 0\n}\nfn make()->str{return "42"}'),
+        ('fn main()->int{\nvar text:str = "0"\ntext = number()\n'
+         'return 0\n}\nfn number()->int{return 42}'),
+        ('fn main()->int{\nvar text:str = "0"\ntext = missing()\n'
+         'return 0\n}'),
+        ('fn main()->int{return 0}\n'
+         'fn forward()->str{return number()}\n'
+         'fn number()->int{return 42}'),
+        ('fn main()->int{return 0}\n'
+         'fn forward()->str{return missing()}\n'),
+        ('fn main()->int{return 0}\n'
+         'fn forward()->str{return make(1,2)}\n'
+         'fn make(n:int)->str{return "42"}'),
+        ('fn main()->int{\nvar raw:str = "42"\nvar text:str = "0"\n'
+         'text = identity(raw.move())\nreturn raw.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+    )
+    for program in invalid_str_return_forwarding:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        rejected = [invoke(cli, "bootstrap-compiler", source)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in rejected), (program, rejected)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
