@@ -22,7 +22,7 @@ struct Machine {
     functions: BTreeMap<String, Vec<String>>,
     function_param_kinds: BTreeMap<String, Vec<String>>,
     function_return_kinds: BTreeMap<String, String>,
-    str_factory_calls: Vec<(String, Vec<String>)>,
+    str_factory_calls: Vec<(String, Vec<String>, String)>,
     str_factory_depth: usize,
     current_function: Option<String>,
     calls: Vec<(Option<String>, String, usize, Vec<String>)>,
@@ -611,16 +611,22 @@ impl Machine {
         }
     }
     fn str_factory_call(&mut self, function: &str) -> R {
+        self.typed_factory_call(function, "str")
+    }
+    fn int_factory_call(&mut self, function: &str) -> R {
+        self.typed_factory_call(function, "int")
+    }
+    fn typed_factory_call(&mut self, function: &str, return_kind: &str) -> R {
         // 遞迴深度不能依賴 Rust 執行緒堆疊無限成長。
         if self.str_factory_depth >= 32 {
             return Err(Fault::Syntax("str 返回函式巢狀呼叫超過 32 層".into()));
         }
         self.str_factory_depth += 1;
-        let result = self.str_factory_call_inner(function);
+        let result = self.typed_factory_call_inner(function, return_kind);
         self.str_factory_depth -= 1;
         result
     }
-    fn str_factory_call_inner(&mut self, function: &str) -> R {
+    fn typed_factory_call_inner(&mut self, function: &str, return_kind: &str) -> R {
         // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
         // 前向函式的參數型別及返回型別。
         self.expect("(")?;
@@ -647,11 +653,18 @@ impl Machine {
                 }
                 TokenKind::Name(source) if self.tokens.get(self.cursor + 1)
                     .is_some_and(|t| t.kind == TokenKind::Symbol('(')) => {
-                    // 巢狀 ->str 的結果是獨立暫時擁有者，可直接交給父呼叫；
-                    // 不建立可重複移交的名稱，也不隱含 clone。
+                    // 已宣告 int 函式可將 i64 暫存交給外層；未宣告者保守以
+                    // str 工廠規則處理並在全檔核對，不能猜測型別。
+                    let known_int = self.function_return_kinds.get(&source)
+                        .is_some_and(|kind| kind == "int");
                     self.cursor += 1;
-                    self.str_factory_call(&source)?;
-                    kinds.push("str".into());
+                    if known_int {
+                        self.int_factory_call(&source)?;
+                        kinds.push("int".into());
+                    } else {
+                        self.str_factory_call(&source)?;
+                        kinds.push("str".into());
+                    }
                 }
                 TokenKind::Name(source) => {
                     let explicit_move = self.tokens.get(self.cursor + 1)
@@ -703,7 +716,7 @@ impl Machine {
         for index in 0..kinds.len() {
             self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
         }
-        self.str_factory_calls.push((function.to_owned(), kinds));
+        self.str_factory_calls.push((function.to_owned(), kinds, return_kind.into()));
         self.emit(")?\n}")
     }
     fn str_local(&mut self) -> R {
@@ -1350,16 +1363,16 @@ impl Machine {
                 return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
             }
         }
-        for (name, actual_kinds) in &self.str_factory_calls {
+        for (name, actual_kinds, return_kind) in &self.str_factory_calls {
             let Some(params) = self.functions.get(name) else {
-                return Err(Fault::Syntax(format!("未知 str 返回函式 {name}")));
+                return Err(Fault::Syntax(format!("未知巢狀函式 {name}")));
             };
             let expected_kinds = self.function_param_kinds.get(name)
-                .ok_or_else(|| Fault::Syntax(format!("未知 str 返回函式簽章 {name}")))?;
+                .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式簽章 {name}")))?;
             if params.len() != actual_kinds.len() || expected_kinds != actual_kinds
-                || self.function_return_kinds.get(name).map(String::as_str) != Some("str") {
+                || self.function_return_kinds.get(name) != Some(return_kind) {
                 return Err(Fault::Syntax(
-                    format!("str 返回函式 {name} 的參數數量、型別或返回型別不符")));
+                    format!("巢狀函式 {name} 的參數數量、型別或返回型別不符")));
             }
         }
         Ok(0)
