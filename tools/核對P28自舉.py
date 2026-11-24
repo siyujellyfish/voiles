@@ -985,9 +985,9 @@ fn main(){
         assert code == 0 and not error and ".clone()" not in generated, (
             case_number, code, error, generated)
         if case_number <= 4:
-            assert "v_text = v_" in generated, (case_number, generated)
+            assert "v_text = {" in generated and "v_" in generated, (case_number, generated)
         else:
-            assert "Ok(v_" in generated, (case_number, generated)
+            assert "Ok({" in generated and "v_" in generated, (case_number, generated)
         rust_source.write_text(
             "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
             "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
@@ -1075,7 +1075,7 @@ fn main(){
         code, generated, error = generated_by[2]
         assert code == 0 and not error and ".clone()" not in generated, (
             case_number, code, error, generated)
-        assert generated.count("depth + 1") >= 2, (case_number, generated)
+        assert generated.count("depth + 1") >= 2 and "__voiles_str_arg_" in generated, (case_number, generated)
         rust_source.write_text(
             "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
             "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
