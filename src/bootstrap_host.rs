@@ -23,6 +23,7 @@ struct Machine {
     function_param_kinds: BTreeMap<String, Vec<String>>,
     function_return_kinds: BTreeMap<String, String>,
     str_factory_calls: Vec<(String, Vec<String>)>,
+    str_factory_depth: usize,
     current_function: Option<String>,
     calls: Vec<(Option<String>, String, usize, Vec<String>)>,
     call_stack: Vec<usize>,
@@ -610,6 +611,16 @@ impl Machine {
         }
     }
     fn str_factory_call(&mut self, function: &str) -> R {
+        // 遞迴深度不能依賴 Rust 執行緒堆疊無限成長。
+        if self.str_factory_depth >= 32 {
+            return Err(Fault::Syntax("str 返回函式巢狀呼叫超過 32 層".into()));
+        }
+        self.str_factory_depth += 1;
+        let result = self.str_factory_call_inner(function);
+        self.str_factory_depth -= 1;
+        result
+    }
+    fn str_factory_call_inner(&mut self, function: &str) -> R {
         // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
         // 前向函式的參數型別及返回型別。
         self.expect("(")?;
@@ -629,6 +640,14 @@ impl Machine {
                 TokenKind::StringLiteral(value) => {
                     self.cursor += 1;
                     self.emit(&format!("String::from({value:?})"))?;
+                    kinds.push("str".into());
+                }
+                TokenKind::Name(source) if self.tokens.get(self.cursor + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) => {
+                    // 巢狀 ->str 的結果是獨立暫時擁有者，可直接交給父呼叫；
+                    // 不建立可重複移交的名稱，也不隱含 clone。
+                    self.cursor += 1;
+                    self.str_factory_call(&source)?;
                     kinds.push("str".into());
                 }
                 TokenKind::Name(source) => {
@@ -1537,7 +1556,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
         cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
         function_param_kinds: BTreeMap::new(),
-        function_return_kinds: BTreeMap::new(), str_factory_calls: Vec::new(), current_function: None, calls: Vec::new(), call_stack: Vec::new(),
+        function_return_kinds: BTreeMap::new(), str_factory_calls: Vec::new(), str_factory_depth: 0, current_function: None, calls: Vec::new(), call_stack: Vec::new(),
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
         locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
