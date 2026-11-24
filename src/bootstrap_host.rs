@@ -98,8 +98,7 @@ impl Machine {
             && self.tokens.get(self.cursor + 9).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
         let factory_call = declarator
             && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
-            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('('))
-            && self.tokens.get(self.cursor + 7).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
+            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('('));
         Ok(i64::from(head && (literal || moved || factory_call)))
     }
     fn at_str_assignment(&self) -> R {
