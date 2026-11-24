@@ -624,14 +624,17 @@ impl Machine {
         // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
         // 前向函式的參數型別及返回型別。
         self.expect("(")?;
-        self.emit(&format!("v_{function}(s, depth + 1"))?;
+        // 依序將所有實參先執行為區塊暫存，再借用 &mut Machine 呼叫外層。
+        // 避免 v_outer(s, depth+1, v_inner(s,...)) 的 Rust E0499 衝突。
+        self.emit("{\n")?;
         let mut kinds: Vec<String> = Vec::new();
         while self.matched_width(")") == 0 {
             if kinds.len() >= 64 {
                 return Err(Fault::Syntax("str 返回函式實參過多".into()));
             }
             if !kinds.is_empty() { self.expect(",")?; }
-            self.emit(", ")?;
+            let slot = format!("__voiles_str_arg_{}_{}", self.str_factory_depth, kinds.len());
+            self.emit(&format!("let {slot} = "))?;
             match self.token().clone() {
                 TokenKind::Integer(_) => {
                     self.literal()?;
@@ -690,13 +693,18 @@ impl Machine {
                 _ => return Err(Fault::Syntax(
                     "str 返回函式實參僅支援 int、字串常值或明確 move".into())),
             }
+            self.emit(";\n")?;
             if self.matched_width(")") == 0 && self.matched_width(",") == 0 {
                 return Err(Fault::Syntax("str 返回函式實參缺少逗號或右括號".into()));
             }
         }
         self.expect(")")?;
+        self.emit(&format!("v_{function}(s, depth + 1"))?;
+        for index in 0..kinds.len() {
+            self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
+        }
         self.str_factory_calls.push((function.to_owned(), kinds));
-        self.emit(")?")
+        self.emit(")?\n}")
     }
     fn str_local(&mut self) -> R {
         let mutable = self.matched_width("var") != 0;
