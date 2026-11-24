@@ -354,6 +354,13 @@ impl Machine {
             }
             TokenKind::Name(name) => {
                 let name = name.clone();
+                if self.tokens.get(self.cursor + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+                    self.cursor += 1;
+                    self.emit("Ok(")?;
+                    self.str_factory_call(&name)?;
+                    return self.emit(")\n");
+                }
                 let moved_kind = match self.locals.get(&name).map(String::as_str) {
                     Some("owned:str") => "moved:str",
                     Some("const-owned:str") => "moved:const:str",
@@ -563,6 +570,15 @@ impl Machine {
             }
             TokenKind::Name(source) => {
                 let source = source.clone();
+                if self.tokens.get(self.cursor + 1)
+                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+                    self.cursor += 1;
+                    self.emit(&format!("v_{name} = "))?;
+                    self.str_factory_call(&source)?;
+                    // 若來源透過 target.move() 轉移，Rust 允許在呼叫後重新初始化 target。
+                    self.locals.insert(name.clone(), "owned:str".into());
+                    return self.emit(";\n");
+                }
                 if source == name {
                     return Err(Fault::Syntax("字串不能以自身作為 move 來源".into()));
                 }
