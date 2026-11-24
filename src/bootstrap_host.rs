@@ -22,7 +22,7 @@ struct Machine {
     functions: BTreeMap<String, Vec<String>>,
     function_param_kinds: BTreeMap<String, Vec<String>>,
     function_return_kinds: BTreeMap<String, String>,
-    str_factory_calls: Vec<String>,
+    str_factory_calls: Vec<(String, Vec<String>)>,
     current_function: Option<String>,
     calls: Vec<(Option<String>, String, usize, Vec<String>)>,
     call_stack: Vec<usize>,
@@ -98,8 +98,7 @@ impl Machine {
             && self.tokens.get(self.cursor + 9).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
         let factory_call = declarator
             && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
-            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('('))
-            && self.tokens.get(self.cursor + 7).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
+            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('('));
         Ok(i64::from(head && (literal || moved || factory_call)))
     }
     fn at_str_assignment(&self) -> R {
@@ -594,6 +593,76 @@ impl Machine {
             _ => Err(Fault::Syntax("str 重新賦值需要字串常值或明確 move".into())),
         }
     }
+    fn str_factory_call(&mut self, function: &str) -> R {
+        // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
+        // 前向函式的參數型別及返回型別。
+        self.expect("(")?;
+        self.emit(&format!("v_{function}(s, depth + 1"))?;
+        let mut kinds: Vec<String> = Vec::new();
+        while self.matched_width(")") == 0 {
+            if kinds.len() >= 64 {
+                return Err(Fault::Syntax("str 返回函式實參過多".into()));
+            }
+            if !kinds.is_empty() { self.expect(",")?; }
+            self.emit(", ")?;
+            match self.token().clone() {
+                TokenKind::Integer(_) => {
+                    self.literal()?;
+                    kinds.push("int".into());
+                }
+                TokenKind::StringLiteral(value) => {
+                    self.cursor += 1;
+                    self.emit(&format!("String::from({value:?})"))?;
+                    kinds.push("str".into());
+                }
+                TokenKind::Name(source) => {
+                    let explicit_move = self.tokens.get(self.cursor + 1)
+                        .is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+                        && self.tokens.get(self.cursor + 2)
+                            .is_some_and(|t| matches!(&t.kind,
+                                TokenKind::Name(n) | TokenKind::Keyword(n) if n == "move"))
+                        && self.tokens.get(self.cursor + 3)
+                            .is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                        && self.tokens.get(self.cursor + 4)
+                            .is_some_and(|t| t.kind == TokenKind::Symbol(')'));
+                    if explicit_move {
+                        if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                            || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
+                            || self.pending_dict_borrow.is_some() {
+                            return Err(Fault::Syntax(
+                                "str 返回函式實參移交暫不允許跨控制流程或有效借用".into()));
+                        }
+                        let moved_kind = match self.locals.get(&source).map(String::as_str) {
+                            Some("owned:str") => "moved:str",
+                            Some("const-owned:str") => "moved:const:str",
+                            _ => return Err(Fault::Syntax(
+                                format!("{source} 不是可移交的 str 實參"))),
+                        };
+                        self.cursor += 1;
+                        self.expect(".")?;
+                        self.expect("move")?;
+                        self.expect("(")?;
+                        self.expect(")")?;
+                        self.locals.insert(source.clone(), moved_kind.into());
+                        self.emit(&format!("v_{source}"))?;
+                        kinds.push("str".into());
+                    } else {
+                        // 保留 int 形參／局部既有的名稱解析，拒絕對 str 的隱含複製。
+                        self.value()?;
+                        kinds.push("int".into());
+                    }
+                }
+                _ => return Err(Fault::Syntax(
+                    "str 返回函式實參僅支援 int、字串常值或明確 move".into())),
+            }
+            if self.matched_width(")") == 0 && self.matched_width(",") == 0 {
+                return Err(Fault::Syntax("str 返回函式實參缺少逗號或右括號".into()));
+            }
+        }
+        self.expect(")")?;
+        self.str_factory_calls.push((function.to_owned(), kinds));
+        self.emit(")?")
+    }
     fn str_local(&mut self) -> R {
         let mutable = self.matched_width("var") != 0;
         self.expect(if mutable { "var" } else { "const" })?;
@@ -623,18 +692,15 @@ impl Machine {
                 if self.tokens.get(self.cursor + 1)
                     .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
                     self.cursor += 1;
-                    self.expect("(")?;
-                    self.expect(")")?;
-                    self.str_factory_calls.push(source.clone());
+                    let modifier = if mutable { "mut " } else { "" };
+                    self.emit(&format!("let {modifier}v_{name}: String = "))?;
+                    self.str_factory_call(&source)?;
                     self.locals.insert(name.clone(), if mutable {
                         "owned:str".into()
                     } else {
                         "const-owned:str".into()
                     });
-                    let modifier = if mutable { "mut " } else { "" };
-                    return self.emit(&format!(
-                        "let {modifier}v_{name}: String = v_{source}(s, depth + 1)?;\n"
-                    ));
+                    return self.emit(";\n");
                 }
                 if !matches!(self.locals.get(&source).map(String::as_str), Some("owned:str" | "const-owned:str")) {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
@@ -1241,12 +1307,16 @@ impl Machine {
                 return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
             }
         }
-        for name in &self.str_factory_calls {
+        for (name, actual_kinds) in &self.str_factory_calls {
             let Some(params) = self.functions.get(name) else {
                 return Err(Fault::Syntax(format!("未知 str 返回函式 {name}")));
             };
-            if !params.is_empty() || self.function_return_kinds.get(name).map(String::as_str) != Some("str") {
-                return Err(Fault::Syntax(format!("字串初始化只允許零參數 str 返回函式：{name}")));
+            let expected_kinds = self.function_param_kinds.get(name)
+                .ok_or_else(|| Fault::Syntax(format!("未知 str 返回函式簽章 {name}")))?;
+            if params.len() != actual_kinds.len() || expected_kinds != actual_kinds
+                || self.function_return_kinds.get(name).map(String::as_str) != Some("str") {
+                return Err(Fault::Syntax(
+                    format!("str 返回函式 {name} 的參數數量、型別或返回型別不符")));
             }
         }
         Ok(0)
