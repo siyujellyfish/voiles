@@ -985,9 +985,9 @@ fn main(){
         assert code == 0 and not error and ".clone()" not in generated, (
             case_number, code, error, generated)
         if case_number <= 4:
-            assert "v_text = v_" in generated, (case_number, generated)
+            assert "v_text = {" in generated and "v_" in generated, (case_number, generated)
         else:
-            assert "Ok(v_" in generated, (case_number, generated)
+            assert "Ok({" in generated and "v_" in generated, (case_number, generated)
         rust_source.write_text(
             "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
             "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
@@ -1032,6 +1032,113 @@ fn main(){
                    for code, generated, diagnostic in rejected), (program, rejected)
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 巢狀 str 函式返回是獨立暫時擁有者：呼叫者無須寫 move，
+    # 但任何有名稱的 str 實參仍需明確 move 並立即失效。
+    nested_str_factory_cases = (
+        ('fn main()->int{\nvar text:str = identity(make())\nreturn text.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{\nconst text:str = identity(identity(make()))\n'
+         'return text.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{\nvar value:str = "42"\n'
+         'const text:str = identity(identity(value.move()))\n'
+         'return text.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'text = identity(make())\nreturn text.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{\nvar value:str = "42"\n'
+         'const text:str = route(7,identity(value.move()),"x")\n'
+         'return text.to_int()\n}\n'
+         'fn route(flag:int,a:str,b:str)->str{return a.move()}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar value:str = "42"\n'
+         'var text:str = relay(value.move())\nreturn text.to_int()\n}\n'
+         'fn relay(raw:str)->str{return identity(identity(raw.move()))}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar result:str = outer(inner("42"),make())\n'
+         'return result.to_int()\n}\n'
+         'fn outer(a:str,b:str)->str{return a.move()}\n'
+         'fn inner(a:str)->str{return a.move()}\n'
+         'fn make()->str{return "0"}'),
+    )
+    for case_number, program in enumerate(nested_str_factory_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generated_by = [invoke(cli, "bootstrap-compiler", source)
+                        for cli in (seed, stage, next_stage)]
+        assert generated_by[0] == generated_by[1] == generated_by[2], (
+            case_number, generated_by)
+        code, generated, error = generated_by[2]
+        assert code == 0 and not error and ".clone()" not in generated, (
+            case_number, code, error, generated)
+        assert generated.count("depth + 1") >= 2 and "__voiles_str_arg_" in generated, (case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), (case_number, program)
+        for mode in ("build", "pack"):
+            exe = root / f"nested-str-factory-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_nested_str_factory_cases = (
+        ('fn main()->int{\nvar value:str = "42"\n'
+         'const text:str = identity(identity(value.move()))\n'
+         'return value.to_int()\n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar value:str = "42"\n'
+         'const text:str = pair(identity(value.move()),value.move())\n'
+         'return 0\n}\n'
+         'fn pair(a:str,b:str)->str{return a.move()}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nconst text:str = identity(number())\n'
+         'return 0\n}\n'
+         'fn identity(value:str)->str{return value.move()}\n'
+         'fn number()->int{return 42}'),
+        ('fn main()->int{\nconst text:str = identity(missing())\n'
+         'return 0\n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nconst text:str = identity(make(1))\n'
+         'return 0\n}\n'
+         'fn identity(value:str)->str{return value.move()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{\nconst text:str = choose(identity("42"))\n'
+         'return 0\n}\n'
+         'fn choose(n:int)->str{return "42"}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+    )
+    for program in invalid_nested_str_factory_cases:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        rejected = [invoke(cli, "bootstrap-compiler", source)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in rejected), (program, rejected)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 來源無限制會導致宿主 Rust 遞迴堆疊溢位；此限額屬自舉
+    # 執行安全措施，不改動公開 Checker 的語言設計。
+    deeply_nested = 'fn main()->int{\nvar text:str = ' + ('identity(' * 33)
+    deeply_nested += '"42"' + (')' * 33)
+    deeply_nested += '\nreturn text.to_int()\n}\n'
+    deeply_nested += 'fn identity(value:str)->str{return value.move()}'
+    source.write_text("import host\n" + deeply_nested, encoding="utf-8")
+    for cli in (seed, stage, next_stage):
+        code, generated, diagnostic = invoke(cli, "bootstrap-compiler", source)
+        assert code == 1 and not generated and "32" in diagnostic, (
+            code, generated, diagnostic)
 
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
