@@ -1256,6 +1256,59 @@ fn main(){
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
 
+    # 普通 ->int 呼叫的字串常值為獨立暫時擁有者，不需要 move。
+    str_literal_argument_cases = (
+        'fn main()->int{return decode("42")}\nfn decode(text:str)->int{return text.to_int()}',
+        'fn main()->int{return decode("海龜")}\nfn decode(text:str)->int{return len(text)+40}',
+        'fn main()->int{return decode(40,"2")}\nfn decode(n:int,text:str)->int{return n+text.to_int()}',
+        'fn main()->int{return decode("2",40)}\nfn decode(text:str,n:int)->int{return n+text.to_int()}',
+        'fn main()->int{return sum("40","2")}\nfn sum(a:str,b:str)->int{return a.to_int()+b.to_int()}',
+        ('fn main()->int{\nvar raw:str = "40"\nreturn sum(raw.move(),"2")\n}\n'
+         'fn sum(a:str,b:str)->int{return a.to_int()+b.to_int()}'),
+    )
+    for case_number, program in enumerate(str_literal_argument_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generated_by = [invoke(cli, "bootstrap-compiler", source)
+                        for cli in (seed, stage, next_stage)]
+        assert generated_by[0] == generated_by[1] == generated_by[2], (
+            case_number, generated_by)
+        code, generated, error = generated_by[2]
+        assert code == 0 and not error and "String::from(" in generated and ".clone()" not in generated, (
+            case_number, code, error, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), (case_number, program)
+        for mode in ("build", "pack"):
+            exe = root / f"str-literal-argument-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_str_literal_arguments = (
+        'fn main()->int{return number("42")}\nfn number(n:int)->int{return n}',
+        'fn main()->int{return decode("42","0")}\nfn decode(text:str)->int{return text.to_int()}',
+        'fn main()->int{return decode("42")}\nfn decode()->int{return 42}',
+        'fn main()->int{return missing("42")}',
+        ('fn main()->int{\nvar raw:str = "40"\nvar n:int = sum(raw.move(),"2")\n'
+         'return raw.to_int()\n}\nfn sum(a:str,b:str)->int{return a.to_int()+b.to_int()}'),
+    )
+    for program in invalid_str_literal_arguments:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        rejected = [invoke(cli, "bootstrap-compiler", source)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in rejected), (program, rejected)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
