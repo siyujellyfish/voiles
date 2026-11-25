@@ -556,6 +556,10 @@ fn one_argument()->int{
     if (host.at_str_move_argument() != 0) {
         return host.str_move_argument()
     } else {
-        return host.argument() + host.emit(", ") + expression()
+        if (host.at_str_literal_argument() != 0) {
+            return host.str_literal_argument()
+        } else {
+            return host.argument() + host.emit(", ") + expression()
+        }
     }
 }
