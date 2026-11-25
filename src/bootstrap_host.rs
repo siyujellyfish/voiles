@@ -122,6 +122,75 @@ impl Machine {
             && self.tokens.get(self.cursor + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
             && self.tokens.get(self.cursor + 4).is_some_and(|t| t.kind == TokenKind::Symbol(')'))))
     }
+    // 僅將全部實參都屬既有型別化子集、且至少一個實參為
+    // 巢狀函式呼叫的普通 int 呼叫導向逐項暫存生成器。
+    // 其他一般 int 表達式繼續使用原公開路徑，避免退化。
+    fn typed_call_lookahead(&self, index: &mut usize, depth: usize, has_nested: &mut bool) -> bool {
+        if depth >= 32 { return false; }
+        if !self.tokens.get(*index).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            || !self.tokens.get(*index + 1)
+                .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+            return false;
+        }
+        *index += 2;
+        if self.tokens.get(*index).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+            *index += 1;
+            return true;
+        }
+        loop {
+            match self.tokens.get(*index).map(|t| &t.kind) {
+                Some(TokenKind::Integer(_) | TokenKind::StringLiteral(_)) => *index += 1,
+                Some(TokenKind::Name(_)) => {
+                    if self.tokens.get(*index + 1)
+                        .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+                        *has_nested = true;
+                        if !self.typed_call_lookahead(index, depth + 1, has_nested) {
+                            return false;
+                        }
+                    } else if self.tokens.get(*index + 1)
+                        .is_some_and(|t| t.kind == TokenKind::Symbol('.')) {
+                        if !self.tokens.get(*index + 2).is_some_and(|t|
+                            matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n)
+                                if n == "move"))
+                            || !self.tokens.get(*index + 3)
+                                .is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                            || !self.tokens.get(*index + 4)
+                                .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                            return false;
+                        }
+                        *index += 5;
+                    } else {
+                        *index += 1;
+                    }
+                }
+                _ => return false,
+            }
+            match self.tokens.get(*index).map(|t| &t.kind) {
+                Some(TokenKind::Symbol(',')) => {
+                    *index += 1;
+                    if self.tokens.get(*index)
+                        .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        return false;
+                    }
+                }
+                Some(TokenKind::Symbol(')')) => {
+                    *index += 1;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+    }
+    fn at_typed_int_call(&self) -> R {
+        let mut position = self.cursor;
+        let mut has_nested = false;
+        Ok(i64::from(self.typed_call_lookahead(&mut position, 0, &mut has_nested)
+            && has_nested))
+    }
+    fn typed_int_call(&mut self) -> R {
+        let name = self.take_name()?;
+        self.typed_factory_call(&name, Some("int"))
+    }
     fn at_call(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Name(_))
             && self.tokens.get(self.cursor + 1).is_some_and(|token|
@@ -1413,6 +1482,7 @@ impl Machine {
         if !matches!(name.as_str(), "at" | "at_end" | "at_integer" | "at_call" | "at_module_call" | "at_field" | "at_field_write" | "at_list_local" | "at_nested_list_local" | "at_nested_dict_local" | "at_dict_local" | "at_dict_borrow" | "at_len" | "at_list_append" | "at_list_pop" | "at_dict_set" | "expect" |
                     "emit" | "name" | "function" | "parameter" | "value" |
                     "finish_function" | "call" | "argument" | "finish_call" |
+                    "at_typed_int_call" | "typed_int_call" |
                     "finish_names" | "module_import" | "module_call" | "structure" | "field" |
                     "field_default" | "finish_structure" | "local" | "local_type" | "constructor" |
                     "constructor_field" | "finish_constructor" | "field_value" | "field_target" |

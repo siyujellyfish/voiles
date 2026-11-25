@@ -522,7 +522,11 @@ Ok(s.expect("host")?.checked_add(s.expect(".")?).ok_or(Fault::Overflow)?.checked
 if s.at_module_call()? != 0i64 {
 Ok(s.module_call()?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(s.emit("(s, depth + 1")?).ok_or(Fault::Overflow)?.checked_add(v_call_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.finish_call()?).ok_or(Fault::Overflow)?.checked_add(s.emit(")?")?).ok_or(Fault::Overflow)?)
 } else {
+if s.at_typed_int_call()? != 0i64 {
+Ok(s.typed_int_call()?)
+} else {
 Ok(s.call()?.checked_add(s.expect("(")?).ok_or(Fault::Overflow)?.checked_add(s.emit("(s, depth + 1")?).ok_or(Fault::Overflow)?.checked_add(v_call_arguments(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.expect(")")?).ok_or(Fault::Overflow)?.checked_add(s.finish_call()?).ok_or(Fault::Overflow)?.checked_add(s.emit(")?")?).ok_or(Fault::Overflow)?)
+}
 }
 }
 }
