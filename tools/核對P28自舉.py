@@ -1140,9 +1140,29 @@ fn main(){
         assert code == 1 and not generated and "32" in diagnostic, (
             code, generated, diagnostic)
 
-    # 已宣告的 ->int 函式結果可作為 ->str 工廠的整數實參，
+    # 前向或已宣告的 ->int 函式結果可作為 ->str 工廠的整數實參，
     # 與前批 ->str 巢狀實參共用先求值的 Rust 暫存區塊。
     nested_int_to_str_cases = (
+        ('fn main()->int{\nvar text:str = make(number())\n'
+         'return text.to_int()\n}\n'
+         'fn number()->int{return 42}\nfn make(n:int)->str{return "42"}'),
+        ('fn main()->int{\nvar text:str = choose(number(42),identity("42"))\n'
+         'return text.to_int()\n}\n'
+         'fn choose(n:int,value:str)->str{return value.move()}\n'
+         'fn number(n:int)->int{return n}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar text:str = outer(number(inner("42")))\n'
+         'return text.to_int()\n}\n'
+         'fn outer(n:int)->str{return "42"}\n'
+         'fn number(value:str)->int{return value.to_int()}\n'
+         'fn inner(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar text:str = "0"\n'
+         'text = make(number(42))\nreturn text.to_int()\n}\n'
+         'fn make(n:int)->str{return "42"}\n'
+         'fn number(n:int)->int{return n}'),
+        ('fn main()->int{\nvar text:str = relay()\nreturn text.to_int()\n}\n'
+         'fn relay()->str{return make(number())}\n'
+         'fn make(n:int)->str{return "42"}\nfn number()->int{return 42}'),
         ('fn number()->int{return 42}\n'
          'fn main()->int{\nvar text:str = make(number())\n'
          'return text.to_int()\n}\nfn make(n:int)->str{return "42"}'),
@@ -1199,6 +1219,18 @@ fn main(){
             assert invoke(exe) == (42, "", ""), (case_number, mode)
 
     invalid_nested_int_to_str_cases = (
+        ('fn main()->int{\nvar text:str = identity(number())\nreturn 0\n}\n'
+         'fn identity(value:str)->str{return value.move()}\nfn number()->int{return 42}'),
+        ('fn main()->int{\nvar text:str = make(number())\nreturn 0\n}\n'
+         'fn make(n:int)->str{return "42"}\nfn number()->str{return "42"}'),
+        ('fn main()->int{\nvar text:str = make(number(1))\nreturn 0\n}\n'
+         'fn make(n:int)->str{return "42"}\nfn number()->int{return 42}'),
+        ('fn main()->int{\nvar text:str = make(number(missing()))\nreturn 0\n}\n'
+         'fn make(n:int)->str{return "42"}\nfn number(n:int)->int{return n}'),
+        ('fn main()->int{\nvar raw:str = "42"\n'
+         'var text:str = choose(number(raw.move()),raw.move())\nreturn 0\n}\n'
+         'fn choose(n:int,value:str)->str{return value.move()}\n'
+         'fn number(value:str)->int{return value.to_int()}'),
         ('fn number()->int{return 42}\n'
          'fn main()->int{\nvar text:str = identity(number())\n'
          'return 0\n}\nfn identity(value:str)->str{return value.move()}'),
@@ -1223,19 +1255,6 @@ fn main(){
                    for code, generated, diagnostic in rejected), (program, rejected)
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
-
-    # 完整來源的前向 int 回傳型別推論尚未移植，公開語言合法情境
-    # 不得被誤標記為公開禁止；未預先知道 int 簽章時自舉保守拒絕。
-    forward_nested_int = (
-        'fn main()->int{\nvar text:str = make(number())\n'
-        'return text.to_int()\n}\n'
-        'fn number()->int{return 42}\nfn make(n:int)->str{return "42"}'
-    )
-    source.write_text("import host\n" + forward_nested_int, encoding="utf-8")
-    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 1
-               for cli in (seed, stage, next_stage))
-    public.write_text(forward_nested_int, encoding="utf-8")
-    assert invoke(next_stage, "check", public) == (0, "", "")
 
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
