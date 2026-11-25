@@ -19,6 +19,14 @@ enum ExceptionKind { Evaluation, Conversion }
 #[derive(Debug)]
 enum FactoryArgumentKind { Int, Str, Call(String) }
 
+// Exported module signatures carry the same int/str contract as local calls.
+// Parameter names are not types; keeping only arity can silently miscompile.
+#[derive(Clone, Debug)]
+struct FunctionSignature {
+    param_kinds: Vec<String>,
+    return_kind: String,
+}
+
 struct Machine {
     tokens: Vec<Token>,
     cursor: usize,
@@ -35,7 +43,7 @@ struct Machine {
     module: Option<String>,
     imports: BTreeSet<String>,
     allowed_imports: BTreeSet<String>,
-    external_functions: BTreeMap<(String, String), usize>,
+    external_functions: BTreeMap<(String, String), FunctionSignature>,
     structures: BTreeMap<String, Vec<(String, i64)>>,
     current_structure: Option<String>,
     pending_field: Option<String>,
@@ -1421,7 +1429,8 @@ impl Machine {
                 if !self.imports.contains(module) {
                     return Err(Fault::Syntax(format!("未匯入模組 {module}")));
                 }
-                self.external_functions.get(&(module.clone(), name.clone())).copied()
+                self.external_functions.get(&(module.clone(), name.clone()))
+                    .map(|signature| signature.param_kinds.len())
             } else {
                 self.functions.get(name).map(Vec::len)
             };
@@ -1441,8 +1450,21 @@ impl Machine {
                 if self.function_return_kinds.get(name).map(String::as_str) != Some("int") {
                     return Err(Fault::Syntax(format!("函式 {name} 不回傳 int")));
                 }
-            } else if actual_kinds.iter().any(|kind| kind == "str") {
-                return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
+            } else {
+                let module = module.as_ref().expect("external call has a module");
+                let signature = self.external_functions.get(&(module.clone(), name.clone()))
+                    .ok_or_else(|| Fault::Syntax(format!("未知模組函式 {module}.{name}")))?;
+                if signature.return_kind != "int" {
+                    return Err(Fault::Syntax(format!(
+                        "跨模組函式 {module}.{name} 不回傳 int")));
+                }
+                if signature.param_kinds != *actual_kinds {
+                    return Err(Fault::Syntax(format!(
+                        "跨模組函式 {module}.{name} 的 str／int 實參型別不符")));
+                }
+                if actual_kinds.iter().any(|kind| kind == "str") {
+                    return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
+                }
             }
         }
         for (name, actual_kinds, return_kind) in &self.str_factory_calls {
@@ -1547,7 +1569,7 @@ pub fn compile_bootstrap_source(path: &Path) -> Result<String, String> {
 /// 一般公開專案仍由 `EntryProgram` 與既有四個命令處理。
 pub fn compile_bootstrap_project(entry: &Path) -> Result<String, String> {
     fn visit(path: PathBuf, root: &Path, visiting: &mut Vec<PathBuf>, done: &mut BTreeSet<PathBuf>,
-        signatures: &mut BTreeMap<(String, String), usize>, output: &mut String) -> Result<(), String> {
+        signatures: &mut BTreeMap<(String, String), FunctionSignature>, output: &mut String) -> Result<(), String> {
         let path = path.canonicalize().map_err(|e| format!("{}：{e}", path.display()))?;
         if done.contains(&path) { return Ok(()); }
         if let Some(start) = visiting.iter().position(|p| p == &path) {
@@ -1569,8 +1591,8 @@ pub fn compile_bootstrap_project(entry: &Path) -> Result<String, String> {
         let (generated, local) = compile_tokens_in_module(&path, &source, scanned.tokens,
             module.clone(), imports.into_iter().collect(), signatures.clone())?;
         output.push_str(&generated);
-        for (name, parameters) in local {
-            if !name.starts_with('_') { signatures.insert((module.clone(), name), parameters.len()); }
+        for (name, signature) in local {
+            if !name.starts_with('_') { signatures.insert((module.clone(), name), signature); }
         }
         visiting.pop();
         done.insert(path);
@@ -1664,14 +1686,14 @@ fn compile_tokens(path: &Path, source: &Source, tokens: Vec<Token>) -> Result<St
 }
 
 fn compile_tokens_in_module(path: &Path, source: &Source, tokens: Vec<Token>, module: String,
-    imports: BTreeSet<String>, external_functions: BTreeMap<(String, String), usize>)
-    -> Result<(String, BTreeMap<String, Vec<String>>), String> {
+    imports: BTreeSet<String>, external_functions: BTreeMap<(String, String), FunctionSignature>)
+    -> Result<(String, BTreeMap<String, FunctionSignature>), String> {
     compile_tokens_with_context(path, source, tokens, Some(module), imports, external_functions)
 }
 
 fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>, module: Option<String>,
-    allowed_imports: BTreeSet<String>, external_functions: BTreeMap<(String, String), usize>)
-    -> Result<(String, BTreeMap<String, Vec<String>>), String> {
+    allowed_imports: BTreeSet<String>, external_functions: BTreeMap<(String, String), FunctionSignature>)
+    -> Result<(String, BTreeMap<String, FunctionSignature>), String> {
     let mut machine = Machine {
         tokens: tokens.into_iter().filter(|t| !matches!(t.kind, TokenKind::Newline)).collect(),
         cursor: 0, steps: 0, output: String::new(), functions: BTreeMap::new(),
@@ -1693,5 +1715,13 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
             Fault::Conversion => "自舉編譯轉換失敗".into() };
         format!("{}:{}:{}: {message}", path.display(), pos.line, pos.column)
     })?;
-    Ok((machine.output, machine.functions))
+    let signatures = machine.functions.keys().map(|name| {
+        (name.clone(), FunctionSignature {
+            param_kinds: machine.function_param_kinds.get(name)
+                .cloned().expect("declared function parameters registered"),
+            return_kind: machine.function_return_kinds.get(name)
+                .cloned().expect("declared function result registered"),
+        })
+    }).collect();
+    Ok((machine.output, signatures))
 }
