@@ -1309,6 +1309,118 @@ fn main(){
         public.write_text(program, encoding="utf-8")
         assert invoke(next_stage, "check", public)[0] == 1, program
 
+    # 普通 ->int 呼叫接收由 ->str 函式產生的獨立暫時所有者。
+    # 受控巢狀呼叫實參必須先求值後借用 Machine，避免 Rust E0499。
+    int_call_nested_str_cases = (
+        ('fn main()->int{return decode(make())}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{return decode(make(7))}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn make(n:int)->str{return "42"}'),
+        ('fn main()->int{return decode(relay(make()))}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn relay(text:str)->str{return text.move()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{return combine(number(),make())}\n'
+         'fn combine(n:int,s:str)->int{return n+s.to_int()}\n'
+         'fn number()->int{return 40}\n'
+         'fn make()->str{return "2"}'),
+        ('fn main()->int{return combine(make(),number())}\n'
+         'fn combine(s:str,n:int)->int{return n+s.to_int()}\n'
+         'fn number()->int{return 40}\n'
+         'fn make()->str{return "2"}'),
+        ('fn main()->int{\nvar raw:str = "42"\n'
+         'return decode(identity(raw.move()))\n}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{return 40+decode(make())-40}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{return relay()}\n'
+         'fn relay()->int{return decode(make())}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{return decode(make(),"2")}\n'
+         'fn decode(a:str,b:str)->int{return a.to_int()+b.to_int()}\n'
+         'fn make()->str{return "40"}'),
+        ('fn main()->int{return decode("40",make())}\n'
+         'fn decode(a:str,b:str)->int{return a.to_int()+b.to_int()}\n'
+         'fn make()->str{return "2"}'),
+    )
+    for case_number, program in enumerate(int_call_nested_str_cases):
+        source.write_text("import host\n" + program, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-compiler", source)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (
+            case_number, generations)
+        code, generated, error = generations[2]
+        assert code == 0 and not error and "__voiles_str_arg_" in generated, (
+            case_number, code, error, generated)
+        assert ".clone()" not in generated and "v_decode(s, depth + 1" in generated, (
+            case_number, generated)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (case_number, invoke(native))
+        public.write_text(program, encoding="utf-8")
+        checked = invoke(next_stage, "check", public)
+        assert checked == (0, "", ""), (case_number, program, checked)
+        assert invoke(next_stage, "run", public) == (0, "42\n", ""), (case_number, program)
+        for mode in ("build", "pack"):
+            exe = root / f"int-nested-str-{case_number}-{mode}"
+            built = invoke(next_stage, mode, public, "-o", exe)
+            assert built == (0, "", ""), (case_number, mode, built)
+            assert invoke(exe) == (42, "", ""), (case_number, mode)
+
+    invalid_int_call_nested_str = (
+        ('fn main()->int{return decode(number())}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn number()->int{return 42}'),
+        ('fn main()->int{return decode(make())}\n'
+         'fn decode(text:int)->int{return text}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{return decode(make(1))}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{return decode(missing())}\n'
+         'fn decode(text:str)->int{return text.to_int()}'),
+        ('fn main()->int{return decode(make(),make())}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn make()->str{return "42"}'),
+        ('fn main()->int{\nvar raw:str = "42"\n'
+         'var n:int = decode(identity(raw.move()))\n'
+         'return raw.to_int()\n}\n'
+         'fn decode(text:str)->int{return text.to_int()}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+        ('fn main()->int{\nvar raw:str = "42"\n'
+         'return both(identity(raw.move()),identity(raw.move()))\n}\n'
+         'fn both(a:str,b:str)->int{return a.to_int()+b.to_int()}\n'
+         'fn identity(value:str)->str{return value.move()}'),
+    )
+    for program in invalid_int_call_nested_str:
+        source.write_text("import host\n" + program, encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-compiler", source)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and error
+                   for code, generated, error in failures), (program, failures)
+        public.write_text(program, encoding="utf-8")
+        assert invoke(next_stage, "check", public)[0] == 1, program
+
+    # 非巢狀的既有 int 運算實參維持原路徑，不套用型別化子集限制。
+    arithmetic_argument = (
+        'fn main()->int{return combine(2+3,37)}\n'
+        'fn combine(a:int,b:int)->int{return a+b}'
+    )
+    source.write_text("import host\n" + arithmetic_argument, encoding="utf-8")
+    assert all(invoke(cli, "bootstrap-compiler", source)[0] == 0
+               for cli in (seed, stage, next_stage))
+    public.write_text(arithmetic_argument, encoding="utf-8")
+    assert invoke(next_stage, "run", public) == (0, "42\n", "")
+
     # int 參數、參數值及多實參呼叫由自舉編譯器產生真 Rust，再與公開四入口比較。
     # main 刻意先於 combine，驗證名稱階段完成整份宣告後才核對前向呼叫。
     functions = "fn main()->int{ return combine(4,2) }\nfn combine(a:int,b:int)->int{ return a*10+b }"
