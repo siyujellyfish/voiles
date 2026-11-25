@@ -88,6 +88,68 @@ with TemporaryDirectory() as tmp:
         assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", "")
         assert invoke(exe) == (42, "", "")
 
+    # 跨模組輸出需傳遞正式 int/str 簽章，而不只是參數數量。
+    # 已實作的跨模組 int 呼叫保留；未實作的跨模組 str 實參
+    # 繼續保守拒絕，不可放任 Rust 編譯器代替靜態檢查。
+    typed_module_success = (
+        'fn combine(a:int,b:int)->int{return a*10+b}\n'
+        'fn unused()->str{return "海龜"}\n'
+    )
+    module.write_text(typed_module_success, encoding="utf-8")
+    entry_module.write_text(
+        "import math\nfn main()->int{return math.combine(4,2)}\n", encoding="utf-8")
+    generated_modules = [invoke(cli, "bootstrap-project", entry_module)
+                         for cli in (seed, stage, next_stage)]
+    assert generated_modules[0] == generated_modules[1] == generated_modules[2]
+    code, generated, error = generated_modules[2]
+    assert code == 0 and not error and "v_math_combine" in generated and "v_math_unused" in generated, (
+        code, error, generated)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+    assert invoke(next_stage, "check", entry_module) == (0, "", "")
+    assert invoke(next_stage, "run", entry_module) == (0, "42\n", "")
+    for mode in ("build", "pack"):
+        exe = root / f"typed-module-{mode}"
+        assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", "")
+        assert invoke(exe) == (42, "", "")
+
+    invalid_typed_module_signatures = (
+        ('fn decode(text:str)->int{return text.to_int()}\n',
+         'import math\nfn main()->int{return math.decode(42)}',
+         '實參型別不符'),
+        ('fn combine(a:int,b:str)->int{return 42}\n',
+         'import math\nfn main()->int{return math.combine(4,2)}',
+         '實參型別不符'),
+        ('fn make()->str{return "42"}\n',
+         'import math\nfn main()->int{return math.make()}',
+         '不回傳 int'),
+    )
+    for exported, caller, diagnostic_label in invalid_typed_module_signatures:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text(caller, encoding="utf-8")
+        rejected = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic_label in diagnostic
+                   for code, generated, diagnostic in rejected), (caller, rejected)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, caller
+
+    # 公開 Checker 已允許非顯式借用的跨模組 str 實參；
+    # 自舉 ABI 尚未移植，禁止以隱含複製或錯誤 Rust 產物冒充支援。
+    module.write_text(
+        'fn decode(text:str)->int{return text.to_int()}\n', encoding="utf-8")
+    entry_module.write_text(
+        'import math\nfn main()->int{return math.decode("42")}', encoding="utf-8")
+    for cli in (seed, stage, next_stage):
+        code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
+        assert code == 1 and not generated and "跨模組 str 實參" in diagnostic, (
+            code, generated, diagnostic)
+    assert invoke(next_stage, "check", entry_module) == (0, "", "")
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
