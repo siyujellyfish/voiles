@@ -14,6 +14,11 @@ enum MatchKind { Integer, Boolean }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ExceptionKind { Evaluation, Conversion }
 
+// A nested call's result kind is determined by the declared signature, not
+// by its position in the source. Literal and moved arguments are already known.
+#[derive(Debug)]
+enum FactoryArgumentKind { Int, Str, Call(String) }
+
 struct Machine {
     tokens: Vec<Token>,
     cursor: usize,
@@ -22,7 +27,7 @@ struct Machine {
     functions: BTreeMap<String, Vec<String>>,
     function_param_kinds: BTreeMap<String, Vec<String>>,
     function_return_kinds: BTreeMap<String, String>,
-    str_factory_calls: Vec<(String, Vec<String>, String)>,
+    str_factory_calls: Vec<(String, Vec<FactoryArgumentKind>, Option<String>)>,
     str_factory_depth: usize,
     current_function: Option<String>,
     calls: Vec<(Option<String>, String, usize, Vec<String>)>,
@@ -611,12 +616,9 @@ impl Machine {
         }
     }
     fn str_factory_call(&mut self, function: &str) -> R {
-        self.typed_factory_call(function, "str")
+        self.typed_factory_call(function, Some("str"))
     }
-    fn int_factory_call(&mut self, function: &str) -> R {
-        self.typed_factory_call(function, "int")
-    }
-    fn typed_factory_call(&mut self, function: &str, return_kind: &str) -> R {
+    fn typed_factory_call(&mut self, function: &str, return_kind: Option<&str>) -> R {
         // 遞迴深度不能依賴 Rust 執行緒堆疊無限成長。
         if self.str_factory_depth >= 32 {
             return Err(Fault::Syntax("str 返回函式巢狀呼叫超過 32 層".into()));
@@ -626,14 +628,14 @@ impl Machine {
         self.str_factory_depth -= 1;
         result
     }
-    fn typed_factory_call_inner(&mut self, function: &str, return_kind: &str) -> R {
+    fn typed_factory_call_inner(&mut self, function: &str, return_kind: Option<&str>) -> R {
         // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
         // 前向函式的參數型別及返回型別。
         self.expect("(")?;
         // 依序將所有實參先執行為區塊暫存，再借用 &mut Machine 呼叫外層。
         // 避免 v_outer(s, depth+1, v_inner(s,...)) 的 Rust E0499 衝突。
         self.emit("{\n")?;
-        let mut kinds: Vec<String> = Vec::new();
+        let mut kinds: Vec<FactoryArgumentKind> = Vec::new();
         while self.matched_width(")") == 0 {
             if kinds.len() >= 64 {
                 return Err(Fault::Syntax("str 返回函式實參過多".into()));
@@ -644,27 +646,20 @@ impl Machine {
             match self.token().clone() {
                 TokenKind::Integer(_) => {
                     self.literal()?;
-                    kinds.push("int".into());
+                    kinds.push(FactoryArgumentKind::Int);
                 }
                 TokenKind::StringLiteral(value) => {
                     self.cursor += 1;
                     self.emit(&format!("String::from({value:?})"))?;
-                    kinds.push("str".into());
+                    kinds.push(FactoryArgumentKind::Str);
                 }
                 TokenKind::Name(source) if self.tokens.get(self.cursor + 1)
                     .is_some_and(|t| t.kind == TokenKind::Symbol('(')) => {
-                    // 已宣告 int 函式可將 i64 暫存交給外層；未宣告者保守以
-                    // str 工廠規則處理並在全檔核對，不能猜測型別。
-                    let known_int = self.function_return_kinds.get(&source)
-                        .is_some_and(|kind| kind == "int");
+                    // 巢狀結果先保留 callee 名稱，待全文的正式簽章建立後
+                    // 再解析型別。生成的 Rust 暫存不需要猜測 int 或 str。
                     self.cursor += 1;
-                    if known_int {
-                        self.int_factory_call(&source)?;
-                        kinds.push("int".into());
-                    } else {
-                        self.str_factory_call(&source)?;
-                        kinds.push("str".into());
-                    }
+                    self.typed_factory_call(&source, None)?;
+                    kinds.push(FactoryArgumentKind::Call(source));
                 }
                 TokenKind::Name(source) => {
                     let explicit_move = self.tokens.get(self.cursor + 1)
@@ -696,11 +691,11 @@ impl Machine {
                         self.expect(")")?;
                         self.locals.insert(source.clone(), moved_kind.into());
                         self.emit(&format!("v_{source}"))?;
-                        kinds.push("str".into());
+                        kinds.push(FactoryArgumentKind::Str);
                     } else {
                         // 保留 int 形參／局部既有的名稱解析，拒絕對 str 的隱含複製。
                         self.value()?;
-                        kinds.push("int".into());
+                        kinds.push(FactoryArgumentKind::Int);
                     }
                 }
                 _ => return Err(Fault::Syntax(
@@ -716,7 +711,7 @@ impl Machine {
         for index in 0..kinds.len() {
             self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
         }
-        self.str_factory_calls.push((function.to_owned(), kinds, return_kind.into()));
+        self.str_factory_calls.push((function.to_owned(), kinds, return_kind.map(str::to_owned)));
         self.emit(")?\n}")
     }
     fn str_local(&mut self) -> R {
@@ -1369,10 +1364,25 @@ impl Machine {
             };
             let expected_kinds = self.function_param_kinds.get(name)
                 .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式簽章 {name}")))?;
-            if params.len() != actual_kinds.len() || expected_kinds != actual_kinds
-                || self.function_return_kinds.get(name) != Some(return_kind) {
+            let declared_return = self.function_return_kinds.get(name)
+                .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式返回型別 {name}")))?;
+            if params.len() != actual_kinds.len()
+                || return_kind.as_ref().is_some_and(|kind| kind != declared_return) {
                 return Err(Fault::Syntax(
                     format!("巢狀函式 {name} 的參數數量、型別或返回型別不符")));
+            }
+            for (expected, actual) in expected_kinds.iter().zip(actual_kinds) {
+                let actual_kind = match actual {
+                    FactoryArgumentKind::Int => "int",
+                    FactoryArgumentKind::Str => "str",
+                    FactoryArgumentKind::Call(callee) => self.function_return_kinds
+                        .get(callee).map(String::as_str).ok_or_else(||
+                            Fault::Syntax(format!("未知巢狀函式返回型別 {callee}")))?,
+                };
+                if expected != actual_kind {
+                    return Err(Fault::Syntax(format!(
+                        "巢狀函式 {name} 的實參型別不符：預期 {expected}，實際 {actual_kind}")));
+                }
             }
         }
         Ok(0)
