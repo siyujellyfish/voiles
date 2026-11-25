@@ -1284,6 +1284,24 @@ impl Machine {
         self.calls[index].3.push("int".into());
         Ok(0)
     }
+    fn at_str_literal_argument(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::StringLiteral(_))))
+    }
+    fn str_literal_argument(&mut self) -> R {
+        let index = self.call_stack.last().copied()
+            .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
+        if self.calls[index].0.is_some() {
+            return Err(Fault::Syntax("跨模組 str 實參尚未支援".into()));
+        }
+        let TokenKind::StringLiteral(value) = self.token() else {
+            return Err(Fault::Syntax("預期字串常值實參".into()));
+        };
+        let value = value.clone();
+        self.cursor += 1;
+        self.calls[index].2 += 1;
+        self.calls[index].3.push("str".into());
+        self.emit(&format!(", String::from({value:?})"))
+    }
     fn at_str_move_argument(&self) -> R {
         Ok(i64::from(matches!(self.token(), TokenKind::Name(name)
                 if matches!(self.locals.get(name).map(String::as_str), Some("owned:str" | "const-owned:str")))
@@ -1413,7 +1431,8 @@ impl Machine {
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
                     "literal" | "at_str_local" | "str_local" | "at_str_move_argument" |
-                    "str_move_argument" | "mark_str_return" | "is_str_return" |
+                    "str_move_argument" | "at_str_literal_argument" | "str_literal_argument" |
+                    "mark_str_return" | "is_str_return" |
                     "str_return_statement" | "at_str_assignment" |
                     "str_assignment" | "at_conversion" | "conversion") {
             return Err(Fault::Syntax("未知的自舉宿主函式".into()));
