@@ -1371,7 +1371,7 @@ impl Machine {
         let index = self.call_stack.last().copied()
             .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
         // A literal creates a fresh owned String, including across modules.
-        // Named owners still pass through the separate move guard.
+        // Named owners use the separate ownership-state transition.
         let TokenKind::StringLiteral(value) = self.token() else {
             return Err(Fault::Syntax("預期字串常值實參".into()));
         };
@@ -1393,9 +1393,8 @@ impl Machine {
     fn str_move_argument(&mut self) -> R {
         let index = self.call_stack.last().copied()
             .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
-        if self.calls[index].0.is_some() {
-            return Err(Fault::Syntax("跨模組字串移交尚未支援".into()));
-        }
+        // Qualified calls share the same move state and control-flow guards.
+        // finish_names verifies the imported signature before returning output.
         if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
             || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
             || self.pending_dict_borrow.is_some() {
