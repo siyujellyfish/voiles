@@ -168,6 +168,28 @@ with TemporaryDirectory() as tmp:
             assert invoke(exe) == (42, "", "")
             exe.unlink()
 
+    # 模組內函式的型別化呼叫應使用模組符號，但形參和所有者仍使用區域符號。
+    module.write_text(
+        'fn _make(text:str)->str{return text.move()}\n'
+        'fn _decode(text:str)->int{return text.to_int()}\n'
+        'fn decode(text:str)->int{return _decode(_make(text.move()))}\n',
+        encoding="utf-8")
+    entry_module.write_text(
+        'import math\nfn main()->int{return math.decode("42")}', encoding="utf-8")
+    generated_modules = [invoke(cli, "bootstrap-project", entry_module)
+                         for cli in (seed, stage, next_stage)]
+    assert generated_modules[0] == generated_modules[1] == generated_modules[2]
+    code, generated, diagnostic = generated_modules[2]
+    assert code == 0 and not diagnostic and "v_math__make(s" in generated, (
+        code, generated, diagnostic)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+
     # 常值支援不能放寬錯誤簽章、私有函式或具名所有者的移交限制。
     literal_module_rejections = (
         ('fn decode(text:int)->int{return text}\n',
