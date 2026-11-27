@@ -89,8 +89,7 @@ with TemporaryDirectory() as tmp:
         assert invoke(exe) == (42, "", "")
 
     # 跨模組輸出需傳遞正式 int/str 簽章，而不只是參數數量。
-    # 保留跨模組 int 呼叫，並以正式簽章檢查獨立 str 常值。
-    # 具名來源的跨模組 move 仍由既有安全守門拒絕。
+    # 保留跨模組 int 呼叫，並以正式簽章檢查獨立 str 常值及明確 move。
     typed_module_success = (
         'fn combine(a:int,b:int)->int{return a*10+b}\n'
         'fn unused()->str{return "海龜"}\n'
@@ -190,7 +189,7 @@ with TemporaryDirectory() as tmp:
     subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
     assert invoke(native) == (42, "", "")
 
-    # 常值支援不能放寬錯誤簽章、私有函式或具名所有者的移交限制。
+    # 常值支援不能放寬錯誤簽章或私有函式限制。
     literal_module_rejections = (
         ('fn decode(text:int)->int{return text}\n',
          'import math\nfn main()->int{return math.decode("42")}', '實參型別不符'),
@@ -210,13 +209,72 @@ with TemporaryDirectory() as tmp:
                 caller, code, generated, diagnostic)
         assert invoke(next_stage, "check", entry_module)[0] == 1
 
-    module.write_text('fn decode(text:str)->int{return text.to_int()}\n', encoding="utf-8")
+    # 跨模組 move 依同一名稱狀態轉移，var / const 皆不得重複消耗。
+    move_module_cases = (
+        ('fn decode(text:str)->int{return text.to_int()}\n',
+         'import math\nfn main()->int{var raw:str = "42"\nreturn math.decode(raw.move())}'),
+        ('fn decode(text:str)->int{return text.to_int()}\n',
+         'import math\nfn main()->int{const raw:str = "42"\nreturn math.decode(raw.move())}'),
+        ('fn combine(a:str,b:str)->int{return a.to_int()+b.to_int()}\n',
+         'import math\nfn main()->int{var first:str = "40"\nconst second:str = "2"\n'
+         'return math.combine(first.move(),second.move())}'),
+        ('fn combine(a:int,text:str,b:int)->int{return a*10+text.to_int()+b}\n',
+         'import math\nfn main()->int{const raw:str = "10"\nreturn math.combine(3,raw.move(),2)}'),
+        ('fn combine(a:str,b:str)->int{return a.to_int()+b.to_int()}\n',
+         'import math\nfn main()->int{var raw:str = "40"\nreturn math.combine(raw.move(),"2")}'),
+    )
+    for case_number, (exported, caller) in enumerate(move_module_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text(caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic and ".clone()" not in generated, (
+            caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"move-module-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    move_module_rejections = (
+        ('fn decode(text:str)->int{return text.to_int()}',
+         'var raw:str = "42"\nreturn math.decode(raw.move())+raw.to_int()'),
+        ('fn combine(a:str,b:str)->int{return a.to_int()+b.to_int()}',
+         'var raw:str = "42"\nreturn math.combine(raw.move(),raw.move())'),
+        ('fn decode(text:int)->int{return text}',
+         'var raw:str = "42"\nreturn math.decode(raw.move())'),
+        ('fn _decode(text:str)->int{return text.to_int()}',
+         'var raw:str = "42"\nreturn math._decode(raw.move())'),
+        ('fn decode(text:str)->int{return text.to_int()}',
+         'var raw:str = "42"\nreturn math.decode(raw.move(),1)'),
+    )
+    for exported, body in move_module_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text('import math\nfn main()->int{\n'+body+'\n}', encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (body, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, body
+
+    # 未收斂控制流程中的 move 仍由既有自舉安全守門拒絕。
+    module.write_text('fn decode(text:str)->int{return text.to_int()}', encoding="utf-8")
     entry_module.write_text(
-        'import math\nfn main()->int{var raw:str = "42"\nreturn math.decode(raw.move())}',
-        encoding="utf-8")
+        'import math\nfn main()->int{var raw:str = "42"\n'
+        'if (1 == 1){return math.decode(raw.move())}else{return 0}}', encoding="utf-8")
     for cli in (seed, stage, next_stage):
         code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
-        assert code == 1 and not generated and "跨模組字串移交" in diagnostic, (
+        assert code == 1 and not generated and "跨控制流程或有效借用" in diagnostic, (
             code, generated, diagnostic)
 
     invalid_projects = (
