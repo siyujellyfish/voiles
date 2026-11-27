@@ -61,6 +61,7 @@ struct Machine {
     pending_list_append: Option<String>,
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize, BTreeMap<String, String>)>,
+    pending_while: bool,
     pending_if_scopes: Vec<(bool, BTreeMap<String, String>, Option<BTreeMap<String, String>>)>,
     pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>, BTreeMap<String, String>)>,
 }
@@ -425,7 +426,7 @@ impl Machine {
         if self.is_str_return()? == 0 {
             return Err(Fault::Syntax("此函式必須回傳 int".into()));
         }
-        if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+        if self.pending_while || !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
             || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
             || self.pending_dict_borrow.is_some() {
             return Err(Fault::Syntax("str 返回暫不支援未收斂控制流程或借用".into()));
@@ -463,6 +464,7 @@ impl Machine {
         }
     }
     fn finish_function(&mut self) -> R {
+        if self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
         self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
         self.locals.clear();
         self.pending_local = None;
@@ -515,6 +517,16 @@ impl Machine {
         let Some(else_end) = matching_end(then_end + 2) else { return Ok(0); };
         Ok(i64::from(self.tokens.get(else_end + 1).is_some_and(|next|
             !matches!(next.kind, TokenKind::Symbol('}') | TokenKind::End))))
+    }
+    fn while_scope_start(&mut self) -> R {
+        if self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
+        self.pending_while = true;
+        Ok(0)
+    }
+    fn while_scope_finish(&mut self) -> R {
+        if !self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
+        self.pending_while = false;
+        Ok(0)
     }
     fn if_scope_start(&mut self) -> R {
         // 保存外層與兩個互斥臂的獨立擁有權狀態。
@@ -671,7 +683,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 沿用宣告移交已核准的直線、無有效借用安全子集。
-                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                if self.pending_while || !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
                     || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                     || self.pending_dict_borrow.is_some() {
                     return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
@@ -751,7 +763,7 @@ impl Machine {
                         && self.tokens.get(self.cursor + 4)
                             .is_some_and(|t| t.kind == TokenKind::Symbol(')'));
                     if explicit_move {
-                        if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                        if self.pending_while || !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
                             || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                             || self.pending_dict_borrow.is_some() {
                             return Err(Fault::Syntax(
@@ -837,7 +849,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!("{source} 不是可移交的擁有字串")));
                 }
                 // 第一批明確移交限直線語句：分支合流與借用票據需後續獨立檢查。
-                if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+                if self.pending_while || !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
                     || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
                     || self.pending_dict_borrow.is_some() {
                     return Err(Fault::Syntax("字串移交暫不允許跨控制流程或有效借用".into()));
@@ -1395,7 +1407,7 @@ impl Machine {
             .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
         // Qualified calls share the same move state and control-flow guards.
         // finish_names verifies the imported signature before returning output.
-        if !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
+        if self.pending_while || !self.pending_if_scopes.is_empty() || !self.pending_matches.is_empty()
             || !self.pending_tries.is_empty() || !self.pending_list_borrows.is_empty()
             || self.pending_dict_borrow.is_some() {
             return Err(Fault::Syntax("字串實參移交暫不允許跨控制流程或有效借用".into()));
@@ -1514,7 +1526,7 @@ impl Machine {
                     "finish_list_append" | "list_pop" | "list_owner" |
                     "list_alias" | "finish_list_borrow" | "dict_owner" | "dict_selector" |
                     "dict_alias" | "finish_dict_borrow" | "dict_set" | "dict_set_key" |
-                    "finish_dict_set" | "return_start" | "if_scope_start" | "if_scope_else" |
+                    "finish_dict_set" | "return_start" | "while_scope_start" | "while_scope_finish" | "if_scope_start" | "if_scope_else" |
                     "if_scope_finish" | "if_has_continuation" | "try_start" | "try_handler" |
                     "exception_category" | "exception_binding" | "finish_try" |
                     "match_start" | "match_integer_subject" |
@@ -1704,7 +1716,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         nested_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,
         pending_list_append: None, pending_dict_set: None,
-        pending_matches: Vec::new(), pending_if_scopes: Vec::new(), pending_tries: Vec::new(),
+        pending_matches: Vec::new(), pending_while: false, pending_if_scopes: Vec::new(), pending_tries: Vec::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);
