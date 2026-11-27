@@ -1367,9 +1367,8 @@ impl Machine {
     fn str_literal_argument(&mut self) -> R {
         let index = self.call_stack.last().copied()
             .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
-        if self.calls[index].0.is_some() {
-            return Err(Fault::Syntax("跨模組 str 實參尚未支援".into()));
-        }
+        // A literal creates a fresh owned String, including across modules.
+        // Named owners still pass through the separate move guard.
         let TokenKind::StringLiteral(value) = self.token() else {
             return Err(Fault::Syntax("預期字串常值實參".into()));
         };
@@ -1462,10 +1461,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!(
                         "跨模組函式 {module}.{name} 的 str／int 實參型別不符")));
                 }
-                if actual_kinds.iter().any(|kind| kind == "str") {
-                    return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
-                }
-            }
+             }
         }
         for (name, actual_kinds, return_kind) in &self.str_factory_calls {
             let Some(params) = self.functions.get(name) else {
