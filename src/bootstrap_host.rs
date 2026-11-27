@@ -111,9 +111,7 @@ impl Machine {
                 matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "move"))
             && self.tokens.get(self.cursor + 8).is_some_and(|t| t.kind == TokenKind::Symbol('('))
             && self.tokens.get(self.cursor + 9).is_some_and(|t| t.kind == TokenKind::Symbol(')'));
-        let factory_call = declarator
-            && self.tokens.get(self.cursor + 5).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
-            && self.tokens.get(self.cursor + 6).is_some_and(|t| t.kind == TokenKind::Symbol('('));
+        let factory_call = declarator && self.factory_head_at(self.cursor + 5);
         Ok(i64::from(head && (literal || moved || factory_call)))
     }
     fn at_str_assignment(&self) -> R {
@@ -440,11 +438,10 @@ impl Machine {
             }
             TokenKind::Name(name) => {
                 let name = name.clone();
-                if self.tokens.get(self.cursor + 1)
-                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
-                    self.cursor += 1;
+                if self.factory_head_at(self.cursor) {
+                    let function = self.take_factory_name()?;
                     self.emit("Ok(")?;
-                    self.str_factory_call(&name)?;
+                    self.str_factory_call(&function)?;
                     return self.emit(")\n");
                 }
                 let moved_kind = match self.locals.get(&name).map(String::as_str) {
@@ -667,11 +664,10 @@ impl Machine {
             }
             TokenKind::Name(source) => {
                 let source = source.clone();
-                if self.tokens.get(self.cursor + 1)
-                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
-                    self.cursor += 1;
+                if self.factory_head_at(self.cursor) {
+                    let function = self.take_factory_name()?;
                     self.emit(&format!("v_{name} = "))?;
-                    self.str_factory_call(&source)?;
+                    self.str_factory_call(&function)?;
                     // 若來源透過 target.move() 轉移，Rust 允許在呼叫後重新初始化 target。
                     self.locals.insert(name.clone(), "owned:str".into());
                     return self.emit(";\n");
@@ -704,6 +700,27 @@ impl Machine {
                 self.emit(&format!("v_{name} = v_{source};\n"))
             }
             _ => Err(Fault::Syntax("str 重新賦值需要字串常值或明確 move".into())),
+        }
+    }
+    // A qualified factory head is distinct from the explicit receiver.move().
+    fn factory_head_at(&self, index: usize) -> bool {
+        if !self.tokens.get(index).is_some_and(|t| matches!(t.kind, TokenKind::Name(_))) {
+            return false;
+        }
+        self.tokens.get(index + 1).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+            || (self.tokens.get(index + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+                && self.tokens.get(index + 2).is_some_and(|t|
+                    matches!(&t.kind, TokenKind::Name(n) if n != "move"))
+                && self.tokens.get(index + 3).is_some_and(|t| t.kind == TokenKind::Symbol('(')))
+    }
+    fn take_factory_name(&mut self) -> Result<String, Fault> {
+        let name = self.take_name()?;
+        if self.matched_width(".") != 0 {
+            self.expect(".")?;
+            let member = self.take_name()?;
+            Ok(format!("{name}.{member}"))
+        } else {
+            Ok(name)
         }
     }
     fn str_factory_call(&mut self, function: &str) -> R {
@@ -798,7 +815,11 @@ impl Machine {
             }
         }
         self.expect(")")?;
-        self.emit_name(function)?;
+        if let Some((module, member)) = function.split_once('.') {
+            self.emit(&format!("v_{module}_{member}"))?;
+        } else {
+            self.emit_name(function)?;
+        }
         self.emit("(s, depth + 1")?;
         for index in 0..kinds.len() {
             self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
@@ -832,12 +853,11 @@ impl Machine {
             }
             TokenKind::Name(source) => {
                 let source = source.clone();
-                if self.tokens.get(self.cursor + 1)
-                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
-                    self.cursor += 1;
+                if self.factory_head_at(self.cursor) {
+                    let function = self.take_factory_name()?;
                     let modifier = if mutable { "mut " } else { "" };
                     self.emit(&format!("let {modifier}v_{name}: String = "))?;
-                    self.str_factory_call(&source)?;
+                    self.str_factory_call(&function)?;
                     self.locals.insert(name.clone(), if mutable {
                         "owned:str".into()
                     } else {
@@ -1478,14 +1498,21 @@ impl Machine {
              }
         }
         for (name, actual_kinds, return_kind) in &self.str_factory_calls {
-            let Some(params) = self.functions.get(name) else {
-                return Err(Fault::Syntax(format!("未知巢狀函式 {name}")));
+            let (expected_kinds, declared_return) = if let Some((module, member)) = name.split_once('.') {
+                if !self.imports.contains(module) {
+                    return Err(Fault::Syntax(format!("未匯入模組 {module}")));
+                }
+                let signature = self.external_functions.get(&(module.to_owned(), member.to_owned()))
+                    .ok_or_else(|| Fault::Syntax(format!("未知模組函式 {name}")))?;
+                (&signature.param_kinds, &signature.return_kind)
+            } else {
+                let expected_kinds = self.function_param_kinds.get(name)
+                    .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式 {name}")))?;
+                let declared_return = self.function_return_kinds.get(name)
+                    .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式返回型別 {name}")))?;
+                (expected_kinds, declared_return)
             };
-            let expected_kinds = self.function_param_kinds.get(name)
-                .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式簽章 {name}")))?;
-            let declared_return = self.function_return_kinds.get(name)
-                .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式返回型別 {name}")))?;
-            if params.len() != actual_kinds.len()
+            if expected_kinds.len() != actual_kinds.len()
                 || return_kind.as_ref().is_some_and(|kind| kind != declared_return) {
                 return Err(Fault::Syntax(
                     format!("巢狀函式 {name} 的參數數量、型別或返回型別不符")));
