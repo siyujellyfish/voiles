@@ -277,6 +277,42 @@ with TemporaryDirectory() as tmp:
         assert code == 1 and not generated and "跨控制流程或有效借用" in diagnostic, (
             code, generated, diagnostic)
 
+    # while 條件與本體都可能重複執行，移交在靜態階段拒絕。
+    for body in (
+        'while (math.decode(raw.move()) != 0){math.noop()}\nreturn 0',
+        'while (1 != 0){math.decode(raw.move())}\nreturn 0',
+        'while (1 != 0){local(raw.move())}\nreturn 0',
+        'while (1 != 0){local(identity(raw.move()))}\nreturn 0',
+    ):
+        module.write_text(
+            'fn decode(text:str)->int{return text.to_int()}\nfn noop()->int{return 0}',
+            encoding="utf-8")
+        entry_module.write_text(
+            'import math\nfn main()->int{var raw:str = "42"\n'+body+'}\n'
+            'fn local(text:str)->int{return text.to_int()}\n'
+            'fn identity(text:str)->str{return text.move()}', encoding="utf-8")
+        for cli in (seed, stage, next_stage):
+            code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
+            assert code == 1 and not generated and "跨控制流程或有效借用" in diagnostic, (
+                body, code, generated, diagnostic)
+
+    # 正常離開迴圈後，直線移交仍合法；不可把守門狀態洩漏到後續語句。
+    entry_module.write_text(
+        'import math\nfn main()->int{var raw:str = "42"\n'
+        'while (0 != 0){math.noop()}\nreturn math.decode(raw.move())}', encoding="utf-8")
+    generations = [invoke(cli, "bootstrap-project", entry_module)
+                   for cli in (seed, stage, next_stage)]
+    assert generations[0] == generations[1] == generations[2]
+    code, generated, diagnostic = generations[2]
+    assert code == 0 and not diagnostic, (code, generated, diagnostic)
+    rust_source.write_text(
+        "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+        "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+        + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+        encoding="utf-8")
+    subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+    assert invoke(native) == (42, "", "")
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
