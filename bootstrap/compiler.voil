@@ -346,7 +346,7 @@ fn constructor_tail()->int{
 
 fn control()->int{
     if (host.at("while") != 0) {
-        return host.expect("while") + host.emit("while ") + comparison() + host.expect("{") + host.emit("s.enter(depth)?;\n") + actions() + host.expect("}") + host.emit("}\n") + statement()
+        return host.expect("while") + host.while_scope_start() + host.emit("while ") + comparison() + host.expect("{") + host.emit("s.enter(depth)?;\n") + actions() + host.expect("}") + host.while_scope_finish() + host.emit("}\n") + statement()
     } else {
         if (host.if_has_continuation() != 0) {
             return condition() + host.if_scope_start() + host.expect("{") + if_flow_body() + host.expect("}") + host.expect("else") + host.if_scope_else() + host.emit("} else {\n") + host.expect("{") + if_flow_body() + host.expect("}") + host.if_scope_finish() + host.emit("}\n") + statement()
