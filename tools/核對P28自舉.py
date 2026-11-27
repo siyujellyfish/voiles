@@ -89,8 +89,8 @@ with TemporaryDirectory() as tmp:
         assert invoke(exe) == (42, "", "")
 
     # 跨模組輸出需傳遞正式 int/str 簽章，而不只是參數數量。
-    # 已實作的跨模組 int 呼叫保留；未實作的跨模組 str 實參
-    # 繼續保守拒絕，不可放任 Rust 編譯器代替靜態檢查。
+    # 保留跨模組 int 呼叫，並以正式簽章檢查獨立 str 常值。
+    # 具名來源的跨模組 move 仍由既有安全守門拒絕。
     typed_module_success = (
         'fn combine(a:int,b:int)->int{return a*10+b}\n'
         'fn unused()->str{return "海龜"}\n'
@@ -138,17 +138,64 @@ with TemporaryDirectory() as tmp:
                    for code, generated, diagnostic in rejected), (caller, rejected)
         assert invoke(next_stage, "check", entry_module)[0] == 1, caller
 
-    # 公開 Checker 已允許非顯式借用的跨模組 str 實參；
-    # 自舉 ABI 尚未移植，禁止以隱含複製或錯誤 Rust 產物冒充支援。
-    module.write_text(
-        'fn decode(text:str)->int{return text.to_int()}\n', encoding="utf-8")
+    # 跨模組 str 常值建立獨立 String，按正式簽章交給 int 返回函式。
+    literal_module_cases = (
+        ('fn decode(text:str)->int{return text.to_int()}\n',
+         'import math\nfn main()->int{return math.decode("42")}'),
+        ('fn combine(a:int,text:str,b:int)->int{return a*10+text.to_int()+b}\n',
+         'import math\nfn main()->int{return math.combine(3,"10",2)}'),
+    )
+    for exported, caller in literal_module_cases:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text(caller, encoding="utf-8")
+        generated_modules = [invoke(cli, "bootstrap-project", entry_module)
+                             for cli in (seed, stage, next_stage)]
+        assert generated_modules[0] == generated_modules[1] == generated_modules[2]
+        code, generated, diagnostic = generated_modules[2]
+        assert code == 0 and not diagnostic and "String::from(" in generated
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", "")
+        assert invoke(next_stage, "check", entry_module) == (0, "", "")
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", "")
+        for mode in ("build", "pack"):
+            exe = root / f"literal-module-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", "")
+            assert invoke(exe) == (42, "", "")
+            exe.unlink()
+
+    # 常值支援不能放寬錯誤簽章、私有函式或具名所有者的移交限制。
+    literal_module_rejections = (
+        ('fn decode(text:int)->int{return text}\n',
+         'import math\nfn main()->int{return math.decode("42")}', '實參型別不符'),
+        ('fn decode(text:str)->int{return text.to_int()}\n',
+         'import math\nfn main()->int{return math.decode("4","2")}', '個實參'),
+        ('fn _decode(text:str)->int{return text.to_int()}\n',
+         'import math\nfn main()->int{return math._decode("42")}', '未知函式'),
+        ('fn make(text:str)->str{return text.move()}\n',
+         'import math\nfn main()->int{return math.make("42")}', '不回傳 int'),
+    )
+    for exported, caller, diagnostic_label in literal_module_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text(caller, encoding="utf-8")
+        for cli in (seed, stage, next_stage):
+            code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
+            assert code == 1 and not generated and diagnostic_label in diagnostic, (
+                caller, code, generated, diagnostic)
+        assert invoke(next_stage, "check", entry_module)[0] == 1
+
+    module.write_text('fn decode(text:str)->int{return text.to_int()}\n', encoding="utf-8")
     entry_module.write_text(
-        'import math\nfn main()->int{return math.decode("42")}', encoding="utf-8")
+        'import math\nfn main()->int{var raw:str = "42"\nreturn math.decode(raw.move())}',
+        encoding="utf-8")
     for cli in (seed, stage, next_stage):
         code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
-        assert code == 1 and not generated and "跨模組 str 實參" in diagnostic, (
+        assert code == 1 and not generated and "跨模組字串移交" in diagnostic, (
             code, generated, diagnostic)
-    assert invoke(next_stage, "check", entry_module) == (0, "", "")
 
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
