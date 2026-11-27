@@ -390,7 +390,9 @@ impl Machine {
         if kind == "str" {
             self.locals.insert(name.clone(), "const-owned:str".into());
         }
-        self.emit_name(&name)
+        // Parameters are lexical bindings, not module exports. Every str
+        // operation (conversion, move, len, return) uses the same local name.
+        self.emit(&format!("v_{name}"))
     }
     fn value(&mut self) -> R {
         let name = self.take_name()?;
@@ -403,7 +405,7 @@ impl Machine {
         if !parameter && !local_int {
             return Err(Fault::Syntax(format!("{name} 不是可用的 int 名稱")));
         }
-        if parameter { self.emit_name(&name) } else { self.emit(&format!("v_{name}")) }
+        self.emit(&format!("v_{name}"))
     }
     fn mark_str_return(&mut self) -> R {
         let name = self.current_function.as_ref()
@@ -784,7 +786,8 @@ impl Machine {
             }
         }
         self.expect(")")?;
-        self.emit(&format!("v_{function}(s, depth + 1"))?;
+        self.emit_name(function)?;
+        self.emit("(s, depth + 1")?;
         for index in 0..kinds.len() {
             self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
         }
@@ -1367,9 +1370,8 @@ impl Machine {
     fn str_literal_argument(&mut self) -> R {
         let index = self.call_stack.last().copied()
             .ok_or_else(|| Fault::Syntax("字串實參不在呼叫中".into()))?;
-        if self.calls[index].0.is_some() {
-            return Err(Fault::Syntax("跨模組 str 實參尚未支援".into()));
-        }
+        // A literal creates a fresh owned String, including across modules.
+        // Named owners still pass through the separate move guard.
         let TokenKind::StringLiteral(value) = self.token() else {
             return Err(Fault::Syntax("預期字串常值實參".into()));
         };
@@ -1462,10 +1464,7 @@ impl Machine {
                     return Err(Fault::Syntax(format!(
                         "跨模組函式 {module}.{name} 的 str／int 實參型別不符")));
                 }
-                if actual_kinds.iter().any(|kind| kind == "str") {
-                    return Err(Fault::Syntax("跨模組 str 實參仍未移植".into()));
-                }
-            }
+             }
         }
         for (name, actual_kinds, return_kind) in &self.str_factory_calls {
             let Some(params) = self.functions.get(name) else {
