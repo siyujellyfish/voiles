@@ -313,6 +313,74 @@ with TemporaryDirectory() as tmp:
     subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
     assert invoke(native) == (42, "", "")
 
+    # 限定 str 返回直接取得所有權，沿用逐項實參暫存與靜態簽章核對。
+    str_module_return_cases = (
+        ('fn make()->str{return "42"}',
+         'fn main()->int{var text:str = math.make()\nreturn text.to_int()}'),
+        ('fn make()->str{return "42"}',
+         'fn main()->int{const text:str = math.make()\nreturn text.to_int()}'),
+        ('fn identity(text:str)->str{return text.move()}',
+         'fn main()->int{var raw:str = "42"\nconst text:str = math.identity(raw.move())\nreturn text.to_int()}'),
+        ('fn identity(text:str)->str{return text.move()}',
+         'fn main()->int{var text:str = "0"\ntext = math.identity("42")\nreturn text.to_int()}'),
+        ('fn identity(text:str)->str{return text.move()}',
+         'fn main()->int{var text:str = "42"\ntext = math.identity(text.move())\nreturn text.to_int()}'),
+        ('fn make(n:int,text:str)->str{return text.move()}',
+         'fn main()->int{const text:str = relay()\nreturn text.to_int()}\n'
+         'fn relay()->str{return math.make(1,"42")}'),
+        ('fn make()->str{return "海龜"}',
+         'fn main()->int{const text:str = math.make()\nreturn len(text)+40}'),
+    )
+    for case_number, (exported, caller) in enumerate(str_module_return_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic and ".clone()" not in generated, (
+            caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), (caller, invoke(native))
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"str-return-module-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    str_module_return_rejections = (
+        ('fn make()->int{return 42}',
+         'var text:str = math.make()\nreturn 0'),
+        ('fn _make()->str{return "42"}',
+         'var text:str = math._make()\nreturn 0'),
+        ('fn make()->str{return "42"}',
+         'var text:str = math.unknown()\nreturn 0'),
+        ('fn make(n:int)->str{return "42"}',
+         'var text:str = math.make("42")\nreturn 0'),
+        ('fn make(n:int)->str{return "42"}',
+         'var text:str = math.make()\nreturn 0'),
+        ('fn identity(text:str)->str{return text.move()}',
+         'var raw:str = "42"\nconst text:str = math.identity(raw.move())\nreturn raw.to_int()'),
+        ('fn identity(a:str,b:str)->str{return a.move()}',
+         'var raw:str = "42"\nconst text:str = math.identity(raw.move(),raw.move())\nreturn 0'),
+        ('fn make()->str{return "42"}',
+         'const text:str = "0"\ntext = math.make()\nreturn 0'),
+    )
+    for exported, body in str_module_return_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text('import math\nfn main()->int{\n'+body+'\n}', encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (body, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, body
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
