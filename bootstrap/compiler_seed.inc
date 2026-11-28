@@ -391,7 +391,15 @@ s.enter(depth)?;
 if s.at("}")? != 0i64 {
 Ok(0i64)
 } else {
+if s.at_int_local()? != 0i64 {
+Ok(s.int_local_start()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.int_local_finish()?).ok_or(Fault::Overflow)?.checked_add(v_actions(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+if s.at_int_assignment()? != 0i64 {
+Ok(s.int_assignment_start()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?.checked_add(v_actions(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
 Ok(v_call(s, depth + 1)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?.checked_add(v_actions(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
 }
 }
 fn v_comparison(s: &mut Machine, depth: usize) -> R {
