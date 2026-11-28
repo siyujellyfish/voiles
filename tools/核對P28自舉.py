@@ -667,9 +667,8 @@ with TemporaryDirectory() as tmp:
          'fn main()->int{var xs:list[int] = [42]\nreturn math.identity(xs.pop())}'),
         ('fn number()->int{return 2}\nfn identity(n:int)->int{return n}',
          'fn main()->int{var xs:list[int] = [40]\nreturn math.identity(n=xs.append(math.number())+40)}'),
-        ('fn identity(n:int)->int{return n}',
-         'fn main()->int{var entries:dict{str,int} = {"甲":1}\nvar n:int = math.identity(n=entries.set("甲",42))\n'
-         'with entries["甲"] as item {return item}\n}'),
+        ('fn combine(a:int,b:int)->int{return a+b}',
+         'fn main()->int{var xs:list[int] = [1]\nreturn math.combine(a=xs.append(40),b=xs.pop())}'),
     )
     for case_number, (exported, caller) in enumerate(container_argument_cases):
         module.write_text(exported, encoding="utf-8")
