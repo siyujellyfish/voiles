@@ -159,7 +159,7 @@ impl Machine {
                 *has_nested = true; // named arguments also require typed temporaries
                 *index += 2;
             }
-            if !self.typed_expression_lookahead(index, depth + 1, has_nested) {
+            if !self.typed_expression_lookahead(index, depth, has_nested) {
                 return false;
             }
             match self.tokens.get(*index).map(|t| &t.kind) {
@@ -192,7 +192,14 @@ impl Machine {
                 }
                 Some(TokenKind::Integer(_) | TokenKind::StringLiteral(_)) => *index += 1,
                 Some(TokenKind::Name(_)) => {
-                    if self.factory_head_at(*index) {
+                    // Built-in reads already have dedicated checked emitters;
+                    // do not treat their receiver as an imported module.
+                    if self.tokens.get(*index).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "len"))
+                        && self.tokens.get(*index + 1).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                        && self.tokens.get(*index + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+                        && self.tokens.get(*index + 3).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        *index += 4;
+                    } else if self.factory_head_at(*index) {
                         *has_nested = true;
                         if !self.typed_call_lookahead(index, depth + 1, has_nested) {
                             return false;
@@ -813,7 +820,7 @@ impl Machine {
         Ok(kind)
     }
     fn typed_argument_primary(&mut self, depth: usize) -> Result<FactoryArgumentKind, Fault> {
-        if depth + self.str_factory_depth >= 32 {
+        if depth >= 32 {
             return Err(Fault::Syntax("型別化實參運算式巢狀超過安全上限".into()));
         }
         if self.matched_width("(") != 0 {
@@ -823,6 +830,14 @@ impl Machine {
             self.require_int_operand(&kind)?;
             self.expect(")")?;
             self.emit(")")?;
+            return Ok(FactoryArgumentKind::Int);
+        }
+        if self.at_conversion()? != 0 {
+            self.conversion()?;
+            return Ok(FactoryArgumentKind::Int);
+        }
+        if self.at_len()? != 0 {
+            self.list_len()?;
             return Ok(FactoryArgumentKind::Int);
         }
         match self.token().clone() {
