@@ -81,39 +81,47 @@ fn body()->int{
 }
 
 fn statement()->int{
-    if (host.at_str_local() != 0) {
-        return host.str_local() + statement()
+    if (host.at_int_local() != 0) {
+        return host.int_local_start() + expression() + host.int_local_finish() + statement()
     } else {
-        if (host.at("var") != 0) {
-            return local() + statement()
+        if (host.at_int_assignment() != 0) {
+            return host.int_assignment_start() + expression() + host.emit(";\n") + statement()
         } else {
-            if (host.at_str_assignment() != 0) {
-                return host.str_assignment() + statement()
+            if (host.at_str_local() != 0) {
+                return host.str_local() + statement()
             } else {
-                if (host.at_field_write() != 0) {
-                    return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
+                if (host.at("var") != 0) {
+                    return local() + statement()
                 } else {
-                    if (host.at("with") != 0) {
-                        if (host.at_dict_borrow() != 0) {
-                            return dict_borrow()
-                        } else {
-                            return list_borrow()
-                        }
+                    if (host.at_str_assignment() != 0) {
+                        return host.str_assignment() + statement()
                     } else {
-                        if (host.at("try") != 0) {
-                            return try_statement()
+                        if (host.at_field_write() != 0) {
+                            return host.field_target() + host.expect("=") + expression() + host.emit(";\n") + statement()
                         } else {
-                            if (host.at("match") != 0) {
-                                return match_statement()
-                            } else {
-                                if (host.at("return") != 0) {
-                                if (host.is_str_return() != 0) {
-                                    return host.str_return_statement()
+                            if (host.at("with") != 0) {
+                                if (host.at_dict_borrow() != 0) {
+                                    return dict_borrow()
                                 } else {
-                                    return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                                    return list_borrow()
                                 }
                             } else {
-                                    return control()
+                                if (host.at("try") != 0) {
+                                    return try_statement()
+                                } else {
+                                    if (host.at("match") != 0) {
+                                        return match_statement()
+                                    } else {
+                                        if (host.at("return") != 0) {
+                                        if (host.is_str_return() != 0) {
+                                            return host.str_return_statement()
+                                        } else {
+                                            return host.expect("return") + host.return_start() + expression() + host.emit(")\n")
+                                        }
+                                    } else {
+                                            return control()
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -357,13 +365,21 @@ fn control()->int{
 }
 
 fn if_flow_body()->int{
-    if (host.at("}") != 0) {
-        return 0
+    if (host.at_int_local() != 0) {
+        return host.int_local_start() + expression() + host.int_local_finish() + if_flow_body()
     } else {
-        if (host.at_str_local() != 0) {
-            return host.str_local() + if_flow_body()
+        if (host.at_int_assignment() != 0) {
+            return host.int_assignment_start() + expression() + host.emit(";\n") + if_flow_body()
         } else {
-            return host.str_assignment() + if_flow_body()
+            if (host.at("}") != 0) {
+                return 0
+            } else {
+                if (host.at_str_local() != 0) {
+                    return host.str_local() + if_flow_body()
+                } else {
+                    return host.str_assignment() + if_flow_body()
+                }
+            }
         }
     }
 }
