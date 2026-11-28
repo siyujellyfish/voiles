@@ -592,6 +592,67 @@ with TemporaryDirectory() as tmp:
         subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
         assert invoke(native) == (73, "", ""), expression
 
+    # 型別化欄位讀取與正式具名尾逗號使用同一個來源序暫存。
+    read_cases = (
+        ('fn identity(n:int)->int{return n}',
+         'struct Box{var value:int = 40}\nfn main()->int{var b:Box = Box()\nreturn math.identity(n=b.value+2)}'),
+        ('fn identity(n:int)->int{return n}',
+         'struct Box{var value:int = 42}\nfn main()->int{var b:Box = Box()\nreturn local(n=b.value,)}\n'
+         'fn local(n:int)->int{return n}'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{return math.combine(b=2,a=4,)}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{return math.identity(n=local(n=42,),)}\nfn local(n:int)->int{return n}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var xs:list[int] = [1,2]\nreturn math.identity(n=len(xs)+40,)}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var entries:dict{str,int} = {"甲":1,"乙":2}\nreturn math.identity(n=len(entries)+40,)}'),
+        ('fn combine(n:int,text:str)->int{return n+text.to_int()}',
+         'fn main()->int{var raw:str = "21"\nreturn math.combine(n=raw.to_int(),text=raw.move(),)}'),
+    )
+    for case_number, (exported, caller) in enumerate(read_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic, (caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"typed-read-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    read_rejections = (
+        ('fn identity(n:int)->int{return n}',
+         'struct Box{var value:int = 42}\nfn main()->int{var b:Box = Box()\nreturn math.identity(n=b.missing,)}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var x:int = 42\nreturn math.identity(n=x.value,)}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{return math.identity(n=42,,)}'),
+        ('fn combine(a:int,b:int)->int{return a+b}',
+         'fn main()->int{return math.combine(a=21,a=21,)}'),
+        ('fn combine(n:int,text:str)->int{return n+text.to_int()}',
+         'fn main()->int{var raw:str = "21"\nreturn math.combine(text=raw.move(),n=raw.to_int(),)}'),
+    )
+    for exported, caller in read_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (caller, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, caller
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
