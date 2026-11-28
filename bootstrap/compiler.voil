@@ -392,7 +392,15 @@ fn actions()->int{
     if (host.at("}") != 0) {
         return 0
     } else {
-        return call() + host.emit(";\n") + actions()
+        if (host.at_int_local() != 0) {
+            return host.int_local_start() + expression() + host.int_local_finish() + actions()
+        } else {
+            if (host.at_int_assignment() != 0) {
+                return host.int_assignment_start() + expression() + host.emit(";\n") + actions()
+            } else {
+                return call() + host.emit(";\n") + actions()
+            }
+        }
     }
 }
 
