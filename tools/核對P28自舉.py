@@ -451,6 +451,66 @@ with TemporaryDirectory() as tmp:
                    for code, generated, diagnostic in failures), (body, failures)
         assert invoke(next_stage, "check", entry_module)[0] == 1, body
 
+    # 具名實參按書寫序求值，只有呼叫的暫存槽依正式參數順序排列。
+    named_cases = (
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{return math.combine(b=2,a=4)}'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{return local(b=2,a=4)}\nfn local(a:int,b:int)->int{return a*10+b}'),
+        ('fn combine(a:int,text:str)->int{return a+text.to_int()}',
+         'fn main()->int{var raw:str = "2"\nreturn math.combine(text=raw.move(),a=40)}'),
+        ('fn choose(n:int,text:str)->str{return text.move()}',
+         'fn main()->int{const text:str = math.choose(text="42",n=0)\nreturn text.to_int()}'),
+        ('fn make()->str{return "2"}\nfn combine(a:int,text:str)->int{return a+text.to_int()}',
+         'fn main()->int{return math.combine(text=math.make(),a=40)}'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{return math.combine(b=2,a=local(y=1,x=3))}\n'
+         'fn local(x:int,y:int)->int{return x+y}'),
+    )
+    for case_number, (exported, caller) in enumerate(named_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic and ".clone()" not in generated, (
+            caller, code, generated, diagnostic)
+        assert "__voiles_str_arg_1_1, __voiles_str_arg_1_0" in generated, generated
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"named-module-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    named_rejections = (
+        ('fn combine(a:int,b:int)->int{return a*10+b}', 'return math.combine(b=2,b=4)'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}', 'return math.combine(b=2,c=4)'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}', 'return math.combine(b=2)'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}', 'return math.combine(b=2,a="4")'),
+        ('fn _combine(a:int,b:int)->int{return a*10+b}', 'return math._combine(b=2,a=4)'),
+        ('fn combine(a:str,b:str)->int{return a.to_int()+b.to_int()}',
+         'var raw:str = "42"\nreturn math.combine(b=raw.move(),a=raw.move())'),
+        ('fn combine(a:int,text:str)->int{return a+text.to_int()}',
+         'var raw:str = "2"\nvar n:int = math.combine(text=raw.move(),a=40)\nreturn raw.to_int()'),
+    )
+    for exported, body in named_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text('import math\nfn main()->int{\n'+body+'\n}', encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (body, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, body
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
