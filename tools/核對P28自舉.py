@@ -653,6 +653,70 @@ with TemporaryDirectory() as tmp:
                    for code, generated, diagnostic in failures), (caller, failures)
         assert invoke(next_stage, "check", entry_module)[0] == 1, caller
 
+    # 容器修改依來源序完成，之後才依具名槽順序執行外層呼叫。
+    container_argument_cases = (
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var xs:list[int] = [42]\nreturn math.identity(n=xs.pop())}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var xs:list[int] = [40]\nreturn math.identity(n=xs.append(2)+40)}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var entries:dict{str,int} = {"甲":1}\nreturn math.identity(n=entries.set("乙",2)+40)}'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{var xs:list[int] = [4,2]\nreturn math.combine(b=xs.pop(),a=xs.pop())}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var xs:list[int] = [42]\nreturn math.identity(xs.pop())}'),
+        ('fn number()->int{return 2}\nfn identity(n:int)->int{return n}',
+         'fn main()->int{var xs:list[int] = [40]\nreturn math.identity(n=xs.append(math.number())+40)}'),
+        ('fn combine(a:int,b:int)->int{return a+b}',
+         'fn main()->int{var xs:list[int] = [1]\nreturn math.combine(a=xs.append(40),b=xs.pop())}'),
+    )
+    for case_number, (exported, caller) in enumerate(container_argument_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic, (caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"typed-container-argument-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    module.write_text('fn identity(n:int)->int{return n}', encoding="utf-8")
+    container_argument_rejections = (
+        'var x:int = 42\nreturn math.identity(n=x.pop())',
+        'var xs:list[int] = [1]\nreturn math.identity(n=xs.append("2"))',
+        'var entries:dict{str,int} = {}\nreturn math.identity(n=entries.set(1,2))',
+        'var xs:list[int] = [42]\nwith xs[0] as item {return math.identity(n=xs.pop())}',
+        'var xs:list[int] = [42]\nwith xs[0] as item {return math.identity(n=xs.append(2))}',
+        'var entries:dict{str,int} = {"甲":42}\nwith entries["甲"] as item {return math.identity(n=entries.set("乙",2))}',
+    )
+    for body in container_argument_rejections:
+        entry_module.write_text('import math\nfn main()->int{\n'+body+'\n}', encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (body, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, body
+
+    # Private bootstrap keeps a conservative pending mutation frame restriction.
+    entry_module.write_text(
+        'import math\nfn main()->int{var xs:list[int] = [42]\nreturn math.identity(n=xs.append(xs.pop()))}',
+        encoding="utf-8")
+    for cli in (seed, stage, next_stage):
+        code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
+        assert code == 1 and not generated and "巢狀容器修改" in diagnostic, (code, generated, diagnostic)
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),

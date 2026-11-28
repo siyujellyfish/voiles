@@ -209,6 +209,8 @@ impl Machine {
                         && self.tokens.get(*index + 4).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
                         *index += 5;
                     } else if self.factory_head_at(*index) {
+                        // Local container methods have the same delimiter grammar,
+                        // but their return type and borrow checks are not module signatures.
                         *has_nested = true;
                         if !self.typed_call_lookahead(index, depth + 1, has_nested) {
                             return false;
@@ -857,6 +859,38 @@ impl Machine {
         if self.at_field()? != 0 {
             self.field_value()?;
             return Ok(FactoryArgumentKind::Int);
+        }
+        // Resolve local receivers before qualified function heads. The ordinary
+        // emitter's borrow guards remain authoritative; pending mutation frames
+        // cannot be nested until their rollback and evaluation order are proven.
+        let local_receiver = matches!(self.token(), TokenKind::Name(n) if self.locals.contains_key(n));
+        if local_receiver {
+            let pop = self.at_list_pop()? != 0;
+            let append = self.at_list_append()? != 0;
+            let set = self.at_dict_set()? != 0;
+            if pop || append || set {
+                if self.pending_list_append.is_some() || self.pending_dict_set.is_some() {
+                    return Err(Fault::Syntax("型別化實參的巢狀容器修改尚未開放".into()));
+                }
+                if pop {
+                    self.list_pop()?;
+                } else if append {
+                    self.list_append()?;
+                    let kind = self.typed_argument_expression(depth + 1)?;
+                    self.require_int_operand(&kind)?;
+                    self.expect(")")?;
+                    self.finish_list_append()?;
+                } else {
+                    self.dict_set()?;
+                    self.dict_set_key()?;
+                    self.expect(",")?;
+                    let kind = self.typed_argument_expression(depth + 1)?;
+                    self.require_int_operand(&kind)?;
+                    self.expect(")")?;
+                    self.finish_dict_set()?;
+                }
+                return Ok(FactoryArgumentKind::Int);
+            }
         }
         match self.token().clone() {
                 TokenKind::Integer(_) => {
