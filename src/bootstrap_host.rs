@@ -154,6 +154,7 @@ impl Machine {
             *index += 1;
             return true;
         }
+        let named_list = self.named_argument_at(*index);
         loop {
             if self.named_argument_at(*index) {
                 *has_nested = true; // named arguments also require typed temporaries
@@ -167,6 +168,7 @@ impl Machine {
                     *index += 1;
                     if self.tokens.get(*index)
                         .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        if named_list { *index += 1; return true; }
                         return false;
                     }
                 }
@@ -199,6 +201,13 @@ impl Machine {
                         && self.tokens.get(*index + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
                         && self.tokens.get(*index + 3).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
                         *index += 4;
+                    } else if self.tokens.get(*index).is_some_and(|t|
+                        matches!(&t.kind, TokenKind::Name(n) if self.locals.contains_key(n)))
+                        && self.tokens.get(*index + 1).is_some_and(|t| t.kind == TokenKind::Symbol('.'))
+                        && self.tokens.get(*index + 2).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "to_int"))
+                        && self.tokens.get(*index + 3).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                        && self.tokens.get(*index + 4).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        *index += 5;
                     } else if self.factory_head_at(*index) {
                         *has_nested = true;
                         if !self.typed_call_lookahead(index, depth + 1, has_nested) {
@@ -206,6 +215,16 @@ impl Machine {
                         }
                     } else if self.tokens.get(*index + 1)
                         .is_some_and(|t| t.kind == TokenKind::Symbol('.')) {
+                        if self.tokens.get(*index + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+                            && !self.tokens.get(*index + 3).is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+                            *index += 3;
+                            if !self.tokens.get(*index).is_some_and(|t|
+                                matches!(t.kind, TokenKind::Symbol('+' | '-' | '*' | '/'))) {
+                                return true;
+                            }
+                            *index += 1;
+                            continue;
+                        }
                         if !self.tokens.get(*index + 2).is_some_and(|t|
                             matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n)
                                 if n == "move"))
@@ -840,6 +859,10 @@ impl Machine {
             self.list_len()?;
             return Ok(FactoryArgumentKind::Int);
         }
+        if self.at_field()? != 0 {
+            self.field_value()?;
+            return Ok(FactoryArgumentKind::Int);
+        }
         match self.token().clone() {
                 TokenKind::Integer(_) => {
                     self.literal()?;
@@ -907,10 +930,15 @@ impl Machine {
         let mut kinds: Vec<FactoryArgumentKind> = Vec::new();
         let mut labels = Vec::new();
         while self.matched_width(")") == 0 {
+            if !kinds.is_empty() {
+                self.expect(",")?;
+                if self.matched_width(")") != 0 && labels.first().is_some_and(Option::is_some) {
+                    break;
+                }
+            }
             if kinds.len() >= 64 {
                 return Err(Fault::Syntax("str 返回函式實參過多".into()));
             }
-            if !kinds.is_empty() { self.expect(",")?; }
             let label = if self.named_argument_at(self.cursor) {
                 let label = self.take_name()?;
                 self.expect("=")?;
