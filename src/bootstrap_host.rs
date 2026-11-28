@@ -218,23 +218,18 @@ impl Machine {
                         if self.tokens.get(*index + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
                             && !self.tokens.get(*index + 3).is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
                             *index += 3;
-                            if !self.tokens.get(*index).is_some_and(|t|
-                                matches!(t.kind, TokenKind::Symbol('+' | '-' | '*' | '/'))) {
-                                return true;
+                        } else {
+                            if !self.tokens.get(*index + 2).is_some_and(|t|
+                                matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n)
+                                    if n == "move"))
+                                || !self.tokens.get(*index + 3)
+                                    .is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                                || !self.tokens.get(*index + 4)
+                                    .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                                return false;
                             }
-                            *index += 1;
-                            continue;
+                            *index += 5;
                         }
-                        if !self.tokens.get(*index + 2).is_some_and(|t|
-                            matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n)
-                                if n == "move"))
-                            || !self.tokens.get(*index + 3)
-                                .is_some_and(|t| t.kind == TokenKind::Symbol('('))
-                            || !self.tokens.get(*index + 4)
-                                .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
-                            return false;
-                        }
-                        *index += 5;
                     } else {
                         *index += 1;
                     }
