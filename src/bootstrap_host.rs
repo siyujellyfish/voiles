@@ -159,10 +159,47 @@ impl Machine {
                 *has_nested = true; // named arguments also require typed temporaries
                 *index += 2;
             }
+            if !self.typed_expression_lookahead(index, depth, has_nested) {
+                return false;
+            }
             match self.tokens.get(*index).map(|t| &t.kind) {
+                Some(TokenKind::Symbol(',')) => {
+                    *index += 1;
+                    if self.tokens.get(*index)
+                        .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        return false;
+                    }
+                }
+                Some(TokenKind::Symbol(')')) => {
+                    *index += 1;
+                    return true;
+                }
+                _ => return false,
+            }
+        }
+    }
+    fn typed_expression_lookahead(&self, index: &mut usize, depth: usize, has_nested: &mut bool) -> bool {
+        if depth >= 32 { return false; }
+        loop {
+            match self.tokens.get(*index).map(|t| &t.kind) {
+                Some(TokenKind::Symbol('(')) => {
+                    *index += 1;
+                    if !self.typed_expression_lookahead(index, depth + 1, has_nested)
+                        || !self.tokens.get(*index).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        return false;
+                    }
+                    *index += 1;
+                }
                 Some(TokenKind::Integer(_) | TokenKind::StringLiteral(_)) => *index += 1,
                 Some(TokenKind::Name(_)) => {
-                    if self.factory_head_at(*index) {
+                    // Built-in reads already have dedicated checked emitters;
+                    // do not treat their receiver as an imported module.
+                    if self.tokens.get(*index).is_some_and(|t| matches!(&t.kind, TokenKind::Name(n) if n == "len"))
+                        && self.tokens.get(*index + 1).is_some_and(|t| t.kind == TokenKind::Symbol('('))
+                        && self.tokens.get(*index + 2).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+                        && self.tokens.get(*index + 3).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
+                        *index += 4;
+                    } else if self.factory_head_at(*index) {
                         *has_nested = true;
                         if !self.typed_call_lookahead(index, depth + 1, has_nested) {
                             return false;
@@ -185,20 +222,11 @@ impl Machine {
                 }
                 _ => return false,
             }
-            match self.tokens.get(*index).map(|t| &t.kind) {
-                Some(TokenKind::Symbol(',')) => {
-                    *index += 1;
-                    if self.tokens.get(*index)
-                        .is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
-                        return false;
-                    }
-                }
-                Some(TokenKind::Symbol(')')) => {
-                    *index += 1;
-                    return true;
-                }
-                _ => return false,
+            if !self.tokens.get(*index).is_some_and(|t|
+                matches!(t.kind, TokenKind::Symbol('+' | '-' | '*' | '/'))) {
+                return true;
             }
+            *index += 1;
         }
     }
     fn at_typed_int_call(&self) -> R {
@@ -749,46 +777,84 @@ impl Machine {
         self.str_factory_depth -= 1;
         result
     }
-    fn typed_factory_call_inner(&mut self, function: &str, return_kind: Option<&str>) -> R {
-        // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
-        // 前向函式的參數型別及返回型別。
-        self.expect("(")?;
-        // 依序將所有實參先執行為區塊暫存，再借用 &mut Machine 呼叫外層。
-        // 避免 v_outer(s, depth+1, v_inner(s,...)) 的 Rust E0499 衝突。
-        self.emit("{\n")?;
-        let mut kinds: Vec<FactoryArgumentKind> = Vec::new();
-        let mut labels = Vec::new();
-        while self.matched_width(")") == 0 {
-            if kinds.len() >= 64 {
-                return Err(Fault::Syntax("str 返回函式實參過多".into()));
+    fn require_int_operand(&mut self, kind: &FactoryArgumentKind) -> Result<(), Fault> {
+        match kind {
+            FactoryArgumentKind::Int => Ok(()),
+            FactoryArgumentKind::Str => Err(Fault::Syntax("算術運算元必須為 int".into())),
+            FactoryArgumentKind::Call(name) => {
+                // The primary's outer call is the most recently completed call.
+                let call = self.str_factory_calls.last_mut()
+                    .filter(|call| &call.name == name)
+                    .ok_or_else(|| Fault::Syntax("算術呼叫返回來源不一致".into()))?;
+                call.return_kind = Some("int".into());
+                Ok(())
             }
-            if !kinds.is_empty() { self.expect(",")?; }
-            let label = if self.named_argument_at(self.cursor) {
-                let label = self.take_name()?;
-                self.expect("=")?;
-                Some(label)
-            } else { None };
-            if labels.first().is_some_and(|first: &Option<String>| first.is_some() != label.is_some()) {
-                return Err(Fault::Syntax("位置實參與具名實參不得混用".into()));
-            }
-            labels.push(label);
-            let slot = format!("__voiles_str_arg_{}_{}", self.str_factory_depth, kinds.len());
-            self.emit(&format!("let {slot} = "))?;
-            match self.token().clone() {
+        }
+    }
+    fn typed_argument_expression(&mut self, depth: usize) -> Result<FactoryArgumentKind, Fault> {
+        let mut kind = self.typed_argument_product(depth)?;
+        while self.matched_width("+") != 0 || self.matched_width("-") != 0 {
+            self.require_int_operand(&kind)?;
+            let op = if self.matched_width("+") != 0 { "+" } else { "-" };
+            self.expect(op)?;
+            self.emit(if op == "+" { ".checked_add(" } else { ".checked_sub(" })?;
+            let right = self.typed_argument_product(depth)?;
+            self.require_int_operand(&right)?;
+            self.emit(").ok_or(Fault::Overflow)?")?;
+            kind = FactoryArgumentKind::Int;
+        }
+        Ok(kind)
+    }
+    fn typed_argument_product(&mut self, depth: usize) -> Result<FactoryArgumentKind, Fault> {
+        let mut kind = self.typed_argument_primary(depth)?;
+        while self.matched_width("*") != 0 || self.matched_width("/") != 0 {
+            self.require_int_operand(&kind)?;
+            let op = if self.matched_width("*") != 0 { "*" } else { "/" };
+            self.expect(op)?;
+            self.emit(if op == "*" { ".checked_mul(" } else { ".checked_div(" })?;
+            let right = self.typed_argument_primary(depth)?;
+            self.require_int_operand(&right)?;
+            self.emit(").ok_or(Fault::Overflow)?")?;
+            kind = FactoryArgumentKind::Int;
+        }
+        Ok(kind)
+    }
+    fn typed_argument_primary(&mut self, depth: usize) -> Result<FactoryArgumentKind, Fault> {
+        if depth >= 32 {
+            return Err(Fault::Syntax("型別化實參運算式巢狀超過安全上限".into()));
+        }
+        if self.matched_width("(") != 0 {
+            self.expect("(")?;
+            self.emit("(")?;
+            let kind = self.typed_argument_expression(depth + 1)?;
+            self.require_int_operand(&kind)?;
+            self.expect(")")?;
+            self.emit(")")?;
+            return Ok(FactoryArgumentKind::Int);
+        }
+        if self.at_conversion()? != 0 {
+            self.conversion()?;
+            return Ok(FactoryArgumentKind::Int);
+        }
+        if self.at_len()? != 0 {
+            self.list_len()?;
+            return Ok(FactoryArgumentKind::Int);
+        }
+        match self.token().clone() {
                 TokenKind::Integer(_) => {
                     self.literal()?;
-                    kinds.push(FactoryArgumentKind::Int);
+                    Ok(FactoryArgumentKind::Int)
                 }
                 TokenKind::StringLiteral(value) => {
                     self.cursor += 1;
                     self.emit(&format!("String::from({value:?})"))?;
-                    kinds.push(FactoryArgumentKind::Str);
+                    Ok(FactoryArgumentKind::Str)
                 }
                 TokenKind::Name(_) if self.factory_head_at(self.cursor) => {
                     // 巢狀結果保留完整限定名稱，待正式簽章建立後解析型別。
                     let source = self.take_factory_name()?;
                     self.typed_factory_call(&source, None)?;
-                    kinds.push(FactoryArgumentKind::Call(source));
+                    Ok(FactoryArgumentKind::Call(source))
                 }
                 TokenKind::Name(source) => {
                     let explicit_move = self.tokens.get(self.cursor + 1)
@@ -820,16 +886,43 @@ impl Machine {
                         self.expect(")")?;
                         self.locals.insert(source.clone(), moved_kind.into());
                         self.emit(&format!("v_{source}"))?;
-                        kinds.push(FactoryArgumentKind::Str);
+                        Ok(FactoryArgumentKind::Str)
                     } else {
                         // 保留 int 形參／局部既有的名稱解析，拒絕對 str 的隱含複製。
                         self.value()?;
-                        kinds.push(FactoryArgumentKind::Int);
+                        Ok(FactoryArgumentKind::Int)
                     }
                 }
-                _ => return Err(Fault::Syntax(
-                    "str 返回函式實參僅支援 int、字串常值或明確 move".into())),
+                _ => Err(Fault::Syntax(
+                    "型別化實參需要 int 運算式、字串常值或明確 move".into())),
             }
+    }
+    fn typed_factory_call_inner(&mut self, function: &str, return_kind: Option<&str>) -> R {
+        // 先依詞彙序逐項求值，保留 move 來源失效；完成全文後才核對
+        // 前向函式的參數型別及返回型別。
+        self.expect("(")?;
+        // 依序將所有實參先執行為區塊暫存，再借用 &mut Machine 呼叫外層。
+        // 避免 v_outer(s, depth+1, v_inner(s,...)) 的 Rust E0499 衝突。
+        self.emit("{\n")?;
+        let mut kinds: Vec<FactoryArgumentKind> = Vec::new();
+        let mut labels = Vec::new();
+        while self.matched_width(")") == 0 {
+            if kinds.len() >= 64 {
+                return Err(Fault::Syntax("str 返回函式實參過多".into()));
+            }
+            if !kinds.is_empty() { self.expect(",")?; }
+            let label = if self.named_argument_at(self.cursor) {
+                let label = self.take_name()?;
+                self.expect("=")?;
+                Some(label)
+            } else { None };
+            if labels.first().is_some_and(|first: &Option<String>| first.is_some() != label.is_some()) {
+                return Err(Fault::Syntax("位置實參與具名實參不得混用".into()));
+            }
+            labels.push(label);
+            let slot = format!("__voiles_str_arg_{}_{}", self.str_factory_depth, kinds.len());
+            self.emit(&format!("let {slot} = "))?;
+            kinds.push(self.typed_argument_expression(0)?);
             self.emit(";\n")?;
             if self.matched_width(")") == 0 && self.matched_width(",") == 0 {
                 return Err(Fault::Syntax("str 返回函式實參缺少逗號或右括號".into()));

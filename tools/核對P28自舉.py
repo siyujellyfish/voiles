@@ -511,6 +511,87 @@ with TemporaryDirectory() as tmp:
                    for code, generated, diagnostic in failures), (body, failures)
         assert invoke(next_stage, "check", entry_module)[0] == 1, body
 
+    # 型別化實參保留 checked 算術、左結合、乘除優先及來源序。
+    arithmetic_cases = (
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{return math.combine(b=(8-2)/3,a=1+3)}'),
+        ('fn combine(a:int,b:int)->int{return a*10+b}',
+         'fn main()->int{return math.combine(b=10-5-3,a=2*3-2)}'),
+        ('fn number()->int{return 20}\nfn identity(n:int)->int{return n}',
+         'fn main()->int{return math.identity(math.number()*2+2)}'),
+        ('fn number()->int{return 20}\nfn identity(n:int)->int{return n}',
+         'fn main()->int{return math.identity((math.number()+1)*2)}'),
+        ('fn combine(a:int,text:str)->int{return a+text.to_int()}',
+         'fn main()->int{const raw:str = "2"\nreturn math.combine(text=raw.move(),a=2*20)}'),
+        ('fn choose(n:int,text:str)->str{return text.move()}',
+         'fn main()->int{const raw:str = math.choose(text="42",n=(1+2)*3)\nreturn raw.to_int()}'),
+        ('fn number()->int{return 20}\nfn identity(n:int)->int{return n}',
+         'fn main()->int{const text:str = "2"\nreturn math.identity(n=math.number()*2+text.to_int())}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{const text:str = "ab"\nreturn math.identity(n=len(text)+40)}'),
+    )
+    for case_number, (exported, caller) in enumerate(arithmetic_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic and ".clone()" not in generated, (
+            caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"typed-arithmetic-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    arithmetic_rejections = (
+        ('fn identity(n:int)->int{return n}', 'return math.identity(n="2"+40)'),
+        ('fn make()->str{return "2"}\nfn identity(n:int)->int{return n}',
+         'return math.identity(n=math.make()+40)'),
+        ('fn make()->str{return "2"}\nfn identity(n:int)->int{return n}',
+         'return math.identity(n=40+math.make())'),
+        ('fn identity(n:int)->int{return n}',
+         'var raw:str = "42"\nreturn math.identity(n=raw.move()+1)'),
+        ('fn combine(a:int,text:str)->int{return a+text.to_int()}',
+         'var raw:str = "2"\nreturn math.combine(text=raw.move(),a=raw.to_int()+40)'),
+    )
+    for exported, body in arithmetic_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text('import math\nfn main()->int{\n'+body+'\n}', encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (body, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, body
+
+    # 溢位與除零必須是真執行期失敗，不能產出 wrapping 值。
+    module.write_text('fn identity(n:int)->int{return n}', encoding="utf-8")
+    for expression in ("9223372036854775807+1", "42/0"):
+        entry_module.write_text(
+            'import math\nfn main()->int{return math.identity(n='+expression+')}',
+            encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2]
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic, (expression, code, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(match v_main(&mut Machine,0){Err(Fault::Overflow)=>73,_=>1})}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (73, "", ""), expression
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
