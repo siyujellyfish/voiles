@@ -18,11 +18,20 @@ enum ExceptionKind { Evaluation, Conversion }
 // by its position in the source. Literal and moved arguments are already known.
 #[derive(Debug)]
 enum FactoryArgumentKind { Int, Str, Call(String) }
+struct FactoryCall {
+    name: String,
+    kinds: Vec<FactoryArgumentKind>,
+    labels: Vec<Option<String>>,
+    return_kind: Option<String>,
+    // Byte offset of the argument list in the generated Rust, after evaluation.
+    named_insert: Option<(usize, usize)>,
+}
 
 // Exported module signatures carry the same int/str contract as local calls.
 // Parameter names are not types; keeping only arity can silently miscompile.
 #[derive(Clone, Debug)]
 struct FunctionSignature {
+    param_names: Vec<String>,
     param_kinds: Vec<String>,
     return_kind: String,
 }
@@ -35,7 +44,7 @@ struct Machine {
     functions: BTreeMap<String, Vec<String>>,
     function_param_kinds: BTreeMap<String, Vec<String>>,
     function_return_kinds: BTreeMap<String, String>,
-    str_factory_calls: Vec<(String, Vec<FactoryArgumentKind>, Option<String>)>,
+    str_factory_calls: Vec<FactoryCall>,
     str_factory_depth: usize,
     current_function: Option<String>,
     calls: Vec<(Option<String>, String, usize, Vec<String>)>,
@@ -132,6 +141,10 @@ impl Machine {
     // 僅將全部實參都屬既有型別化子集、且至少一個實參為
     // 巢狀函式呼叫的普通 int 呼叫導向逐項暫存生成器。
     // 其他一般 int 表達式繼續使用原公開路徑，避免退化。
+    fn named_argument_at(&self, index: usize) -> bool {
+        self.tokens.get(index).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(index + 1).is_some_and(|t| t.kind == TokenKind::Symbol('='))
+    }
     fn typed_call_lookahead(&self, index: &mut usize, depth: usize, has_nested: &mut bool) -> bool {
         if depth >= 32 { return false; }
         if !self.factory_head_at(*index) { return false; }
@@ -142,6 +155,10 @@ impl Machine {
             return true;
         }
         loop {
+            if self.named_argument_at(*index) {
+                *has_nested = true; // named arguments also require typed temporaries
+                *index += 2;
+            }
             match self.tokens.get(*index).map(|t| &t.kind) {
                 Some(TokenKind::Integer(_) | TokenKind::StringLiteral(_)) => *index += 1,
                 Some(TokenKind::Name(_)) => {
@@ -740,11 +757,21 @@ impl Machine {
         // 避免 v_outer(s, depth+1, v_inner(s,...)) 的 Rust E0499 衝突。
         self.emit("{\n")?;
         let mut kinds: Vec<FactoryArgumentKind> = Vec::new();
+        let mut labels = Vec::new();
         while self.matched_width(")") == 0 {
             if kinds.len() >= 64 {
                 return Err(Fault::Syntax("str 返回函式實參過多".into()));
             }
             if !kinds.is_empty() { self.expect(",")?; }
+            let label = if self.named_argument_at(self.cursor) {
+                let label = self.take_name()?;
+                self.expect("=")?;
+                Some(label)
+            } else { None };
+            if labels.first().is_some_and(|first: &Option<String>| first.is_some() != label.is_some()) {
+                return Err(Fault::Syntax("位置實參與具名實參不得混用".into()));
+            }
+            labels.push(label);
             let slot = format!("__voiles_str_arg_{}_{}", self.str_factory_depth, kinds.len());
             self.emit(&format!("let {slot} = "))?;
             match self.token().clone() {
@@ -815,10 +842,18 @@ impl Machine {
             self.emit_name(function)?;
         }
         self.emit("(s, depth + 1")?;
-        for index in 0..kinds.len() {
-            self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
-        }
-        self.str_factory_calls.push((function.to_owned(), kinds, return_kind.map(str::to_owned)));
+        let named_insert = if labels.first().is_some_and(Option::is_some) {
+            Some((self.output.len(), self.str_factory_depth))
+        } else {
+            for index in 0..kinds.len() {
+                self.emit(&format!(", __voiles_str_arg_{}_{}", self.str_factory_depth, index))?;
+            }
+            None
+        };
+        self.str_factory_calls.push(FactoryCall {
+            name: function.to_owned(), kinds, labels,
+            return_kind: return_kind.map(str::to_owned), named_insert,
+        });
         self.emit(")?\n}")
     }
     fn str_local(&mut self) -> R {
@@ -1447,20 +1482,22 @@ impl Machine {
         self.call_stack.pop().ok_or_else(|| Fault::Syntax("呼叫邊界無效".into()))?;
         Ok(0)
     }
-    fn factory_signature(&self, name: &str) -> Result<(&Vec<String>, &String), Fault> {
+    fn factory_signature(&self, name: &str) -> Result<(&Vec<String>, &Vec<String>, &String), Fault> {
         if let Some((module, member)) = name.split_once('.') {
                 if !self.imports.contains(module) {
                     return Err(Fault::Syntax(format!("未匯入模組 {module}")));
                 }
                 let signature = self.external_functions.get(&(module.to_owned(), member.to_owned()))
                     .ok_or_else(|| Fault::Syntax(format!("未知模組函式 {name}")))?;
-                Ok((&signature.param_kinds, &signature.return_kind))
+                Ok((&signature.param_names, &signature.param_kinds, &signature.return_kind))
             } else {
                 let expected_kinds = self.function_param_kinds.get(name)
                     .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式 {name}")))?;
                 let declared_return = self.function_return_kinds.get(name)
                     .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式返回型別 {name}")))?;
-                Ok((expected_kinds, declared_return))
+                let param_names = self.functions.get(name)
+                    .ok_or_else(|| Fault::Syntax(format!("未知函式參數名稱 {name}")))?;
+                Ok((param_names, expected_kinds, declared_return))
             }
     }
     fn finish_names(&mut self) -> R {
@@ -1507,24 +1544,52 @@ impl Machine {
                 }
              }
         }
-        for (name, actual_kinds, return_kind) in &self.str_factory_calls {
-            let (expected_kinds, declared_return) = self.factory_signature(name)?;
+        let mut named_patches = Vec::new();
+        for call in &self.str_factory_calls {
+            let name = &call.name;
+            let actual_kinds = &call.kinds;
+            let return_kind = &call.return_kind;
+            let (param_names, expected_kinds, declared_return) = self.factory_signature(name)?;
             if expected_kinds.len() != actual_kinds.len()
                 || return_kind.as_ref().is_some_and(|kind| kind != declared_return) {
                 return Err(Fault::Syntax(
                     format!("巢狀函式 {name} 的參數數量、型別或返回型別不符")));
             }
-            for (expected, actual) in expected_kinds.iter().zip(actual_kinds) {
+            let mut ordered = vec![None; expected_kinds.len()];
+            for (source_index, (label, actual)) in call.labels.iter().zip(actual_kinds).enumerate() {
+                let slot = match label {
+                    Some(label) => param_names.iter().position(|param| param == label)
+                        .ok_or_else(|| Fault::Syntax(format!("函式 {name} 未知具名實參 {label}")))?,
+                    None => source_index,
+                };
+                if ordered[slot].replace(source_index).is_some() {
+                    return Err(Fault::Syntax(format!("函式 {name} 重複指定實參 {}", param_names[slot])));
+                }
+                let expected = &expected_kinds[slot];
                 let actual_kind = match actual {
                     FactoryArgumentKind::Int => "int",
                     FactoryArgumentKind::Str => "str",
-                    FactoryArgumentKind::Call(callee) => self.factory_signature(callee)?.1.as_str(),
+                    FactoryArgumentKind::Call(callee) => self.factory_signature(callee)?.2.as_str(),
                 };
                 if expected != actual_kind {
                     return Err(Fault::Syntax(format!(
                         "巢狀函式 {name} 的實參型別不符：預期 {expected}，實際 {actual_kind}")));
                 }
             }
+            if let Some((offset, depth)) = call.named_insert {
+                let mut args = String::new();
+                for source_index in ordered {
+                    let source_index = source_index.ok_or_else(|| Fault::Syntax(format!("函式 {name} 缺少具名實參")))?;
+                    args.push_str(&format!(", __voiles_str_arg_{depth}_{source_index}"));
+                }
+                named_patches.push((offset, args));
+            }
+        }
+        // No textual sentinel replacement: only insert at recorded UTF-8 byte
+        // boundaries, from the end back, after every call has been validated.
+        named_patches.sort_by_key(|(offset, _)| *offset);
+        for (offset, args) in named_patches.into_iter().rev() {
+            self.output.insert_str(offset, &args);
         }
         Ok(0)
     }
@@ -1749,6 +1814,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
     })?;
     let signatures = machine.functions.keys().map(|name| {
         (name.clone(), FunctionSignature {
+            param_names: machine.functions.get(name).cloned().expect("declared parameter names registered"),
             param_kinds: machine.function_param_kinds.get(name)
                 .cloned().expect("declared function parameters registered"),
             return_kind: machine.function_return_kinds.get(name)
