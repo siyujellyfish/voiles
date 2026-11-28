@@ -381,6 +381,76 @@ with TemporaryDirectory() as tmp:
                    for code, generated, diagnostic in failures), (body, failures)
         assert invoke(next_stage, "check", entry_module)[0] == 1, body
 
+    # 巢狀結果使用完整模組限定簽章；實參先逐項暫存，不重複借用 Machine。
+    qualified_nested_cases = (
+        ('fn make()->str{return "42"}\nfn decode(text:str)->int{return text.to_int()}',
+         'fn main()->int{return math.decode(math.make())}'),
+        ('fn make()->str{return "42"}',
+         'fn main()->int{return decode(math.make())}\nfn decode(text:str)->int{return text.to_int()}'),
+        ('fn decode(text:str)->int{return text.to_int()}',
+         'fn main()->int{return math.decode(make())}\nfn make()->str{return "42"}'),
+        ('fn number()->int{return 40}\nfn make()->str{return "2"}',
+         'fn main()->int{return combine(math.number(),math.make())}\n'
+         'fn combine(n:int,text:str)->int{return n+text.to_int()}'),
+        ('fn identity(text:str)->str{return text.move()}\nfn decode(text:str)->int{return text.to_int()}',
+         'fn main()->int{var raw:str = "42"\nreturn math.decode(math.identity(raw.move()))}'),
+        ('fn make()->str{return "42"}\nfn identity(text:str)->str{return text.move()}',
+         'fn main()->int{const text:str = math.identity(math.make())\nreturn text.to_int()}'),
+        ('fn make()->str{return "42"}\nfn identity(text:str)->str{return text.move()}',
+         'fn main()->int{const text:str = relay()\nreturn text.to_int()}\n'
+         'fn relay()->str{return math.identity(math.make())}'),
+        ('fn make()->str{return "2"}\nfn combine(a:str,b:str)->int{return a.to_int()+b.to_int()}',
+         'fn main()->int{return math.combine("40",math.make())}'),
+    )
+    for case_number, (exported, caller) in enumerate(qualified_nested_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic and "__voiles_str_arg_" in generated, (
+            caller, code, generated, diagnostic)
+        assert ".clone()" not in generated, caller
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"qualified-nested-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    qualified_nested_rejections = (
+        ('fn make()->int{return 42}\nfn decode(text:str)->int{return text.to_int()}',
+         'return math.decode(math.make())'),
+        ('fn make()->str{return "42"}\nfn decode(n:int)->int{return n}',
+         'return math.decode(math.make())'),
+        ('fn _make()->str{return "42"}\nfn decode(text:str)->int{return text.to_int()}',
+         'return math.decode(math._make())'),
+        ('fn make()->str{return "42"}\nfn decode(text:str)->int{return text.to_int()}',
+         'return math.decode(math.make(1))'),
+        ('fn decode(text:str)->int{return text.to_int()}',
+         'return math.decode(math.missing())'),
+        ('fn identity(text:str)->str{return text.move()}\nfn decode(text:str)->int{return text.to_int()}',
+         'var raw:str = "42"\nvar n:int = math.decode(math.identity(raw.move()))\nreturn raw.to_int()'),
+        ('fn identity(text:str)->str{return text.move()}\nfn combine(a:str,b:str)->int{return a.to_int()+b.to_int()}',
+         'var raw:str = "42"\nreturn math.combine(math.identity(raw.move()),raw.move())'),
+    )
+    for exported, body in qualified_nested_rejections:
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text('import math\nfn main()->int{\n'+body+'\n}', encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (body, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, body
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),

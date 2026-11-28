@@ -520,11 +520,11 @@ fn call()->int{
     if (host.at("host") != 0) {
         return host.expect("host") + host.expect(".") + host.method() + host.expect("(") + host.emit("(") + host_arguments() + host.expect(")") + host.emit(")?")
     } else {
-        if (host.at_module_call() != 0) {
-            return host.module_call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
+        if (host.at_typed_int_call() != 0) {
+            return host.typed_int_call()
         } else {
-            if (host.at_typed_int_call() != 0) {
-                return host.typed_int_call()
+            if (host.at_module_call() != 0) {
+                return host.module_call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
             } else {
                 return host.call() + host.expect("(") + host.emit("(s, depth + 1") + call_arguments() + host.expect(")") + host.finish_call() + host.emit(")?")
             }

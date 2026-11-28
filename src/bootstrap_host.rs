@@ -134,12 +134,9 @@ impl Machine {
     // 其他一般 int 表達式繼續使用原公開路徑，避免退化。
     fn typed_call_lookahead(&self, index: &mut usize, depth: usize, has_nested: &mut bool) -> bool {
         if depth >= 32 { return false; }
-        if !self.tokens.get(*index).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
-            || !self.tokens.get(*index + 1)
-                .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
-            return false;
-        }
-        *index += 2;
+        if !self.factory_head_at(*index) { return false; }
+        *index += if self.tokens.get(*index + 1)
+            .is_some_and(|t| t.kind == TokenKind::Symbol('.')) { 4 } else { 2 };
         if self.tokens.get(*index).is_some_and(|t| t.kind == TokenKind::Symbol(')')) {
             *index += 1;
             return true;
@@ -148,8 +145,7 @@ impl Machine {
             match self.tokens.get(*index).map(|t| &t.kind) {
                 Some(TokenKind::Integer(_) | TokenKind::StringLiteral(_)) => *index += 1,
                 Some(TokenKind::Name(_)) => {
-                    if self.tokens.get(*index + 1)
-                        .is_some_and(|t| t.kind == TokenKind::Symbol('(')) {
+                    if self.factory_head_at(*index) {
                         *has_nested = true;
                         if !self.typed_call_lookahead(index, depth + 1, has_nested) {
                             return false;
@@ -195,7 +191,7 @@ impl Machine {
             && has_nested))
     }
     fn typed_int_call(&mut self) -> R {
-        let name = self.take_name()?;
+        let name = self.take_factory_name()?;
         self.typed_factory_call(&name, Some("int"))
     }
     fn at_call(&self) -> R {
@@ -761,11 +757,9 @@ impl Machine {
                     self.emit(&format!("String::from({value:?})"))?;
                     kinds.push(FactoryArgumentKind::Str);
                 }
-                TokenKind::Name(source) if self.tokens.get(self.cursor + 1)
-                    .is_some_and(|t| t.kind == TokenKind::Symbol('(')) => {
-                    // 巢狀結果先保留 callee 名稱，待全文的正式簽章建立後
-                    // 再解析型別。生成的 Rust 暫存不需要猜測 int 或 str。
-                    self.cursor += 1;
+                TokenKind::Name(_) if self.factory_head_at(self.cursor) => {
+                    // 巢狀結果保留完整限定名稱，待正式簽章建立後解析型別。
+                    let source = self.take_factory_name()?;
                     self.typed_factory_call(&source, None)?;
                     kinds.push(FactoryArgumentKind::Call(source));
                 }
@@ -1453,6 +1447,22 @@ impl Machine {
         self.call_stack.pop().ok_or_else(|| Fault::Syntax("呼叫邊界無效".into()))?;
         Ok(0)
     }
+    fn factory_signature(&self, name: &str) -> Result<(&Vec<String>, &String), Fault> {
+        if let Some((module, member)) = name.split_once('.') {
+                if !self.imports.contains(module) {
+                    return Err(Fault::Syntax(format!("未匯入模組 {module}")));
+                }
+                let signature = self.external_functions.get(&(module.to_owned(), member.to_owned()))
+                    .ok_or_else(|| Fault::Syntax(format!("未知模組函式 {name}")))?;
+                Ok((&signature.param_kinds, &signature.return_kind))
+            } else {
+                let expected_kinds = self.function_param_kinds.get(name)
+                    .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式 {name}")))?;
+                let declared_return = self.function_return_kinds.get(name)
+                    .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式返回型別 {name}")))?;
+                Ok((expected_kinds, declared_return))
+            }
+    }
     fn finish_names(&mut self) -> R {
         if self.current_function.is_some() || !self.call_stack.is_empty() {
             return Err(Fault::Syntax("名稱解析邊界無效".into()));
@@ -1498,20 +1508,7 @@ impl Machine {
              }
         }
         for (name, actual_kinds, return_kind) in &self.str_factory_calls {
-            let (expected_kinds, declared_return) = if let Some((module, member)) = name.split_once('.') {
-                if !self.imports.contains(module) {
-                    return Err(Fault::Syntax(format!("未匯入模組 {module}")));
-                }
-                let signature = self.external_functions.get(&(module.to_owned(), member.to_owned()))
-                    .ok_or_else(|| Fault::Syntax(format!("未知模組函式 {name}")))?;
-                (&signature.param_kinds, &signature.return_kind)
-            } else {
-                let expected_kinds = self.function_param_kinds.get(name)
-                    .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式 {name}")))?;
-                let declared_return = self.function_return_kinds.get(name)
-                    .ok_or_else(|| Fault::Syntax(format!("未知巢狀函式返回型別 {name}")))?;
-                (expected_kinds, declared_return)
-            };
+            let (expected_kinds, declared_return) = self.factory_signature(name)?;
             if expected_kinds.len() != actual_kinds.len()
                 || return_kind.as_ref().is_some_and(|kind| kind != declared_return) {
                 return Err(Fault::Syntax(
@@ -1521,9 +1518,7 @@ impl Machine {
                 let actual_kind = match actual {
                     FactoryArgumentKind::Int => "int",
                     FactoryArgumentKind::Str => "str",
-                    FactoryArgumentKind::Call(callee) => self.function_return_kinds
-                        .get(callee).map(String::as_str).ok_or_else(||
-                            Fault::Syntax(format!("未知巢狀函式返回型別 {callee}")))?,
+                    FactoryArgumentKind::Call(callee) => self.factory_signature(callee)?.1.as_str(),
                 };
                 if expected != actual_kind {
                     return Err(Fault::Syntax(format!(
