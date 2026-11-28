@@ -72,6 +72,7 @@ struct Machine {
     pending_dict_set: Option<(String, Option<String>)>,
     pending_matches: Vec<(Option<MatchKind>, BTreeSet<i64>, bool, usize, BTreeMap<String, String>)>,
     pending_while: bool,
+    while_outer_locals: Option<BTreeMap<String, String>>,
     pending_if_scopes: Vec<(bool, BTreeMap<String, String>, Option<BTreeMap<String, String>>)>,
     pending_tries: Vec<(bool, Option<ExceptionKind>, Option<(String, Option<String>)>, BTreeMap<String, String>)>,
 }
@@ -111,10 +112,10 @@ impl Machine {
                 matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "int"))))
     }
     fn int_local_start(&mut self) -> R {
-        // The current with/while host lacks complete lexical scope rollback.
-        // Do not register a binding that could outlive its emitted Rust block.
-        if self.pending_while || !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some() {
-            return Err(Fault::Syntax("int 區域宣告暫不支援 while 或有效容器借用內部".into()));
+        // with still lacks complete lexical scope rollback; while now restores
+        // its outer binding map and preserves all outer resource states.
+        if !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some() {
+            return Err(Fault::Syntax("int 區域宣告暫不支援有效容器借用內部".into()));
         }
         if self.pending_int_local.is_some() {
             return Err(Fault::Syntax("int 區域宣告邊界無效".into()));
@@ -570,7 +571,7 @@ impl Machine {
         }
     }
     fn finish_function(&mut self) -> R {
-        if self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
+        if self.pending_while || self.while_outer_locals.is_some() { return Err(Fault::Syntax("while 邊界無效".into())); }
         if self.pending_int_local.is_some() { return Err(Fault::Syntax("未完成 int 區域宣告".into())); }
         self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
         self.locals.clear();
@@ -626,12 +627,25 @@ impl Machine {
             !matches!(next.kind, TokenKind::Symbol('}') | TokenKind::End))))
     }
     fn while_scope_start(&mut self) -> R {
-        if self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
+        if self.pending_while || self.while_outer_locals.is_some() {
+            return Err(Fault::Syntax("while 邊界無效".into()));
+        }
+        self.while_outer_locals = Some(self.locals.clone());
         self.pending_while = true;
         Ok(0)
     }
     fn while_scope_finish(&mut self) -> R {
         if !self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
+        let outer = self.while_outer_locals.take()
+            .ok_or_else(|| Fault::Syntax("while 外層作用域缺失".into()))?;
+        for (name, kind) in &outer {
+            if self.locals.get(name) != Some(kind) {
+                return Err(Fault::Syntax(format!("while 外層名稱 {name} 資源狀態無法安全合流")));
+            }
+        }
+        // The body may execute zero or multiple times. Only outer initialized
+        // bindings remain visible; body-local values are rebuilt each iteration.
+        self.locals = outer;
         self.pending_while = false;
         Ok(0)
     }
@@ -2008,7 +2022,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         nested_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,
         pending_list_append: None, pending_dict_set: None,
-        pending_matches: Vec::new(), pending_while: false, pending_if_scopes: Vec::new(), pending_tries: Vec::new(),
+        pending_matches: Vec::new(), pending_while: false, while_outer_locals: None, pending_if_scopes: Vec::new(), pending_tries: Vec::new(),
     };
     v_main(&mut machine, 0).map_err(|e| {
         let pos = source.position(machine.tokens[machine.cursor].start);

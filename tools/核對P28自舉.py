@@ -776,6 +776,51 @@ with TemporaryDirectory() as tmp:
                    for code, generated, diagnostic in failures), (caller, failures)
         assert invoke(next_stage, "check", entry_module)[0] == 1, caller
 
+    # while 內的整數區域值每輪重建；離域後只有外層已初始化名稱可讀。
+    while_int_cases = (
+        'fn main()->int{var n:int = 0\nwhile (n < 42){n = n+1}\nreturn n}',
+        'fn main()->int{var n:int = 0\nwhile (n < 42){const step:int = 2\nn = n+step}\nreturn n}',
+        'fn main()->int{var n:int = 0\nwhile (n < 42){var step:int = 1\nstep = step+1\nn = n+step}\nreturn n}',
+        'fn main()->int{var n:int = 42\nwhile (n < 0){var step:int = 1\nn = step}\nreturn n}',
+        'fn main()->int{var n:int = 0\nwhile (n < 42){const step:int = math.identity(n=2)\nn = n+step}\nreturn n}',
+        'fn main()->int{var n:int = 0\nwhile (n < 1){var step:int = 1\nn = n+step}\nconst step:int = 41\nreturn n+step}',
+    )
+    module.write_text('fn identity(n:int)->int{return n}', encoding="utf-8")
+    for case_number, caller in enumerate(while_int_cases):
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic, (caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"while-int-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    while_int_rejections = (
+        'fn main()->int{var n:int = 0\nwhile (n < 1){var step:int = 42\nn = n+1}\nreturn step}',
+        'fn main()->int{var n:int = 0\nwhile (n < 1){const step:int = 42\nstep = 1\nn = n+1}\nreturn n}',
+        'fn main()->int{const n:int = 42\nwhile (n < 0){n = 1}\nreturn n}',
+        'fn main()->int{var n:int = 0\nwhile (n < 1){var step:int = step+1\nn = n+1}\nreturn n}',
+    )
+    for caller in while_int_rejections:
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (caller, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, caller
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
