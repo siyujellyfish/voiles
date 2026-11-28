@@ -58,6 +58,7 @@ struct Machine {
     pending_field: Option<String>,
     locals: BTreeMap<String, String>,
     pending_local: Option<(String, String)>,
+    pending_int_local: Option<(String, bool)>,
     pending_constructor: Option<String>,
     constructor_fields: BTreeSet<String>,
     list_items: usize,
@@ -102,6 +103,57 @@ impl Machine {
     fn at(&self, text: &str) -> R { Ok(i64::from(self.matched_width(text) != 0)) }
     fn at_end(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::End))) }
     fn at_integer(&self) -> R { Ok(i64::from(matches!(self.token(), TokenKind::Integer(_)))) }
+    fn at_int_local(&self) -> R {
+        Ok(i64::from((self.matched_width("var") != 0 || self.matched_width("const") != 0)
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| matches!(t.kind, TokenKind::Name(_)))
+            && self.tokens.get(self.cursor + 2).is_some_and(|t| t.kind == TokenKind::Symbol(':'))
+            && self.tokens.get(self.cursor + 3).is_some_and(|t|
+                matches!(&t.kind, TokenKind::Name(n) | TokenKind::Keyword(n) if n == "int"))))
+    }
+    fn int_local_start(&mut self) -> R {
+        // The current with/while host lacks complete lexical scope rollback.
+        // Do not register a binding that could outlive its emitted Rust block.
+        if self.pending_while || !self.pending_list_borrows.is_empty() || self.pending_dict_borrow.is_some() {
+            return Err(Fault::Syntax("int 區域宣告暫不支援 while 或有效容器借用內部".into()));
+        }
+        if self.pending_int_local.is_some() {
+            return Err(Fault::Syntax("int 區域宣告邊界無效".into()));
+        }
+        let mutable = self.matched_width("var") != 0;
+        self.expect(if mutable { "var" } else { "const" })?;
+        let name = self.take_name()?;
+        let parameter = self.current_function.as_ref().and_then(|f| self.functions.get(f))
+            .is_some_and(|parameters| parameters.contains(&name));
+        if parameter || self.locals.contains_key(&name) {
+            return Err(Fault::Syntax(format!("重複區域名稱 {name}")));
+        }
+        self.expect(":")?;
+        self.expect("int")?;
+        self.expect("=")?;
+        self.emit(&format!("let {}v_{name}: i64 = ", if mutable { "mut " } else { "" }))?;
+        // Publish only after the initializer is completely parsed and emitted.
+        self.pending_int_local = Some((name, mutable));
+        Ok(0)
+    }
+    fn int_local_finish(&mut self) -> R {
+        let (name, mutable) = self.pending_int_local.take()
+            .ok_or_else(|| Fault::Syntax("int 區域宣告邊界無效".into()))?;
+        self.locals.insert(name, if mutable { "var:int" } else { "const:int" }.into());
+        self.emit(";\n")
+    }
+    fn at_int_assignment(&self) -> R {
+        Ok(i64::from(matches!(self.token(), TokenKind::Name(n)
+            if matches!(self.locals.get(n).map(String::as_str), Some("var:int" | "const:int")))
+            && self.tokens.get(self.cursor + 1).is_some_and(|t| t.kind == TokenKind::Symbol('='))))
+    }
+    fn int_assignment_start(&mut self) -> R {
+        let name = self.take_name()?;
+        if self.locals.get(&name).map(String::as_str) != Some("var:int") {
+            return Err(Fault::Syntax(format!("{name} 不是可變 int 區域名稱")));
+        }
+        self.expect("=")?;
+        self.emit(&format!("v_{name} = "))
+    }
     fn at_str_local(&self) -> R {
         let mutable = self.matched_width("var") != 0;
         let declarator = mutable || self.matched_width("const") != 0;
@@ -457,7 +509,7 @@ impl Machine {
                 .and_then(|index| self.function_param_kinds.get(function)?.get(index))
         }).map(String::as_str);
         let parameter = parameter_kind == Some("int");
-        let local_int = self.locals.get(&name).is_some_and(|kind| kind == "int");
+        let local_int = matches!(self.locals.get(&name).map(String::as_str), Some("int" | "var:int" | "const:int"));
         if !parameter && !local_int {
             return Err(Fault::Syntax(format!("{name} 不是可用的 int 名稱")));
         }
@@ -519,6 +571,7 @@ impl Machine {
     }
     fn finish_function(&mut self) -> R {
         if self.pending_while { return Err(Fault::Syntax("while 邊界無效".into())); }
+        if self.pending_int_local.is_some() { return Err(Fault::Syntax("未完成 int 區域宣告".into())); }
         self.current_function.take().ok_or_else(|| Fault::Syntax("函式邊界無效".into()))?;
         self.locals.clear();
         self.pending_local = None;
@@ -1769,6 +1822,8 @@ impl Machine {
                     "match_start" | "match_integer_subject" |
                     "match_boolean_subject" | "match_pattern" |
                     "match_wildcard" | "finish_match_arm" | "finish_match" | "method" |
+                    "at_int_local" | "int_local_start" | "int_local_finish" |
+                    "at_int_assignment" | "int_assignment_start" |
                     "literal" | "at_str_local" | "str_local" | "at_str_move_argument" |
                     "str_move_argument" | "at_str_literal_argument" | "str_literal_argument" |
                     "mark_str_return" | "is_str_return" |
@@ -1948,7 +2003,7 @@ fn compile_tokens_with_context(path: &Path, source: &Source, tokens: Vec<Token>,
         function_return_kinds: BTreeMap::new(), str_factory_calls: Vec::new(), str_factory_depth: 0, current_function: None, calls: Vec::new(), call_stack: Vec::new(),
         module, imports: BTreeSet::new(), allowed_imports, external_functions,
         structures: BTreeMap::new(), current_structure: None, pending_field: None,
-        locals: BTreeMap::new(), pending_local: None, pending_constructor: None,
+        locals: BTreeMap::new(), pending_local: None, pending_int_local: None, pending_constructor: None,
         constructor_fields: BTreeSet::new(), list_items: 0, nested_rows: 0,
         nested_items: 0, dict_items: 0,
         dict_keys: BTreeSet::new(), pending_list_borrows: Vec::new(), pending_dict_borrow: None,

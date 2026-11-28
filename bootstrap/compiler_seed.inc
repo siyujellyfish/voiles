@@ -80,6 +80,12 @@ Ok(s.expect("{")?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)
 }
 fn v_statement(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
+if s.at_int_local()? != 0i64 {
+Ok(s.int_local_start()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.int_local_finish()?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+if s.at_int_assignment()? != 0i64 {
+Ok(s.int_assignment_start()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
 if s.at_str_local()? != 0i64 {
 Ok(s.str_local()?.checked_add(v_statement(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
@@ -113,6 +119,8 @@ Ok(s.expect("return")?.checked_add(s.return_start()?).ok_or(Fault::Overflow)?.ch
 }
 } else {
 Ok(v_control(s, depth + 1)?)
+}
+}
 }
 }
 }
@@ -356,6 +364,12 @@ Ok(v_condition(s, depth + 1)?.checked_add(s.if_scope_start()?).ok_or(Fault::Over
 }
 fn v_if_flow_body(s: &mut Machine, depth: usize) -> R {
 s.enter(depth)?;
+if s.at_int_local()? != 0i64 {
+Ok(s.int_local_start()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.int_local_finish()?).ok_or(Fault::Overflow)?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
+if s.at_int_assignment()? != 0i64 {
+Ok(s.int_assignment_start()?.checked_add(v_expression(s, depth + 1)?).ok_or(Fault::Overflow)?.checked_add(s.emit(";\n")?).ok_or(Fault::Overflow)?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?)
+} else {
 if s.at("}")? != 0i64 {
 Ok(0i64)
 } else {
@@ -363,6 +377,8 @@ if s.at_str_local()? != 0i64 {
 Ok(s.str_local()?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?)
 } else {
 Ok(s.str_assignment()?.checked_add(v_if_flow_body(s, depth + 1)?).ok_or(Fault::Overflow)?)
+}
+}
 }
 }
 }
