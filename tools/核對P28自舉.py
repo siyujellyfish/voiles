@@ -717,6 +717,65 @@ with TemporaryDirectory() as tmp:
         code, generated, diagnostic = invoke(cli, "bootstrap-project", entry_module)
         assert code == 1 and not generated and "巢狀容器修改" in diagnostic, (code, generated, diagnostic)
 
+    # int 區域值在 initializer 完成後才發布，const 不可覆寫。
+    int_local_cases = (
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var n:int = 40\nreturn n+2}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{const n:int = (8-2)*7\nreturn n}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var n:int = math.identity(n=40)\nconst m:int = n+2\nreturn m}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var n:int = 40\nn = n+2\nreturn n}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var n:int = 0\nif (1 == 1){n = 42}else{n = 1}\nreturn n}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{if (1 == 1){const n:int = 42\nreturn n}else{const n:int = 0\nreturn n}}'),
+        ('fn identity(n:int)->int{return n}',
+         'fn main()->int{var entries:dict{str,int} = {"甲":1}\nvar n:int = math.identity(n=entries.set("甲",42))\n'
+         'with entries["甲"] as item {return item}\n}'),
+        ('fn decode(text:str)->int{return text.to_int()}',
+         'fn main()->int{var text:str = "42"\nconst n:int = math.decode(text.move())\nreturn n}'),
+    )
+    for case_number, (exported, caller) in enumerate(int_local_cases):
+        module.write_text(exported, encoding="utf-8")
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        generations = [invoke(cli, "bootstrap-project", entry_module)
+                       for cli in (seed, stage, next_stage)]
+        assert generations[0] == generations[1] == generations[2], (caller, generations)
+        code, generated, diagnostic = generations[2]
+        assert code == 0 and not diagnostic, (caller, code, generated, diagnostic)
+        rust_source.write_text(
+            "type R=Result<i64,Fault>; enum Fault{Overflow,Limit,Conversion,Syntax(String)} struct Machine; "
+            "impl Machine{fn enter(&mut self,_:usize)->Result<(),Fault>{Ok(())}}\n"
+            + generated + "fn main(){std::process::exit(v_main(&mut Machine,0).unwrap_or(1) as i32)}",
+            encoding="utf-8")
+        subprocess.run(["rustc", "--edition=2021", rust_source, "-o", native], check=True)
+        assert invoke(native) == (42, "", ""), caller
+        assert invoke(next_stage, "check", entry_module) == (0, "", ""), caller
+        assert invoke(next_stage, "run", entry_module) == (0, "42\n", ""), caller
+        for mode in ("build", "pack"):
+            exe = root / f"int-local-{case_number}-{mode}"
+            assert invoke(next_stage, mode, entry_module, "-o", exe) == (0, "", ""), caller
+            assert invoke(exe) == (42, "", ""), caller
+
+    int_local_rejections = (
+        'fn main()->int{var n:int = n+1\nreturn n}',
+        'fn main()->int{const n:int = 42\nn = 1\nreturn n}',
+        'fn main()->int{var n:int = "42"\nreturn n}',
+        'fn main()->int{var n:int = 1\nvar n:int = 42\nreturn n}',
+        'fn main()->int{if (1 == 1){var n:int = 42}else{var n:int = 0}\nreturn n}',
+        'fn main()->int{return local(42)}\nfn local(n:int)->int{var n:int = 1\nreturn n}',
+    )
+    module.write_text('fn identity(n:int)->int{return n}', encoding="utf-8")
+    for caller in int_local_rejections:
+        entry_module.write_text("import math\n"+caller, encoding="utf-8")
+        failures = [invoke(cli, "bootstrap-project", entry_module)
+                    for cli in (seed, stage, next_stage)]
+        assert all(code == 1 and not generated and diagnostic
+                   for code, generated, diagnostic in failures), (caller, failures)
+        assert invoke(next_stage, "check", entry_module)[0] == 1, caller
+
     invalid_projects = (
         ("import missing\nfn main()->int{ return 0 }", None),
         ("import math\nfn main()->int{ return math.unknown() }", None),
